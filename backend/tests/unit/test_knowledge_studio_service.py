@@ -1695,3 +1695,71 @@ async def test_author_and_service_accounts_cannot_publish_a_review_draft() -> No
         )
 
     store.publish_draft.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_managed_draft_applies_fixed_fields() -> None:
+    current = draft()
+    store = SimpleNamespace(
+        create_draft=AsyncMock(return_value=current),
+        is_managed_domain_creator=AsyncMock(return_value=True),
+    )
+
+    actor = subject(allowed_domains=frozenset({current.domain_id}))
+    result = await service(store).create_managed_draft(
+        workspace_id=WORKSPACE_ID,
+        subject=actor,
+        name=current.name,
+        endpoint_alias=current.endpoint_alias,
+        endpoint_aliases=current.endpoint_aliases,
+        domain_id=current.domain_id,
+        domain_source_version=current.domain_source_version,
+        classification=current.classification,
+        managed_intent="metadata-lineage",
+        idempotency_key="managed-draft",
+        request_hash="managed-draft-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="managed-draft-request",
+    )
+
+    assert result is current
+    store.create_draft.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        author_id=actor.subject_id,
+        name=current.name,
+        endpoint_alias=current.endpoint_alias,
+        endpoint_aliases=current.endpoint_aliases,
+        domain_id=current.domain_id,
+        domain_source_version=current.domain_source_version,
+        classification=int(current.classification),
+        idempotency_key="managed-draft",
+        request_hash="managed-draft-hash",
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_managed_draft_rejects_unknown_intent() -> None:
+    from uuid import uuid4
+    with pytest.raises(ValidationError):
+        domain_id = uuid4()
+        await service(SimpleNamespace()).create_managed_draft(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({domain_id})),
+            name="Test",
+            endpoint_alias="test",
+            endpoint_aliases=("test",),
+            domain_id=domain_id,
+            domain_source_version="1",
+            classification=Classification.INTERNAL,
+            managed_intent="unknown",
+            idempotency_key="key",
+            request_hash="hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="req",
+        )

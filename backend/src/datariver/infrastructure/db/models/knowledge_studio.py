@@ -268,6 +268,12 @@ class KnowledgeStudioDraftModel(
     discarded_at: Mapped[datetime | None]
     discarded_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     last_autosaved_at: Mapped[datetime] = mapped_column(nullable=False)
+    managed_intent: Mapped[str | None] = mapped_column(String(64))
+    managed_graph_type: Mapped[str | None] = mapped_column(String(64))
+    accepted_proposal_id: Mapped[str | None] = mapped_column(String(255))
+    accepted_proposal_hash: Mapped[str | None] = mapped_column(String(64))
+    source_contract_hash: Mapped[str | None] = mapped_column(String(64))
+    mapping_contract_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class TBoxDraftElementModel(
@@ -1827,6 +1833,12 @@ class KnowledgeStudioReleaseModel(Base, UuidPrimaryKeyMixin):
     published_at: Mapped[datetime] = mapped_column(nullable=False)
     archived_at: Mapped[datetime | None]
     archived_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    managed_intent: Mapped[str | None] = mapped_column(String(64))
+    managed_graph_type: Mapped[str | None] = mapped_column(String(64))
+    accepted_proposal_id: Mapped[str | None] = mapped_column(String(255))
+    accepted_proposal_hash: Mapped[str | None] = mapped_column(String(64))
+    source_contract_hash: Mapped[str | None] = mapped_column(String(64))
+    mapping_contract_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class OntologyElementModel(Base, UuidPrimaryKeyMixin):

@@ -274,16 +274,36 @@ describe('KnowledgeRegistry', () => {
     const client = {
       request: vi.fn().mockResolvedValue({ items: [], next_cursor: null, limit: 25 }),
     } as unknown as ApiClient
+    const onCreate = vi.fn()
     const { rerender } = render(
-      <KnowledgeRegistry client={client} onCreate={vi.fn()} onEdit={vi.fn()} />,
+      <KnowledgeRegistry client={client} onCreate={onCreate} onEdit={vi.fn()} />,
     )
     expect(await screen.findByText('등록된 지식 에셋이 없습니다')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /에셋 추가 시작하기/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /일반 에셋 추가/ })).not.toBeInTheDocument()
     expect(screen.getByText(/현재 계정은 레지스트리를 조회할 수 있지만/)).toBeInTheDocument()
 
     rerender(
-      <KnowledgeRegistry client={client} onCreate={vi.fn()} onEdit={vi.fn()} canManage />,
+      <KnowledgeRegistry client={client} onCreate={onCreate} onEdit={vi.fn()} canManage />,
     )
-    expect(await screen.findByRole('button', { name: /에셋 추가 시작하기/ })).toBeInTheDocument()
+    const normalAdds = await screen.findAllByRole('button', { name: /일반 에셋 추가/ })
+    const metadataAdds = await screen.findAllByRole('button', { name: /Metadata Lineage 생성/ })
+    const glossaryAdds = await screen.findAllByRole('button', { name: /Data Glossary 생성/ })
+
+    const normalAdd = normalAdds.at(0)
+    const metadataAdd = metadataAdds.at(0)
+    const glossaryAdd = glossaryAdds.at(0)
+
+    if (!normalAdd || !metadataAdd || !glossaryAdd) {
+      throw new Error('expected all three create actions')
+    }
+
+    fireEvent.click(normalAdd)
+    expect(onCreate).toHaveBeenCalledWith()
+
+    fireEvent.click(metadataAdd)
+    expect(onCreate).toHaveBeenCalledWith('metadata-lineage')
+
+    fireEvent.click(glossaryAdd)
+    expect(onCreate).toHaveBeenCalledWith('data-glossary')
   })
 })

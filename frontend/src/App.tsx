@@ -307,9 +307,9 @@ export function App() {
     setPage(next)
   }, [hasPocPageAccess, pocMode])
 
-  const navigateKnowledgeStudio = useCallback((assetId?: string, status?: string) => {
+  const navigateKnowledgeStudio = useCallback((assetId?: string, status?: string, intent?: string) => {
     window.history.pushState({}, '', knowledgeStudioUrl(
-      status === 'DRAFT' ? { draftId: assetId } : { assetId },
+      status === 'DRAFT' ? { draftId: assetId, intent } : { assetId, intent },
     ))
     setCatalogQuery('')
     setPage('knowledge-studio')

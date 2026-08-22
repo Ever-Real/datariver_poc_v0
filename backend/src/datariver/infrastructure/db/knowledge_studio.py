@@ -262,6 +262,12 @@ def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecor
         materialized_graph_id=model.materialized_graph_id,
         materialized_ontology_version_id=model.materialized_ontology_version_id,
         published_studio_release_id=model.published_studio_release_id,
+        managed_intent=model.managed_intent,
+        managed_graph_type=model.managed_graph_type,
+        accepted_proposal_id=model.accepted_proposal_id,
+        accepted_proposal_hash=model.accepted_proposal_hash,
+        source_contract_hash=model.source_contract_hash,
+        mapping_contract_hash=model.mapping_contract_hash,
     )
 
 
@@ -656,6 +662,12 @@ def _studio_release_record(
         published_by=model.published_by,
         published_at=model.published_at,
         archived_studio_release_id=archived_studio_release_id,
+        managed_intent=model.managed_intent,
+        managed_graph_type=model.managed_graph_type,
+        accepted_proposal_id=model.accepted_proposal_id,
+        accepted_proposal_hash=model.accepted_proposal_hash,
+        source_contract_hash=model.source_contract_hash,
+        mapping_contract_hash=model.mapping_contract_hash,
     )
 
 
@@ -3080,6 +3092,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         classification: int,
         idempotency_key: str,
         request_hash: str,
+        managed_intent: str | None = None,
+        managed_graph_type: str | None = None,
+        accepted_proposal_id: str | None = None,
+        accepted_proposal_hash: str | None = None,
+        source_contract_hash: str | None = None,
+        mapping_contract_hash: str | None = None,
     ) -> KnowledgeStudioDraftRecord:
         idempotency = SqlIdempotencyStore(self._session)
         await idempotency.acquire_key_lock(
@@ -3126,6 +3144,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             created_at=now,
             updated_at=now,
             version=1,
+            managed_intent=managed_intent,
+            managed_graph_type=managed_graph_type,
+            accepted_proposal_id=accepted_proposal_id,
+            accepted_proposal_hash=accepted_proposal_hash,
+            source_contract_hash=source_contract_hash,
+            mapping_contract_hash=mapping_contract_hash,
         )
         self._session.add(model)
         try:
@@ -4038,6 +4062,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             review_reason=reason,
             published_by=actor_id,
             published_at=now,
+            managed_intent=draft.managed_intent,
+            managed_graph_type=draft.managed_graph_type,
+            accepted_proposal_id=draft.accepted_proposal_id,
+            accepted_proposal_hash=draft.accepted_proposal_hash,
+            source_contract_hash=draft.source_contract_hash,
+            mapping_contract_hash=draft.mapping_contract_hash,
         )
         self._session.add(studio_release)
         await self._flush_publication((studio_release,))
@@ -4184,12 +4214,55 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     exclude_draft_id=draft.id,
                 )
             now = utc_now()
+            if draft.managed_intent:
+                intent_map = {
+                    "metadata-lineage": {
+                        "managed_graph_type": "CATALOG_MIRROR",
+                        "accepted_proposal_id": "contract.semantic.metadata-lineage",
+                        "accepted_proposal_hash": (
+                            "9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96"
+                        ),
+                        "source_contract_hash": (
+                            "8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb"
+                        ),
+                        "mapping_contract_hash": (
+                            "f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3"
+                        ),
+                    },
+                    "data-glossary": {
+                        "managed_graph_type": "CURATED_KNOWLEDGE",
+                        "accepted_proposal_id": "contract.semantic.data-glossary",
+                        "accepted_proposal_hash": (
+                            "670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1"
+                        ),
+                        "source_contract_hash": (
+                            "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
+                        ),
+                        "mapping_contract_hash": (
+                            "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
+                        ),
+                    }
+                }
+                if draft.managed_intent not in intent_map:
+                    raise ConflictError("Incomplete or unknown managed intent.")
+                expected = intent_map[draft.managed_intent]
+                if (
+                    draft.managed_graph_type != expected["managed_graph_type"]
+                    or draft.accepted_proposal_id != expected["accepted_proposal_id"]
+                    or draft.accepted_proposal_hash != expected["accepted_proposal_hash"]
+                    or draft.source_contract_hash != expected["source_contract_hash"]
+                    or draft.mapping_contract_hash != expected["mapping_contract_hash"]
+                ):
+                    raise ConflictError("Inconsistent managed binding.")
+                graph_type = draft.managed_graph_type
+            else:
+                graph_type = "CURATED_KNOWLEDGE"
             graph = GraphModel(
                 id=uuid7(),
                 workspace_id=workspace_id,
                 slug=draft.endpoint_alias,
                 name=draft.name,
-                graph_type="CURATED_KNOWLEDGE",
+                graph_type=graph_type,
                 status="PUBLISHED",
                 active_release_id=None,
                 active_studio_release_id=None,
@@ -4349,6 +4422,15 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             "tbox_hash": tbox_hash,
             "abox_hash": abox_hash,
         }
+        if draft.managed_intent:
+            contract_document["managed_publication"] = {
+                "managed_intent": draft.managed_intent,
+                "managed_graph_type": draft.managed_graph_type,
+                "accepted_proposal_id": draft.accepted_proposal_id,
+                "accepted_proposal_hash": draft.accepted_proposal_hash,
+                "source_contract_hash": draft.source_contract_hash,
+                "mapping_contract_hash": draft.mapping_contract_hash,
+            }
         return _StudioContract(
             elements=elements,
             bindings=binding_rows,
@@ -4465,6 +4547,24 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         }
         if canonical_json_hash(persisted_abox) != studio_release.abox_hash:
             raise ConflictError("The canonical A-Box mapping read-back verification failed.")
+        persisted_contract_document: dict[str, object] = {
+            "contract_version": RELEASE_CONTRACT_VERSION,
+            "draft": contract.contract_document["draft"],
+            "tbox_hash": studio_release.tbox_hash,
+            "abox_hash": studio_release.abox_hash,
+        }
+        if studio_release.managed_intent:
+            persisted_contract_document["managed_publication"] = {
+                "managed_intent": studio_release.managed_intent,
+                "managed_graph_type": studio_release.managed_graph_type,
+                "accepted_proposal_id": studio_release.accepted_proposal_id,
+                "accepted_proposal_hash": studio_release.accepted_proposal_hash,
+                "source_contract_hash": studio_release.source_contract_hash,
+                "mapping_contract_hash": studio_release.mapping_contract_hash,
+            }
+
+        if canonical_json_hash(persisted_contract_document) != studio_release.contract_hash:
+            raise ConflictError("The Studio Release manifest read-back verification failed.")
         if (
             studio_release.contract_hash != contract.contract_hash
             or studio_release.tbox_hash != contract.tbox_hash

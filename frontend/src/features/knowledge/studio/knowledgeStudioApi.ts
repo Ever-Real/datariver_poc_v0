@@ -91,6 +91,12 @@ export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
   materialized_graph_id?: string
   materialized_ontology_version_id?: string
   published_studio_release_id?: string
+  managed_intent?: string
+  managed_graph_type?: string
+  accepted_proposal_id?: string
+  accepted_proposal_hash?: string
+  source_contract_hash?: string
+  mapping_contract_hash?: string
 }
 
 export interface KnowledgeStudioTBoxElement {
@@ -719,6 +725,23 @@ export async function createKnowledgeStudioDraft(
 ): Promise<ApiResponse<KnowledgeStudioDraft>> {
   return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
     '/knowledge/studio/drafts',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function createKnowledgeStudioManagedDraft(
+  client: ApiClient,
+  intent: string,
+  payload: KnowledgeStudioBasicInformation,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioDraft>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
+    `/knowledge/studio/managed-drafts/${encodeURIComponent(intent)}`,
     {
       method: 'POST',
       body: JSON.stringify(payload),

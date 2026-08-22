@@ -8,6 +8,7 @@ import {
   completeKnowledgeStudioSourceUpload,
   createKnowledgeStudioRelationIngestion,
   createKnowledgeStudioDraft,
+  createKnowledgeStudioManagedDraft,
   createKnowledgeStudioEditDraft,
   createKnowledgeStudioTBoxAssetReleaseProposal,
   createKnowledgeStudioTBoxProposalJob,
@@ -806,5 +807,38 @@ describe('Knowledge Studio API', () => {
     expect(new Headers(retryCall?.[1]?.headers).get('If-Match')).toBe('"4"')
     expect(new Headers(retryCall?.[1]?.headers).get('Idempotency-Key')).toBe('retry-key')
     expect(retryCall?.[1]?.body).toBeUndefined()
+  })
+
+  it('submits managed drafts to the dedicated route', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify(draftResponse(1)), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json', ETag: '"1"' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    const result = await createKnowledgeStudioManagedDraft(
+      client,
+      'metadata-lineage',
+      {
+        name: 'test',
+        endpoint_alias: 'test',
+        endpoint_aliases: ['test'],
+        domain_id: 'd1',
+        domain_source_version: 'v1',
+        classification: 'normal',
+      },
+      'idemp-key',
+    )
+
+    expect(result.data.id).toBeDefined()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(requestUrl(url)).toContain('/managed-drafts/metadata-lineage')
+    expect(init.method).toBe('POST')
+    expect(new Headers(init.headers).get('Idempotency-Key')).toBe('idemp-key')
+    expect(JSON.parse(init.body as string)).toMatchObject({ name: 'test' })
   })
 })

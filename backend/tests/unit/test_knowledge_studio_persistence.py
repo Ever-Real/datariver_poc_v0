@@ -1326,3 +1326,186 @@ def test_abox_idempotency_snapshot_round_trips_exact_draft_and_binding() -> None
             author_id=draft_record.author_id,
             request_hash="request-hash",
         )
+
+
+@pytest.mark.asyncio
+async def test_materialization_target_validates_managed_binding() -> None:
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from datariver.infrastructure.db.knowledge_studio import SqlKnowledgeStudioStore
+    from datariver.infrastructure.db.models.knowledge_studio import KnowledgeStudioDraftModel
+
+    session = AsyncMock()
+    session.add = Mock()
+    store = SqlKnowledgeStudioStore(session)
+    store._require_alias_available = AsyncMock()
+
+    workspace_id = uuid4()
+    draft = KnowledgeStudioDraftModel(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        kind="CREATE",
+        name="test",
+        endpoint_alias="test",
+        endpoint_aliases=["test"],
+        classification="normal",
+        domain_ref_id=uuid4(),
+        domain_source_version="1",
+        author_id=uuid4(),
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+    )
+
+    # Valid binding
+    graph, _release = await store._materialization_target(
+        workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+    )
+    assert graph.graph_type == "CATALOG_MIRROR"
+
+    # positive data-glossary -> CURATED_KNOWLEDGE
+    draft.managed_intent = "data-glossary"
+    draft.managed_graph_type = "CURATED_KNOWLEDGE"
+    draft.accepted_proposal_id = "contract.semantic.data-glossary"
+    draft.accepted_proposal_hash = (
+        "670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1"
+    )
+    draft.source_contract_hash = (
+        "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
+    )
+    draft.mapping_contract_hash = (
+        "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
+    )
+    graph, _release = await store._materialization_target(
+        workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+    )
+    assert graph.graph_type == "CURATED_KNOWLEDGE"
+
+    # Unknown intent
+    draft.managed_intent = "unknown"
+    with pytest.raises(ConflictError, match="unknown managed intent"):
+        await store._materialization_target(
+            workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+        )
+
+    # Mismatched graph type
+    draft.managed_intent = "metadata-lineage"
+    draft.managed_graph_type = "CURATED_KNOWLEDGE"
+    with pytest.raises(ConflictError, match="Inconsistent managed binding"):
+        await store._materialization_target(
+            workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+        )
+
+    # Missing proposal hash rejection
+    draft.managed_graph_type = "CATALOG_MIRROR"
+    draft.accepted_proposal_hash = None
+    with pytest.raises(ConflictError, match="Inconsistent managed binding"):
+        await store._materialization_target(
+            workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+        )
+
+    # Mismatched proposal hash rejection
+    draft.accepted_proposal_hash = "wrong"
+    with pytest.raises(ConflictError, match="Inconsistent managed binding"):
+        await store._materialization_target(
+            workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+        )
+
+    # Generic CREATE
+    draft.managed_intent = None
+    draft.managed_graph_type = None
+    draft.accepted_proposal_id = None
+    draft.accepted_proposal_hash = None
+    draft.source_contract_hash = None
+    draft.mapping_contract_hash = None
+    graph, _release = await store._materialization_target(
+        workspace_id=workspace_id, draft=draft, actor_id=uuid4()
+    )
+    assert graph.graph_type == "CURATED_KNOWLEDGE"
+
+
+@pytest.mark.asyncio
+async def test_load_contract_and_verify_managed_binding() -> None:
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from datariver.infrastructure.db.knowledge_studio import SqlKnowledgeStudioStore
+    from datariver.infrastructure.db.models.knowledge_studio import (
+        KnowledgeStudioDraftModel,
+        KnowledgeStudioReleaseModel,
+    )
+
+    session = AsyncMock()
+
+    # Provide empty bindings and elements
+    result_mock = Mock()
+    result_mock.all.return_value = []
+
+    session.execute.return_value = result_mock
+    session.scalars.return_value = result_mock
+
+    store = SqlKnowledgeStudioStore(session)
+
+    workspace_id = uuid4()
+    draft = KnowledgeStudioDraftModel(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        kind="CREATE",
+        name="test",
+        endpoint_alias="test",
+        endpoint_aliases=["test"],
+        classification="normal",
+        domain_ref_id=uuid4(),
+        domain_source_version="1",
+        author_id=uuid4(),
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+    )
+
+    contract = await store._load_contract(workspace_id=workspace_id, draft=draft, lock=False)
+    assert "managed_publication" in contract.contract_document
+    assert contract.contract_document["managed_publication"]["managed_intent"] == "metadata-lineage"
+
+    release = KnowledgeStudioReleaseModel(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        tbox_hash=contract.tbox_hash,
+        abox_hash=contract.abox_hash,
+        contract_hash=contract.contract_hash,
+        ontology_version_id=uuid4(),
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+    )
+
+    # Exact read-back passes
+    await store._verify_materialized_contract(
+        workspace_id=workspace_id, studio_release=release, contract=contract
+    )
+
+    # Tampering fails: managed_graph_type
+    original_graph_type = release.managed_graph_type
+    release.managed_graph_type = "TAMPERED"
+    with pytest.raises(ConflictError, match="manifest read-back verification failed"):
+        await store._verify_materialized_contract(
+            workspace_id=workspace_id, studio_release=release, contract=contract
+        )
+    release.managed_graph_type = original_graph_type
+
+    # Tampering fails: accepted_proposal_hash
+    release.accepted_proposal_hash = "TAMPERED"
+    with pytest.raises(ConflictError, match="manifest read-back verification failed"):
+        await store._verify_materialized_contract(
+            workspace_id=workspace_id, studio_release=release, contract=contract
+        )

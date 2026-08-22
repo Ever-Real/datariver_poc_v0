@@ -67,7 +67,7 @@ export function KnowledgeRegistry({
   canArchive = false,
 }: {
   client: ApiClient
-  onCreate: () => void
+  onCreate: (intent?: string) => void
   onEdit: (assetId: string, status: string) => void
   canManage?: boolean
   canArchive?: boolean
@@ -509,9 +509,17 @@ export function KnowledgeRegistry({
               검색
             </button>
             {canManage && (
-              <button className="button" type="button" onClick={onCreate}>
-                <Plus size={14} /> 에셋 추가
-              </button>
+              <>
+                <button className="button" type="button" onClick={() => onCreate()}>
+                  <Plus size={14} /> 일반 에셋 추가
+                </button>
+                <button className="button" type="button" onClick={() => onCreate('metadata-lineage')}>
+                  <Plus size={14} /> Metadata Lineage 생성
+                </button>
+                <button className="button" type="button" onClick={() => onCreate('data-glossary')}>
+                  <Plus size={14} /> Data Glossary 생성
+                </button>
+              </>
             )}
           </div>
         </header>
@@ -527,9 +535,17 @@ export function KnowledgeRegistry({
                 활성화된 에셋을 직접 수정하면 새로운 DRAFT 버전이 생성되며, 기존 ACTIVE 버전은 유지됩니다. (최대 1개 활성 허용)
               </p>
               {canManage ? (
-                <button className="button button-primary" type="button" onClick={onCreate}>
-                  <Plus size={14} /> 에셋 추가 시작하기
-                </button>
+                <div className="flex gap-2 justify-center">
+                  <button className="button button-primary" type="button" onClick={() => onCreate()}>
+                    <Plus size={14} /> 일반 에셋 추가
+                  </button>
+                  <button className="button button-secondary" type="button" onClick={() => onCreate('metadata-lineage')}>
+                    <Plus size={14} /> Metadata Lineage 생성
+                  </button>
+                  <button className="button button-secondary" type="button" onClick={() => onCreate('data-glossary')}>
+                    <Plus size={14} /> Data Glossary 생성
+                  </button>
+                </div>
               ) : (
                 <p className="m-0 text-xs font-semibold text-slate-600">현재 계정은 레지스트리를 조회할 수 있지만 새 Asset을 만들 수 없습니다.</p>
               )}

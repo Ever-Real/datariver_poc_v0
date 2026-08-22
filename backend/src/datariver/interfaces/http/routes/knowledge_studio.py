@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, Query, Request, Response, status
@@ -372,6 +372,12 @@ def _draft_response(record: KnowledgeStudioDraftRecord) -> KnowledgeStudioDraftR
         materialized_graph_id=record.materialized_graph_id,
         materialized_ontology_version_id=record.materialized_ontology_version_id,
         published_studio_release_id=record.published_studio_release_id,
+        managed_intent=record.managed_intent,
+        managed_graph_type=record.managed_graph_type,
+        accepted_proposal_id=record.accepted_proposal_id,
+        accepted_proposal_hash=record.accepted_proposal_hash,
+        source_contract_hash=record.source_contract_hash,
+        mapping_contract_hash=record.mapping_contract_hash,
     )
 
 
@@ -490,6 +496,12 @@ def _studio_release_response(
         published_by=record.published_by,
         published_at=record.published_at,
         archived_studio_release_id=record.archived_studio_release_id,
+        managed_intent=record.managed_intent,
+        managed_graph_type=record.managed_graph_type,
+        accepted_proposal_id=record.accepted_proposal_id,
+        accepted_proposal_hash=record.accepted_proposal_hash,
+        source_contract_hash=record.source_contract_hash,
+        mapping_contract_hash=record.mapping_contract_hash,
     )
 
 
@@ -1134,6 +1146,44 @@ async def archive_knowledge_property_profile(
     response.headers["ETag"] = f'"{profile.version}"'
     return _profile_value_response(profile)
 
+
+def _managed_draft_request_hash(intent: str, payload_dict: dict[str, Any]) -> str:
+    return canonical_json_hash({"managed_intent": intent, "payload": payload_dict})
+
+
+@router.post(
+    "/managed-drafts/{intent}",
+    response_model=KnowledgeStudioDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_201_CREATED: ETAG_RESPONSE},
+)
+async def create_managed_knowledge_studio_draft(
+    intent: str,
+    payload: KnowledgeStudioBasicInformationRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+) -> KnowledgeStudioDraftResponse:
+    request_hash = _managed_draft_request_hash(intent, payload.model_dump(mode="json"))
+    record = await _service(request, session).create_managed_draft(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        name=payload.name,
+        endpoint_alias=payload.endpoint_alias,
+        endpoint_aliases=tuple(payload.endpoint_aliases or [payload.endpoint_alias]),
+        domain_id=payload.domain_id,
+        domain_source_version=payload.domain_source_version,
+        classification=Classification[payload.classification],
+        managed_intent=intent,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record)
+    return _draft_response(record)
 
 @router.post(
     "/drafts",

@@ -20,6 +20,7 @@ import {
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   createKnowledgeStudioManagedDomain,
+  createKnowledgeStudioManagedDraft,
   getKnowledgeStudioDraft,
   getResumableKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
@@ -574,11 +575,18 @@ export function KnowledgeStudioPage({
               savingRecord.expectedEtag ?? '',
               savingRecord.idempotencyKey,
             )
-          : await createKnowledgeStudioDraft(
-              client,
-              savingRecord.payload,
-              savingRecord.idempotencyKey,
-            )
+          : location.intent
+            ? await createKnowledgeStudioManagedDraft(
+                client,
+                location.intent,
+                savingRecord.payload,
+                savingRecord.idempotencyKey,
+              )
+            : await createKnowledgeStudioDraft(
+                client,
+                savingRecord.payload,
+                savingRecord.idempotencyKey,
+              )
       } catch (error) {
         if (
           currentDraftId
@@ -657,7 +665,7 @@ export function KnowledgeStudioPage({
     } finally {
       setBusy(false)
     }
-  }, [applyServerDraft, client, queue, scopeHash, serverDraft])
+  }, [applyServerDraft, client, location.intent, queue, scopeHash, serverDraft])
 
   const savePending = useCallback(async (): Promise<boolean> => {
     savePromiseRef.current ??= performPendingSave()
@@ -930,6 +938,7 @@ export function KnowledgeStudioPage({
           onChange={queueForm}
           onDomainQueryChange={setDomainQuery}
           onRetryDomains={retryDomains}
+          serverDraft={serverDraft}
           onCreateDomain={createDomain}
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}

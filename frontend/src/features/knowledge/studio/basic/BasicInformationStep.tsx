@@ -4,6 +4,7 @@ import type {
   KnowledgeClassification,
   KnowledgeStudioBasicInformation,
   KnowledgeStudioDomainOption,
+  KnowledgeStudioDraft,
 } from '../knowledgeStudioApi'
 
 const classifications: KnowledgeClassification[] = [
@@ -76,6 +77,10 @@ interface BasicInformationStepProps {
   onCreateDomain: (displayName: string) => Promise<void>
   onSave: () => void
   onContinue: () => void
+  serverDraft?: Pick<
+    KnowledgeStudioDraft,
+    'managed_intent' | 'managed_graph_type' | 'accepted_proposal_id' | 'accepted_proposal_hash'
+  >
 }
 
 export function BasicInformationStep({
@@ -92,6 +97,7 @@ export function BasicInformationStep({
   onCreateDomain,
   onSave,
   onContinue,
+  serverDraft,
 }: BasicInformationStepProps) {
   const [directDomain, setDirectDomain] = useState(false)
   const [domainCreating, setDomainCreating] = useState(false)
@@ -145,6 +151,13 @@ export function BasicInformationStep({
           </p>
         </div>
       </header>
+      {serverDraft?.managed_intent && (
+        <section className="rounded-enterprise border border-blue-200 bg-blue-50 p-5 text-sm text-blue-950">
+          <strong>Managed Intent: {serverDraft.managed_intent}</strong><br />
+          Graph Type: {serverDraft.managed_graph_type}<br />
+          Proposal: {serverDraft.accepted_proposal_id} ({serverDraft.accepted_proposal_hash})
+        </section>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
         <label className="grid gap-1 text-xs font-black text-navy-900">
           지식 그래프 이름

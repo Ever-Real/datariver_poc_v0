@@ -27,7 +27,7 @@ interface KnowledgeWorkspacePageProps {
   canManage: boolean
   canReview: boolean
   onNavigate: (page: Page) => void
-  onOpenStudio: (assetId?: string, status?: string) => void
+  onOpenStudio: (assetId?: string, status?: string, intent?: string) => void
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
@@ -92,7 +92,7 @@ export function KnowledgeWorkspacePage({
           <div key={registryRevision}>
             <KnowledgeRegistry
               client={client}
-              onCreate={() => onOpenStudio()}
+              onCreate={(intent) => onOpenStudio(undefined, undefined, intent)}
               onEdit={onOpenStudio}
               canManage={canManage}
               canArchive={canReview}

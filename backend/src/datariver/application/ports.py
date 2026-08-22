@@ -1857,6 +1857,12 @@ class KnowledgeStudioStore(Protocol):
         classification: int,
         idempotency_key: str,
         request_hash: str,
+        managed_intent: str | None = None,
+        managed_graph_type: str | None = None,
+        accepted_proposal_id: str | None = None,
+        accepted_proposal_hash: str | None = None,
+        source_contract_hash: str | None = None,
+        mapping_contract_hash: str | None = None,
     ) -> KnowledgeStudioDraftRecord: ...
 
     async def autosave_draft(

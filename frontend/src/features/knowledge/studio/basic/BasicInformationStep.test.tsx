@@ -116,4 +116,33 @@ describe('BasicInformationStep', () => {
       description: 'Updated description',
     }))
   })
+
+  it('renders the managed intent banner if serverDraft contains managed intent', () => {
+    const serverDraft = {
+      managed_intent: 'metadata-lineage',
+      managed_graph_type: 'CATALOG_MIRROR',
+      accepted_proposal_id: 'contract.123',
+      accepted_proposal_hash: 'hash123',
+    }
+    render(
+      <BasicInformationStep
+        value={value}
+        domains={[]}
+        domainsLoading={false}
+        domainQuery=""
+        busy={false}
+        saveStatus="준비됨"
+        onChange={vi.fn()}
+        onDomainQueryChange={vi.fn()}
+        onCreateDomain={vi.fn().mockResolvedValue(undefined)}
+        onSave={vi.fn()}
+        onContinue={vi.fn()}
+        serverDraft={serverDraft}
+      />,
+    )
+    expect(screen.getByText('Managed Intent: metadata-lineage')).toBeInTheDocument()
+    expect(screen.getByText(/CATALOG_MIRROR/)).toBeInTheDocument()
+    expect(screen.getByText(/contract\.123/)).toBeInTheDocument()
+    expect(screen.getByText(/hash123/)).toBeInTheDocument()
+  })
 })

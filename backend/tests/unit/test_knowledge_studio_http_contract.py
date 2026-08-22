@@ -542,3 +542,23 @@ async def test_proposal_job_commit_failure_rolls_back_before_response(
     session.commit.assert_awaited_once_with()
     session.rollback.assert_awaited_once_with()
     assert "ETag" not in response.headers
+
+
+def test_managed_draft_request_hash_binds_intent() -> None:
+    from datariver.domain.common import canonical_json_hash
+    from datariver.interfaces.http.routes.knowledge_studio import _managed_draft_request_hash
+
+    payload = {"name": "test", "domain_id": "abc"}
+
+    # 1. same intent + same payload => stable hash
+    hash1 = _managed_draft_request_hash("intent1", payload)
+    hash2 = _managed_draft_request_hash("intent1", payload)
+    assert hash1 == hash2
+
+    # 2. same payload + different intent => different hash
+    hash3 = _managed_draft_request_hash("intent2", payload)
+    assert hash1 != hash3
+
+    # 3. generic hash behavior remains its existing payload-only canonical hash
+    generic_hash = canonical_json_hash(payload)
+    assert hash1 != generic_hash

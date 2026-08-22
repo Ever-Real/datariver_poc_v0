@@ -1230,6 +1230,12 @@ class KnowledgeStudioDraftRecord:
     materialized_graph_id: UUID | None = None
     materialized_ontology_version_id: UUID | None = None
     published_studio_release_id: UUID | None = None
+    managed_intent: str | None = None
+    managed_graph_type: str | None = None
+    accepted_proposal_id: str | None = None
+    accepted_proposal_hash: str | None = None
+    source_contract_hash: str | None = None
+    mapping_contract_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1556,6 +1562,12 @@ class KnowledgeStudioReleaseRecord:
     published_by: UUID
     published_at: datetime
     archived_studio_release_id: UUID | None
+    managed_intent: str | None = None
+    managed_graph_type: str | None = None
+    accepted_proposal_id: str | None = None
+    accepted_proposal_hash: str | None = None
+    source_contract_hash: str | None = None
+    mapping_contract_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
