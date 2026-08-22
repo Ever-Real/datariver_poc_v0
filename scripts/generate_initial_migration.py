@@ -1250,6 +1250,9 @@ BEGIN
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT, UPDATE, DELETE ON knowledge.tbox_draft_blocks,
             knowledge.tbox_draft_elements TO datariver_app;
+        GRANT SELECT, INSERT, DELETE ON knowledge.tbox_classes,
+            knowledge.tbox_properties,
+            knowledge.tbox_relationships TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON knowledge.tbox_proposals TO datariver_app;
         GRANT SELECT, INSERT ON knowledge.studio_ingestion_jobs TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
