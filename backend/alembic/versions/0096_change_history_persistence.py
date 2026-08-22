@@ -20,6 +20,27 @@ down_revision: str | Sequence[str] | None = "0095"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+EXPECTED_OBJECT_COUNT = 4
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    CASE WHEN to_regclass('change_history.sources') IS NOT NULL THEN 1 ELSE 0 END
+                    + CASE WHEN to_regclass('change_history.ledger_events') IS NOT NULL THEN 1 ELSE 0 END
+                    + CASE WHEN to_regclass('change_history.checkpoints') IS NOT NULL THEN 1 ELSE 0 END
+                    + CASE WHEN to_regclass('change_history.cr_link_events') IS NOT NULL THEN 1 ELSE 0 END
+                """
+            )
+        )
+        .scalar_one()
+    )
+
+
 _WORKSPACE_RLS = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 _TABLES = ("sources", "ledger_events", "checkpoints", "cr_link_events")
 _FORBIDDEN_DOCUMENT_JSONPATH = (
@@ -939,6 +960,12 @@ def _create_cr_link_events() -> None:
 
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("0096 found a partial change_history schema. It is partially present.")
+        return
+
     op.execute("CREATE SCHEMA IF NOT EXISTS change_history")
     _create_sources()
     _create_ledger_events()
@@ -957,33 +984,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        """
-        DO $datariver$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM change_history.sources LIMIT 1)
-               OR EXISTS (SELECT 1 FROM change_history.ledger_events LIMIT 1)
-               OR EXISTS (SELECT 1 FROM change_history.checkpoints LIMIT 1)
-               OR EXISTS (SELECT 1 FROM change_history.cr_link_events LIMIT 1) THEN
-                RAISE EXCEPTION
-                    '0096 downgrade refuses to delete change-history evidence';
-            END IF;
-        END
-        $datariver$
-        """
-    )
-    op.execute(
-        "DROP FUNCTION change_history.advance_checkpoint_v1(uuid, uuid, integer, bigint, bigint, bigint, text, text, text, timestamptz, timestamptz, boolean)"
-    )
-    op.execute(
-        "DROP FUNCTION change_history.claim_checkpoint_v1(uuid, uuid, text, integer, bigint, text, text, integer)"
-    )
-    op.drop_table("cr_link_events", schema="change_history")
-    op.drop_table("checkpoints", schema="change_history")
-    op.drop_table("ledger_events", schema="change_history")
-    op.drop_table("sources", schema="change_history")
-    op.execute("DROP FUNCTION change_history.guard_cr_link_chain_v1()")
-    op.execute("DROP FUNCTION change_history.guard_checkpoint_v1()")
-    op.execute("DROP FUNCTION change_history.reject_append_only_mutation_v1()")
-    op.execute("DROP FUNCTION change_history.guard_source_identity_v1()")
-    op.execute("DROP SCHEMA change_history")
+    # Compatibility bridge: regenerated 0001 owns the canonical change_history schema.
+    pass

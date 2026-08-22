@@ -78,6 +78,11 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "create_table",
         "_install_security_contract",
     ),
+    (
+        "0096_change_history_persistence.py",
+        "execute",
+        None,
+    ),
 )
 
 
