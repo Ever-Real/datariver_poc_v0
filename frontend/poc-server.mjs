@@ -3837,22 +3837,46 @@ export function parseChatRouteDecision(value, graphAssets = []) {
     || !['NONE', 'LEXICAL', 'SEMANTIC', 'GRAPH_TRAVERSAL', 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'].includes(parsed.retrieval_method)) {
     throw new Error('The Chat route classifier returned a malformed route.')
   }
-  if ((parsed.graph_traversal_required && parsed.mode !== 'GRAPH')
-    || (parsed.mode === 'GRAPH' && !parsed.graph_traversal_required)
-    || (['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(parsed.intent)
-      && (parsed.mode !== 'VECTOR' || parsed.semantic_retrieval_required))
-    || (['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(parsed.intent)
-      && (parsed.mode !== 'VECTOR' || !parsed.semantic_retrieval_required))
-    || (['LINEAGE', 'IMPACT_ANALYSIS', 'RELATIONSHIP', 'MIXED_DISCOVERY_GRAPH'].includes(parsed.intent)
-      && (parsed.mode !== 'GRAPH' || !parsed.graph_traversal_required))
-    || (parsed.intent === 'GENERAL_CONVERSATION' && parsed.mode !== 'GENERAL')
-    || (parsed.mode === 'GENERAL' && (parsed.selected_graph_asset !== null || parsed.relation_intent !== null || parsed.retrieval_method !== 'NONE'))
-    || (parsed.mode === 'VECTOR' && (parsed.selected_graph_asset !== null || parsed.graph_traversal_required))
-    || (parsed.mode === 'GRAPH' && (!parsed.selected_graph_asset || !parsed.relation_intent
-      || !['GRAPH_TRAVERSAL', 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'].includes(parsed.retrieval_method)))) {
+  const normalized = { ...parsed }
+  if (normalized.mode === 'GENERAL') {
+    Object.assign(normalized, {
+      intent: 'GENERAL_CONVERSATION',
+      entity_resolution_required: false,
+      graph_traversal_required: false,
+      semantic_retrieval_required: false,
+      fallback_mode: null,
+      relation_intent: null,
+      entity_type_hints: [],
+      selected_graph_asset: null,
+      retrieval_method: 'NONE',
+    })
+  } else if (normalized.mode === 'VECTOR') {
+    const exactIntent = ['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(normalized.intent)
+    const semanticIntent = ['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(normalized.intent)
+    normalized.intent = exactIntent || semanticIntent ? normalized.intent : 'SEMANTIC_DISCOVERY'
+    normalized.graph_traversal_required = false
+    normalized.semantic_retrieval_required = !exactIntent
+    normalized.fallback_mode = null
+    normalized.relation_intent = null
+    normalized.selected_graph_asset = null
+    normalized.retrieval_method = exactIntent
+      ? (normalized.retrieval_method === 'LEXICAL' ? 'LEXICAL' : 'NONE')
+      : (normalized.retrieval_method === 'LEXICAL' ? 'LEXICAL' : 'SEMANTIC')
+  } else {
+    if (!['LINEAGE', 'IMPACT_ANALYSIS', 'RELATIONSHIP', 'MIXED_DISCOVERY_GRAPH'].includes(normalized.intent)) {
+      normalized.intent = 'RELATIONSHIP'
+    }
+    normalized.graph_traversal_required = true
+    normalized.retrieval_method = normalized.entity_resolution_required || normalized.semantic_retrieval_required
+      ? 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'
+      : 'GRAPH_TRAVERSAL'
+  }
+  if ((normalized.graph_traversal_required && normalized.mode !== 'GRAPH')
+    || (normalized.mode === 'GRAPH' && (!normalized.selected_graph_asset || !normalized.relation_intent
+      || !['GRAPH_TRAVERSAL', 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'].includes(normalized.retrieval_method)))) {
     throw new Error('The Chat route classifier returned an inconsistent route.')
   }
-  return parsed
+  return normalized
 }
 
 function boundedConceptList(value) {
