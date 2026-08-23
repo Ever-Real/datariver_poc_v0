@@ -6285,6 +6285,58 @@ function assertManagedK9AssetGrade(context, classification) {
   assertKnowledgeChatAssetGrade(context, { classification: grade })
 }
 
+function managedK9NodeDatasetUrn(node) {
+  const properties = node?.properties && typeof node.properties === 'object'
+    ? node.properties
+    : {}
+  const candidate = properties.dataset_urn || properties.external_urn
+  return isCanonicalDatahubDatasetUrn(candidate) ? candidate : null
+}
+
+export function authorizeManagedK9Release(principal, canonicalRelease) {
+  if (principal?.role === 'admin') return canonicalRelease
+  const nodes = Array.isArray(canonicalRelease?.nodes) ? canonicalRelease.nodes : []
+  const edges = Array.isArray(canonicalRelease?.edges) ? canonicalRelease.edges : []
+  const dataNodeIds = new Set()
+  const allowedNodeIds = new Set()
+  for (const node of nodes) {
+    const datasetUrn = managedK9NodeDatasetUrn(node)
+    if (!datasetUrn) continue
+    dataNodeIds.add(node.id)
+    const securityGrade = k9ClassificationToGrade[node.classification]
+    if (securityGrade && canReadAsset(principal, {
+      id: datasetUrn,
+      dataset_kind: 'TABLE',
+      security_grade: securityGrade,
+    }, 'knowledge')) {
+      allowedNodeIds.add(node.id)
+    }
+  }
+  // Non-data semantic nodes are visible only when they are attached to a Table or
+  // Column that is already authorized. Data nodes are never admitted transitively.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const edge of edges) {
+      const sourceAllowed = allowedNodeIds.has(edge.source)
+      const targetAllowed = allowedNodeIds.has(edge.target)
+      if (sourceAllowed && !dataNodeIds.has(edge.target) && !allowedNodeIds.has(edge.target)) {
+        allowedNodeIds.add(edge.target)
+        changed = true
+      }
+      if (targetAllowed && !dataNodeIds.has(edge.source) && !allowedNodeIds.has(edge.source)) {
+        allowedNodeIds.add(edge.source)
+        changed = true
+      }
+    }
+  }
+  return {
+    ...canonicalRelease,
+    nodes: nodes.filter((node) => allowedNodeIds.has(node.id)),
+    edges: edges.filter((edge) => allowedNodeIds.has(edge.source) && allowedNodeIds.has(edge.target)),
+  }
+}
+
 async function managedK9Assets(context) {
   if (typeof context.stateStore.listK9ManagedGraphAssets !== 'function') return []
   const rows = await context.stateStore.listK9ManagedGraphAssets()
@@ -6309,15 +6361,16 @@ function managedK9ScopeFromRow(context, row, requestedReleaseId) {
     || (requestedReleaseId && requestedReleaseId !== row.active_release_pointer)) {
     throw knowledgeChatNotFound()
   }
-  const canonicalRelease = row.active_canonical_release
-  if (!canonicalRelease || typeof canonicalRelease !== 'object'
-    || canonicalRelease.manifest?.graph_id !== row.graph_id
-    || canonicalRelease.manifest?.policy_hash !== row.policy_hash
-    || canonicalRelease.manifest?.input_snapshot_hash !== row.active_input_snapshot_hash
-    || !Array.isArray(canonicalRelease.nodes)
-    || !Array.isArray(canonicalRelease.edges)) {
+  const activeCanonicalRelease = row.active_canonical_release
+  if (!activeCanonicalRelease || typeof activeCanonicalRelease !== 'object'
+    || activeCanonicalRelease.manifest?.graph_id !== row.graph_id
+    || activeCanonicalRelease.manifest?.policy_hash !== row.policy_hash
+    || activeCanonicalRelease.manifest?.input_snapshot_hash !== row.active_input_snapshot_hash
+    || !Array.isArray(activeCanonicalRelease.nodes)
+    || !Array.isArray(activeCanonicalRelease.edges)) {
     throw knowledgeProjectionError(409, 'K9_ACTIVE_RELEASE_INVALID', 'The active managed graph release is inconsistent.')
   }
+  const canonicalRelease = authorizeManagedK9Release(context.principal, activeCanonicalRelease)
   const definition = k9GraphAssetDefinition(row.graph_id)
   const grade = k9ClassificationToGrade[row.classification]
   return Object.freeze({
@@ -8939,6 +8992,7 @@ export async function startPocServer({ stateStore } = {}) {
       name: field?.fieldPath || asset.name,
       qualified_name: field ? `${asset.name}.${field.fieldPath}` : asset.name,
       platform: asset.platform,
+      dataset_kind: asset.dataset_kind,
       database_name: asset.database_name,
       schema_name: asset.schema_name,
       description: source.description || '',

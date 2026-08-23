@@ -174,6 +174,39 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
   }), [asset]), /inconsistent route/)
 })
 
+test('managed graph snapshots retain request-time Table authorization boundaries', async () => {
+  const { authorizeManagedK9Release } = await import('./poc-server.mjs?managed-graph-authorization-contract')
+  const tableA = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.table_a,DEV)'
+  const tableB = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.table_b,DEV)'
+  const release = {
+    manifest: { graph_id: 'g1' },
+    nodes: [
+      { id: 'table-a', classification: 'CONFIDENTIAL', properties: { external_urn: tableA } },
+      { id: 'column-a', classification: 'CONFIDENTIAL', properties: { dataset_urn: tableA } },
+      { id: 'table-b', classification: 'CONFIDENTIAL', properties: { external_urn: tableB } },
+      { id: 'term-shared', classification: 'CONFIDENTIAL', properties: { name: 'Shared term' } },
+    ],
+    edges: [
+      { source: 'table-a', target: 'column-a', type: 'CONTAINS' },
+      { source: 'table-a', target: 'term-shared', type: 'HAS_TERM' },
+      { source: 'table-b', target: 'term-shared', type: 'HAS_TERM' },
+    ],
+  }
+  const principal = {
+    role: 'data_steward',
+    maxSecurityGrade: 'credential',
+    activeTableGrantUrns: new Set([tableA]),
+    allowedFeatureSecurityCells: new Set(['knowledge\u0000data_steward\u0000credential']),
+  }
+  const authorized = authorizeManagedK9Release(principal, release)
+  assert.deepEqual(authorized.nodes.map((node) => node.id), ['table-a', 'column-a', 'term-shared'])
+  assert.deepEqual(authorized.edges.map((edge) => `${edge.source}->${edge.target}`), [
+    'table-a->column-a',
+    'table-a->term-shared',
+  ])
+  assert.equal(authorizeManagedK9Release({ role: 'admin' }, release), release)
+})
+
 test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)
