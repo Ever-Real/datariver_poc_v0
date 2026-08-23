@@ -8975,12 +8975,13 @@ export async function startPocServer({ stateStore } = {}) {
 
   function k9SourceClassification(item, ceiling) {
     const tags = (item.tags || []).filter((tag) => tag.toUpperCase().startsWith('CLASSIFICATION:'))
-    if (tags.length !== 1) throw new Error('Missing or multiple classifications for ' + k9AssetUrn(item))
+    // Unclassified or ambiguously classified source metadata has no graph-read
+    // authority. Exclude it instead of guessing a grade or failing the whole
+    // last-known-good refresh.
+    if (tags.length !== 1) return null
     const classification = tags[0].slice(tags[0].indexOf(':') + 1).trim().toUpperCase()
-    if (!Object.hasOwn(k9ClassificationRanks, classification)
-      || !Object.hasOwn(k9ClassificationRanks, ceiling)) {
-      throw new Error('Unknown classification for ' + k9AssetUrn(item))
-    }
+    if (!Object.hasOwn(k9ClassificationRanks, classification)) return null
+    if (!Object.hasOwn(k9ClassificationRanks, ceiling)) throw new Error('Unknown K9 classification ceiling')
     return k9ClassificationRanks[classification] <= k9ClassificationRanks[ceiling]
       ? classification
       : null
