@@ -26,6 +26,9 @@ import type {
   ClassificationPolicySummary,
   GovernanceApplyReport,
   KnowledgeGraph,
+  KnowledgeAssetOperationalDetail,
+  KnowledgeAssetPage,
+  KnowledgeAssetVersionHistoryPage,
   KnowledgeAssetVersionHistoryItem,
   KnowledgeRelease,
   KnowledgeSnapshot,
@@ -3968,7 +3971,34 @@ class PocApiClient {
       }
       return assetPairs.filter((p) => p.publishedDraft && p.publishedDraft.state === 'PUBLISHED').map(({ publishedDraft: draft, release }) => ({ id: draft!.materialized_graph_id, slug: draft!.endpoint_alias, name: draft!.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft!.classification, domain_id: draft!.domain_id, domain_source_version: draft!.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft!.domain_id)?.display_name, active_release_id: release?.id, created_by: draft!.author_id, updated_by: draft!.published_by, created_at: draft!.created_at, updated_at: draft!.updated_at, version: draft!.version }))
     }
-    if (path === '/knowledge/registry/assets') return { items: assetPairs.map(({ editableDraft, publishedDraft, release }) => knowledgeAssetSummary(editableDraft ?? publishedDraft!, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
+    if (path === '/knowledge/registry/assets') {
+      const localItems = assetPairs.map(({ editableDraft, publishedDraft, release }) => (
+        knowledgeAssetSummary(editableDraft ?? publishedDraft!, release)
+      ))
+      const managedPage = runtimeFlags().pocState
+        ? await gatewayRequest<KnowledgeAssetPage>('/poc-api/knowledge/managed-assets', {
+          signal: options.signal,
+        })
+        : { items: [], next_cursor: null, limit: 100 }
+      const merged = [
+        ...localItems,
+        ...managedPage.items.filter((managed) => !localItems.some((item) => item.id === managed.id)),
+      ]
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      const items = query
+        ? merged.filter((item) => {
+          const name = typeof item.name === 'string' ? item.name : ''
+          const description = typeof item.description === 'string' ? item.description : ''
+          const graphType = typeof item.graph_type === 'string' ? item.graph_type : ''
+          return `${name} ${description} ${graphType}`.toLocaleLowerCase().includes(query)
+        })
+        : merged
+      return {
+        items,
+        next_cursor: null,
+        limit: Number(url.searchParams.get('limit') ?? 25),
+      }
+    }
     const knowledgeDeliveryPolicyPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/delivery-policy$/)
     if (knowledgeDeliveryPolicyPath && method === 'PUT') {
       const graphId = decodeURIComponent(knowledgeDeliveryPolicyPath[1] ?? '')
@@ -4049,6 +4079,18 @@ class PocApiClient {
         const d = g.editableDraft ?? g.publishedDraft
         return d && String(d.materialized_graph_id ?? d.id) === graphId
       })
+      if (!pair && runtimeFlags().pocState) {
+        const suffix = knowledgeRegistryPath[2]
+        return suffix === 'detail'
+          ? gatewayRequest<KnowledgeAssetOperationalDetail>(
+            `/poc-api/knowledge/managed-assets/${encodeURIComponent(graphId)}/detail`,
+            { signal: options.signal },
+          )
+          : gatewayRequest<KnowledgeAssetVersionHistoryPage>(
+            `/poc-api/knowledge/managed-assets/${encodeURIComponent(graphId)}/versions`,
+            { signal: options.signal },
+          )
+      }
       if (!pair) throw new Error('등록된 지식 자산이 없습니다.')
       const targetDraft = pair.editableDraft ?? pair.publishedDraft!
       const asset = knowledgeAssetSummary(targetDraft, pair.release)

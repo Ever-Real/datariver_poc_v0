@@ -2276,6 +2276,56 @@ export function createPocStateStore({ databasePool } = {}) {
     return rows[0]
   }
 
+  async function listK9ManagedGraphAssets() {
+    await startDatabase()
+    if (!pool) throw new Error('K9 managed graph Assets require PostgreSQL')
+    const { rows } = await pool.query(`
+      SELECT
+        policy.*,
+        latest.run_id AS latest_run_id,
+        latest.status AS latest_result,
+        latest.started_at AS latest_started_at,
+        latest.completed_at AS latest_completed_at,
+        latest.error_message AS latest_error_message,
+        active.run_id AS active_run_id,
+        active.started_at AS active_started_at,
+        active.completed_at AS active_completed_at,
+        active.input_snapshot_hash AS active_input_snapshot_hash,
+        active.manifest AS active_manifest,
+        active.canonical_release AS active_canonical_release
+      FROM poc_k9_managed_graph_policies AS policy
+      LEFT JOIN LATERAL (
+        SELECT run_id, status, started_at, completed_at, error_message
+        FROM poc_k9_refresh_runs
+        WHERE graph_id = policy.graph_id
+        ORDER BY started_at DESC, run_id DESC
+        LIMIT 1
+      ) AS latest ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT run_id, started_at, completed_at, input_snapshot_hash, manifest, canonical_release
+        FROM poc_k9_refresh_runs
+        WHERE graph_id = policy.graph_id
+          AND active_release_pointer = policy.active_release_pointer
+          AND status IN ('RUN', 'NO_OP')
+          AND canonical_release IS NOT NULL
+        ORDER BY started_at DESC, run_id DESC
+        LIMIT 1
+      ) AS active ON policy.active_release_pointer IS NOT NULL
+      ORDER BY policy.managed_intent, policy.graph_id
+    `)
+    return rows
+  }
+
+  async function getK9ManagedGraphAsset(graphId) {
+    const rows = await listK9ManagedGraphAssets()
+    return rows.find((row) => row.graph_id === graphId) || null
+  }
+
+  async function readK9SchedulerReceipt(lockName) {
+    const name = requireBoundedString(lockName, 'lockName', 255)
+    return read('k9-scheduler-v1:' + name)
+  }
+
   async function ensureK9Policies(policies) {
     await startDatabase()
     if (!pool) throw new Error('K9 policies require PostgreSQL')
@@ -2574,6 +2624,9 @@ export function createPocStateStore({ databasePool } = {}) {
     updateKnowledgeIngestionJob,
     verifyK9StudioAuthority,
     getK9Policy,
+    listK9ManagedGraphAssets,
+    getK9ManagedGraphAsset,
+    readK9SchedulerReceipt,
     ensureK9Policies,
     getK9PreparingRuns,
     getK9OrphanRuns,

@@ -118,6 +118,62 @@ test('labels missing database metadata without inventing a database identity', a
   assert.equal(catalogDatabaseBranchLabel('', ''), 'Database 메타데이터 없음')
 })
 
+test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph Asset capability selection', async () => {
+  const { parseChatRouteDecision } = await import('./poc-server.mjs?semantic-route-contract')
+  const asset = {
+    asset_id: 'lineage-graph-id',
+    supported_intents: ['UPSTREAM', 'DOWNSTREAM'],
+    semantic_capabilities: ['BOUNDED_MULTI_HOP_TRAVERSAL'],
+  }
+  const base = {
+    confidence: 0.98,
+    entity_resolution_required: false,
+    graph_traversal_required: false,
+    semantic_retrieval_required: false,
+    fallback_mode: null,
+    primary_concepts: ['data lineage'],
+    secondary_concepts: [],
+    relation_intent: null,
+    entity_type_hints: [],
+    selected_graph_asset: null,
+    retrieval_method: 'NONE',
+  }
+  assert.equal(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GENERAL',
+    intent: 'GENERAL_CONVERSATION',
+  }), [asset]).mode, 'GENERAL')
+  assert.equal(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'VECTOR',
+    intent: 'SEMANTIC_DISCOVERY',
+    semantic_retrieval_required: true,
+    entity_type_hints: ['KNOWLEDGE_ASSET'],
+    retrieval_method: 'SEMANTIC',
+  }), [asset]).mode, 'VECTOR')
+  assert.equal(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GRAPH',
+    intent: 'IMPACT_ANALYSIS',
+    entity_resolution_required: true,
+    graph_traversal_required: true,
+    semantic_retrieval_required: true,
+    fallback_mode: 'VECTOR',
+    relation_intent: 'IMPACT',
+    entity_type_hints: ['TABLE'],
+    selected_graph_asset: asset.asset_id,
+    retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
+  }), [asset]).selected_graph_asset, asset.asset_id)
+  assert.throws(() => parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GRAPH',
+    intent: 'LINEAGE',
+    graph_traversal_required: true,
+    relation_intent: 'UPSTREAM',
+    retrieval_method: 'GRAPH_TRAVERSAL',
+  }), [asset]), /inconsistent route/)
+})
+
 test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)
@@ -1961,21 +2017,24 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(id0.body.id, 0)
 
     const list = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/list', id: 2 }, h)
-    assert.equal(list.body.result.tools.length, 2)
-    assert.equal(list.body.result.tools[0].name, 'knowledge_release_snapshot')
-    assert.equal(list.body.result.tools[1].name, 'knowledge_release_graphrag')
-    assert.equal(list.body.result.tools[0].outputSchema.additionalProperties, false)
-    assert.equal(list.body.result.tools[1].outputSchema.additionalProperties, false)
-    const relSchema0 = list.body.result.tools[0].outputSchema.properties.release
-    const nodeSchema0 = list.body.result.tools[0].outputSchema.properties.nodes.items
-    const edgeSchema0 = list.body.result.tools[0].outputSchema.properties.edges.items
+    assert.deepEqual(list.body.result.tools.map((tool) => tool.name), [
+      'metadata_search',
+      'knowledge_graph_assets',
+      'knowledge_lineage_traversal',
+      'knowledge_release_snapshot',
+      'knowledge_release_graphrag',
+    ])
+    assert.ok(list.body.result.tools.every((tool) => tool.outputSchema.additionalProperties === false))
+    const relSchema0 = list.body.result.tools[3].outputSchema.properties.release
+    const nodeSchema0 = list.body.result.tools[3].outputSchema.properties.nodes.items
+    const edgeSchema0 = list.body.result.tools[3].outputSchema.properties.edges.items
     const provSchema0 = nodeSchema0.properties.provenance.items
     assert.equal(relSchema0.additionalProperties, false)
     assert.equal(nodeSchema0.additionalProperties, false)
     assert.equal(edgeSchema0.additionalProperties, false)
     assert.equal(provSchema0.additionalProperties, false)
-    const citeSchema1 = list.body.result.tools[1].outputSchema.properties.citations.items
-    const modSchema1 = list.body.result.tools[1].outputSchema.properties.model_audit
+    const citeSchema1 = list.body.result.tools[4].outputSchema.properties.citations.items
+    const modSchema1 = list.body.result.tools[4].outputSchema.properties.model_audit
     assert.equal(citeSchema1.additionalProperties, false)
     assert.equal(modSchema1.additionalProperties, false)
 
@@ -1988,6 +2047,12 @@ test('MCP adapter bounded implementation', async () => {
     const unkTool = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'unknown', arguments: {} }, id: 8 }, h)
     assert.equal(unkTool.body.error.code, -32601)
 
+    const resources = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'resources/list', id: 9 }, h)
+    assert.deepEqual(resources.body.result.resources, [])
+
+    const assets = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_graph_assets', arguments: {} }, id: 10 }, h)
+    assert.deepEqual(assets.body.result.structuredContent.items, [])
+
     const badEnv = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 1, extra: 1 }, h)
     assert.equal(badEnv.body.error.code, -32600)
 
@@ -1999,6 +2064,11 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(snap.body.result.structuredContent.release.graph_id, 'g1')
     assert.equal(snap.body.result.structuredContent.release.content_hash, 'hash1')
     assert.equal(snap.body.result.structuredContent.nodes[0].provenance[0].source_version, 'sv1')
+
+    const traversal = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_lineage_traversal', arguments: { graph_id: 'g1', release_id: 'r1', start_node_id: 'n1' } }, id: 11 }, h)
+    assert.equal(traversal.status, 200)
+    assert.equal(traversal.body.result.structuredContent.release.graph_id, 'g1')
+    assert.equal(traversal.body.result.structuredContent.nodes[0].id, 'n1')
 
     const rag = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'drop tables' } }, id: 5 }, h)
     assert.equal(rag.status, 200)

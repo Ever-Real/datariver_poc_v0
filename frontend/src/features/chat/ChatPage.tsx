@@ -59,6 +59,7 @@ const modeLabels: Record<ChatMode, string> = {
 const routeReasonLabels: Record<ChatRouteDecision['reason'], string> = {
   EXPLICIT_SELECTION: '사용자 경로 선택',
   GRAPH_INTENT: '영향·계보 질문 감지',
+  GRAPH_ASSET_CAPABILITY: 'Graph Asset capability 선택',
   KNOWLEDGE_ASSET_POLICY: '지식 Asset 정책 일치',
   SEMANTIC_INTENT: '의미 검색 질문 감지',
   GENERAL_DEFAULT: '일반 대화 기본 경로',

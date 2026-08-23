@@ -248,6 +248,10 @@ progress boundary is defined by
 non-authoritative request-time conversation context is defined by
 [ADR-0102](adr/0102-bounded-request-time-chat-conversation-memory.md); it stores no summary or
 reusable checkpoint.
+Canonical managed-graph Registry reconciliation, DataHub-driven Metadata Master projection,
+configuration-driven refresh, capability-based semantic routing, and the shared native/MCP adapter
+boundary are defined by
+[ADR-0128](adr/0128-chat-knowledge-router-and-managed-metadata-projections.md).
 Workspace-scoped Monitoring dashboard tabs, administrator updates and the exact-origin frame
 boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.md). Registration of
 credential-free HTTP(S) links from any origin, while preserving the existing disabled-first iframe

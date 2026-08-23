@@ -61,9 +61,6 @@ export function assertExactKeys(obj, allowedKeys, context) {
 export function validateClassification(source, ceiling) {
   if (!CLASSIFICATION_RANK.has(source)) throw new Error("Unknown classification");
   if (!CLASSIFICATION_RANK.has(ceiling)) throw new Error("Unknown classification ceiling");
-  if (CLASSIFICATION_RANK.get(source) > CLASSIFICATION_RANK.get("INTERNAL")) {
-      throw new Error("Classification above INTERNAL is rejected by policy");
-  }
   if (CLASSIFICATION_RANK.get(source) > CLASSIFICATION_RANK.get(ceiling)) {
     throw new Error("Classification exceeds ceiling");
   }
@@ -487,5 +484,5 @@ export function validateAuthorityPin(pin) {
   if (!isPosSafeInt(pin.authorization_generation)) throw new Error("authorization_generation positive safe int");
   if (typeof pin.workspace_id !== 'string' || pin.workspace_id === "") throw new Error("workspace_id nonempty string");
   if (typeof pin.subject_id !== 'string' || pin.subject_id === "") throw new Error("subject_id nonempty string");
-  if (pin.classification_ceiling !== "INTERNAL") throw new Error("classification_ceiling exactly INTERNAL");
+  if (!CLASSIFICATION_RANK.has(pin.classification_ceiling)) throw new Error("classification_ceiling must be canonical");
 }

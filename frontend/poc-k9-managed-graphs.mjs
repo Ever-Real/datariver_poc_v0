@@ -64,6 +64,55 @@ export const K9_POLICIES = {
   }
 }
 
+function frozenAssetDefinition(value) {
+  return Object.freeze({
+    ...value,
+    supported_intents: Object.freeze([...value.supported_intents]),
+    semantic_capabilities: Object.freeze([...value.semantic_capabilities]),
+    supported_entity_types: Object.freeze([...value.supported_entity_types]),
+  })
+}
+
+export const K9_GRAPH_ASSET_DEFINITIONS = Object.freeze({
+  [K9_POLICIES.METADATA_LINEAGE.graph_id]: frozenAssetDefinition({
+    display_name: 'Default Lineage Graph',
+    description: 'DataHub dataset dependency graph for authorized provenance, path, upstream, downstream, and impact traversal.',
+    graph_type: 'LINEAGE',
+    source: 'DataHub',
+    is_default: true,
+    supported_intents: [
+      'UPSTREAM', 'DOWNSTREAM', 'DEPENDENCY', 'IMPACT', 'PATH',
+      'PROVENANCE', 'DATA_FLOW', 'COMMON_UPSTREAM', 'COMMON_DOWNSTREAM',
+    ],
+    semantic_capabilities: [
+      'DIRECTED_DEPENDENCY_GRAPH',
+      'BOUNDED_MULTI_HOP_TRAVERSAL',
+      'SEMANTIC_ENTITY_RESOLUTION',
+    ],
+    supported_entity_types: ['DATASET', 'TABLE', 'VIEW', 'COLUMN'],
+  }),
+  [K9_POLICIES.DATA_GLOSSARY.graph_id]: frozenAssetDefinition({
+    display_name: 'Metadata Master Graph',
+    description: 'DataHub semantic metadata graph for tables, columns, descriptions, tags, glossary terms, domains, and business concepts.',
+    graph_type: 'METADATA_MASTER',
+    source: 'DataHub',
+    is_default: true,
+    supported_intents: ['SEMANTIC_DISCOVERY', 'ENTITY_RESOLUTION', 'METADATA_EXPLANATION'],
+    semantic_capabilities: [
+      'SEMANTIC_METADATA',
+      'GLOSSARY_CONCEPT_BINDING',
+      'VECTOR_RETRIEVAL_ENRICHMENT',
+    ],
+    supported_entity_types: [
+      'DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'KNOWLEDGE_ASSET',
+    ],
+  }),
+})
+
+export function k9GraphAssetDefinition(graphId) {
+  return K9_GRAPH_ASSET_DEFINITIONS[graphId] || null
+}
+
 function computePolicyHash(p) {
   return computeSha256({
     graph_id: p.graph_id,
@@ -86,12 +135,24 @@ function computePolicyHash(p) {
   })
 }
 
-export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
+export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificationCeiling, log = console }) {
   if (!stateStore || typeof stateStore.executeK9Transaction !== 'function' || typeof stateStore.getK9Policy !== 'function') {
     throw new Error('K9 managed graphs requires a PostgreSQL stateStore interface with K9 capabilities')
   }
   if (!neo4j || typeof neo4j.run !== 'function') {
     throw new Error('K9 managed graphs requires a Neo4j driver interface')
+  }
+  const configuredSchedule = typeof schedule === 'string' && schedule.trim() ? schedule.trim() : null
+  if (classificationCeiling !== undefined) validateClassification(classificationCeiling, classificationCeiling)
+  const configuredClassification = classificationCeiling || null
+
+  function configuredPolicy(base) {
+    return Object.assign(
+      {},
+      base,
+      configuredSchedule ? { schedule: configuredSchedule } : {},
+      configuredClassification ? { classification: configuredClassification } : {},
+    )
   }
 
   async function resolveK9SystemSubject(context) {
@@ -117,7 +178,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
     const resolved = await resolveK9SystemSubject(authCtx)
     const k9Policies = []
     for (const base of Object.values(K9_POLICIES)) {
-      const p = Object.assign({}, base, {
+      const p = Object.assign({}, configuredPolicy(base), {
         subject_id: resolved.subject_id,
         workspace_id: resolved.workspace_id
       })
@@ -177,7 +238,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
 
   async function collectAndPublish(authCtx, policyBase, collectorFunc, mapperFunc) {
     const resolved = await resolveK9SystemSubject(authCtx)
-    const expectedPolicy = Object.assign({}, policyBase, {
+    const expectedPolicy = Object.assign({}, configuredPolicy(policyBase), {
       subject_id: resolved.subject_id,
       workspace_id: resolved.workspace_id
     })
@@ -383,7 +444,14 @@ export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
       if (!isValidTableAssignmentId(node.id)) throw new Error('Invalid node id: ' + node.id)
       if (!node.classification) throw new Error('Missing classification for lineage node')
       const props = {}
-      if (node.external_urn !== undefined) props.external_urn = node.external_urn
+      for (const key of [
+        'external_urn', 'name', 'qualified_name', 'platform', 'database_name',
+        'schema_name', 'description', 'domain',
+      ]) {
+        if (node[key] !== undefined && node[key] !== null && node[key] !== '') props[key] = node[key]
+      }
+      if (Array.isArray(node.tags) && node.tags.length) props.tags = [...new Set(node.tags)].sort()
+      if (Array.isArray(node.terms) && node.terms.length) props.terms = [...new Set(node.terms)].sort()
       addNode({ id: node.id, type: 'class.dataset', classification: node.classification, properties: props })
     }
     for (const edge of (sourceData.edges || [])) {
@@ -443,6 +511,23 @@ export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
       }
     }
 
+    for (const table of (sourceData.table_nodes || [])) {
+      if (!isValidTableAssignmentId(table.id)) throw new Error('Invalid table id: ' + table.id)
+      if (!table.classification) throw new Error('Missing classification for table')
+      addNode({ id: table.id, type: 'class.table', classification: table.classification, properties: table.properties || {} })
+    }
+    for (const column of (sourceData.column_nodes || [])) {
+      if (!isValidColumnAssignmentId(column.id)) throw new Error('Invalid column id: ' + column.id)
+      if (!column.classification) throw new Error('Missing classification for column')
+      addNode({ id: column.id, type: 'class.column', classification: column.classification, properties: column.properties || {} })
+    }
+    for (const containment of (sourceData.table_column_edges || [])) {
+      if (!isValidTableAssignmentId(containment.table_id) || !isValidColumnAssignmentId(containment.column_id)) {
+        throw new Error('Invalid table-column containment identity')
+      }
+      addEdge({ source: containment.table_id, target: containment.column_id, type: 'rel.table_contains_column', properties: {} })
+    }
+
     for (const term of (sourceData.terms || [])) {
       if (!isTermUrn(term.urn)) throw new Error('Invalid term urn: ' + term.urn)
       const props = {}
@@ -461,14 +546,14 @@ export function createK9ManagedGraphs({ stateStore, neo4j, log = console }) {
       if (!isValidTableAssignmentId(ta.id)) throw new Error('Invalid table id: ' + ta.id)
       if (!isTermUrn(ta.term_urn)) throw new Error('Invalid term id: ' + ta.term_urn)
       if (!ta.classification) throw new Error('Missing classification for table assignment')
-      addNode({ id: ta.id, type: 'class.table', classification: ta.classification, properties: {} })
+      addNode({ id: ta.id, type: 'class.table', classification: ta.classification, properties: ta.properties || {} })
       addEdge({ source: ta.id, target: ta.term_urn, type: 'rel.table_mapped_to_term', properties: {} })
     }
     for (const ca of (sourceData.column_assignments || [])) {
       if (!isValidColumnAssignmentId(ca.id)) throw new Error('Invalid column id: ' + ca.id)
       if (!isTermUrn(ca.term_urn)) throw new Error('Invalid term id: ' + ca.term_urn)
       if (!ca.classification) throw new Error('Missing classification for column assignment')
-      addNode({ id: ca.id, type: 'class.column', classification: ca.classification, properties: {} })
+      addNode({ id: ca.id, type: 'class.column', classification: ca.classification, properties: ca.properties || {} })
       addEdge({ source: ca.id, target: ca.term_urn, type: 'rel.column_mapped_to_term', properties: {} })
     }
     for (const te of (sourceData.term_parent_edges || [])) {

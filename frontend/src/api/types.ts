@@ -1103,6 +1103,21 @@ export interface KnowledgeAssetSummary {
   updated_at: string
   version: number
   delivery_policy: KnowledgeDeliveryPolicy | null
+  managed?: boolean
+  canonical_graph_type?: string
+  source?: string
+  is_default?: boolean
+  refresh_mode?: 'DAILY' | 'HOURLY' | 'MANUAL' | 'EVENT_DRIVEN'
+  schedule?: string
+  next_refresh?: string | null
+  last_refresh?: string | null
+  last_result?: string
+  last_error_code?: string | null
+  semantic_index_status?: 'READY' | 'PENDING' | 'UNAVAILABLE'
+  supported_intents?: string[]
+  semantic_capabilities?: string[]
+  supported_entity_types?: string[]
+  active_input_snapshot_hash?: string | null
 }
 
 export interface KnowledgeAssetPage {
@@ -1207,11 +1222,18 @@ export type ChatMode = 'AUTO' | 'GENERAL' | 'VECTOR' | 'GRAPH'
 export interface ChatRouteDecision {
   requested_mode: ChatMode
   selected_mode: ChatMode
-  reason: 'EXPLICIT_SELECTION' | 'GRAPH_INTENT' | 'KNOWLEDGE_ASSET_POLICY' | 'SEMANTIC_INTENT' | 'GENERAL_DEFAULT'
+  reason:
+    | 'EXPLICIT_SELECTION'
+    | 'GRAPH_INTENT'
+    | 'GRAPH_ASSET_CAPABILITY'
+    | 'KNOWLEDGE_ASSET_POLICY'
+    | 'SEMANTIC_INTENT'
+    | 'GENERAL_DEFAULT'
   adapter_state: 'READY' | 'UNAVAILABLE' | 'FAILED'
   intent?:
     | 'EXPLICIT_SELECTION'
     | 'GENERAL_CONVERSATION'
+    | 'CATALOG_INVENTORY'
     | 'EXACT_METADATA'
     | 'SEMANTIC_DISCOVERY'
     | 'SEMANTIC_SIMILARITY'
@@ -1227,13 +1249,33 @@ export interface ChatRouteDecision {
   semantic_retrieval_required?: boolean
   fallback_mode?: Exclude<ChatMode, 'AUTO'> | null
   clarification_required?: boolean
+  primary_concepts?: string[]
+  secondary_concepts?: string[]
+  relation_intent?:
+    | 'UPSTREAM'
+    | 'DOWNSTREAM'
+    | 'DEPENDENCY'
+    | 'IMPACT'
+    | 'PATH'
+    | 'PROVENANCE'
+    | 'DATA_FLOW'
+    | 'COMMON_UPSTREAM'
+    | 'COMMON_DOWNSTREAM'
+    | null
+  entity_type_hints?: string[]
+  selected_graph_asset?: string | null
+  retrieval_method?: 'NONE' | 'LEXICAL' | 'SEMANTIC' | 'GRAPH_TRAVERSAL' | 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'
+  resolved_entities?: Array<{ id: string; urn: string; name?: string; method: string }>
+  latency_ms?: { routing?: number; retrieval?: number; total?: number }
+  llm_call_count?: number
   knowledge_scope?: {
     graph_id: string
     release_id: string
     asset_name: string
-    policy_id: string
-    policy_version: number
-    policy_hash: string
+    selection_source?: 'MANAGED_ASSET_CAPABILITY' | 'DELIVERY_POLICY'
+    policy_id: string | null
+    policy_version: number | null
+    policy_hash: string | null
   }
 }
 

@@ -1,7 +1,11 @@
 /* global process */
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildK9GlossaryScrollVariables, createK9ManagedGraphs } from './poc-k9-managed-graphs.mjs'
+import {
+  buildK9GlossaryScrollVariables,
+  createK9ManagedGraphs,
+  K9_GRAPH_ASSET_DEFINITIONS,
+} from './poc-k9-managed-graphs.mjs'
 
 const authCtx = {
   principal: { subjectId: 'test-k9-id' },
@@ -48,6 +52,17 @@ test('K9 Glossary scroll variables use the live provider sort contract', () => {
     sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }]
   })
   assert.equal(Object.hasOwn(variables.input.sortInput, 'sortCriterion'), false)
+})
+
+test('K9 exact canonical graph identities expose domain-independent capability metadata', () => {
+  const entries = Object.entries(K9_GRAPH_ASSET_DEFINITIONS)
+  assert.deepEqual(entries.map(([id]) => id).sort(), [
+    '01a02d2a-f8a0-7658-b5da-890eccdccf44',
+    '01a02d2a-f90d-74fe-bd96-aa596276cb87',
+  ])
+  assert.equal(entries.find(([, item]) => item.graph_type === 'LINEAGE')[1].display_name, 'Default Lineage Graph')
+  assert.equal(entries.find(([, item]) => item.graph_type === 'METADATA_MASTER')[1].display_name, 'Metadata Master Graph')
+  assert.doesNotMatch(JSON.stringify(entries), /wafer|semiconductor|반도체|yield|\bCMP\b|etching|photolithography/iu)
 })
 
 test('K9 Managed Graphs - missing policy no-publish', async () => {
@@ -126,6 +141,20 @@ test('K9 Managed Graphs - mapper deduplication and deterministic sorting', async
   assert.throws(() => k9.mapLineage(lineageDataConflict), /Conflicting duplicate node/)
 
   const glossaryDataSafe = {
+    table_nodes: [{
+      id: 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD)',
+      classification: 'INTERNAL',
+      properties: { name: 'A', tags: ['tag-a'] },
+    }],
+    column_nodes: [{
+      id: 'COLUMN:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD):id',
+      classification: 'INTERNAL',
+      properties: { name: 'id', parent_table_id: 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD)' },
+    }],
+    table_column_edges: [{
+      table_id: 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD)',
+      column_id: 'COLUMN:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD):id',
+    }],
     terms: [
       { urn: 'urn:li:glossaryTerm:2', name: 't2' },
       { urn: 'urn:li:glossaryTerm:1', name: 't1' },
@@ -134,8 +163,8 @@ test('K9 Managed Graphs - mapper deduplication and deterministic sorting', async
     parent_nodes: [], table_assignments: [], column_assignments: [], term_parent_edges: [], node_parent_edges: []
   }
   const glossaryResult = k9.mapGlossary(glossaryDataSafe)
-  assert.equal(glossaryResult.nodes.length, 2)
-  assert.equal(glossaryResult.nodes[0].id, 'urn:li:glossaryTerm:1')
+  assert.equal(glossaryResult.nodes.length, 4)
+  assert.equal(glossaryResult.edges[0].type, 'rel.table_contains_column')
 })
 
 test('K9 Managed Graphs - identical NO_OP', async () => {

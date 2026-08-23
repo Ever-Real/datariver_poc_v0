@@ -139,7 +139,7 @@ test('mapping contracts bind exact source and T-Box pins and preserve determinis
   assert.equal(dependencyRule.edge_target, 'edges.source_asset_id');
 });
 
-test('static validation fails closed on pin and classification violations', () => {
+test('runtime authority validation accepts canonical ceilings and fails closed on violations', () => {
   assert.doesNotThrow(() => validateAuthorityPin({
     projection_version: 1,
     policy_version: 'POC_LIVE_PROVIDER_V1',
@@ -149,7 +149,7 @@ test('static validation fails closed on pin and classification violations', () =
     subject_id: 'subject-1',
     classification_ceiling: 'INTERNAL',
   }));
-  assert.throws(
+  assert.doesNotThrow(
     () => validateAuthorityPin({
       projection_version: 1,
       policy_version: 'POC_LIVE_PROVIDER_V1',
@@ -157,12 +157,21 @@ test('static validation fails closed on pin and classification violations', () =
       authorization_generation: 1,
       workspace_id: 'workspace-1',
       subject_id: 'subject-1',
-      classification_ceiling: 'RESTRICTED',
+      classification_ceiling: 'CONFIDENTIAL',
     }),
-    /exactly INTERNAL/,
   );
+  assert.throws(() => validateAuthorityPin({
+    projection_version: 1,
+    policy_version: 'POC_LIVE_PROVIDER_V1',
+    classification_policy_version: 1,
+    authorization_generation: 1,
+    workspace_id: 'workspace-1',
+    subject_id: 'subject-1',
+    classification_ceiling: 'SECRET',
+  }), /must be canonical/);
   assert.doesNotThrow(() => validateClassification('INTERNAL', 'INTERNAL'));
-  assert.throws(() => validateClassification('CONFIDENTIAL', 'INTERNAL'), /above INTERNAL/);
+  assert.doesNotThrow(() => validateClassification('CONFIDENTIAL', 'CONFIDENTIAL'));
+  assert.throws(() => validateClassification('CONFIDENTIAL', 'INTERNAL'), /exceeds ceiling/);
   assert.throws(() => validateClassification('toString', 'INTERNAL'), /Unknown classification/);
   assert.throws(() => validateClassification('constructor', 'INTERNAL'), /Unknown classification/);
   assert.throws(() => validateClassification('INTERNAL', 'toString'), /Unknown classification ceiling/);

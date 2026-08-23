@@ -40,6 +40,42 @@ test('K9 Scheduler Config reads correctly', () => {
   }
   const config = loadPocK9SchedulerConfig(env)
   assert.equal(config.enabled, true)
+  assert.equal(config.refreshMode, 'DAILY')
+  assert.equal(config.schedule, '02:00 Asia/Seoul')
+  assert.equal(config.classificationCeiling, 'INTERNAL')
+})
+
+test('K9 Scheduler supports configured daily, hourly, and manual refresh policies', async () => {
+  const common = {
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_STUDIO_DATABASE_URL: 'postgres://studio-reader@example.test/studio',
+  }
+  const daily = loadPocK9SchedulerConfig({
+    ...common,
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '5',
+    POC_K9_SCHEDULE_MINUTE: '30',
+    POC_K9_CLASSIFICATION_CEILING: 'CONFIDENTIAL',
+  })
+  assert.equal(daily.schedule, '05:30 UTC')
+  assert.equal(daily.classificationCeiling, 'CONFIDENTIAL')
+  assert.equal(currentScheduleBoundary(new Date('2026-08-24T06:00:00.000Z'), 'UTC', 5, 30).toISOString(), '2026-08-24T05:30:00.000Z')
+
+  const hourly = loadPocK9SchedulerConfig({ ...common, POC_K9_REFRESH_MODE: 'HOURLY', POC_K9_SCHEDULE_MINUTE: '15' })
+  assert.equal(hourly.enabled, true)
+  assert.equal(hourly.schedule, 'hourly at minute 15 Asia/Seoul')
+  assert.equal(nextScheduleBoundary(new Date('2026-08-24T10:22:00.000Z'), 'UTC', 2, 15, 'HOURLY').toISOString(), '2026-08-24T11:15:00.000Z')
+
+  const manual = loadPocK9SchedulerConfig({ ...common, POC_K9_REFRESH_MODE: 'MANUAL' })
+  assert.equal(manual.enabled, false)
+  assert.equal(manual.requested, true)
+  const stateStore = { configured: { postgres: true }, runK9Scheduler: mock.fn(async (opts, cb) => cb()) }
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({ config: manual, stateStore, triggerK9Refresh })
+  assert.deepEqual(await scheduler.start(), { status: 'idle', mode: 'MANUAL' })
+  assert.equal((await scheduler.triggerManual(new Date('2026-08-24T10:22:43.000Z'))).status, 'SUCCESS')
 })
 
 test('K9 Scheduler manual trigger runs triggerK9Refresh and fails if no-publish', async () => {
@@ -145,5 +181,5 @@ test('K9 Scheduler rejects invalid manual boundaries like midnight', () => {
   const scheduler = createPocK9Scheduler({ config, stateStore, triggerK9Refresh })
 
   const midnight = new Date(Date.UTC(2026, 7, 24, 15, 0, 0))
-  assert.throws(() => scheduler.triggerManual(midnight), /02:00 boundary/)
+  assert.throws(() => scheduler.triggerManual(midnight), /configured refresh boundary/)
 })

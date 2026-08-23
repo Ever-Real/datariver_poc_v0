@@ -306,6 +306,27 @@ export function KnowledgeRegistry({
       cell: ({ row }) => <strong>{row.original.name}</strong>,
     },
     {
+      id: 'graph_type',
+      header: 'Type',
+      size: 150,
+      enableSorting: false,
+      cell: ({ row }) => row.original.graph_type,
+    },
+    {
+      id: 'source',
+      header: 'Source',
+      size: 100,
+      enableSorting: false,
+      cell: ({ row }) => row.original.source ?? 'Studio',
+    },
+    {
+      id: 'default',
+      header: 'Default',
+      size: 80,
+      enableSorting: false,
+      cell: ({ row }) => row.original.is_default ? 'Yes' : '—',
+    },
+    {
       id: 'version',
       header: 'Version',
       size: 140,
@@ -313,7 +334,9 @@ export function KnowledgeRegistry({
       cell: ({ row }) => {
         const status = row.original.status
         let badgeColor = 'bg-slate-100 text-slate-800'
-        if (status === 'ACTIVE') badgeColor = 'bg-emerald-100 text-emerald-800'
+        if (status === 'ACTIVE' || status === 'READY') badgeColor = 'bg-emerald-100 text-emerald-800'
+        if (status === 'READY_WITH_REFRESH_FAILURE') badgeColor = 'bg-orange-100 text-orange-800'
+        if (status === 'FAILED') badgeColor = 'bg-red-100 text-red-800'
         if (status === 'DRAFT') badgeColor = 'bg-amber-100 text-amber-800'
         if (status === 'ARCHIVED') badgeColor = 'bg-slate-200 text-slate-600'
         return (
@@ -325,6 +348,22 @@ export function KnowledgeRegistry({
           </div>
         )
       },
+    },
+    {
+      id: 'counts',
+      header: 'Nodes / Edges',
+      size: 120,
+      enableSorting: false,
+      cell: ({ row }) => `${row.original.node_count} / ${row.original.edge_count}`,
+    },
+    {
+      id: 'refresh',
+      header: 'Refresh',
+      size: 180,
+      enableSorting: false,
+      cell: ({ row }) => row.original.managed
+        ? `${row.original.refresh_mode ?? '—'} · ${row.original.last_result ?? 'NOT_RUN'}`
+        : 'MANUAL',
     },
     {
       id: 'description',
@@ -365,7 +404,7 @@ export function KnowledgeRegistry({
       enableSorting: false,
       cell: ({ row }) => (
         <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-          {canManage && row.original.status !== 'ARCHIVED' && (
+          {canManage && !row.original.managed && row.original.status !== 'ARCHIVED' && (
             <button
               type="button"
               className="button button-secondary"
@@ -381,7 +420,7 @@ export function KnowledgeRegistry({
               <Edit3 size={13} />
             </button>
           )}
-          {canArchive && row.original.status !== 'ARCHIVED' && row.original.active_studio_release_id && (
+          {canArchive && !row.original.managed && row.original.status !== 'ARCHIVED' && row.original.active_studio_release_id && (
             <button
               type="button"
               className="button button-secondary"
@@ -458,7 +497,9 @@ export function KnowledgeRegistry({
           ['현재 페이지 Assets', String(assets.length)],
           ['활성 인스턴스', String(assets.filter((item) => item.active_release_id).length)],
           ['검증된 Projection', String(assets.filter(
-            (item) => item.projection_state === 'SHADOW_VERIFIED',
+            (item) => ['SHADOW_VERIFIED', 'READY', 'READY_WITH_REFRESH_FAILURE'].includes(
+              item.projection_state ?? '',
+            ),
           ).length)],
         ].map(([label, value]) => (
           <article
@@ -660,6 +701,14 @@ export function KnowledgeRegistry({
                   <dd className="m-0">{selected.status}</dd>
                 </div>
                 <div>
+                  <dt className="text-[10px] font-black text-slate-500">Type / Default</dt>
+                  <dd className="m-0">{selected.graph_type} / {selected.is_default ? 'Yes' : 'No'}</dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] font-black text-slate-500">Source</dt>
+                  <dd className="m-0">{selected.source ?? 'Knowledge Studio'}</dd>
+                </div>
+                <div>
                   <dt className="text-[10px] font-black text-slate-500">Current Version</dt>
                   <dd className="m-0">
                     {focusedRelease ? `Release v${focusedRelease.release_no}` : `v${selected.display_version ?? selected.version}`}
@@ -669,6 +718,34 @@ export function KnowledgeRegistry({
                   <dt className="text-[10px] font-black text-slate-500">Nodes / Edges</dt>
                   <dd className="m-0">{focusedRelease?.node_count ?? selected.node_count} / {focusedRelease?.edge_count ?? selected.edge_count}</dd>
                 </div>
+                {selected.managed && (
+                  <>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Refresh Mode / Schedule</dt>
+                      <dd className="m-0">{selected.refresh_mode} / {selected.schedule ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Last Refresh</dt>
+                      <dd className="m-0">{localTime(selected.last_refresh ?? undefined)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Next Refresh</dt>
+                      <dd className="m-0">{localTime(selected.next_refresh ?? undefined)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Last Result</dt>
+                      <dd className="m-0">{selected.last_result ?? 'NOT_RUN'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Semantic / Vector Index</dt>
+                      <dd className="m-0">{selected.semantic_index_status ?? 'PENDING'}</dd>
+                    </div>
+                    <div className="col-span-2 md:col-span-3">
+                      <dt className="text-[10px] font-black text-slate-500">Semantic Capabilities</dt>
+                      <dd className="m-0">{selected.semantic_capabilities?.join(', ') || '—'}</dd>
+                    </div>
+                  </>
+                )}
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Creator</dt>
                   <dd className="m-0 break-all">
