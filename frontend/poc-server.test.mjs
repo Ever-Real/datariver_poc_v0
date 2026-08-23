@@ -107,6 +107,17 @@ test('normalizes only controlled DataHub manual-metadata read-back fields', asyn
   )
 })
 
+test('labels missing database metadata without inventing a database identity', async () => {
+  const { catalogDatabaseBranchLabel } = await import('./poc-server.mjs?catalog-database-label-contract')
+
+  assert.equal(catalogDatabaseBranchLabel('FINANCE', 'oracle'), 'FINANCE')
+  assert.equal(
+    catalogDatabaseBranchLabel('', 'postgres'),
+    'postgres · Database 메타데이터 없음',
+  )
+  assert.equal(catalogDatabaseBranchLabel('', ''), 'Database 메타데이터 없음')
+})
+
 test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)

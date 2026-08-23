@@ -2404,6 +2404,15 @@ function hierarchyValues(values) {
     .sort((left, right) => left.localeCompare(right))
 }
 
+export function catalogDatabaseBranchLabel(databaseName, platform) {
+  const canonicalDatabaseName = typeof databaseName === 'string' ? databaseName.trim() : ''
+  if (canonicalDatabaseName) return canonicalDatabaseName
+  const canonicalPlatformName = typeof platform === 'string' ? platform.trim() : ''
+  return canonicalPlatformName
+    ? `${canonicalPlatformName} · Database 메타데이터 없음`
+    : 'Database 메타데이터 없음'
+}
+
 async function datahubTree(searchParameters, principal) {
   const assets = filterAssetsForPrincipal(principal, await datahubHierarchyInventory())
   const parentKind = searchParameters.get('parent_kind') || 'ROOT'
@@ -2426,7 +2435,7 @@ async function datahubTree(searchParameters, principal) {
       .map((asset) => asset.database_name)).map((value) => ({
       id: `DATABASE:${platform}:${value}`,
       kind: 'DATABASE',
-      label: value || '(database 미지정)',
+      label: catalogDatabaseBranchLabel(value, platform),
       asset_count: assets.filter((asset) => asset.platform === platform && asset.database_name === value).length,
       has_children: assets.some((asset) => asset.platform === platform && asset.database_name === value && asset.schema_name),
       platform,

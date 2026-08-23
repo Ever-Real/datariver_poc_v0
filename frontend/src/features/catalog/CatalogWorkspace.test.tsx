@@ -39,6 +39,26 @@ function clientWith(request: (path: string, options?: RequestOptions) => Promise
   return { request: vi.fn(request) } as unknown as ApiClient
 }
 
+function detailFor(value: CatalogAsset) {
+  return {
+    ...value,
+    ownership: [],
+    glossary_terms: [],
+    tags: value.tags ?? [],
+    schema_fields: [],
+    schema_fields_total: 0,
+    schema_fields_available: 0,
+    schema_fields_truncated: false,
+    schema_fields_total_exact: true,
+    schema_fields_offset: 0,
+    schema_fields_limit: 100,
+    schema_fields_has_more: false,
+    quality: {},
+    projection_source_version: 'projection-v7',
+    source_version: 'source-v7',
+  }
+}
+
 function TestCatalogPage(props: ComponentProps<typeof CatalogPage>) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -480,7 +500,7 @@ describe('catalog workspace', () => {
     expect(platform).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('focuses a Resource Tree table in Search Results without opening detail', async () => {
+  it('keeps the URL-owned query while exact-reading a Resource Tree table and opening detail', async () => {
     const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
     const assets = [...Array.from({ length: 50 }, (_, index) => ({
       ...asset,
@@ -505,17 +525,21 @@ describe('catalog workspace', () => {
         })
       }
       if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: treeAsset.name, asset_count: 1, has_children: false, asset: treeAsset }], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve(detailFor(treeAsset))
       return defaultRequest(path)
     })
-    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    const onQueryChange = vi.fn()
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" onQueryChange={onQueryChange} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     fireEvent.click(await within(tree).findByRole('button', { name: /tree_selected_table/ }))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name))
-    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue(treeAsset.name)
-    expect(request.mock.calls.some(([path]) => String(path).includes(`q=${treeAsset.name}`))).toBe(true)
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('wafer')
+    expect(onQueryChange).not.toHaveBeenCalled()
+    expect(request.mock.calls.some(([path]) => path === `/catalog/assets/${treeAsset.id}`)).toBe(true)
+    expect(request.mock.calls.some(([path]) => String(path).includes(`q=${treeAsset.name}`))).toBe(false)
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/tree/') && String(path).includes('q='))).toBe(false)
   })
 
@@ -537,6 +561,7 @@ describe('catalog workspace', () => {
         return Promise.resolve(responseFor(offset, limit))
       }
       if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: treeAsset.name, asset_count: 1, has_children: false, asset: treeAsset }], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve(detailFor(treeAsset))
       return defaultRequest(path)
     })
     render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
@@ -547,6 +572,42 @@ describe('catalog workspace', () => {
     await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name))
     expect(table).not.toHaveTextContent('tree_page_0')
     expect(screen.getAllByText('1 페이지 · 현재 1건')).toHaveLength(2)
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('wafer')
+    expect(request.mock.calls.some(([path]) => path === `/catalog/assets/${treeAsset.id}`)).toBe(true)
+  })
+
+  it('clears every Search in target, including Schema, while retaining default search semantics', async () => {
+    const request = vi.fn(defaultRequest)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" catalogExportWorkerEnabled />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '필터' }))
+    const dialog = screen.getByRole('dialog', { name: '상세 검색 필터' })
+    await within(dialog).findByRole('option', { name: /analytics/ })
+    const targets = within(dialog)
+      .getByRole('group', { name: 'Search in' })
+    const authorityCallsBeforeDeselect = request.mock.calls.filter(([path]) => (
+      String(path).startsWith('/catalog/assets?') || String(path).startsWith('/catalog/facets?')
+    )).length
+    fireEvent.click(within(targets).getByRole('checkbox', { name: 'Search in 전체' }))
+
+    for (const name of ['Search in 전체', 'Schema', 'Table', 'Column', 'Tag', 'Term', 'Description']) {
+      expect(within(targets).getByRole('checkbox', { name })).not.toBeChecked()
+    }
+    expect(await screen.findByText('검색 대상을 하나 이상 선택하세요.')).toBeInTheDocument()
+    expect(screen.queryByText('wafer_events')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV 저장' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Excel 저장' })).toBeDisabled()
+    expect(request.mock.calls.filter(([path]) => (
+      String(path).startsWith('/catalog/assets?') || String(path).startsWith('/catalog/facets?')
+    ))).toHaveLength(authorityCallsBeforeDeselect)
+
+    fireEvent.click(within(targets).getByRole('checkbox', { name: 'Search in 전체' }))
+    expect(await screen.findByText('wafer_events')).toBeInTheDocument()
+    expect(within(targets).getAllByRole('checkbox')).toHaveLength(7)
+    for (const checkbox of within(targets).getAllByRole('checkbox')) expect(checkbox).toBeChecked()
+    expect(screen.getByRole('button', { name: 'CSV 저장' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Excel 저장' })).toBeEnabled()
   })
 
   it('keeps legacy search targets and bounded facet filtering in a responsive popover', async () => {
