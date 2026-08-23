@@ -536,16 +536,21 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     WorkspaceMembershipModel,
                     {"workspace_id": workspace.id, "subject_id": service_subject.id},
                 )
+                allowed_domain_ids = []
+                if "k9-publisher" in service_definition.bootstrap_contract:
+                    allowed_domain_ids = [
+                        str(default_knowledge_domain_id(workspace.id, "data-governance"))
+                    ]
+
                 service_attributes = {
                     "groups": list(service_definition.groups),
                     "allowed_actions": [
                         action.value for action in service_definition.allowed_actions
                     ],
                     "denied_actions": [],
-                    # Empty scopes intentionally restrict the local service to PUBLIC
-                    # assets until an operator assigns exact governed scopes.
+                    # Data-governance domain is exactly assigned to allow bounded K9 operations.
                     "allowed_system_ids": [],
-                    "allowed_domain_ids": [],
+                    "allowed_domain_ids": allowed_domain_ids,
                     "bootstrap": service_definition.bootstrap_contract,
                 }
                 if service_membership is None:

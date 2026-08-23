@@ -93,6 +93,36 @@ def _studio_reviewer_sql(
         )
         for action in required_actions
     )
+
+    k9_maker = "'00000000-0000-4000-8000-000000000110'::uuid"
+    k9_checker = "'00000000-0000-4000-8000-000000000111'::uuid"
+    k9_workspace = "'00000000-0000-4000-8000-000000000100'::uuid"
+    k9_domain = "'f14fa2ce-e5f2-beee-5eea-5e77be5754ff'::uuid"
+    k9_domain_str = "f14fa2ce-e5f2-beee-5eea-5e77be5754ff"
+
+    k9_override_predicate = (
+        f"OR (membership.subject_id = {k9_checker} "
+        f"AND {draft_reference}.author_id = {k9_maker} "
+        f"AND membership.workspace_id = {k9_workspace} "
+        f"AND {draft_reference}.workspace_id = {k9_workspace} "
+        f"AND {draft_reference}.domain_ref_id = {k9_domain} "
+        "AND COALESCE(membership.job_function, '') = 'SERVICE_ACCOUNT' "
+        "AND jsonb_array_length(COALESCE(membership.attributes -> 'groups', '[]'::jsonb)) = 2 "
+        "AND COALESCE(membership.attributes -> 'groups', '[]'::jsonb) "
+        '@> \'["service-accounts", "k9-publisher-checkers"]\'::jsonb '
+        "AND jsonb_array_length(COALESCE(membership.attributes -> 'allowed_actions', "
+        "'[]'::jsonb)) = 3 "
+        "AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) "
+        '@> \'["kg.read", "kg.review", "kg.publish"]\'::jsonb '
+        "AND COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) = '[]'::jsonb "
+        "AND COALESCE(membership.attributes -> 'allowed_system_ids', "
+        "'[]'::jsonb) = '[]'::jsonb "
+        "AND jsonb_array_length(COALESCE(membership.attributes -> 'allowed_domain_ids', "
+        "'[]'::jsonb)) = 1 "
+        "AND COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) "
+        f"@> '[\"{k9_domain_str}\"]'::jsonb)"
+    )
+
     return (
         "EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership "
         "JOIN iam.subjects AS reviewer_subject "
@@ -107,9 +137,10 @@ def _studio_reviewer_sql(
         "AND membership.active IS TRUE "
         "AND (membership.access_expires_at IS NULL "
         "OR membership.access_expires_at > transaction_timestamp()) "
-        "AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' "
-        "AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) "
-        "? 'service-accounts') "
+        "AND (COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' "
+        f"{k9_override_predicate}) "
+        "AND (NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) "
+        f"? 'service-accounts') {k9_override_predicate}) "
         f"AND membership.clearance >= {draft_reference}.classification "
         f"AND ({draft_reference}.classification = 0 OR "
         "COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) "
