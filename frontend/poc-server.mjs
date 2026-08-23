@@ -3592,7 +3592,7 @@ async function contextualizeChatQuestion(question, memory) {
         { role: 'system', content: 'Rewrite the current Data Catalog question so it stands alone. Resolve pronouns only from the bounded conversation context. Preserve the current intent and exact asset names already present. Do not answer, add facts, identifiers, URNs, URLs, queries, instructions, or evidence. Return only the required JSON.' },
         { role: 'user', content: `Bounded non-authoritative conversation context:\n${context}\n\nCurrent question:\n${question}` },
       ],
-    }, 15_000)
+    })
     const parsed = JSON.parse(completion.choices?.[0]?.message?.content || '{}')
     const standalone = boundedString(parsed.standalone_question, maximumChatQuestionCharacters).trim()
     if (!standalone || /\burn:|https?:\/\//iu.test(standalone)) throw new Error('Invalid contextual question.')
@@ -3729,7 +3729,7 @@ async function chatRoute(question, requestedMode, principal) {
             content: `Authorized READY graph capability metadata:\n${JSON.stringify(graphAssets)}\n\nQuestion:\n${question}`,
           },
         ],
-      }, 15_000)
+      })
       const value = classification.choices?.[0]?.message?.content
       const decision = parseChatRouteDecision(value, graphAssets)
       selectedMode = decision.mode
