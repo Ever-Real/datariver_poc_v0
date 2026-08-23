@@ -485,3 +485,441 @@ async def test_preview_etag_fails_before_any_source_read() -> None:
 
     sources.get_dataset.assert_not_awaited()
     samples.sample_rows.assert_not_awaited()
+
+
+def test_managed_preflight_validates_metadata_lineage_contract_exactly() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+        classification=Classification.INTERNAL,
+    )
+    dataset_class = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="class.dataset",
+        kind="CLASS",
+        canonical_name="Dataset",
+        display_name="Dataset",
+        parent_stable_element_id=None,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=0,
+        version=1,
+    )
+    depends_on_rel = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="rel.dataset_depends_on",
+        kind="RELATION",
+        canonical_name="DEPENDS_ON",
+        display_name="Depends On",
+        parent_stable_element_id=None,
+        source_stable_element_id="class.dataset",
+        target_stable_element_id="class.dataset",
+        data_type=None,
+        nullable=None,
+        ordinal=1,
+        version=1,
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(dataset_class, depends_on_rel),
+        bindings=(),
+    )
+
+    evidence = KnowledgeStudioPreviewService._managed_preflight(managed_abox)
+
+    assert len(evidence) == 1
+    assert evidence[0].severity == "INFO"
+    assert evidence[0].code == "MANAGED_CONTRACT_VALID"
+
+
+def test_managed_preflight_fails_with_generic_abox_bindings() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+        classification=Classification.INTERNAL,
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(),
+    )
+
+    evidence = KnowledgeStudioPreviewService._managed_preflight(managed_abox)
+    codes = [e.code for e in evidence]
+
+    assert "UNEXPECTED_GENERIC_BINDING" in codes
+    assert "TBOX_CLASSES_MISMATCH" in codes
+    assert "TBOX_RELATIONS_MISMATCH" in codes
+
+
+def test_managed_preflight_fails_on_missing_or_mismatched_intent_fields() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="metadata-lineage",
+        managed_graph_type="SOME_OTHER_TYPE",
+        accepted_proposal_id="wrong.id",
+        accepted_proposal_hash="wrong.hash",
+        source_contract_hash="wrong.hash",
+        mapping_contract_hash="wrong.hash",
+        classification=Classification.CONFIDENTIAL,
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(),
+        bindings=(),
+    )
+
+    evidence = KnowledgeStudioPreviewService._managed_preflight(managed_abox)
+    codes = [e.code for e in evidence]
+
+    assert "INVALID_MANAGED_GRAPH_TYPE" in codes
+    assert "INVALID_PROPOSAL_ID" in codes
+    assert "INVALID_PROPOSAL_HASH" in codes
+    assert "INVALID_SOURCE_HASH" in codes
+    assert "INVALID_MAPPING_HASH" in codes
+    assert "CLASSIFICATION_TOO_HIGH" in codes
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_for_valid_metadata_lineage_managed_intent() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="metadata-lineage",
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+        classification=Classification.INTERNAL,
+    )
+    dataset_class = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="class.dataset",
+        kind="CLASS",
+        canonical_name="Dataset",
+        display_name="Dataset",
+        parent_stable_element_id=None,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=0,
+        version=1,
+    )
+    depends_on_rel = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="rel.dataset_depends_on",
+        kind="RELATION",
+        canonical_name="DEPENDS_ON",
+        display_name="Depends On",
+        parent_stable_element_id=None,
+        source_stable_element_id="class.dataset",
+        target_stable_element_id="class.dataset",
+        data_type=None,
+        nullable=None,
+        ordinal=1,
+        version=1,
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(dataset_class, depends_on_rel),
+        bindings=(),
+    )
+    store = SimpleNamespace(
+        get_abox=AsyncMock(return_value=managed_abox),
+        record_preflight=AsyncMock(
+            return_value=KnowledgeStudioPreflightRecord(
+                status="PASS", valid=True, evidence=(), checked_at=NOW, draft_version=7
+            )
+        ),
+    )
+    sources = SimpleNamespace(validate_dataset_access=AsyncMock())
+    samples = SimpleNamespace(probe_access=AsyncMock())
+
+    result = await service(store, sources=sources, samples=samples).preflight(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(),
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.status == "PASS"
+    store.record_preflight.assert_awaited_once()
+    record_kwargs = store.record_preflight.await_args.kwargs
+    assert record_kwargs["status"] == "PASS"
+    assert record_kwargs["valid"] is True
+    assert record_kwargs["evidence"][0].code == "MANAGED_CONTRACT_VALID"
+    sources.validate_dataset_access.assert_not_awaited()
+    samples.probe_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_for_valid_data_glossary_managed_intent() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="data-glossary",
+        managed_graph_type="CURATED_KNOWLEDGE",
+        accepted_proposal_id="contract.semantic.data-glossary",
+        accepted_proposal_hash="670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1",
+        source_contract_hash="12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8",
+        mapping_contract_hash="ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f",
+        classification=Classification.INTERNAL,
+    )
+
+    tbox_elements = [
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="class.business_term",
+            kind="CLASS",
+            canonical_name="BusinessTerm",
+            display_name="BusinessTerm",
+            parent_stable_element_id=None,
+            source_stable_element_id=None,
+            target_stable_element_id=None,
+            data_type=None,
+            nullable=None,
+            ordinal=0,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="class.glossary_node",
+            kind="CLASS",
+            canonical_name="GlossaryNode",
+            display_name="GlossaryNode",
+            parent_stable_element_id=None,
+            source_stable_element_id=None,
+            target_stable_element_id=None,
+            data_type=None,
+            nullable=None,
+            ordinal=1,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="class.table",
+            kind="CLASS",
+            canonical_name="Table",
+            display_name="Table",
+            parent_stable_element_id=None,
+            source_stable_element_id=None,
+            target_stable_element_id=None,
+            data_type=None,
+            nullable=None,
+            ordinal=2,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="class.column",
+            kind="CLASS",
+            canonical_name="Column",
+            display_name="Column",
+            parent_stable_element_id=None,
+            source_stable_element_id=None,
+            target_stable_element_id=None,
+            data_type=None,
+            nullable=None,
+            ordinal=3,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="rel.term_has_parent",
+            kind="RELATION",
+            canonical_name="HAS_PARENT_NODE",
+            display_name="HAS_PARENT_NODE",
+            parent_stable_element_id=None,
+            source_stable_element_id="class.business_term",
+            target_stable_element_id="class.glossary_node",
+            data_type=None,
+            nullable=None,
+            ordinal=4,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="rel.node_has_parent",
+            kind="RELATION",
+            canonical_name="HAS_PARENT_NODE",
+            display_name="HAS_PARENT_NODE",
+            parent_stable_element_id=None,
+            source_stable_element_id="class.glossary_node",
+            target_stable_element_id="class.glossary_node",
+            data_type=None,
+            nullable=None,
+            ordinal=5,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="rel.table_mapped_to_term",
+            kind="RELATION",
+            canonical_name="MAPPED_TO_TERM",
+            display_name="MAPPED_TO_TERM",
+            parent_stable_element_id=None,
+            source_stable_element_id="class.table",
+            target_stable_element_id="class.business_term",
+            data_type=None,
+            nullable=None,
+            ordinal=6,
+            version=1,
+        ),
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="rel.column_mapped_to_term",
+            kind="RELATION",
+            canonical_name="MAPPED_TO_TERM",
+            display_name="MAPPED_TO_TERM",
+            parent_stable_element_id=None,
+            source_stable_element_id="class.column",
+            target_stable_element_id="class.business_term",
+            data_type=None,
+            nullable=None,
+            ordinal=7,
+            version=1,
+        ),
+    ]
+
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=tuple(tbox_elements),
+        bindings=(),
+    )
+    store = SimpleNamespace(
+        get_abox=AsyncMock(return_value=managed_abox),
+        record_preflight=AsyncMock(
+            return_value=KnowledgeStudioPreflightRecord(
+                status="PASS", valid=True, evidence=(), checked_at=NOW, draft_version=7
+            )
+        ),
+    )
+    sources = SimpleNamespace(validate_dataset_access=AsyncMock())
+    samples = SimpleNamespace(probe_access=AsyncMock())
+
+    result = await service(store, sources=sources, samples=samples).preflight(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(),
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.status == "PASS"
+    store.record_preflight.assert_awaited_once()
+    record_kwargs = store.record_preflight.await_args.kwargs
+    assert record_kwargs["status"] == "PASS"
+    assert record_kwargs["valid"] is True
+    assert record_kwargs["evidence"][0].code == "MANAGED_CONTRACT_VALID"
+    sources.validate_dataset_access.assert_not_awaited()
+    samples.probe_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preflight_fails_for_unknown_managed_intent() -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent="some-unknown-intent",
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(),
+        bindings=(),
+    )
+    store = SimpleNamespace(
+        get_abox=AsyncMock(return_value=managed_abox),
+        record_preflight=AsyncMock(
+            return_value=KnowledgeStudioPreflightRecord(
+                status="FAIL", valid=False, evidence=(), checked_at=NOW, draft_version=7
+            )
+        ),
+    )
+    sources = SimpleNamespace(validate_dataset_access=AsyncMock())
+    samples = SimpleNamespace(probe_access=AsyncMock())
+
+    result = await service(store, sources=sources, samples=samples).preflight(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(),
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.status == "FAIL"
+    store.record_preflight.assert_awaited_once()
+    record_kwargs = store.record_preflight.await_args.kwargs
+    assert record_kwargs["status"] == "FAIL"
+    assert record_kwargs["valid"] is False
+    assert record_kwargs["evidence"][0].code == "UNKNOWN_MANAGED_INTENT"
+    sources.validate_dataset_access.assert_not_awaited()
+    samples.probe_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_intent", [None, ""])
+async def test_preflight_fails_for_partial_managed_metadata_with_empty_intent(
+    empty_intent: str | None,
+) -> None:
+    current_abox = abox()
+    managed_draft = replace(
+        current_abox.draft,
+        managed_intent=empty_intent,
+        managed_graph_type="CATALOG_MIRROR",  # other field present
+    )
+    managed_abox = replace(
+        current_abox,
+        draft=managed_draft,
+        tbox_elements=(),
+        bindings=(),
+    )
+    store = SimpleNamespace(
+        get_abox=AsyncMock(return_value=managed_abox),
+        record_preflight=AsyncMock(
+            return_value=KnowledgeStudioPreflightRecord(
+                status="FAIL", valid=False, evidence=(), checked_at=NOW, draft_version=7
+            )
+        ),
+    )
+    sources = SimpleNamespace(validate_dataset_access=AsyncMock())
+    samples = SimpleNamespace(probe_access=AsyncMock())
+
+    result = await service(store, sources=sources, samples=samples).preflight(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(),
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.status == "FAIL"
+    store.record_preflight.assert_awaited_once()
+    record_kwargs = store.record_preflight.await_args.kwargs
+    assert record_kwargs["status"] == "FAIL"
+    assert record_kwargs["valid"] is False
+    assert record_kwargs["evidence"][0].code == "UNKNOWN_MANAGED_INTENT"
+    sources.validate_dataset_access.assert_not_awaited()
+    samples.probe_access.assert_not_awaited()

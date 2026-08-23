@@ -502,3 +502,74 @@ def require_studio_transition(
         raise ConflictError(
             f"Knowledge Studio draft cannot transition from {current.value} to {target.value}."
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedStudioContract:
+    managed_graph_type: str
+    accepted_proposal_id: str
+    accepted_proposal_hash: str
+    source_contract_hash: str
+    mapping_contract_hash: str
+    tbox_classes: frozenset[tuple[str, str]]
+    tbox_relations: frozenset[tuple[str, str, str, str]]
+
+
+MANAGED_STUDIO_CONTRACTS: dict[str, ManagedStudioContract] = {
+    "metadata-lineage": ManagedStudioContract(
+        managed_graph_type="CATALOG_MIRROR",
+        accepted_proposal_id="contract.semantic.metadata-lineage",
+        accepted_proposal_hash="9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96",
+        source_contract_hash="8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb",
+        mapping_contract_hash="f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3",
+        tbox_classes=frozenset({("class.dataset", "Dataset")}),
+        tbox_relations=frozenset(
+            {
+                ("rel.dataset_depends_on", "DEPENDS_ON", "class.dataset", "class.dataset"),
+            }
+        ),
+    ),
+    "data-glossary": ManagedStudioContract(
+        managed_graph_type="CURATED_KNOWLEDGE",
+        accepted_proposal_id="contract.semantic.data-glossary",
+        accepted_proposal_hash="670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1",
+        source_contract_hash="12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8",
+        mapping_contract_hash="ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f",
+        tbox_classes=frozenset(
+            {
+                ("class.business_term", "BusinessTerm"),
+                ("class.glossary_node", "GlossaryNode"),
+                ("class.table", "Table"),
+                ("class.column", "Column"),
+            }
+        ),
+        tbox_relations=frozenset(
+            {
+                (
+                    "rel.term_has_parent",
+                    "HAS_PARENT_NODE",
+                    "class.business_term",
+                    "class.glossary_node",
+                ),
+                (
+                    "rel.node_has_parent",
+                    "HAS_PARENT_NODE",
+                    "class.glossary_node",
+                    "class.glossary_node",
+                ),
+                (
+                    "rel.table_mapped_to_term",
+                    "MAPPED_TO_TERM",
+                    "class.table",
+                    "class.business_term",
+                ),
+                (
+                    "rel.column_mapped_to_term",
+                    "MAPPED_TO_TERM",
+                    "class.column",
+                    "class.business_term",
+                ),
+            }
+        ),
+    ),
+}

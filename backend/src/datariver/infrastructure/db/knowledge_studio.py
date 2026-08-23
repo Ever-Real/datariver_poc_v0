@@ -52,6 +52,7 @@ from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
     DEFAULT_KNOWLEDGE_DOMAINS,
     DEFAULT_TBOX_BLOCK_WEIGHT,
+    MANAGED_STUDIO_CONTRACTS,
     ABoxBindingReadiness,
     ABoxMappingMethod,
     StudioDraftKind,
@@ -4215,43 +4216,15 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             now = utc_now()
             if draft.managed_intent:
-                intent_map = {
-                    "metadata-lineage": {
-                        "managed_graph_type": "CATALOG_MIRROR",
-                        "accepted_proposal_id": "contract.semantic.metadata-lineage",
-                        "accepted_proposal_hash": (
-                            "9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96"
-                        ),
-                        "source_contract_hash": (
-                            "8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb"
-                        ),
-                        "mapping_contract_hash": (
-                            "f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3"
-                        ),
-                    },
-                    "data-glossary": {
-                        "managed_graph_type": "CURATED_KNOWLEDGE",
-                        "accepted_proposal_id": "contract.semantic.data-glossary",
-                        "accepted_proposal_hash": (
-                            "670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1"
-                        ),
-                        "source_contract_hash": (
-                            "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
-                        ),
-                        "mapping_contract_hash": (
-                            "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
-                        ),
-                    },
-                }
-                if draft.managed_intent not in intent_map:
+                if draft.managed_intent not in MANAGED_STUDIO_CONTRACTS:
                     raise ConflictError("Incomplete or unknown managed intent.")
-                expected = intent_map[draft.managed_intent]
+                expected = MANAGED_STUDIO_CONTRACTS[draft.managed_intent]
                 if (
-                    draft.managed_graph_type != expected["managed_graph_type"]
-                    or draft.accepted_proposal_id != expected["accepted_proposal_id"]
-                    or draft.accepted_proposal_hash != expected["accepted_proposal_hash"]
-                    or draft.source_contract_hash != expected["source_contract_hash"]
-                    or draft.mapping_contract_hash != expected["mapping_contract_hash"]
+                    draft.managed_graph_type != expected.managed_graph_type
+                    or draft.accepted_proposal_id != expected.accepted_proposal_id
+                    or draft.accepted_proposal_hash != expected.accepted_proposal_hash
+                    or draft.source_contract_hash != expected.source_contract_hash
+                    or draft.mapping_contract_hash != expected.mapping_contract_hash
                 ):
                     raise ConflictError("Inconsistent managed binding.")
                 graph_type = draft.managed_graph_type

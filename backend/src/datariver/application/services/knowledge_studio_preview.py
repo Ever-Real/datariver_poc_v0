@@ -26,9 +26,13 @@ from datariver.application.ports import (
 )
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
-from datariver.domain.authz import EnvironmentAttributes, SubjectAttributes
+from datariver.domain.authz import Classification, EnvironmentAttributes, SubjectAttributes
 from datariver.domain.common import DomainError, ValidationError, canonical_json_hash, utc_now
-from datariver.domain.knowledge_studio import require_studio_version, validate_stable_element_id
+from datariver.domain.knowledge_studio import (
+    MANAGED_STUDIO_CONTRACTS,
+    require_studio_version,
+    validate_stable_element_id,
+)
 
 MAXIMUM_SAMPLE_VALUE_CHARACTERS = 2_000
 MAXIMUM_PREFLIGHT_SOURCES = 500
@@ -465,29 +469,43 @@ class KnowledgeStudioPreviewService:
             request_id=request_id,
         )
         require_studio_version(abox.draft.version, expected_version)
-        evidence = self._mapping_evidence(abox)
-        class_bindings = self._class_bindings(abox)
-        source_requests = self._deduplicated_source_requests(class_bindings)
-        if len(source_requests) > MAXIMUM_PREFLIGHT_SOURCES:
-            evidence.append(
-                _evidence(
-                    severity="ERROR",
-                    code="PREFLIGHT_SOURCE_BOUND_EXCEEDED",
-                    location="abox",
-                    message="The A-Box source set exceeds the pre-flight validation bound.",
-                )
+        has_managed_metadata = any(
+            value is not None
+            for value in (
+                abox.draft.managed_intent,
+                abox.draft.managed_graph_type,
+                abox.draft.accepted_proposal_id,
+                abox.draft.accepted_proposal_hash,
+                abox.draft.source_contract_hash,
+                abox.draft.mapping_contract_hash,
             )
+        )
+        if has_managed_metadata:
+            evidence = self._managed_preflight(abox)
         else:
-            evidence.extend(
-                await self._source_access_evidence(
-                    abox=abox,
-                    bindings=class_bindings,
-                    source_requests=source_requests,
-                    subject=subject,
-                    environment=environment,
-                    request_id=request_id,
+            evidence = self._mapping_evidence(abox)
+            class_bindings = self._class_bindings(abox)
+            source_requests = self._deduplicated_source_requests(class_bindings)
+            if len(source_requests) > MAXIMUM_PREFLIGHT_SOURCES:
+                evidence.append(
+                    _evidence(
+                        severity="ERROR",
+                        code="PREFLIGHT_SOURCE_BOUND_EXCEEDED",
+                        location="abox",
+                        message="The A-Box source set exceeds the pre-flight validation bound.",
+                    )
                 )
-            )
+            else:
+                evidence.extend(
+                    await self._source_access_evidence(
+                        abox=abox,
+                        bindings=class_bindings,
+                        source_requests=source_requests,
+                        subject=subject,
+                        environment=environment,
+                        request_id=request_id,
+                    )
+                )
         has_errors = any(item.severity == "ERROR" for item in evidence)
         unavailable = any(
             item.code
@@ -511,6 +529,162 @@ class KnowledgeStudioPreviewService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
+
+    @staticmethod
+    def _managed_preflight(
+        abox: KnowledgeStudioABoxRecord,
+    ) -> list[KnowledgeStudioValidationEvidence]:
+        evidence: list[KnowledgeStudioValidationEvidence] = []
+        intent = abox.draft.managed_intent
+        if intent is None:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="UNKNOWN_MANAGED_INTENT",
+                    location="draft",
+                    message="The managed intent is incomplete or unknown.",
+                )
+            )
+            return evidence
+        contract = MANAGED_STUDIO_CONTRACTS.get(intent)
+        if contract is None:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="UNKNOWN_MANAGED_INTENT",
+                    location="draft",
+                    message="The managed intent is not recognized.",
+                )
+            )
+            return evidence
+
+        if abox.draft.managed_graph_type != contract.managed_graph_type:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="INVALID_MANAGED_GRAPH_TYPE",
+                    location="draft",
+                    message="The managed graph type does not match the exact contract.",
+                )
+            )
+        if abox.draft.accepted_proposal_id != contract.accepted_proposal_id:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="INVALID_PROPOSAL_ID",
+                    location="draft",
+                    message="The proposal ID does not match the exact contract.",
+                )
+            )
+        if abox.draft.accepted_proposal_hash != contract.accepted_proposal_hash:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="INVALID_PROPOSAL_HASH",
+                    location="draft",
+                    message="The proposal hash does not match the exact contract.",
+                )
+            )
+        if abox.draft.source_contract_hash != contract.source_contract_hash:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="INVALID_SOURCE_HASH",
+                    location="draft",
+                    message="The source contract hash does not match the exact contract.",
+                )
+            )
+        if abox.draft.mapping_contract_hash != contract.mapping_contract_hash:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="INVALID_MAPPING_HASH",
+                    location="draft",
+                    message="The mapping contract hash does not match the exact contract.",
+                )
+            )
+        if abox.draft.classification > Classification.INTERNAL:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="CLASSIFICATION_TOO_HIGH",
+                    location="draft",
+                    message="Managed intent drafts must not exceed INTERNAL classification.",
+                )
+            )
+
+        if abox.bindings:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="UNEXPECTED_GENERIC_BINDING",
+                    location="abox",
+                    message="Managed intent drafts must not contain generic A-Box bindings.",
+                )
+            )
+
+        classes = {
+            (item.stable_element_id, item.canonical_name)
+            for item in abox.tbox_elements
+            if item.kind == "CLASS"
+        }
+        relations = {
+            (
+                item.stable_element_id,
+                item.canonical_name,
+                item.source_stable_element_id,
+                item.target_stable_element_id,
+            )
+            for item in abox.tbox_elements
+            if item.kind == "RELATION"
+        }
+        other_kinds = [
+            item for item in abox.tbox_elements if item.kind not in {"CLASS", "RELATION"}
+        ]
+
+        if classes != contract.tbox_classes:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="TBOX_CLASSES_MISMATCH",
+                    location="tbox",
+                    message="The T-Box classes do not exactly match the accepted contract.",
+                )
+            )
+        if relations != contract.tbox_relations:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="TBOX_RELATIONS_MISMATCH",
+                    location="tbox",
+                    message="The T-Box relations do not exactly match the accepted contract.",
+                )
+            )
+        if other_kinds:
+            evidence.append(
+                _evidence(
+                    severity="ERROR",
+                    code="UNEXPECTED_TBOX_ELEMENT",
+                    location="tbox",
+                    message=(
+                        "Managed intent drafts must not contain unexpected T-Box element kinds."
+                    ),
+                )
+            )
+
+        if not evidence:
+            evidence.append(
+                _evidence(
+                    severity="INFO",
+                    code="MANAGED_CONTRACT_VALID",
+                    location="draft",
+                    message=(
+                        "The managed contract perfectly matches the server-owned exact definition."
+                    ),
+                )
+            )
+
+        return evidence
 
     async def _validate_preview_source(
         self,

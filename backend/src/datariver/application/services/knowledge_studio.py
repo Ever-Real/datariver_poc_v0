@@ -43,6 +43,7 @@ from datariver.domain.common import (
 )
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import (
+    MANAGED_STUDIO_CONTRACTS,
     ABoxMappingMethod,
     ABoxMappingRuleInput,
     TBoxBlockKind,
@@ -1238,38 +1239,10 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
 
-        intent_map = {
-            "metadata-lineage": {
-                "managed_graph_type": "CATALOG_MIRROR",
-                "accepted_proposal_id": "contract.semantic.metadata-lineage",
-                "accepted_proposal_hash": (
-                    "9b6a5e0e07624df4520d333b5d673fbe77f7ab84b0f352bbe3c647b262523e96"
-                ),
-                "source_contract_hash": (
-                    "8d8cba3f1b46f997e234207f956238bf4a87e752d7566c20bb41a1e08d2a5feb"
-                ),
-                "mapping_contract_hash": (
-                    "f923778369eda84d0b2942d7fd1b1b837f64125fc3a2f5dd4dc72bcdc9d99bf3"
-                ),
-            },
-            "data-glossary": {
-                "managed_graph_type": "CURATED_KNOWLEDGE",
-                "accepted_proposal_id": "contract.semantic.data-glossary",
-                "accepted_proposal_hash": (
-                    "670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1"
-                ),
-                "source_contract_hash": (
-                    "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
-                ),
-                "mapping_contract_hash": (
-                    "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
-                ),
-            },
-        }
-        if managed_intent not in intent_map:
+        contract = MANAGED_STUDIO_CONTRACTS.get(managed_intent)
+        if contract is None:
             raise ValidationError("Unknown managed intent.")
 
-        intent_data = intent_map[managed_intent]
         return await self._store.create_draft(
             workspace_id=workspace_id,
             author_id=subject.subject_id,
@@ -1282,11 +1255,11 @@ class KnowledgeStudioService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             managed_intent=managed_intent,
-            managed_graph_type=intent_data["managed_graph_type"],
-            accepted_proposal_id=intent_data["accepted_proposal_id"],
-            accepted_proposal_hash=intent_data["accepted_proposal_hash"],
-            source_contract_hash=intent_data["source_contract_hash"],
-            mapping_contract_hash=intent_data["mapping_contract_hash"],
+            managed_graph_type=contract.managed_graph_type,
+            accepted_proposal_id=contract.accepted_proposal_id,
+            accepted_proposal_hash=contract.accepted_proposal_hash,
+            source_contract_hash=contract.source_contract_hash,
+            mapping_contract_hash=contract.mapping_contract_hash,
         )
 
     async def autosave_draft(
