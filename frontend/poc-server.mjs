@@ -91,6 +91,10 @@ if (existsSync(environmentFile)) process.loadEnvFile(environmentFile)
 const maximumJsonBytes = 1024 * 1024
 const maximumObjectBytes = 50 * 1024 * 1024
 const providerTimeoutMs = 15_000
+const llmProviderTimeoutMs = Number(process.env.POC_LLM_TIMEOUT_MS || providerTimeoutMs)
+if (!Number.isSafeInteger(llmProviderTimeoutMs) || llmProviderTimeoutMs < 1_000 || llmProviderTimeoutMs > 300_000) {
+  throw new Error('POC_LLM_TIMEOUT_MS must be an integer from 1000 through 300000.')
+}
 const allowedAirflowDags = new Set([
   'datariver_bulk_registration_prepare',
   'datariver_catalog_probe',
@@ -3485,7 +3489,7 @@ async function triggerAirflowDag(dagId, body) {
   return response
 }
 
-async function llmRequest(provider, endpoint, body, timeoutMs = providerTimeoutMs, signal) {
+async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeoutMs, signal) {
   if (!provider) throw Object.assign(new Error('The requested LLM stage is not configured.'), { statusCode: 503 })
   const response = await providerFetch(llmEndpoint(provider, endpoint), {
     method: 'POST',
