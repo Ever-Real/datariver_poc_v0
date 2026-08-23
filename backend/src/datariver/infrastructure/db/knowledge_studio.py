@@ -3968,7 +3968,6 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     KnowledgeStudioPreflightCheckModel.id.desc(),
                 )
                 .limit(1)
-                .with_for_update(read=True)
             )
         ).one_or_none()
         if receipt is None:

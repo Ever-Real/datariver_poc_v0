@@ -1609,3 +1609,37 @@ def test_tbox_element_records_lock_invariant() -> None:
             )
             break
     assert found_contract_fn, "Could not find _load_contract"
+
+
+def test_publish_draft_receipt_lock_invariant() -> None:
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    ks_path = root / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
+    source = ks_path.read_text(encoding="utf-8")
+
+    tree = ast.parse(source)
+
+    found_publish_fn = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "publish_draft":
+            found_publish_fn = True
+            found_receipt_assign = False
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if isinstance(target, ast.Name) and target.id == "receipt":
+                            found_receipt_assign = True
+                            for call in ast.walk(child.value):
+                                if (
+                                    isinstance(call, ast.Call)
+                                    and getattr(call.func, "attr", "") == "with_for_update"
+                                ):
+                                    raise AssertionError(
+                                        "publish_draft must not use with_for_update for the "
+                                        "preflight receipt to avoid requiring UPDATE grants"
+                                    )
+            assert found_receipt_assign, "Could not find receipt assignment in publish_draft"
+            break
+    assert found_publish_fn, "Could not find publish_draft"
