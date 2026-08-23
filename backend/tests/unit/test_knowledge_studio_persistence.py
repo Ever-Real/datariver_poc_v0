@@ -1525,8 +1525,10 @@ def test_tbox_element_records_lock_invariant() -> None:
 
     tree = ast.parse(source)
 
+    found_tbox_fn = False
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_load_tbox_element_records":
+            found_tbox_fn = True
             # Find the elements_statement lock
             found_elements_lock = False
             for child in ast.walk(node):
@@ -1557,6 +1559,53 @@ def test_tbox_element_records_lock_invariant() -> None:
                             )
 
             assert found_load_details, "Could not find load_details inner function"
-            return
+            break
+    assert found_tbox_fn, "Could not find _load_tbox_element_records"
 
-    raise AssertionError("Could not find _load_tbox_element_records")
+    found_contract_fn = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_load_contract":
+            found_contract_fn = True
+            found_bindings_lock = False
+            found_rules_lock = False
+
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if isinstance(target, ast.Name):
+                            if target.id == "bindings_statement":
+                                if (
+                                    isinstance(child.value, ast.Call)
+                                    and getattr(child.value.func, "attr", "") == "with_for_update"
+                                ):
+                                    found_bindings_lock = True
+                                    has_read_true = any(
+                                        kw.arg == "read"
+                                        and getattr(kw.value, "value", None) is True
+                                        for kw in child.value.keywords
+                                    )
+                                    assert has_read_true, "with_for_update must specify read=True"
+
+                                    has_of_kwarg = any(
+                                        kw.arg == "of"
+                                        and isinstance(kw.value, ast.Name)
+                                        and kw.value.id == "ABoxBindingDraftModel"
+                                        for kw in child.value.keywords
+                                    )
+                                    assert has_of_kwarg, (
+                                        "bindings_statement.with_for_update must specify "
+                                        "'of=ABoxBindingDraftModel'"
+                                    )
+                            if target.id == "rules_statement":
+                                if (
+                                    isinstance(child.value, ast.Call)
+                                    and getattr(child.value.func, "attr", "") == "with_for_update"
+                                ):
+                                    found_rules_lock = True
+
+            assert found_bindings_lock, "Must qualify lock for bindings_statement"
+            assert not found_rules_lock, (
+                "Must omit lock for rules_statement to avoid FOR SHARE on detail tables"
+            )
+            break
+    assert found_contract_fn, "Could not find _load_contract"

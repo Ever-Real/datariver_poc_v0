@@ -4339,7 +4339,9 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             .limit(501)
         )
         if lock:
-            bindings_statement = bindings_statement.with_for_update(read=True)
+            bindings_statement = bindings_statement.with_for_update(
+                read=True, of=ABoxBindingDraftModel
+            )
         elements = await self._load_tbox_element_records(
             workspace_id=workspace_id,
             draft_id=draft.id,
@@ -4366,8 +4368,8 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
                 .limit(2_001)
             )
-            if lock:
-                rules_statement = rules_statement.with_for_update(read=True)
+            # Detail-row locking is redundant and safe to omit: the transaction already
+            # holds read locks on the parent bindings (and `studio_drafts`).
             rule_models = tuple((await self._session.scalars(rules_statement)).all())
         if len(rule_models) > 2_000:
             raise ConflictError("The Studio mapping rule set exceeds the publication bound.")
