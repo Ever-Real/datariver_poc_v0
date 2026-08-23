@@ -1957,7 +1957,11 @@ class PocApiClient {
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (isRegistrationOperatorPath(parsed.pathname, method)) requireRegistrationOperator()
     if (isRegistrationReaderPath(parsed.pathname, method)) requireRegistrationReader(parsed.pathname)
-    if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
+    if (((parsed.pathname === '/change-requests/summaries'
+      || (method === 'GET'
+        && /^\/change-requests\/(?!intake$|summaries$|systems$|targets$)[^/]+$/.test(parsed.pathname)))
+      && runtimeFlags().pocState)
+      || path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
       || parsed.pathname === '/admin/table-system-mappings'
       || parsed.pathname === '/admin/feature-security-policy'
       || parsed.pathname === '/admin/users'

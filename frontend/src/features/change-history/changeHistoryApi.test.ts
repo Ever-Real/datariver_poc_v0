@@ -157,6 +157,7 @@ describe('ChangeHistoryApi', () => {
     await expect(api.events({ limit: 2 })).rejects.toThrow('검증된 계약')
 
     await expect(api.events({ precision: 'GUESSED' as 'EXACT_MCL' })).rejects.toThrow('검증된 계약')
+    await expect(api.events({ dateFrom: '2026-08-12', dateTo: '2026-08-11' })).rejects.toThrow('검증된 계약')
     expect(request).toHaveBeenCalledTimes(2)
   })
 

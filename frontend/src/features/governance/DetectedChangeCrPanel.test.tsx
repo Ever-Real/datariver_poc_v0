@@ -212,6 +212,92 @@ describe('DetectedChangeCrPanel', () => {
     expect(screen.getByLabelText('현재 round CR 대상')).toHaveDisplayValue('선택')
     expect(screen.getByRole('button', { name: '연결 이력 저장' })).toBeDisabled()
   })
+
+  it('uses the exact schema, system, and KST date range in the reused right-side TanStack drawer', async () => {
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/change-history/events?')) return Promise.resolve(eventPage([event()]))
+      throw new Error(`Unexpected path: ${path}`)
+    })
+    const onClose = vi.fn()
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, detailTransport([]))}
+      changeRequests={[changeRequest()]}
+      selection={{
+        platform: 'postgres', databaseName: 'business', schemaName: 'public',
+        systemId: 'system-1', systemResolution: 'RESOLVED', systemName: 'Business', dateFrom: '2026-08-01', dateTo: '2026-08-03',
+      }}
+      onClose={onClose}
+    />)
+
+    const drawer = await screen.findByRole('complementary', { name: 'public 이벤트 상세' })
+    expect(within(drawer).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      '발생 시각', '변경', '대상', '단계', 'CR',
+    ])
+    expect(within(drawer).getByText('orders')).toBeInTheDocument()
+    const url = new URL(eventPaths(request)[0]!, 'https://datariver.invalid')
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      limit: '50', date_from: '2026-08-01', date_to: '2026-08-03',
+      platform: 'postgres', database_name: 'business', schema_name: 'public',
+      system_id: 'system-1', system_resolution: 'RESOLVED',
+    })
+    expect(weeklyPaths(request)).toHaveLength(0)
+    fireEvent.click(within(drawer).getByText('orders').closest('tr')!)
+    expect(await within(drawer).findByLabelText('선택 이벤트 CR 연결')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: '이벤트 상세 닫기' }))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('shows an authorized empty state inside the event drawer', async () => {
+    const request = vi.fn((path: string) => path.startsWith('/change-history/events?')
+      ? Promise.resolve(eventPage([]))
+      : Promise.reject(new Error(`Unexpected path: ${path}`)))
+    render(<DetectedChangeCrPanel
+      client={clientFor(request)}
+      changeRequests={[]}
+      selection={{
+        platform: 'postgres', databaseName: 'business', schemaName: 'empty_schema',
+        systemId: 'system-1', systemResolution: 'RESOLVED', systemName: 'Business', dateFrom: '2026-08-01', dateTo: '2026-08-03',
+      }}
+      onClose={vi.fn()}
+    />)
+    expect(await screen.findByText('선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다.')).toBeInTheDocument()
+  })
+
+  it('keeps every authorized exact-match event reachable across cursor pages', async () => {
+    const firstItems = Array.from({ length: 50 }, (_, index) => ({
+      ...event(),
+      event_id: index.toString(16).padStart(64, '0'),
+      locator: { ...event().locator!, asset_name: `orders-${index}` },
+    }))
+    const finalItem = {
+      ...event(),
+      event_id: 'f'.repeat(64),
+      locator: { ...event().locator!, asset_name: 'invoices-final' },
+    }
+    const request = vi.fn((path: string) => {
+      if (!path.startsWith('/change-history/events?')) throw new Error(`Unexpected path: ${path}`)
+      const cursor = new URL(path, 'https://datariver.invalid').searchParams.get('cursor')
+      return Promise.resolve(cursor
+        ? { items: [finalItem], next_cursor: null, limit: 50, total: 51 }
+        : { items: firstItems, next_cursor: 'cursor-2', limit: 50, total: 51 })
+    })
+    render(<DetectedChangeCrPanel
+      client={clientFor(request)}
+      changeRequests={[]}
+      selection={{
+        platform: 'postgres', databaseName: 'business', schemaName: 'public',
+        systemId: 'system-1', systemResolution: 'RESOLVED', systemName: 'Business', dateFrom: '2026-08-01', dateTo: '2026-08-03',
+      }}
+      onClose={vi.fn()}
+    />)
+
+    expect(await screen.findByText('orders-0')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '다음' }))
+    expect(await screen.findByText('invoices-final')).toBeInTheDocument()
+    expect(new URL(eventPaths(request)[1]!, 'https://datariver.invalid').searchParams.get('cursor')).toBe('cursor-2')
+    fireEvent.click(screen.getByRole('button', { name: '이전' }))
+    expect(await screen.findByText('orders-0')).toBeInTheDocument()
+  })
 })
 
 function setCurrentWeek() {

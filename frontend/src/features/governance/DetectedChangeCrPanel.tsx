@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import type { ColumnDef } from '@tanstack/react-table'
+import { X } from 'lucide-react'
 import type { ApiClient, ApiResponse } from '../../api/client'
 import type { ChangeRequestSummary } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { ChangeHistoryApi } from '../change-history/changeHistoryApi'
 import type {
   ChangeHistoryEventDetail,
+  ChangeHistoryEvent,
   ChangeHistoryEventPage,
   ChangeHistoryLinkAction,
   ChangeHistoryLinkPage,
@@ -41,17 +45,42 @@ interface FreshDetail {
 
 type WeeklyFilterKey = (typeof weeklyFilters)[number]['key']
 
+export interface DetectedChangeSelection {
+  platform: string
+  databaseName: string
+  schemaName: string
+  systemId: string | null
+  systemResolution: 'RESOLVED' | 'UNMAPPED' | 'AMBIGUOUS'
+  systemName: string | null
+  dateFrom: string
+  dateTo: string
+}
+
+const eventColumns: ColumnDef<ChangeHistoryEvent>[] = [
+  { accessorKey: 'source_occurred_at', header: '발생 시각', size: 150, enableSorting: false, cell: ({ row }) => row.original.source_occurred_at ? formatKst(row.original.source_occurred_at) : '시간 미상' },
+  { id: 'change', header: '변경', size: 190, enableSorting: false, cell: ({ row }) => `${row.original.category} · ${row.original.operation}` },
+  { id: 'target', header: '대상', size: 210, enableSorting: false, cell: ({ row }) => row.original.locator?.asset_name ?? row.original.entity_key },
+  { accessorKey: 'current_stage', header: '단계', size: 120, enableSorting: false },
+  { id: 'cr', header: 'CR', size: 180, enableSorting: false, cell: ({ row }) => row.original.current_primary ? `${row.original.current_primary.change_request_id} · round ${row.original.current_primary.change_request_round}` : '미연결' },
+]
+
 export function DetectedChangeCrPanel({
   client,
   changeRequests,
+  selection,
+  onClose,
 }: {
   client: ApiClient
   changeRequests: ChangeRequestSummary[]
+  selection?: DetectedChangeSelection
+  onClose?: () => void
 }) {
   const api = useMemo(() => new ChangeHistoryApi(client), [client])
   const weekStart = useMemo(() => currentKstWeekStart(), [])
   const [weekly, setWeekly] = useState<ChangeHistoryWeeklySummary>()
   const [page, setPage] = useState<ChangeHistoryEventPage>()
+  const [eventCursor, setEventCursor] = useState<string>()
+  const [eventCursorStack, setEventCursorStack] = useState<string[]>([])
   const [activeFilterKey, setActiveFilterKey] = useState<WeeklyFilterKey>('total_count')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
@@ -65,15 +94,29 @@ export function DetectedChangeCrPanel({
   const loadController = useRef<AbortController | undefined>(undefined)
   const detailController = useRef<AbortController | undefined>(undefined)
 
-  const fetchEvents = useCallback(async (filterKey: WeeklyFilterKey, signal?: AbortSignal) => {
+  const fetchEvents = useCallback(async (filterKey: WeeklyFilterKey, signal?: AbortSignal, cursor?: string) => {
+    if (selection) {
+      return api.events({
+        dateFrom: selection.dateFrom,
+        dateTo: selection.dateTo,
+        platform: selection.platform,
+        databaseName: selection.databaseName,
+        schemaName: selection.schemaName,
+        systemId: selection.systemId ?? undefined,
+        systemResolution: selection.systemResolution,
+        limit: EVENT_LIMIT,
+        cursor,
+      }, signal)
+    }
     const filter = weeklyFilters.find((candidate) => candidate.key === filterKey)
     return api.events({
       weekStart,
       linkState: filter?.linkState,
       stage: filter?.stage,
       limit: EVENT_LIMIT,
+      cursor,
     }, signal)
-  }, [api, weekStart])
+  }, [api, selection, weekStart])
 
   const load = useCallback(async () => {
     loadController.current?.abort()
@@ -83,11 +126,15 @@ export function DetectedChangeCrPanel({
     setError(undefined)
     setWeekly(undefined)
     setPage(undefined)
+    setEventCursor(undefined)
+    setEventCursorStack([])
     try {
-      const [weeklyResult, eventResult] = await Promise.all([
-        api.weekly(weekStart, controller.signal),
-        fetchEvents(activeFilterKey, controller.signal),
-      ])
+      const [weeklyResult, eventResult] = selection
+        ? [undefined, await fetchEvents(activeFilterKey, controller.signal)]
+        : await Promise.all([
+          api.weekly(weekStart, controller.signal),
+          fetchEvents(activeFilterKey, controller.signal),
+        ])
       if (controller.signal.aborted) return
       setWeekly(weeklyResult)
       setPage(eventResult)
@@ -99,19 +146,48 @@ export function DetectedChangeCrPanel({
         setLoading(false)
       }
     }
-  }, [activeFilterKey, api, fetchEvents, weekStart])
+  }, [activeFilterKey, api, fetchEvents, selection, weekStart])
 
   useEffect(() => {
     void load()
+    if (selection) document.body.classList.add('catalog-overlay-open')
     return () => {
       loadController.current?.abort()
       detailController.current?.abort()
+      if (selection) document.body.classList.remove('catalog-overlay-open')
     }
-  }, [load])
+  }, [load, selection])
 
   const chooseFilter = (filterKey: WeeklyFilterKey) => {
     if (loading || filterKey === activeFilterKey) return
     setActiveFilterKey(filterKey)
+  }
+
+  const changeEventPage = async (cursor: string | undefined, direction: 'next' | 'previous') => {
+    if (loading || (direction === 'next' && !cursor)) return
+    loadController.current?.abort()
+    const controller = new AbortController()
+    loadController.current = controller
+    setLoading(true)
+    setError(undefined)
+    try {
+      const nextPage = await fetchEvents(activeFilterKey, controller.signal, cursor)
+      if (controller.signal.aborted) return
+      setPage(nextPage)
+      if (direction === 'next') {
+        setEventCursorStack((current) => [...current, eventCursor ?? ''])
+      } else {
+        setEventCursorStack((current) => current.slice(0, -1))
+      }
+      setEventCursor(cursor)
+    } catch (pageError) {
+      if (!controller.signal.aborted) setError(pageError)
+    } finally {
+      if (loadController.current === controller) {
+        loadController.current = undefined
+        setLoading(false)
+      }
+    }
   }
 
   const loadDetail = useCallback(async (eventId: string) => {
@@ -177,15 +253,14 @@ export function DetectedChangeCrPanel({
         crypto.randomUUID(),
       )
       const eventId = detail.event.data.event_id
-      const [event, links, nextWeekly, nextPage] = await Promise.all([
+      const [event, links, nextPage] = await Promise.all([
         api.event(eventId),
         api.links(eventId, { limit: EVENT_LIMIT }),
-        api.weekly(weekStart),
-        fetchEvents(activeFilterKey),
+        fetchEvents(activeFilterKey, undefined, eventCursor),
       ])
       setDetail(freshDetail(event, links))
-      setWeekly(nextWeekly)
       setPage(nextPage)
+      if (!selection) setWeekly(await api.weekly(weekStart))
       setAction('')
       setTargetKey('')
       setReason('')
@@ -198,18 +273,18 @@ export function DetectedChangeCrPanel({
 
   const allowedActions = detail?.event.data.allowed_link_actions ?? []
 
-  return (
+  const content = (
     <section className="detected-change-cr" aria-labelledby="detected-change-cr-title" aria-busy={loading}>
       <header className="detected-change-cr-header">
         <div>
           <span className="governance-kicker">Detected Change → CR</span>
-          <h2 id="detected-change-cr-title">감지 변경과 CR 연결</h2>
-          <p>KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.</p>
+          <h2 id="detected-change-cr-title">{selection ? `${selection.schemaName} 이벤트` : '감지 변경과 CR 연결'}</h2>
+          <p>{selection ? `${selection.systemName ?? '시스템 미지정'} · ${selection.dateFrom}–${selection.dateTo} · 서버 권한 범위` : 'KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.'}</p>
         </div>
-        <button className="button button-secondary" type="button" disabled={loading} onClick={() => void load()}>새로고침</button>
+        <div className="detected-change-header-actions"><button className="button button-secondary" type="button" disabled={loading} onClick={() => void load()}>새로고침</button>{selection && <button type="button" aria-label="이벤트 상세 닫기" onClick={onClose}><X size={16} /></button>}</div>
       </header>
       <ErrorNotice error={error} />
-      {weekly && (
+      {!selection && weekly && (
         <div className="detected-change-weekly" aria-label="주간 변경 7개 집계">
           {weeklyFilters.map((card) => (
             <button key={card.key} type="button" className={activeFilterKey === card.key ? 'active' : ''} aria-pressed={activeFilterKey === card.key} onClick={() => chooseFilter(card.key)}>
@@ -218,9 +293,16 @@ export function DetectedChangeCrPanel({
           ))}
         </div>
       )}
-      <p className="detected-change-window">{weekStart} · 서버 이벤트 최대 {EVENT_LIMIT}건</p>
+      <p className="detected-change-window">{selection ? `${page?.total.toLocaleString() ?? 0}개 권한 행 · 현재 페이지 최대 ${EVENT_LIMIT}건` : `${weekStart} · 서버 이벤트 최대 ${EVENT_LIMIT}건`}</p>
       {loading && !page ? <p role="status">변경 이벤트를 불러오는 중입니다.</p> : null}
-      {page ? (
+      {selection && page ? <DenseDataTable
+        caption={`${selection.schemaName} 권한 범위의 감지 변경 이벤트`}
+        columns={eventColumns}
+        data={page.items}
+        getRowId={(event) => event.event_id}
+        emptyMessage="선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다."
+        onRowActivate={(event) => void loadDetail(event.event_id)}
+      /> : page ? (
         <div className="detected-change-table-wrap">
           <table>
             <caption>권한 범위의 감지 변경 이벤트</caption>
@@ -237,6 +319,10 @@ export function DetectedChangeCrPanel({
           </table>
         </div>
       ) : null}
+      {selection && page ? <nav className="detected-change-pagination" aria-label="이벤트 페이지 이동">
+        <button className="button button-secondary" type="button" disabled={loading || !eventCursorStack.length} onClick={() => void changeEventPage(eventCursorStack.at(-1) || undefined, 'previous')}>이전</button>
+        <button className="button button-secondary" type="button" disabled={loading || !page.next_cursor} onClick={() => void changeEventPage(page.next_cursor ?? undefined, 'next')}>다음</button>
+      </nav> : null}
       {detailLoading ? <p role="status">최신 이벤트와 CR 연결 ETag를 확인하는 중입니다.</p> : null}
       <ErrorNotice error={actionError} />
       {detail ? (
@@ -255,6 +341,12 @@ export function DetectedChangeCrPanel({
       ) : null}
     </section>
   )
+  return selection ? <>
+    <button type="button" className="catalog-detail-backdrop" aria-label="이벤트 상세 닫기" onClick={onClose} />
+    <aside className="catalog-detail catalog-detail--overlay panel detected-change-drawer" role="complementary" aria-label={`${selection.schemaName} 이벤트 상세`}>
+      {content}
+    </aside>
+  </> : content
 }
 
 function targetValue(target: { change_request_id: string; change_request_round: number }) {

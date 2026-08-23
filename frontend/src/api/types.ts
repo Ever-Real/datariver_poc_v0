@@ -789,6 +789,7 @@ export interface ChangeRequestSummary {
   title: string
   state: ChangeRequestState
   requester_id: string
+  requester_name?: string | null
   requester_department_id: string | null
   current_round_number: number
   created_at: string
@@ -798,6 +799,8 @@ export interface ChangeRequestSummary {
   classification: string
   version: number
   item_count: number
+  target_schema_name?: string | null
+  assignee_names?: string[]
   first_item: {
     target_ref: string
     aspect_name: string
@@ -853,6 +856,7 @@ export interface ChangeRequestSchemaOverview {
   database_name: string
   schema_name: string
   system_id: string | null
+  system_resolution?: 'RESOLVED' | 'UNMAPPED' | 'AMBIGUOUS'
   system_code: string | null
   system_name: string | null
   assignees: Array<{
@@ -861,6 +865,8 @@ export interface ChangeRequestSchemaOverview {
     responsibility: 'DEVELOPER' | 'DATA_STEWARD'
     priority: number
   }>
+  event_count?: number
+  unprogressed_event_count?: number
   pending_count: number
   total_count: number
   received_count: number

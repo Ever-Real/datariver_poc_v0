@@ -114,6 +114,8 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('change.event.command', 'POST', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}\/cr-link-events$/, 'CAPABILITY_PROTECTED', 'change.execute', { scopedMutation: true }),
   route('change.weekly', 'GET', /^\/api\/v1\/change-history\/weekly$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.summary', 'GET', /^\/api\/v1\/change-history\/summary$/, 'CAPABILITY_PROTECTED', 'change.read'),
+  route('change.cr.summaries', 'GET', /^\/api\/v1\/change-requests\/summaries$/, 'CAPABILITY_PROTECTED', 'change.read'),
+  route('change.cr.detail', 'GET', /^\/api\/v1\/change-requests\/(?!summaries$)[^/]+$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.reverse', 'GET', /^\/api\/v1\/change-requests\/[^/]+\/change-history$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.cr.create', 'POST', /^\/poc-api\/change-requests$/, 'CAPABILITY_PROTECTED', 'change.read', { scopedMutation: true }),
   route('change.cr.read', 'GET', /^\/poc-api\/change-requests\/[^/]+$/, 'CAPABILITY_PROTECTED', 'change.read'),

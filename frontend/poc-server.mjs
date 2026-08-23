@@ -543,53 +543,6 @@ function changeHistoryActiveUser(document, subjectId) {
   return user
 }
 
-function changeHistoryCatalogAsset(event, catalog) {
-  const matches = catalog.items.filter((item) => item?.id === event.asset_urn)
-  return matches.length === 1 ? matches[0] : null
-}
-
-function changeHistoryContext(event, catalog) {
-  const asset = changeHistoryCatalogAsset(event, catalog)
-  if (!asset) return null
-  if (typeof asset.platform !== 'string' || typeof asset.database_name !== 'string'
-    || typeof asset.schema_name !== 'string') return null
-  const providerContext = {
-    platform: asset.platform.trim().toLowerCase(),
-    database_name: asset.database_name.trim(),
-    schema_name: asset.schema_name.trim(),
-  }
-  return providerContext.platform && providerContext.database_name && providerContext.schema_name
-    ? providerContext
-    : null
-}
-
-function changeHistoryLocator(event, catalog) {
-  const asset = changeHistoryCatalogAsset(event, catalog)
-  const context = asset ? changeHistoryContext(event, catalog) : null
-  if (!asset || !context) return null
-  return {
-    platform: context.platform,
-    database_name: context.database_name,
-    schema_name: context.schema_name,
-    asset_name: typeof asset.name === 'string' && asset.name.trim() ? asset.name.trim() : null,
-  }
-}
-
-function changeHistorySystem(event, document, catalog) {
-  const providerContext = changeHistoryContext(event, catalog)
-  if (!providerContext) return { resolution: 'UNMAPPED', system_id: null, provider_context: null }
-  const activeSystems = new Set(document.systems.filter((system) => system.active).map((system) => system.system_id))
-  const matches = document.system_schema_scopes.filter((scope) => scope.active
-    && activeSystems.has(scope.system_id)
-    && scope.platform === providerContext.platform
-    && scope.database_name === providerContext.database_name
-    && scope.schema_name === providerContext.schema_name)
-  if (matches.length !== 1) {
-    return { resolution: matches.length ? 'AMBIGUOUS' : 'UNMAPPED', system_id: null, provider_context: providerContext }
-  }
-  return { resolution: 'RESOLVED', system_id: matches[0].system_id, provider_context: providerContext }
-}
-
 function changeHistoryAssignee(system, document) {
   const unassigned = { subject_id: null, responsibility: 'UNASSIGNED', system_id: system.system_id, priority: null, basis: 'CURRENT_POC_PROJECTION' }
   if (system.resolution !== 'RESOLVED') return unassigned
@@ -647,31 +600,70 @@ function changeHistoryPrecision(event, projection) {
     : null
 }
 
-function changeHistoryRow(event, projection, document) {
-  const system = changeHistorySystem(event, document, projection.catalog.value)
+function changeHistoryLinkedCr(target, core, targetsById, eventSystemId) {
+  if (!target) return null
+  const cr = changeHistoryCr(core, target.change_request_id)
+  if (!cr || cr.active === false || ['REJECTED', 'CANCELLED'].includes(cr.state)
+    || Number(cr.current_round_number) !== Number(target.change_request_round)
+    || crResponsibleSystemId(cr) !== eventSystemId
+    || !changeManagementRecordTargets(cr, targetsById)) return null
+  return cr
+}
+
+function changeHistoryAuthorizedCurrent(current, core, targetsById, eventSystemId) {
+  return {
+    ...current,
+    primary: changeHistoryLinkedCr(current.primary, core, targetsById, eventSystemId)
+      ? current.primary
+      : null,
+    candidates: current.candidates.filter((candidate) => (
+      changeHistoryLinkedCr(candidate, core, targetsById, eventSystemId)
+    )),
+  }
+}
+
+function changeHistoryRow(event, projection, document, target, targetsById) {
+  const system = {
+    resolution: 'RESOLVED',
+    system_id: target.system_id,
+    provider_context: target.locator,
+  }
   const assignee = changeHistoryAssignee(system, document)
   const links = projection.links.filter((link) => link.ledger_event_identity === event.event_identity)
+  const current = changeHistoryAuthorizedCurrent(
+    changeHistoryLinkState(links),
+    projection.core.value,
+    targetsById,
+    target.system_id,
+  )
   return {
     event,
     system,
     assignee,
-    locator: changeHistoryLocator(event, projection.catalog.value),
+    locator: target.locator,
     precision: changeHistoryPrecision(event, projection),
     links,
-    current: changeHistoryLinkState(links),
+    current,
   }
-}
-
-function changeHistoryCanRead(row, principal) {
-  if (principal.globalSystemRead) return true
-  if (row.system.resolution !== 'RESOLVED') return false
-  return principal.systemIds.has(row.system.system_id)
 }
 
 function changeHistoryCrPresentationStage(cr) {
   if (!cr || cr.active === false || ['REJECTED', 'CANCELLED'].includes(cr.state)) return 'UNLINKED'
-  if (cr.state === 'REGISTERED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) === 1)) return 'RECEIVED'
-  if (cr.state === 'CHANGES_REQUESTED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) > 1)) return 'RECHECK'
+  if (cr.state === 'REGISTERED') return 'RECEIVED'
+  if (cr.state === 'IN_REVIEW') {
+    const rounds = Array.isArray(cr.rounds) ? cr.rounds : []
+    const currentRound = rounds.find((round) => round?.id === cr.current_round_id)
+    const transitions = (Array.isArray(cr.transitions) ? cr.transitions : [])
+      .filter((transition) => transition?.round_id === cr.current_round_id)
+    const enteredReview = transitions.some((transition) => transition?.to_state === 'IN_REVIEW')
+    const resubmitted = Number(cr.current_round_number) > 1
+      || currentRound?.revision_kind === 'EDITED'
+      || transitions.some((transition) => transition?.from_state === 'CHANGES_REQUESTED'
+        && (transition?.to_state === 'IN_REVIEW'
+          || (transition?.to_state === 'REGISTERED' && enteredReview)))
+    return resubmitted ? 'RECHECK' : 'RECEIVED'
+  }
+  if (cr.state === 'CHANGES_REQUESTED') return 'RECHECK'
   if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(cr.state)) return 'TESTING'
   if (cr.state === 'FINAL_REVIEW') return 'FINAL_REVIEW'
   if (['APPLIED', 'COMPLETED'].includes(cr.state)) return 'COMPLETED'
@@ -741,6 +733,11 @@ function changeHistoryPublicLinkEvent(link) {
   }
 }
 
+function changeHistoryCanDisplayLink(link, core, targetsById) {
+  const cr = changeHistoryCr(core, link.change_request_id)
+  return Boolean(cr && changeManagementRecordTargets(cr, targetsById))
+}
+
 function changeHistoryPageParameters(parameters) {
   const rawLimit = parameters.get('limit') ?? '50'
   if (!/^\d+$/.test(rawLimit)) throw accessError(400, 'PAGE_INVALID', 'limit must be an integer.')
@@ -788,14 +785,9 @@ function changeHistoryCr(core, id) {
   return records.find((item) => item && item.id === id)
 }
 
-function assertChangeHistoryCrBinding(cr, roundNumber, systemId) {
-  if (!cr || Number(cr.current_round_number) !== roundNumber || typeof cr.current_round_id !== 'string') {
-    throw accessError(409, 'CR_BINDING_DRIFT', 'The change request or current round does not match the command.')
-  }
-  const round = Array.isArray(cr.rounds) ? cr.rounds.find((item) => item?.id === cr.current_round_id) : null
-  const items = Array.isArray(cr.items) ? cr.items : []
-  if (!round || !items.length || round.selected_system_id !== systemId
-    || items.some((item) => item?.routing_system_id !== systemId)) {
+function assertChangeHistoryCrBinding(cr, roundNumber, systemId, targetsById) {
+  const target = cr ? { change_request_id: cr.id, change_request_round: roundNumber } : null
+  if (!changeHistoryLinkedCr(target, { changeRecords: cr ? [cr] : [] }, targetsById, systemId)) {
     throw accessError(409, 'CR_BINDING_DRIFT', 'The change request is no longer bound to the event System.')
   }
 }
@@ -853,11 +845,282 @@ function changeHistoryWeekBounds(weekStart) {
   }
 }
 
+function changeHistoryKstDate(value, field) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) {
+    throw accessError(400, 'DATE_RANGE_INVALID', `${field} must be YYYY-MM-DD.`)
+  }
+  const date = new Date(`${value}T00:00:00+09:00`)
+  const normalized = Number.isFinite(date.getTime())
+    ? new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    : undefined
+  if (normalized !== value) {
+    throw accessError(400, 'DATE_RANGE_INVALID', `${field} must be a valid KST date.`)
+  }
+  return date
+}
+
+function changeHistoryDateBounds(parameters) {
+  const weekStart = parameters.get('week_start')
+  const dateFrom = parameters.get('date_from')
+  const dateTo = parameters.get('date_to')
+  if (weekStart && (dateFrom || dateTo)) {
+    throw accessError(400, 'DATE_RANGE_INVALID', 'week_start cannot be combined with date_from or date_to.')
+  }
+  if (weekStart) return changeHistoryWeekBounds(weekStart)
+  if (!dateFrom && !dateTo) return null
+  if (!dateFrom || !dateTo) {
+    throw accessError(400, 'DATE_RANGE_INVALID', 'date_from and date_to must be supplied together.')
+  }
+  const start = changeHistoryKstDate(dateFrom, 'date_from')
+  const inclusiveEnd = changeHistoryKstDate(dateTo, 'date_to')
+  if (start.getTime() > inclusiveEnd.getTime()) {
+    throw accessError(400, 'DATE_RANGE_INVALID', 'date_from must not be after date_to.')
+  }
+  return { start, end: new Date(inclusiveEnd.getTime() + 24 * 60 * 60 * 1000) }
+}
+
+function changeHistoryInBounds(row, bounds) {
+  if (!bounds) return true
+  const occurredAt = row.event.source_occurred_at
+  return Boolean(occurredAt)
+    && Date.parse(occurredAt) >= bounds.start.getTime()
+    && Date.parse(occurredAt) < bounds.end.getTime()
+}
+
 function changeHistoryTransactionStage(transactionRows, core) {
   const primaryKeys = new Set(transactionRows.map((row) => row.current.primary && canonicalJson(row.current.primary)).filter(Boolean))
   if (transactionRows.some((row) => !row.current.primary) || primaryKeys.size !== 1) return 'UNLINKED'
   const primary = JSON.parse([...primaryKeys][0])
   return changeHistoryCrPresentationStage(changeHistoryCr(core, primary.change_request_id))
+}
+
+function changeManagementSchemaKey(platform, databaseName, schemaName, systemId, systemResolution = systemId ? 'RESOLVED' : 'UNMAPPED') {
+  return JSON.stringify([platform.toLowerCase(), databaseName, schemaName, systemId, systemResolution])
+}
+
+function changeHistoryCurrentTableAuthority(catalog, mappingDocument, document, principal) {
+  const activeSystemIds = new Set(document.systems.filter((system) => system.active)
+    .map((system) => system.system_id))
+  const systems = new Map(document.systems.map((system) => [system.system_id, system]))
+  const targetsById = new Map()
+  for (const asset of catalog.items) {
+    const assetId = asset?.id
+    if (asset?.dataset_kind !== 'TABLE' || !canReadAsset(principal, asset, 'change')) continue
+    if (typeof asset.platform !== 'string' || typeof asset.database_name !== 'string'
+      || typeof asset.schema_name !== 'string') continue
+    const locator = {
+      platform: asset.platform.trim().toLowerCase(),
+      database_name: asset.database_name.trim(),
+      schema_name: asset.schema_name.trim(),
+      asset_name: typeof asset.name === 'string' && asset.name.trim() ? asset.name.trim() : null,
+    }
+    if (!locator.platform || !locator.database_name || !locator.schema_name) continue
+    const mappedSystemIds = activeSystemIdsForTable(mappingDocument, assetId, activeSystemIds)
+    if (mappedSystemIds.length !== 1) continue
+    const systemId = mappedSystemIds[0]
+    const system = systems.get(systemId)
+    if (!system?.active) continue
+    const key = changeManagementSchemaKey(
+      locator.platform,
+      locator.database_name,
+      locator.schema_name,
+      systemId,
+    )
+    targetsById.set(assetId, { asset_id: assetId, key, locator, system_id: systemId })
+  }
+  return { targetsById }
+}
+
+function changeManagementBaseOverview(targetsById, document) {
+  const systems = new Map(document.systems.map((system) => [system.system_id, system]))
+  const overview = new Map()
+  for (const target of targetsById.values()) {
+    if (overview.has(target.key)) continue
+    const system = systems.get(target.system_id)
+    if (!system?.active) continue
+    const { locator, system_id: systemId, key } = target
+    overview.set(key, {
+      platform: locator.platform,
+      database_name: locator.database_name,
+      schema_name: locator.schema_name,
+      system_id: systemId,
+      system_resolution: 'RESOLVED',
+      system_code: system.code,
+      system_name: system.name,
+      assignees: [],
+      event_count: 0,
+      unprogressed_event_count: 0,
+      pending_count: 0,
+      total_count: 0,
+      received_count: 0,
+      recheck_count: 0,
+      testing_count: 0,
+      final_review_count: 0,
+      completed_count: 0,
+    })
+  }
+  return overview
+}
+
+function changeManagementEventOverview(rows, core, document, overview) {
+  const systems = new Map(document.systems.map((system) => [system.system_id, system]))
+  const transactions = new Map()
+  for (const row of rows) {
+    const transactionId = row.event.normalized_change_transaction_id
+    const values = transactions.get(transactionId) ?? []
+    values.push(row)
+    transactions.set(transactionId, values)
+  }
+  const stageByTransaction = new Map([...transactions].map(([transactionId, values]) => (
+    [transactionId, changeHistoryTransactionStage(values, core)]
+  )))
+  const transactionIdsBySchema = new Map()
+  for (const row of rows) {
+    if (!row.locator) continue
+    const systemId = row.system.resolution === 'RESOLVED' ? row.system.system_id : null
+    const key = changeManagementSchemaKey(
+      row.locator.platform,
+      row.locator.database_name,
+      row.locator.schema_name,
+      systemId,
+      row.system.resolution,
+    )
+    if (!overview.has(key)) {
+      const system = systems.get(systemId)
+      overview.set(key, {
+        platform: row.locator.platform,
+        database_name: row.locator.database_name,
+        schema_name: row.locator.schema_name,
+        system_id: systemId,
+        system_resolution: row.system.resolution,
+        system_code: system?.code ?? null,
+        system_name: system?.name ?? null,
+        assignees: [],
+        event_count: 0,
+        unprogressed_event_count: 0,
+        pending_count: 0,
+        total_count: 0,
+        received_count: 0,
+        recheck_count: 0,
+        testing_count: 0,
+        final_review_count: 0,
+        completed_count: 0,
+      })
+    }
+    const transactionIds = transactionIdsBySchema.get(key) ?? new Set()
+    transactionIds.add(row.event.normalized_change_transaction_id)
+    transactionIdsBySchema.set(key, transactionIds)
+  }
+  for (const [key, transactionIds] of transactionIdsBySchema) {
+    const overviewRow = overview.get(key)
+    overviewRow.event_count = transactionIds.size
+    overviewRow.unprogressed_event_count = [...transactionIds]
+      .filter((transactionId) => stageByTransaction.get(transactionId) === 'UNLINKED').length
+  }
+  return overview
+}
+
+function changeManagementCrCreatedInBounds(record, bounds) {
+  if (!bounds) return true
+  const createdAt = Date.parse(record.created_at)
+  return Number.isFinite(createdAt)
+    && createdAt >= bounds.start.getTime()
+    && createdAt < bounds.end.getTime()
+}
+
+function changeManagementRecordTargets(record, targetsById) {
+  if (record?.active === false) return null
+  const responsibleSystemId = crResponsibleSystemId(record)
+  const items = Array.isArray(record?.items) ? record.items : []
+  if (!responsibleSystemId || items.length === 0) return null
+  const targets = []
+  for (const item of items) {
+    const target = typeof item?.target_asset_id === 'string'
+      ? targetsById.get(item.target_asset_id)
+      : undefined
+    if (!target || target.system_id !== responsibleSystemId
+      || item.target_system_id !== target.system_id
+      || item.routing_system_id !== target.system_id) return null
+    targets.push(target)
+  }
+  return targets
+}
+
+function changeManagementAddCrCounts(overview, visibleRecords) {
+  for (const { record, targets } of visibleRecords) {
+    if (record.active === false || ['REJECTED', 'CANCELLED'].includes(record.state)) continue
+    const stage = changeHistoryCrPresentationStage(record)
+    for (const key of new Set(targets.map((target) => target.key))) {
+      const row = overview.get(key)
+      if (!row) continue
+      row.total_count += 1
+      if (record.state === 'REGISTERED') row.pending_count += 1
+      if (stage === 'RECEIVED') row.received_count += 1
+      if (stage === 'RECHECK') row.recheck_count += 1
+      if (stage === 'TESTING') row.testing_count += 1
+      if (stage === 'FINAL_REVIEW') row.final_review_count += 1
+      if (stage === 'COMPLETED') row.completed_count += 1
+    }
+  }
+}
+
+function changeManagementPriorityOneAssignees(record, document) {
+  const systemId = crResponsibleSystemId(record)
+  if (!systemId) return []
+  const users = new Map(document.users.filter((user) => user.active)
+    .map((user) => [user.subject_id, user]))
+  const assignments = document.system_assignments.filter((assignment) => assignment.active
+    && assignment.system_id === systemId && assignment.priority === 1
+    && users.has(assignment.subject_id))
+    .sort((left, right) => left.responsibility.localeCompare(right.responsibility)
+      || left.subject_id.localeCompare(right.subject_id))
+  const seenSubjects = new Set()
+  const displayNames = []
+  for (const assignment of assignments) {
+    if (seenSubjects.has(assignment.subject_id)) continue
+    seenSubjects.add(assignment.subject_id)
+    const displayName = users.get(assignment.subject_id)?.display_name
+    if (typeof displayName === 'string' && displayName.trim()) displayNames.push(displayName)
+  }
+  return displayNames
+}
+
+function changeManagementSummaryItem(record, targets, document) {
+  const first = Array.isArray(record.items) ? record.items[0] : null
+  const locator = targets[0]?.locator
+  const requester = document.users.find((user) => user.subject_id === record.requester_id)
+  return {
+    id: record.id,
+    number: record.number,
+    request_type: record.request_type,
+    title: record.title,
+    state: record.state,
+    requester_id: record.requester_id,
+    requester_name: requester?.display_name || null,
+    requester_department_id: record.requester_department_id ?? null,
+    current_round_number: Number(record.current_round_number || 1),
+    created_at: record.created_at,
+    requested_due_date: record.requested_due_date ?? null,
+    priority: record.priority ?? null,
+    urgency: record.urgency ?? null,
+    classification: record.classification,
+    version: Number(record.version || 1),
+    item_count: Array.isArray(record.items) ? record.items.length : 0,
+    target_schema_name: locator.schema_name,
+    assignee_names: changeManagementPriorityOneAssignees(record, document),
+    first_item: {
+      target_ref: first?.target_ref ?? '',
+      aspect_name: first?.aspect_name ?? '',
+      operation: first?.operation ?? '',
+    },
+  }
+}
+
+function changeManagementOverviewRows(overview) {
+  return [...overview.values()].sort((left, right) => (
+    changeManagementSchemaKey(left.platform, left.database_name, left.schema_name, left.system_id, left.system_resolution)
+      .localeCompare(changeManagementSchemaKey(right.platform, right.database_name, right.schema_name, right.system_id, right.system_resolution))
+  ))
 }
 
 function changeHistoryWeeklySummary(rows, core, document, weekStart) {
@@ -1038,8 +1301,21 @@ async function changeHistoryApi(request, response, url, context) {
   rejectProtectedAccessClaims(request, url, { allowSystemFilter: true })
   const projection = await context.stateStore.readChangeHistoryProjection({ catalogScope: datahubInventoryStateScope })
   const { document } = changeHistoryProjectionAuthority(projection, context)
-  const rows = projection.events.map((event) => changeHistoryRow(event, projection, document))
-    .filter((row) => changeHistoryCanRead(row, context.principal))
+  const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+  const mappingDocument = normalizeTableSystemMappingDocument(mappingSnapshot.value)
+  const currentTableAuthority = changeHistoryCurrentTableAuthority(
+    projection.catalog.value,
+    mappingDocument,
+    document,
+    context.principal,
+  )
+  const rows = projection.events.map((event) => {
+    const target = currentTableAuthority.targetsById.get(event.asset_urn)
+    return target
+      ? changeHistoryRow(event, projection, document, target, currentTableAuthority.targetsById)
+      : null
+  })
+    .filter(Boolean)
     .map((row) => ({
       ...row,
       current_stage: changeHistoryRowPresentationStage(row, projection.core.value),
@@ -1050,11 +1326,65 @@ async function changeHistoryApi(request, response, url, context) {
   const eventLinksMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})\/cr-links$/)
   const eventCommandMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})\/cr-link-events$/)
   const eventMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})$/)
+  const changeRequestMatch = url.pathname.match(/^\/api\/v1\/change-requests\/([^/]+)$/)
   const reverseMatch = url.pathname.match(/^\/api\/v1\/change-requests\/([^/]+)\/change-history$/)
 
+  if (request.method === 'GET' && url.pathname === '/api/v1/change-requests/summaries') {
+    const bounds = changeHistoryDateBounds(url.searchParams)
+    const requestedState = url.searchParams.get('state')
+    const allowedStates = new Set([
+      'REGISTERED', 'IN_REVIEW', 'CHANGES_REQUESTED', 'TESTING', 'FINAL_REVIEW',
+      'APPLY_QUEUED', 'APPLYING', 'APPLIED', 'APPLY_FAILED', 'REJECTED', 'CANCELLED', 'COMPLETED',
+    ])
+    if (requestedState && !allowedStates.has(requestedState)) {
+      throw accessError(400, 'FILTER_INVALID', 'The change-request state filter is invalid.')
+    }
+    const rawLimit = url.searchParams.get('limit') ?? '25'
+    if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 50) {
+      throw accessError(400, 'PAGE_INVALID', 'limit must be between 1 and 50.')
+    }
+    const visibleRecords = (Array.isArray(projection.core.value?.changeRecords)
+      ? projection.core.value.changeRecords
+      : []).filter((record) => changeManagementCrCreatedInBounds(record, bounds))
+      .map((record) => ({
+        record,
+        targets: changeManagementRecordTargets(record, currentTableAuthority.targetsById),
+      }))
+      .filter((entry) => entry.targets !== null)
+    const overview = changeManagementEventOverview(
+      rows.filter((row) => changeHistoryInBounds(row, bounds)),
+      projection.core.value,
+      document,
+      changeManagementBaseOverview(currentTableAuthority.targetsById, document),
+    )
+    changeManagementAddCrCounts(overview, visibleRecords)
+    const overviewRows = changeManagementOverviewRows(overview)
+    const filteredRecords = visibleRecords.filter(({ record }) => !requestedState || record.state === requestedState)
+      .sort((left, right) => String(right.record.created_at).localeCompare(String(left.record.created_at))
+        || String(right.record.id).localeCompare(String(left.record.id)))
+    const page = changeHistoryPage(filteredRecords, url.searchParams, ({ record }) => (
+      [String(record.created_at || ''), String(record.id || '')]
+    ))
+    const items = page.items.map(({ record, targets }) => changeManagementSummaryItem(record, targets, document))
+    return json(response, 200, {
+      items,
+      overview: overviewRows.slice(0, 100),
+      overview_truncated: overviewRows.length > 100,
+      page: { next_cursor: page.next_cursor, limit: page.limit },
+    })
+  }
+
+  if (request.method === 'GET' && changeRequestMatch) {
+    const crId = decodeURIComponent(changeRequestMatch[1])
+    const cr = changeHistoryCr(projection.core.value, crId)
+    if (!cr || !changeManagementRecordTargets(cr, currentTableAuthority.targetsById)) {
+      throw accessError(404, 'CHANGE_REQUEST_NOT_FOUND', 'The change request was not found.')
+    }
+    return json(response, 200, cr, { 'Cache-Control': 'private, no-store' })
+  }
+
   if (request.method === 'GET' && url.pathname === '/api/v1/change-history/events') {
-    const weekStart = url.searchParams.get('week_start')
-    const bounds = weekStart ? changeHistoryWeekBounds(weekStart) : null
+    const bounds = changeHistoryDateBounds(url.searchParams)
     const changeType = changeHistoryFilterValue(url.searchParams, 'change_type', 32)
     const category = changeHistoryFilterValue(url.searchParams, 'category', 32)
     const precision = changeHistoryFilterValue(url.searchParams, 'precision', 32)
@@ -1063,6 +1393,7 @@ async function changeHistoryApi(request, response, url, context) {
     const databaseName = changeHistoryFilterValue(url.searchParams, 'database_name')
     const schemaName = changeHistoryFilterValue(url.searchParams, 'schema_name')
     const systemId = changeHistoryFilterValue(url.searchParams, 'system_id')
+    const systemResolution = changeHistoryFilterValue(url.searchParams, 'system_resolution', 32)
     const assigneeId = changeHistoryFilterValue(url.searchParams, 'assignee_subject_id')
     const linkState = changeHistoryFilterValue(url.searchParams, 'link_state', 32)
     const stage = changeHistoryFilterValue(url.searchParams, 'stage', 32)
@@ -1070,13 +1401,12 @@ async function changeHistoryApi(request, response, url, context) {
       || (category && !changeHistoryCategories.has(category))
       || (precision && !changeHistoryPrecisionValues.includes(precision))
       || (operation && !changeHistoryOperations.has(operation))
+      || (systemResolution && !['RESOLVED', 'UNMAPPED', 'AMBIGUOUS'].includes(systemResolution))
       || (linkState && !['LINKED', 'UNLINKED'].includes(linkState))
       || (stage && !changeHistoryPresentationStages.has(stage))) {
       throw accessError(400, 'FILTER_INVALID', 'A change-history filter is invalid.')
     }
-    const filtered = rows.filter((row) => (!bounds || (row.event.source_occurred_at
-        && Date.parse(row.event.source_occurred_at) >= bounds.start.getTime()
-        && Date.parse(row.event.source_occurred_at) < bounds.end.getTime()))
+    const filtered = rows.filter((row) => changeHistoryInBounds(row, bounds)
       && (!changeType || (changeType === 'SCHEMA_CHANGE') === (row.event.category === 'TECHNICAL_SCHEMA' && row.event.source_aspect === 'schemaMetadata'))
       && (!category || row.event.category === category)
       && (!precision || row.precision === precision)
@@ -1085,6 +1415,7 @@ async function changeHistoryApi(request, response, url, context) {
       && (!databaseName || row.locator?.database_name === databaseName)
       && (!schemaName || row.locator?.schema_name === schemaName)
       && (!systemId || row.system.system_id === systemId)
+      && (!systemResolution || row.system.resolution === systemResolution)
       && (!assigneeId || row.assignee.subject_id === assigneeId)
       && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary))
       && (!stage || row.current_stage === stage))
@@ -1104,7 +1435,11 @@ async function changeHistoryApi(request, response, url, context) {
   if (request.method === 'GET' && eventLinksMatch) {
     const row = rows.find((item) => item.event.event_identity === eventLinksMatch[1])
     if (!row) throw accessError(404, 'CHANGE_HISTORY_EVENT_NOT_FOUND', 'The change-history event was not found.')
-    const history = [...row.links].sort((left, right) => Number(right.link_version) - Number(left.link_version))
+    const history = row.links.filter((link) => changeHistoryCanDisplayLink(
+      link,
+      projection.core.value,
+      currentTableAuthority.targetsById,
+    )).sort((left, right) => Number(right.link_version) - Number(left.link_version))
     const page = changeHistoryPage(history, url.searchParams, (link) => [String(link.occurred_at), String(link.link_event_identity)])
     return json(response, 200, {
       current_primary: row.current.primary,
@@ -1121,7 +1456,7 @@ async function changeHistoryApi(request, response, url, context) {
     const { idempotencyKey, priorLinkHash } = changeHistoryMutationHeaders(request)
     const command = changeHistoryCommandBody(await bodyJson(request))
     const cr = changeHistoryCr(projection.core.value, command.changeRequestId)
-    assertChangeHistoryCrBinding(cr, command.changeRequestRound, row.system.system_id)
+    assertChangeHistoryCrBinding(cr, command.changeRequestRound, row.system.system_id, currentTableAuthority.targetsById)
     const replay = await context.stateStore.readChangeHistoryCrLinkReplay?.({
       idempotencyKey, ledgerEventIdentity: row.event.event_identity, linkKind: command.linkKind,
       action: command.action, changeRequestId: command.changeRequestId,
@@ -1184,7 +1519,10 @@ async function changeHistoryApi(request, response, url, context) {
   }
   if (request.method === 'GET' && reverseMatch) {
     const crId = decodeURIComponent(reverseMatch[1])
-    if (!changeHistoryCr(projection.core.value, crId)) throw accessError(404, 'CHANGE_REQUEST_NOT_FOUND', 'The change request was not found.')
+    const cr = changeHistoryCr(projection.core.value, crId)
+    if (!cr || !changeManagementRecordTargets(cr, currentTableAuthority.targetsById)) {
+      throw accessError(404, 'CHANGE_REQUEST_NOT_FOUND', 'The change request was not found.')
+    }
     const linked = rows.filter((row) => row.links.some((link) => link.change_request_id === crId))
     const page = changeHistoryPage(linked, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
     return json(response, 200, { change_request_id: crId, items: page.items.map((row) => changeHistoryPublicRow(row)), next_cursor: page.next_cursor, limit: page.limit })
@@ -7381,7 +7719,9 @@ async function api(request, response, url, context) {
   if (url.pathname === '/api/v1/change-history/events'
     || url.pathname === '/api/v1/change-history/summary'
     || url.pathname === '/api/v1/change-history/weekly'
+    || url.pathname === '/api/v1/change-requests/summaries'
     || /^\/api\/v1\/change-history\/events\//.test(url.pathname)
+    || /^\/api\/v1\/change-requests\/[^/]+$/.test(url.pathname)
     || /^\/api\/v1\/change-requests\/[^/]+\/change-history$/.test(url.pathname)) {
     return changeHistoryApi(request, response, url, context)
   }

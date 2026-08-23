@@ -11,7 +11,9 @@ import type { ChangeHistoryEvent } from '../change-history/types'
 import { GovernancePage } from './GovernancePage'
 
 vi.mock('./DetectedChangeCrPanel', () => ({
-  DetectedChangeCrPanel: () => <section data-testid="detected-change-cr-panel" />,
+  DetectedChangeCrPanel: ({ selection }: { selection: { schemaName: string; systemId: string | null; systemResolution: string } }) => (
+    <section data-testid="detected-change-cr-panel" data-system-id={selection.systemId ?? ''} data-system-resolution={selection.systemResolution}>{selection.schemaName}</section>
+  ),
 }))
 
 function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequestRecord {
@@ -106,6 +108,7 @@ function summary(record: ChangeRequestRecord): ChangeRequestSummary {
     title: record.title,
     state: record.state,
     requester_id: record.requester_id,
+    requester_name: '요청자 김',
     requester_department_id: record.requester_department_id,
     current_round_number: record.current_round_number,
     created_at: record.created_at,
@@ -115,6 +118,8 @@ function summary(record: ChangeRequestRecord): ChangeRequestSummary {
     classification: record.classification,
     version: record.version,
     item_count: record.items.length,
+    target_schema_name: 'engineering',
+    assignee_names: ['담당자 이'],
     first_item: {
       target_ref: first.target_ref,
       aspect_name: first.aspect_name,
@@ -136,8 +141,19 @@ function summaryList(
   }
 }
 
-function apiClient(request: (path: string, options?: RequestOptions) => Promise<unknown>): ApiClient {
-  return { request } as unknown as ApiClient
+function apiClient(
+  request: (path: string, options?: RequestOptions) => Promise<unknown>,
+  preserveDateRange = false,
+): ApiClient {
+  return {
+    request: (path: string, options?: RequestOptions) => {
+      if (preserveDateRange || !path.startsWith('/change-requests/summaries?')) return request(path, options)
+      const url = new URL(path, 'https://datariver.invalid')
+      url.searchParams.delete('date_from')
+      url.searchParams.delete('date_to')
+      return request(`${url.pathname}?${url.searchParams.toString()}`, options)
+    },
+  } as unknown as ApiClient
 }
 
 const governedCatalogAsset: CatalogAsset = {
@@ -231,7 +247,7 @@ async function openDetailAfterRender(
 }
 
 describe('GovernancePage', () => {
-  it('groups CR status and detected changes while keeping Monitoring independently navigable', async () => {
+  it('renders one consolidated overview while keeping Monitoring independently navigable', async () => {
     const onNavigate = vi.fn()
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([]))
@@ -246,10 +262,10 @@ describe('GovernancePage', () => {
       onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
-    const combined = screen.getByRole('region', { name: '현재 권한 창의 스키마별 변경요청 현황' })
+    const combined = screen.getByRole('region', { name: '현재 권한과 기간의 스키마별 변경 현황' })
       .closest('.governance-combined-overview')
     expect(combined).toHaveAccessibleName('CR 및 감지 변경 현황')
-    expect(within(combined as HTMLElement).getByTestId('detected-change-cr-panel')).toBeInTheDocument()
+    expect(within(combined as HTMLElement).queryByTestId('detected-change-cr-panel')).not.toBeInTheDocument()
     fireEvent.click(within(combined as HTMLElement).getByRole('button', { name: 'Monitoring 상세 현황' }))
     expect(onNavigate).toHaveBeenCalledWith('monitoring')
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
@@ -260,7 +276,7 @@ describe('GovernancePage', () => {
     const request = vi.fn((): Promise<unknown> => list.promise)
     renderPage(apiClient(request))
 
-    expect(screen.getByTestId('detected-change-cr-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('detected-change-cr-panel')).not.toBeInTheDocument()
     const loading = screen.getByText('데이터를 불러오는 중입니다.')
     expect(loading.closest('.dense-table-frame')).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByText('현재 조회된 요청 · 페이지당 최대 25건')).toBeInTheDocument()
@@ -268,6 +284,25 @@ describe('GovernancePage', () => {
     act(() => list.resolve(summaryList([])))
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
     expect(screen.getByText('0건 표시')).toBeInTheDocument()
+  })
+
+  it('reloads the authoritative summary when the KST date range changes', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      void path
+      return Promise.resolve(summaryList([]))
+    })
+    renderPage(apiClient(request, true))
+
+    await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')
+    fireEvent.change(screen.getByLabelText('조회 시작일'), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText('조회 종료일'), { target: { value: '2026-08-03' } })
+
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      const url = new URL(path, 'https://datariver.invalid')
+      return url.pathname === '/change-requests/summaries'
+        && url.searchParams.get('date_from') === '2026-08-01'
+        && url.searchParams.get('date_to') === '2026-08-03'
+    })).toBe(true))
   })
 
   it('sizes overview identity columns from content, keeps metric columns equal, and exposes clipped values in titles', async () => {
@@ -279,6 +314,8 @@ describe('GovernancePage', () => {
       system_code: 'FAB',
       system_name: 'Fabrication data platform',
       assignees: [],
+      event_count: 7,
+      unprogressed_event_count: 2,
       pending_count: 0,
       total_count: 0,
       received_count: 0,
@@ -296,14 +333,14 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
 
     const region = await screen.findByRole('region', {
-      name: '현재 권한 창의 스키마별 변경요청 현황',
+      name: '현재 권한과 기간의 스키마별 변경 현황',
     })
     const widths = Array.from(region.querySelectorAll('col')).map(
       (column) => column.getAttribute('style'),
     )
     expect(widths).toHaveLength(10)
-    expect(new Set(widths.slice(0, 3)).size).toBeGreaterThan(1)
-    expect(new Set(widths.slice(3)).size).toBe(1)
+    expect(new Set(widths.slice(0, 2)).size).toBeGreaterThan(1)
+    expect(new Set(widths.slice(2)).size).toBe(1)
     expect(screen.getByText(schemaOverview.schema_name)).toHaveClass('governance-overview-primary')
     expect(screen.getByText(schemaOverview.schema_name)).toHaveAttribute(
       'title',
@@ -313,6 +350,38 @@ describe('GovernancePage', () => {
       'title',
       schemaOverview.system_name,
     )
+    expect(screen.getByText(schemaOverview.schema_name).closest('button')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /담당자/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: `${schemaOverview.schema_name} 이벤트 7건 열기` }))
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveTextContent(schemaOverview.schema_name)
+  })
+
+  it('keeps concurrent resolved, unmapped, and ambiguous row identities aligned with drawer selection', async () => {
+    const common = {
+      platform: 'postgres', database_name: 'warehouse', schema_name: 'shared',
+      system_code: null, system_name: null, assignees: [], unprogressed_event_count: 0,
+      pending_count: 0, total_count: 0, received_count: 0, recheck_count: 0,
+      testing_count: 0, final_review_count: 0, completed_count: 0,
+    }
+    const rows: ChangeRequestSchemaOverview[] = [
+      { ...common, system_id: 'system-1', system_resolution: 'RESOLVED', system_code: 'ONE', system_name: 'One', event_count: 2 },
+      { ...common, system_id: null, system_resolution: 'UNMAPPED', event_count: 3 },
+      { ...common, system_id: null, system_resolution: 'AMBIGUOUS', event_count: 4 },
+    ]
+    const request = vi.fn((path: string): Promise<unknown> => path === '/change-requests/summaries?limit=25'
+      ? Promise.resolve(summaryList([], null, rows))
+      : Promise.reject(new Error(`Unexpected request: ${path}`)))
+    renderPage(apiClient(request))
+
+    await screen.findByRole('button', { name: 'shared 이벤트 2건 열기' })
+    fireEvent.click(screen.getByRole('button', { name: 'shared 이벤트 2건 열기' }))
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveAttribute('data-system-id', 'system-1')
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveAttribute('data-system-resolution', 'RESOLVED')
+    fireEvent.click(screen.getByRole('button', { name: 'shared 이벤트 3건 열기' }))
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveAttribute('data-system-id', '')
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveAttribute('data-system-resolution', 'UNMAPPED')
+    fireEvent.click(screen.getByRole('button', { name: 'shared 이벤트 4건 열기' }))
+    expect(screen.getByTestId('detected-change-cr-panel')).toHaveAttribute('data-system-resolution', 'AMBIGUOUS')
   })
 
   it('renders the bounded dense list and opens independent CR creation', async () => {
@@ -327,8 +396,17 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
 
     expect(await screen.findByText(existing.number)).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'CR-No' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: '변경 Aspect' })).toBeInTheDocument()
+    const listRegion = screen.getByRole('region', { name: '변경 요청 목록' })
+    expect(within(listRegion).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'CR-No', 'CR명', '유형', '대상스키마', '상태', '등급', '요청자', '담당자',
+      '요청일', '요청납기', '중요도', '긴급도', '버전',
+    ])
+    expect(within(listRegion).getByText('engineering')).toBeInTheDocument()
+    expect(within(listRegion).getByText('요청자 김')).toBeInTheDocument()
+    expect(within(listRegion).getByText('담당자 이')).toBeInTheDocument()
+    expect(within(listRegion).queryByText(existing.items[0]!.target_ref)).not.toBeInTheDocument()
+    expect(within(listRegion).getByLabelText('현재 권한 범위의 변경 요청 스크롤 영역')).toHaveClass('dense-table-frame')
+    expect(within(listRegion).getByText(/하단 스크롤바 또는 Shift\+휠/)).toBeInTheDocument()
     expect(screen.getByText('1건 표시')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()

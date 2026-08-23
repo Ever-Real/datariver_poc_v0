@@ -231,6 +231,8 @@ export interface VersionedChangeHistoryAccess extends ChangeHistoryAccessDocumen
 
 export interface ChangeHistoryEventFilters {
   weekStart?: string
+  dateFrom?: string
+  dateTo?: string
   changeType?: ChangeHistoryChangeType
   category?: ChangeHistoryCategory
   precision?: ChangeHistoryPrecision
@@ -239,6 +241,7 @@ export interface ChangeHistoryEventFilters {
   databaseName?: string
   schemaName?: string
   systemId?: string
+  systemResolution?: ChangeHistorySystemResolution['resolution']
   assigneeSubjectId?: string
   linkState?: 'LINKED' | 'UNLINKED'
   stage?: ChangeHistoryStage

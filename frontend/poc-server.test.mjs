@@ -860,21 +860,36 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
   const eventId = '1'.repeat(64)
   const transactionId = '2'.repeat(64)
   const assetUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,business_db.public.orders,PROD)'
+  const targetItem = { routing_system_id: 'business-system', target_system_id: 'business-system', target_asset_id: assetUrn,
+    target_ref: assetUrn, aspect_name: 'schemaMetadata', operation: 'UPDATE' }
   const changeRequest = {
-    id: 'poc-change-request-1', state: 'IN_REVIEW', current_round_id: 'round-1',
+    id: 'poc-change-request-1', number: 'CR-2026-0001', request_type: 'CHANGE_INTAKE',
+    title: 'Orders schema change', state: 'IN_REVIEW', current_round_id: 'round-1',
     current_round_number: 1, version: 7,
+    requester_id: 'historical-requester', requester_department_id: null,
+    created_at: '2026-08-12T00:30:00.000Z', requested_due_date: '2026-08-20',
+    priority: 'HIGH', urgency: 'NORMAL', classification: 'INTERNAL',
     rounds: [{ id: 'round-1', selected_system_id: 'business-system' }],
-    items: [{ routing_system_id: 'business-system' }], approvals: [], transitions: [],
+    items: [targetItem, { ...targetItem }], approvals: [], transitions: [],
   }
+  const mappingDocument = { schema_version: 1, bindings: [{
+    table_identity: assetUrn, system_id: 'business-system', active: true, version: 1,
+    created_at: '2026-08-10T00:00:00.000Z', created_by: 'admin-subject',
+    updated_at: '2026-08-10T00:00:00.000Z', updated_by: 'admin-subject', reason: 'contract fixture',
+  }] }
   const projection = {
     access: { version: 3, value: {
       schema_version: 1, active_subject_id: 'admin-subject',
       policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
       users: [
-        { subject_id: 'admin-subject', role: 'admin', active: true, provider_owner_refs: [] },
-        { subject_id: 'steward-subject', role: 'data_steward', active: true, provider_owner_refs: [] },
+        { subject_id: 'admin-subject', display_name: 'Request Admin', role: 'admin', active: true, provider_owner_refs: [] },
+        { subject_id: 'historical-requester', display_name: 'Historical Requester', role: 'viewer', active: false, provider_owner_refs: [] },
+        { subject_id: 'steward-subject', display_name: 'Primary Steward', role: 'data_steward', active: true, provider_owner_refs: [] },
       ],
-      system_assignments: [{ system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true }],
+      system_assignments: [
+        { system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true },
+        { system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DEVELOPER', priority: 1, active: true },
+      ],
     } },
     core: { version: 5, value: {
       changeRecords: [changeRequest],
@@ -883,7 +898,7 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     } },
     catalog: { version: 2, value: {
       projection_version: 1, source_scope: 'disabled', source_generation: 'a'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z',
-      items: [{ id: assetUrn, name: 'orders', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
+      items: [{ id: assetUrn, name: 'orders', dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
     } },
     events: [{
       event_identity: eventId, event_hash: '3'.repeat(64), normalized_change_transaction_id: transactionId,
@@ -906,6 +921,10 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     async readChangeHistoryProjection({ catalogScope }) {
       assert.equal(catalogScope, 'catalog-inventory-v1:disabled')
       return structuredClone(projection)
+    },
+    async read(scope) {
+      assert.equal(scope, 'table-system-mappings-v1')
+      return { value: structuredClone(mappingDocument), version: 1 }
     },
     async readChangeHistoryCrLinkReplay(command) {
       const stored = replayCommands.get(command.idempotencyKey)
@@ -958,8 +977,63 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
       locator: { platform: 'postgres', database_name: 'business_db', schema_name: 'public', asset_name: 'orders' },
     })
     assert.equal(listed.items[0].system.system_id, 'business-system')
+    const rangeSummaryResponse = await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)
+    assert.equal(rangeSummaryResponse.status, 200)
+    const rangeSummary = await rangeSummaryResponse.json()
+    assert.equal(rangeSummary.items.length, 1)
+    assert.equal(rangeSummary.items[0].target_schema_name, 'public')
+    assert.equal(rangeSummary.items[0].item_count, 2)
+    assert.equal(rangeSummary.items[0].requester_name, 'Historical Requester')
+    assert.deepEqual(rangeSummary.items[0].assignee_names, ['Primary Steward'])
+    const authorizedCrDetail = await fetch(`${base}/api/v1/change-requests/${changeRequest.id}`)
+    assert.equal(authorizedCrDetail.status, 200)
+    assert.deepEqual(await authorizedCrDetail.json(), changeRequest)
+    assert.deepEqual({
+      event_count: rangeSummary.overview[0].event_count,
+      unprogressed_event_count: rangeSummary.overview[0].unprogressed_event_count,
+      total_count: rangeSummary.overview[0].total_count,
+      received_count: rangeSummary.overview[0].received_count,
+    }, { event_count: 1, unprogressed_event_count: 1, total_count: 1, received_count: 1 })
+    changeRequest.items.push({ ...targetItem, target_asset_id: 'urn:li:dataset:(urn:li:dataPlatform:postgres,business_db.public.missing,PROD)' })
+    const missingCurrentTarget = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.equal(missingCurrentTarget.items.length, 0, 'one absent current target hides the entire multi-item CR')
+    assert.equal(missingCurrentTarget.overview[0].total_count, 0)
+    const missingCurrentTargetDetail = await fetch(`${base}/api/v1/change-requests/${changeRequest.id}`)
+    assert.equal(missingCurrentTargetDetail.status, 404, 'one unauthorized target existence-hides the entire multi-item CR')
+    changeRequest.items.pop()
+    changeRequest.items[1].routing_system_id = 'stale-system'
+    const mismatchedBinding = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.equal(mismatchedBinding.items.length, 0)
+    assert.equal(mismatchedBinding.overview[0].total_count, 0)
+    changeRequest.items[1].routing_system_id = 'business-system'
+    mappingDocument.bindings[0].active = false
+    const inactiveBinding = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.deepEqual(inactiveBinding.items, [])
+    assert.deepEqual(inactiveBinding.overview, [])
+    mappingDocument.bindings[0].active = true
+    projection.core.value.adminSystems[0].active = false
+    projection.core.value.adminSystemSchemaScopes[0][1][0].active = false
+    projection.access.value.system_assignments.forEach((assignment) => { assignment.active = false })
+    const inactiveSystem = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.deepEqual(inactiveSystem.items, [])
+    assert.deepEqual(inactiveSystem.overview, [])
+    projection.core.value.adminSystems[0].active = true
+    projection.core.value.adminSystemSchemaScopes[0][1][0].active = true
+    projection.access.value.system_assignments.forEach((assignment) => { assignment.active = true })
+    changeRequest.rounds[0].revision_kind = 'EDITED'
+    const resubmittedRange = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.equal(resubmittedRange.overview[0].received_count, 0)
+    assert.equal(resubmittedRange.overview[0].recheck_count, 1)
+    delete changeRequest.rounds[0].revision_kind
+    const outsideRange = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-13&date_to=2026-08-13`)).json()
+    assert.equal(outsideRange.items.length, 0)
+    assert.equal(outsideRange.overview[0].event_count, 0)
+    assert.equal(outsideRange.overview[0].total_count, 0)
     const filtered = await (await fetch(`${base}/api/v1/change-history/events?week_start=2026-08-10&change_type=SCHEMA_CHANGE&category=TECHNICAL_SCHEMA&precision=EXACT_MCL&operation=UPDATE&platform=postgres&database_name=business_db&schema_name=public&system_id=business-system&assignee_subject_id=steward-subject&link_state=UNLINKED&stage=UNLINKED`)).json()
     assert.equal(filtered.total, 1)
+    const ranged = await (await fetch(`${base}/api/v1/change-history/events?date_from=2026-08-11&date_to=2026-08-11&platform=postgres&database_name=business_db&schema_name=public&system_id=business-system`)).json()
+    assert.equal(ranged.total, 1)
+    assert.equal((await fetch(`${base}/api/v1/change-history/events?date_from=2026-08-12&date_to=2026-08-11`)).status, 400)
     assert.equal((await fetch(`${base}/api/v1/change-history/events?precision=GUESSED`)).status, 400)
     assert.equal((await fetch(`${base}/api/v1/change-history/events?stage=UNKNOWN`)).status, 400)
     const detail = await fetch(`${base}/api/v1/change-history/events/${eventId}`)
@@ -1093,15 +1167,38 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(sourceSummary.ledger_guarantee_from, '2026-08-11T01:00:02.000Z')
 
     projection.core.value.changeRecords[0].current_round_number = 2
-    const resubmittedSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
-    assert.equal(resubmittedSummary.recheck_count, 1)
-    assert.equal(resubmittedSummary.received_count, 0)
+    const staleRoundSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
+    const staleRoundDetail = await (await fetch(`${base}/api/v1/change-history/events/${eventId}`)).json()
+    assert.equal(staleRoundSummary.unlinked_count, 2)
+    assert.equal(staleRoundSummary.recheck_count, 0)
+    assert.equal(staleRoundDetail.current_stage, 'UNLINKED')
+    assert.equal(staleRoundDetail.current_primary, null)
+    projection.core.value.changeRecords[0].current_round_number = 1
+    projection.core.value.changeRecords[0].rounds[0].revision_kind = 'EDITED'
+    const editedEventSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
+    const editedEventDetail = await (await fetch(`${base}/api/v1/change-history/events/${eventId}`)).json()
+    const editedCrSummary = await (await fetch(`${base}/api/v1/change-requests/summaries?date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.equal(editedEventSummary.recheck_count, 1)
+    assert.equal(editedEventSummary.received_count, 0)
+    assert.equal(editedEventDetail.current_stage, 'RECHECK')
+    assert.equal(editedCrSummary.overview[0].recheck_count, 1)
+    delete projection.core.value.changeRecords[0].rounds[0].revision_kind
+    projection.core.value.changeRecords[0].transitions = [
+      { round_id: 'round-1', from_state: 'CHANGES_REQUESTED', to_state: 'REGISTERED' },
+      { round_id: 'round-1', from_state: 'REGISTERED', to_state: 'IN_REVIEW' },
+    ]
+    const transitionEventSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
+    const transitionEventDetail = await (await fetch(`${base}/api/v1/change-history/events/${eventId}`)).json()
+    const transitionCrSummary = await (await fetch(`${base}/api/v1/change-requests/summaries?date_from=2026-08-11&date_to=2026-08-12`)).json()
+    assert.equal(transitionEventSummary.recheck_count, 1)
+    assert.equal(transitionEventDetail.current_stage, 'RECHECK')
+    assert.equal(transitionCrSummary.overview[0].recheck_count, 1)
+    projection.core.value.changeRecords[0].transitions = []
     projection.core.value.changeRecords[0].state = 'CANCELLED'
     const cancelledSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
     assert.equal(cancelledSummary.unlinked_count, 2)
     assert.equal(cancelledSummary.recheck_count, 0)
     projection.core.value.changeRecords[0].state = 'IN_REVIEW'
-    projection.core.value.changeRecords[0].current_round_number = 1
 
     const invalidTuesday = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-11`)
     assert.equal(invalidTuesday.status, 400)
@@ -1120,24 +1217,42 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
 
 test('prunes assigned-role rows, keeps viewer read-only, and fails closed on stale or unmapped mutations', async () => {
   const { createPocServer } = await import('./poc-server.mjs?change-history-role-contract')
+  const { approvedDefaultFeatureSecurityPolicy } = await import('./poc-feature-security-policy.mjs')
+  const opposingPolicy = (catalogAllowed, changeAllowed) => {
+    const document = approvedDefaultFeatureSecurityPolicy()
+    for (const cell of document.cells) {
+      if (cell.role !== 'viewer' || cell.grade !== 'normal') continue
+      if (cell.feature === 'catalog') cell.allow = catalogAllowed
+      if (cell.feature === 'change') cell.allow = changeAllowed
+    }
+    return document
+  }
   const eventId = '6'.repeat(64)
+  const assetUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.public.one,PROD)'
   const event = {
     event_identity: eventId, event_hash: '7'.repeat(64), normalized_change_transaction_id: '8'.repeat(64),
-    asset_urn: 'urn:asset:one', normalized_entity_key: 'one', category: 'TAG', source_aspect: 'globalTags', operation: 'ADD',
+    asset_urn: assetUrn, normalized_entity_key: 'one', category: 'TAG', source_aspect: 'globalTags', operation: 'ADD',
     before_data: {}, after_data: {}, source_occurred_at: '2026-08-11T01:00:00.000Z', detected_at: '2026-08-11T01:00:01.000Z', captured_at: '2026-08-11T01:00:02.000Z',
   }
   const baseProjection = {
     access: { version: 1, value: {
       schema_version: 1, active_subject_id: 'stored-admin',
       policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
-      users: [{ subject_id: 'role-subject', role: 'viewer', active: true, provider_owner_refs: [] }], system_assignments: [],
+      users: [{ subject_id: 'role-subject', role: 'viewer', active: true, max_security_grade: 'normal', provider_owner_refs: [] }], system_assignments: [],
     } },
     core: { version: 1, value: {
-      changeRecords: [{ id: 'cr-1', current_round_id: 'r1', current_round_number: 1, state: 'REGISTERED', rounds: [{ id: 'r1', selected_system_id: 'system-1' }], items: [{ routing_system_id: 'system-1' }] }],
+      changeRecords: [{ id: 'cr-1', current_round_id: 'r1', current_round_number: 1, state: 'REGISTERED', rounds: [{ id: 'r1', selected_system_id: 'system-1' }], items: [{ target_asset_id: assetUrn, target_system_id: 'system-1', routing_system_id: 'system-1' }] }],
       adminSystems: [{ system_id: 'system-1', code: 'ONE', name: 'One', active: true, version: 1 }],
       adminSystemSchemaScopes: [['system-1', [{ scope_id: 's1', system_id: 'system-1', platform: 'postgres', database_name: 'db', schema_name: 'public', active: true, version: 1 }]]],
     } },
-    catalog: { version: 1, value: { projection_version: 1, source_scope: 'disabled', source_generation: '9'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z', items: [{ id: event.asset_urn, platform: 'postgres', database_name: 'db', schema_name: 'public' }] } },
+    catalog: { version: 1, value: { projection_version: 1, source_scope: 'disabled', source_generation: '9'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z', items: [{ id: event.asset_urn, dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'db', schema_name: 'public' }] } },
+    tableGrants: [],
+    featurePolicy: approvedDefaultFeatureSecurityPolicy(),
+    mapping: { schema_version: 1, bindings: [{
+      table_identity: assetUrn, system_id: 'system-1', active: true, version: 1,
+      created_at: '2026-08-10T00:00:00.000Z', created_by: 'admin',
+      updated_at: '2026-08-10T00:00:00.000Z', updated_by: 'admin', reason: 'contract fixture',
+    }] },
     events: [event], links: [],
   }
   const run = async (projection, action) => {
@@ -1148,6 +1263,12 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
         return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
       },
       async readChangeHistoryProjection() { return structuredClone(projection) },
+      async read(scope) {
+        assert.equal(scope, 'table-system-mappings-v1')
+        return { value: structuredClone(projection.mapping), version: 1 }
+      },
+      async listUserTableGrants() { return structuredClone(projection.tableGrants ?? []) },
+      async readFeatureSecurityPolicy() { return { value: structuredClone(projection.featurePolicy), version: 1 } },
       async appendChangeHistoryCrLink() { appendCalls += 1; return { linkEventIdentity: 'a'.repeat(64), eventHash: 'b'.repeat(64), linkVersion: 1, replayed: false } },
     }
     const roleServer = createPocServer({
@@ -1162,9 +1283,70 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
     }
   }
   const viewerRead = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events`))
-  const viewerItems = (await viewerRead.result.json()).items
-  assert.equal(viewerItems.length, 1)
-  assert.deepEqual(viewerItems[0].allowed_link_actions, [])
+  const viewerReadBody = await viewerRead.result.json()
+  assert.equal(viewerReadBody.total, 0)
+  assert.deepEqual(viewerReadBody.items, [])
+  const deniedDetail = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
+  assert.equal(deniedDetail.result.status, 404)
+  const viewerSummary = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  const viewerSummaryBody = await viewerSummary.result.json()
+  assert.equal(viewerSummaryBody.items.length, 0, 'global or responsible-System read never substitutes for current Table authority')
+  assert.deepEqual(viewerSummaryBody.overview, [], 'denied targets leak neither existence nor counts')
+  const grantedViewer = structuredClone(baseProjection)
+  grantedViewer.tableGrants = [{ tableUrn: assetUrn, active: true }]
+  grantedViewer.core.value.adminSystemSchemaScopes = []
+  const grantedViewerRead = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  const grantedViewerReadBody = await grantedViewerRead.result.json()
+  assert.equal(grantedViewerReadBody.total, 1, 'exact Table authority is sufficient without a legacy schema scope')
+  assert.equal(grantedViewerReadBody.items[0].system.system_id, 'system-1')
+  assert.deepEqual(grantedViewerReadBody.items[0].allowed_link_actions, [])
+  const grantedDrawerRead = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-history/events?date_from=2026-08-11&date_to=2026-08-11&platform=postgres&database_name=db&schema_name=public&system_id=system-1&system_resolution=RESOLVED`))
+  assert.equal((await grantedDrawerRead.result.json()).total, 1)
+  const grantedViewerSummary = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  const grantedViewerSummaryBody = await grantedViewerSummary.result.json()
+  assert.equal(grantedViewerSummaryBody.items.length, 1)
+  assert.equal(grantedViewerSummaryBody.overview[0].event_count, 1)
+  const grantedDetail = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
+  assert.equal(grantedDetail.result.status, 200)
+  const grantedLinks = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`))
+  assert.equal(grantedLinks.result.status, 200)
+  const catalogOnly = structuredClone(grantedViewer)
+  catalogOnly.featurePolicy = opposingPolicy(true, false)
+  const catalogOnlyList = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  const catalogOnlyDrawer = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/events?date_from=2026-08-11&date_to=2026-08-11&platform=postgres&database_name=db&schema_name=public&system_id=system-1&system_resolution=RESOLVED`))
+  const catalogOnlyWeekly = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/weekly?week_start=2026-08-10`))
+  const catalogOnlyDetail = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
+  const catalogOnlyLinks = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`))
+  const catalogOnlySummary = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  const catalogOnlyCrDetail = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-requests/cr-1`))
+  assert.equal((await catalogOnlyList.result.json()).total, 0)
+  assert.equal((await catalogOnlyDrawer.result.json()).total, 0)
+  assert.equal((await catalogOnlyWeekly.result.json()).total_count, 0)
+  assert.equal(catalogOnlyDetail.result.status, 404)
+  assert.equal(catalogOnlyLinks.result.status, 404)
+  assert.equal(catalogOnlyCrDetail.result.status, 404)
+  assert.deepEqual((await catalogOnlySummary.result.json()), {
+    items: [], overview: [], overview_truncated: false, page: { next_cursor: null, limit: 25 },
+  })
+  const changeOnly = structuredClone(grantedViewer)
+  changeOnly.featurePolicy = opposingPolicy(false, true)
+  const changeOnlyList = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  const changeOnlyDrawer = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/events?date_from=2026-08-11&date_to=2026-08-11&platform=postgres&database_name=db&schema_name=public&system_id=system-1&system_resolution=RESOLVED`))
+  const changeOnlyWeekly = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/weekly?week_start=2026-08-10`))
+  const changeOnlyDetail = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
+  const changeOnlyLinks = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`))
+  const changeOnlySummary = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  const changeOnlyCrDetail = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-requests/cr-1`))
+  assert.equal((await changeOnlyList.result.json()).total, 1)
+  assert.equal((await changeOnlyDrawer.result.json()).total, 1)
+  assert.equal((await changeOnlyWeekly.result.json()).total_count, 1)
+  assert.equal(changeOnlyDetail.result.status, 200)
+  assert.equal(changeOnlyLinks.result.status, 200)
+  assert.equal(changeOnlyCrDetail.result.status, 200)
+  assert.equal((await changeOnlyCrDetail.result.json()).id, 'cr-1')
+  const changeOnlySummaryBody = await changeOnlySummary.result.json()
+  assert.equal(changeOnlySummaryBody.items.length, 1)
+  assert.equal(changeOnlySummaryBody.overview[0].event_count, 1)
   const viewerWrite = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
     body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
@@ -1175,11 +1357,27 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   steward.access.value.users[0].role = 'data_steward'
   const hidden = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
   assert.equal((await hidden.result.json()).items.length, 0)
+  const hiddenSummary = await run(steward, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  assert.equal((await hiddenSummary.result.json()).items.length, 0)
   steward.access.value.system_assignments = [{ system_id: 'system-1', subject_id: 'role-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true }]
   const visible = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
-  const stewardItems = (await visible.result.json()).items
-  assert.equal(stewardItems.length, 1)
-  assert.deepEqual(stewardItems[0].allowed_link_actions, ['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE'])
+  assert.equal((await visible.result.json()).total, 0, 'legacy System responsibility cannot grant event visibility')
+  const responsibleSystemOnlyDetail = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
+  assert.equal(responsibleSystemOnlyDetail.result.status, 404)
+  const responsibleSystemOnlyLinks = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`))
+  assert.equal(responsibleSystemOnlyLinks.result.status, 404)
+  const responsibleSystemOnlySummary = await run(steward, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  const responsibleSystemOnlyBody = await responsibleSystemOnlySummary.result.json()
+  assert.equal(responsibleSystemOnlyBody.items.length, 0)
+  assert.deepEqual(responsibleSystemOnlyBody.overview, [])
+  steward.tableGrants = [{ tableUrn: assetUrn, active: true }]
+  steward.core.value.adminSystemSchemaScopes = []
+  const tableAuthorized = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  const tableAuthorizedItems = (await tableAuthorized.result.json()).items
+  assert.equal(tableAuthorizedItems.length, 1)
+  assert.deepEqual(tableAuthorizedItems[0].allowed_link_actions, ['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE'])
+  const visibleSummary = await run(steward, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
+  assert.equal((await visibleSummary.result.json()).items.length, 1)
   const mutate = (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'assigned-key', 'If-Match': '"0"' },
     body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'assigned' }),
@@ -1189,7 +1387,9 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   assert.equal(stewardMutation.appendCalls, 1)
   const developer = structuredClone(steward)
   developer.access.value.users[0].role = 'developer'
-  assert.equal((await (await run(developer, (origin) => fetch(`${origin}/api/v1/change-history/events`))).result.json()).items.length, 0)
+  const unassignedDeveloperItems = (await (await run(developer, (origin) => fetch(`${origin}/api/v1/change-history/events`))).result.json()).items
+  assert.equal(unassignedDeveloperItems.length, 1)
+  assert.deepEqual(unassignedDeveloperItems[0].allowed_link_actions, [])
   developer.access.value.system_assignments[0].responsibility = 'DEVELOPER'
   assert.equal((await (await run(developer, (origin) => fetch(`${origin}/api/v1/change-history/events`))).result.json()).items.length, 1)
   const developerMutation = await run(developer, mutate)
@@ -1209,8 +1409,7 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
     body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
   }))
-  assert.equal(adminRejected.result.status, 409)
-  assert.equal((await adminRejected.result.json()).code, 'SYSTEM_MAPPING_UNRESOLVED')
+  assert.equal(adminRejected.result.status, 404)
   const stale = structuredClone(steward)
   stale.links = [{ ledger_event_identity: eventId, event_hash: 'c'.repeat(64), link_version: 1, link_event_identity: 'd'.repeat(64), link_kind: 'CANDIDATE', action: 'ADD_CANDIDATE', change_request_id: 'cr-1', change_request_round: 1, occurred_at: '2026-08-11T02:00:00.000Z' }]
   const staleResponse = await run(stale, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
@@ -1485,8 +1684,13 @@ function makeChangeHistoryProjection({ sourceHashes, configuredCheckpointHash })
     catalog: { version: 2, value: {
       projection_version: 1, source_scope: 'disabled',
       source_generation: 'a'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z',
-      items: [{ id: assetUrn, name: 'orders', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
+      items: [{ id: assetUrn, name: 'orders', dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
     } },
+    mapping: { schema_version: 1, bindings: [{
+      table_identity: assetUrn, system_id: 'biz-system', active: true, version: 1,
+      created_at: '2026-01-01T00:00:00.000Z', created_by: 'admin-sub',
+      updated_at: '2026-01-01T00:00:00.000Z', updated_by: 'admin-sub', reason: 'source fixture',
+    }] },
     events,
     links: [],
     sources,
@@ -1503,6 +1707,7 @@ test('configured current source among two resolves operational status and preser
     configured: { postgres: true, redis: false },
     async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
     async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) { assert.equal(scope, 'table-system-mappings-v1'); return { value: structuredClone(projection.mapping), version: 1 } },
   }
   const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
   try {
@@ -1544,6 +1749,7 @@ test('missing or syntactically invalid configured source falls back to SOURCE_AM
     configured: { postgres: true, redis: false },
     async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
     async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) { assert.equal(scope, 'table-system-mappings-v1'); return { value: structuredClone(projection.mapping), version: 1 } },
   }
   const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
   try {
@@ -1583,6 +1789,7 @@ test('configured source hash matching no stored source fails closed with SOURCE_
     configured: { postgres: true, redis: false },
     async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
     async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) { assert.equal(scope, 'table-system-mappings-v1'); return { value: structuredClone(projection.mapping), version: 1 } },
   }
   const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
   try {

@@ -30,6 +30,7 @@ const operations = new Set<ChangeHistoryOperation>(['CREATE', 'UPDATE', 'UPSERT'
 const precisions = new Set<ChangeHistoryPrecision>(['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE'])
 const stages = new Set<ChangeHistoryStage>(['UNLINKED', 'RECEIVED', 'RECHECK', 'TESTING', 'FINAL_REVIEW', 'COMPLETED'])
 const actions = new Set<ChangeHistoryLinkAction>(['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE'])
+const systemResolutions = new Set(['RESOLVED', 'UNMAPPED', 'AMBIGUOUS'])
 const syncStates = new Set<ChangeHistorySummary['sync_status']>([
   'SOURCE_NOT_CONFIGURED', 'SOURCE_AMBIGUOUS', 'CHECKPOINT_NOT_AVAILABLE',
   'CHECKPOINT_INVALID', 'CAPTURE_PENDING', 'CONTIGUOUS_CAPTURE_RECORDED',
@@ -59,9 +60,16 @@ export class ChangeHistoryApi {
   async events(filters: ChangeHistoryEventFilters = {}, signal?: AbortSignal): Promise<ChangeHistoryEventPage> {
     const limit = filters.limit ?? 50
     if (!integerBetween(limit, 1, 100)
-      || (filters.precision !== undefined && !precisions.has(filters.precision))) invalid()
+      || (filters.precision !== undefined && !precisions.has(filters.precision))
+      || (filters.systemResolution !== undefined && !systemResolutions.has(filters.systemResolution))
+      || ((filters.dateFrom === undefined) !== (filters.dateTo === undefined))
+      || (filters.weekStart !== undefined && filters.dateFrom !== undefined)
+      || (filters.dateFrom !== undefined && (!date(filters.dateFrom) || !date(filters.dateTo!)
+        || filters.dateFrom > filters.dateTo!))) invalid()
     const parameters = new URLSearchParams({ limit: String(limit) })
     setParameter(parameters, 'week_start', filters.weekStart)
+    setParameter(parameters, 'date_from', filters.dateFrom)
+    setParameter(parameters, 'date_to', filters.dateTo)
     setParameter(parameters, 'change_type', filters.changeType)
     setParameter(parameters, 'category', filters.category)
     setParameter(parameters, 'precision', filters.precision)
@@ -70,6 +78,7 @@ export class ChangeHistoryApi {
     setParameter(parameters, 'database_name', filters.databaseName)
     setParameter(parameters, 'schema_name', filters.schemaName)
     setParameter(parameters, 'system_id', filters.systemId)
+    setParameter(parameters, 'system_resolution', filters.systemResolution)
     setParameter(parameters, 'assignee_subject_id', filters.assigneeSubjectId)
     setParameter(parameters, 'link_state', filters.linkState)
     setParameter(parameters, 'stage', filters.stage)
@@ -181,6 +190,12 @@ export class ChangeHistoryApi {
     if (response.etag !== `"${response.data.event_hash}"`) invalid()
     return response
   }
+}
+
+function date(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
 }
 
 function setParameter(parameters: URLSearchParams, name: string, value?: string) {

@@ -150,6 +150,13 @@ function installGatewayMock() {
         if_match: headers.get('If-Match'),
       }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"server-etag"' } }))
     }
+    if (/^\/api\/v1\/change-requests\/(?!summaries$)[^/]+$/.test(url.pathname)) {
+      return Promise.resolve(json({
+        id: decodeURIComponent(url.pathname.split('/').at(-1) ?? ''),
+        title: 'Authoritative change request detail',
+        gateway_path: url.pathname,
+      }))
+    }
     if (/^\/poc-api\/bulk\/uploads\/[^/]+\/preparations\/[^/]+\/metadata-candidates\/[^/]+\/change-request$/.test(url.pathname)) {
       const headers = new Headers(options?.headers)
       return Promise.resolve(json({
@@ -987,6 +994,24 @@ describe('POC live-provider compatibility adapter', () => {
     expect(mutation.etag).toBe('"server-etag"')
     const reverse = await client.request<{ path: string }>('/change-requests/cr-1/change-history?limit=10')
     expect(reverse.path).toBe('/api/v1/change-requests/cr-1/change-history?limit=10')
+  })
+
+  it('loads bare CR detail through the authoritative gateway without hydrated browser state', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+    resetPocMemory()
+
+    const detail = await useStableApiClient().request<{
+      id: string
+      title: string
+      gateway_path: string
+    }>('/change-requests/cr-hard-reload')
+
+    expect(detail).toEqual({
+      id: 'cr-hard-reload',
+      title: 'Authoritative change request detail',
+      gateway_path: '/api/v1/change-requests/cr-hard-reload',
+    })
   })
 
   it('proxies a bulk candidate command with its preview and idempotency fences', async () => {
