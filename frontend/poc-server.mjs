@@ -38,6 +38,8 @@ import {
   createPocChangeHistoryScheduler,
   loadPocChangeHistorySchedulerConfig,
 } from './poc-change-history-scheduler.mjs'
+import { buildK9GlossaryScrollVariables, createK9ManagedGraphs } from './poc-k9-managed-graphs.mjs'
+import { createPocK9Scheduler, loadPocK9SchedulerConfig } from './poc-k9-scheduler.mjs'
 import {
   POC_TABLE_SYSTEM_MAPPING_SCOPE,
   activeSystemIdsForTable,
@@ -1436,6 +1438,15 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
             count: 0
             includeSoftDelete: false
           }) { total }
+        }
+        ... on GlossaryNode {
+          properties { name description }
+          parentNodes {
+            nodes {
+              urn type
+              ... on GlossaryNode { properties { name description } }
+            }
+          }
         }
       }
     }
@@ -7873,6 +7884,298 @@ export async function startPocServer({ stateStore } = {}) {
       process.stderr.write(`POC change-history scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
     },
   })
+
+  const k9Neo4jAdapter = {
+    run: async (stmt, params) => {
+      const result = await neo4jQuery(stmt, params)
+      return result.map(r => r.row)
+    }
+  }
+  const k9 = createK9ManagedGraphs({ stateStore: pocStateStore, neo4j: k9Neo4jAdapter, log: { warn: (msg) => process.stderr.write(`K9 warning: ${msg}\n`) } })
+
+  async function collectLineageInventorySeam(authorityPin) {
+    const inventory = await currentDatahubInventory()
+    if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
+    const nodes = []
+    const edges = []
+    const edgeSet = new Set()
+    const nodeSet = new Set()
+    const completeness_metadata = { per_asset: {} }
+
+    for (const item of inventory) {
+      if (!['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
+      const clsTags = (item.tags || []).filter((t) => t.toUpperCase().startsWith('CLASSIFICATION:'))
+      if (clsTags.length !== 1) throw new Error('Missing or multiple classifications for ' + item.urn)
+      if (clsTags[0].toUpperCase() !== 'CLASSIFICATION:INTERNAL') throw new Error('Above-INTERNAL or unknown classification rejected: ' + clsTags[0])
+
+      const nodeId = 'TABLE:' + item.urn
+      if (nodeSet.has(nodeId)) throw new Error('Duplicate node identity: ' + nodeId)
+      nodeSet.add(nodeId)
+      nodes.push({ id: nodeId, external_urn: item.urn, classification: 'INTERNAL' })
+
+      completeness_metadata.per_asset[item.urn] = {}
+      for (const direction of ['UPSTREAM', 'DOWNSTREAM']) {
+        let start = 0
+        let lastTotal = -1
+        let fetchedCount = 0
+        let pages = 0
+        const traceSet = new Set()
+        while (true) {
+          if (pages >= 10002) throw new Error('Exceeded lineage page limit')
+          const data = await datahubGraphql(datahubLineageQuery, {
+            urn: item.urn,
+            input: { direction, start, count: 100, separateSiblings: false, includeGhostEntities: false }
+          })
+          pages++
+          const lineage = data.dataset?.lineage
+          if (!lineage || typeof lineage.total !== 'number') throw new Error('Malformed lineage response')
+          const total = lineage.total
+          if (lastTotal !== -1 && total !== lastTotal) throw new Error('Truncation or mutation during lineage pagination')
+          lastTotal = total
+          const rels = lineage.relationships || []
+          if (rels.length === 0 && start < total) throw new Error('Truncation or repeated cursor in lineage')
+          if (rels.length === 0) break
+          for (const rel of rels) {
+            if (rel.entity?.urn && rel.entity.type === 'DATASET') {
+              const relAsset = datasetAsset(rel.entity)
+              if (relAsset && ['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(relAsset.dataset_kind)) {
+                const source = direction === 'UPSTREAM' ? 'TABLE:' + relAsset.urn : 'TABLE:' + item.urn
+                const target = direction === 'UPSTREAM' ? 'TABLE:' + item.urn : 'TABLE:' + relAsset.urn
+                const edgeKey = `${source}->${target}`
+                if (traceSet.has(edgeKey)) throw new Error('Duplicate edge identity within trace: ' + edgeKey)
+                traceSet.add(edgeKey)
+                if (!edgeSet.has(edgeKey)) {
+                  edgeSet.add(edgeKey)
+                  edges.push({ source_asset_id: source, target_asset_id: target })
+                }
+              }
+            }
+          }
+          fetchedCount += rels.length
+          start += 100
+          if (start >= total) break
+        }
+        completeness_metadata.per_asset[item.urn][direction] = { fetched: fetchedCount, total: lastTotal === -1 ? 0 : lastTotal }
+        if (fetchedCount !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Completeness reconciliation failed')
+      }
+    }
+    edges.sort((a, b) => a.source_asset_id.localeCompare(b.source_asset_id) || a.target_asset_id.localeCompare(b.target_asset_id))
+    return { authority_pin: authorityPin, direction: 'BOTH', depth: 1, truncated: false, completeness_metadata, nodes, edges }
+  }
+
+  async function collectGlossaryInventorySeam(authorityPin) {
+    const inventory = await currentDatahubInventory()
+    const inventoryMap = new Map(inventory.map((item) => [item.urn, item]))
+    let nextScrollId = null
+    const seenScrollIds = new Set()
+    let fetchedTerms = 0
+    let pages = 0
+    const terms = []
+    const parent_nodes = []
+    const term_parent_edges = []
+    const node_parent_edges = []
+    const table_assignments = []
+    const column_assignments = []
+    const termSet = new Set()
+    const nodeSet = new Set()
+    const assignmentSet = new Set()
+    const termParentEdgeSet = new Set()
+    const nodeParentEdgeSet = new Set()
+    const completeness_metadata = { fetched: 0, total: 0, per_assignment: {} }
+    let lastTotal = -1
+
+    while (true) {
+      if (pages >= 10002) throw new Error('Exceeded glossary inventory page limit')
+      const data = await datahubGraphql(datahubGlossaryQuery, buildK9GlossaryScrollVariables(nextScrollId))
+      pages++
+      const scroll = data.scrollAcrossEntities
+      if (!scroll || typeof scroll.total !== 'number') throw new Error('Malformed glossary response')
+      if (lastTotal !== -1 && scroll.total !== lastTotal) throw new Error('Truncation or mutation during glossary pagination')
+      lastTotal = scroll.total
+      const results = scroll.searchResults || []
+      if (results.length === 0 && fetchedTerms < scroll.total) throw new Error('Truncation or repeated cursor in glossary')
+      if (results.length === 0) break
+      for (const res of results) {
+        const entity = res.entity
+        if (entity.type === 'GLOSSARY_TERM') {
+          if (termSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
+          termSet.add(entity.urn)
+          terms.push({ urn: entity.urn, name: entity.properties?.name || '', description: entity.properties?.description || '' })
+          for (const pn of entity.parentNodes?.nodes || []) {
+            const edgeKey = entity.urn + '->' + pn.urn
+            if (termParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical term-parent edge: ' + edgeKey)
+            termParentEdgeSet.add(edgeKey)
+            term_parent_edges.push({ term_urn: entity.urn, parent_urn: pn.urn })
+          }
+
+          completeness_metadata.per_assignment[entity.urn] = {}
+          const assignRules = [
+            { type: 'TABLE', relType: 'TermedWith', direction: 'INCOMING' },
+            { type: 'COLUMN', relType: 'SchemaFieldWithGlossaryTerm', direction: 'INCOMING' }
+          ]
+          for (const rule of assignRules) {
+            let aStart = 0
+            let aLastTotal = -1
+            let aPages = 0
+            let aFetched = 0
+            while (true) {
+              if (aPages >= 2001) throw new Error('Exceeded assignment page limit')
+              if (aStart > 100000) throw new Error('Exceeded assignment offset limit')
+              const aData = await datahubGraphql(datahubGlossaryAssignmentsQuery, {
+                urn: entity.urn,
+                input: { start: aStart, count: 50, direction: rule.direction, types: [rule.relType], includeSoftDelete: false }
+              })
+              aPages++
+              const rel = aData.entity?.relationships
+              if (!rel || typeof rel.total !== 'number') throw new Error('Malformed assignments response')
+              if (aLastTotal !== -1 && rel.total !== aLastTotal) throw new Error('Mutation during assignments pagination')
+              aLastTotal = rel.total
+              const arels = rel.relationships || []
+              if (arels.length === 0 && aStart < rel.total) throw new Error('Truncation or repeated cursor in assignments')
+              if (arels.length === 0) break
+
+              for (const arel of arels) {
+                if (rule.type === 'TABLE' && arel.entity?.type === 'DATASET') {
+                  const mapped = inventoryMap.get(arel.entity.urn)
+                  if (!mapped) throw new Error('Unauthorized or unknown dataset assignment: ' + arel.entity.urn)
+                  const clsTags = (mapped.tags || []).filter((t) => t.toUpperCase().startsWith('CLASSIFICATION:'))
+                  if (clsTags.length !== 1) throw new Error('Missing or multiple classifications for ' + mapped.urn)
+                  if (clsTags[0].toUpperCase() !== 'CLASSIFICATION:INTERNAL') throw new Error('Above-INTERNAL or unknown classification rejected: ' + clsTags[0])
+
+                  const assignId = 'TABLE:' + mapped.urn
+                  const assignKey = assignId + '->' + entity.urn
+                  if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
+                  assignmentSet.add(assignKey)
+                  table_assignments.push({ id: assignId, term_urn: entity.urn, classification: 'INTERNAL' })
+
+                } else if (rule.type === 'COLUMN' && arel.entity?.type === 'DATASET') {
+                  const mapped = inventoryMap.get(arel.entity.urn)
+                  if (!mapped) throw new Error('Unauthorized or unknown dataset assignment for field: ' + arel.entity.urn)
+
+                  const clsTags = (mapped.tags || []).filter((t) => t.toUpperCase().startsWith('CLASSIFICATION:'))
+                  if (clsTags.length !== 1) throw new Error('Missing or multiple classifications for field parent ' + mapped.urn)
+                  if (clsTags[0].toUpperCase() !== 'CLASSIFICATION:INTERNAL') throw new Error('Above-INTERNAL or unknown classification rejected for field: ' + clsTags[0])
+
+                  const fields = datahubSchemaFields(mapped)
+                  for (const f of fields) {
+                    const hasTerm = f.glossaryTerms?.terms?.some(t => t.term?.urn === entity.urn)
+                    if (hasTerm) {
+                      const assignId = 'COLUMN:' + mapped.urn + ':' + f.fieldPath
+                      const assignKey = assignId + '->' + entity.urn
+                      if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
+                      assignmentSet.add(assignKey)
+                      column_assignments.push({ id: assignId, term_urn: entity.urn, classification: 'INTERNAL' })
+                    }
+                  }
+                }
+              }
+              aFetched += arels.length
+              aStart += 50
+              if (aStart >= rel.total) break
+            }
+            completeness_metadata.per_assignment[entity.urn][rule.type] = { fetched: aFetched, total: aLastTotal === -1 ? 0 : aLastTotal }
+            if (aFetched !== (aLastTotal === -1 ? 0 : aLastTotal)) throw new Error('Assignment completeness reconciliation failed')
+          }
+        } else if (entity.type === 'GLOSSARY_NODE') {
+          if (nodeSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
+          nodeSet.add(entity.urn)
+          parent_nodes.push({ urn: entity.urn, name: entity.properties?.name || '', description: entity.properties?.description || '' })
+          for (const pn of entity.parentNodes?.nodes || []) {
+            const edgeKey = entity.urn + '->' + pn.urn
+            if (nodeParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical node-parent edge: ' + edgeKey)
+            nodeParentEdgeSet.add(edgeKey)
+            node_parent_edges.push({ child_urn: entity.urn, parent_urn: pn.urn })
+          }
+        }
+      }
+      fetchedTerms += results.length
+      nextScrollId = scroll.nextScrollId || null
+      if (!nextScrollId && fetchedTerms < scroll.total) throw new Error('Missing scroll ID during glossary pagination')
+      if (nextScrollId) {
+        if (seenScrollIds.has(nextScrollId)) throw new Error('Repeated nonterminal scroll ID')
+        seenScrollIds.add(nextScrollId)
+      }
+      if (fetchedTerms >= scroll.total) {
+        if (nextScrollId) throw new Error('Nonterminal scroll ID at glossary completeness boundary')
+        break
+      }
+    }
+    completeness_metadata.fetched = fetchedTerms
+    completeness_metadata.total = lastTotal === -1 ? 0 : lastTotal
+    if (fetchedTerms !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Glossary completeness reconciliation failed')
+
+    return { authority_pin: authorityPin, completeness_metadata, terms, parent_nodes, table_assignments, column_assignments, term_parent_edges, node_parent_edges }
+  }
+
+  const k9SchedulerConfig = loadPocK9SchedulerConfig()
+
+  async function resolveLiveK9AuthCtx() {
+    const k9SubjectId = process.env.POC_K9_SYSTEM_SUBJECT_ID?.trim()
+    const k9WorkspaceId = process.env.POC_K9_WORKSPACE_ID?.trim()
+    const mcpSubjectId = process.env.POC_MCP_SUBJECT_ID?.trim()
+    if (!k9SubjectId || !k9WorkspaceId) throw new Error('K9 system subject or workspace configuration missing')
+    if (k9SubjectId === mcpSubjectId) throw new Error('K9 system subject must not be the same as MCP service subject')
+
+    const localCreds = await pocStateStore.listLocalCredentialAdministration()
+    const k9Creds = localCreds.filter(c => c.subjectId === k9SubjectId)
+    if (k9Creds.length !== 1) throw new Error('Zero or duplicate K9 credentials for subject ID')
+    const k9Cred = k9Creds[0]
+    if (!k9Cred.loginEnabled || (k9Cred.lockedUntil && Date.parse(k9Cred.lockedUntil) > Date.now())) {
+      throw new Error('K9 system subject login is disabled or currently locked')
+    }
+    if (k9Cred.mustChangePassword) throw new Error('K9 system subject requires password change')
+
+    const snapshot = await pocStateStore.readChangeHistoryAccess()
+    if (snapshot.access.value === null) throw new Error('Access not provisioned')
+    const document = changeHistoryDocumentFromSnapshot(snapshot)
+    const user = changeHistoryActiveUser(document, k9SubjectId)
+    if (user.role !== 'manager') throw new Error('K9 system subject is not a manager')
+    if (k9Cred.activeSessionCount !== 0) throw new Error('K9 system subject must not have active sessions')
+
+    const principal = { ...user, subjectId: user.subject_id }
+
+    return {
+      principal,
+      workspaceId: k9WorkspaceId,
+      authorityPin: {
+        subject_id: k9SubjectId,
+        workspace_id: k9WorkspaceId,
+        classification_ceiling: 'INTERNAL',
+        projection_version: 1,
+        policy_version: 'POC_LIVE_PROVIDER_V1',
+        classification_policy_version: 1,
+        authorization_generation: 1
+      }
+    }
+  }
+
+  const k9Scheduler = createPocK9Scheduler({
+    config: k9SchedulerConfig,
+    stateStore: pocStateStore,
+    triggerK9Refresh: async () => {
+      let lr, gr
+      try {
+        const liveAuth = await resolveLiveK9AuthCtx()
+        lr = await k9.triggerLineagePublish(liveAuth, async () => collectLineageInventorySeam(liveAuth.authorityPin))
+        if (lr.status === 'FAILURE') return { status: 'FAILURE', reason: lr.reason, lineage: lr }
+        gr = await k9.triggerGlossaryPublish(liveAuth, async () => collectGlossaryInventorySeam(liveAuth.authorityPin))
+        if (gr.status === 'FAILURE') return { status: 'FAILURE', reason: gr.reason, lineage: lr, glossary: gr }
+        return { status: 'SUCCESS', lineage: lr, glossary: gr }
+      } catch (error) {
+        return { status: 'FAILURE', reason: error instanceof Error ? error.message : String(error), lineage: lr, glossary: gr }
+      }
+    },
+    onError(error) {
+      process.stderr.write(`POC K9 scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+  })
+
+  if (k9SchedulerConfig.enabled) {
+    const liveAuth = await resolveLiveK9AuthCtx()
+    await k9.bootstrapK9Policies(liveAuth)
+    await k9.performRestartRecovery()
+  }
+
   const server = createPocServer({ stateStore: serverStateStore, authenticator })
   const host = resolvePocServerHost()
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
@@ -7883,6 +8186,8 @@ export async function startPocServer({ stateStore } = {}) {
   }
   if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
   await scheduler.start()
+  await k9Scheduler.start()
+
   let stopping
   server.stopPoc = () => {
     if (!stopping) {
@@ -7903,6 +8208,7 @@ export async function startPocServer({ stateStore } = {}) {
         await Promise.allSettled([
           serverClosed,
           scheduler.stop(),
+          k9Scheduler.stop(),
           inventoryBackground,
           embeddingBackground,
         ])

@@ -377,6 +377,73 @@ const KNOWLEDGE_INGESTION_SCHEMA = [
   `,
 ]
 
+const K9_MANAGED_GRAPH_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_k9_managed_graph_policies (
+        graph_id char(36) PRIMARY KEY,
+        name varchar(255) NOT NULL,
+        status varchar(50) NOT NULL,
+        classification varchar(50) NOT NULL,
+        ontology_version_id char(36) NOT NULL,
+        studio_release_id char(36) NOT NULL,
+        publication_version integer NOT NULL,
+        schedule varchar(100) NOT NULL,
+        managed_intent varchar(100) NOT NULL,
+        accepted_proposal_id varchar(255) NOT NULL,
+        subject_id varchar(255) NOT NULL,
+        workspace_id varchar(255) NOT NULL,
+        policy_hash char(64) NOT NULL,
+        tbox_hash char(64) NOT NULL,
+        contract_hash char(64) NOT NULL,
+        proposal_hash char(64) NOT NULL,
+        source_hash char(64) NOT NULL,
+        mapping_hash char(64) NOT NULL,
+        active_release_pointer varchar(255),
+        active_release_hash char(64),
+        created_at timestamp with time zone NOT NULL,
+        updated_at timestamp with time zone NOT NULL,
+        CONSTRAINT chk_k9_graph_id CHECK (graph_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+        CONSTRAINT chk_k9_ontology_id CHECK (ontology_version_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+        CONSTRAINT chk_k9_studio_id CHECK (studio_release_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+        CONSTRAINT chk_k9_policy_hash CHECK (policy_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_tbox_hash CHECK (tbox_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_contract_hash CHECK (contract_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_proposal_hash CHECK (proposal_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_source_hash CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_mapping_hash CHECK (mapping_hash ~ '^[0-9a-f]{64}$')
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS poc_k9_refresh_runs (
+        run_id char(36) PRIMARY KEY,
+        graph_id char(36) NOT NULL,
+        status varchar(50) NOT NULL,
+        input_snapshot_hash char(64),
+        policy_hash char(64) NOT NULL,
+        manifest jsonb,
+        canonical_release jsonb,
+        started_at timestamp with time zone NOT NULL,
+        completed_at timestamp with time zone,
+        active_release_pointer varchar(255),
+        error_message text,
+        CONSTRAINT chk_k9_run_id CHECK (run_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+        CONSTRAINT chk_k9_r_policy_hash CHECK (policy_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_r_snapshot_hash CHECK (input_snapshot_hash IS NULL OR input_snapshot_hash ~ '^[0-9a-f]{64}$'),
+        CONSTRAINT chk_k9_r_status_hash CHECK (
+            (status IN ('RUN', 'NO_OP') AND input_snapshot_hash IS NOT NULL AND manifest IS NOT NULL AND canonical_release IS NOT NULL) OR
+            (status NOT IN ('RUN', 'NO_OP'))
+        )
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_poc_k9_refresh_runs_graph ON poc_k9_refresh_runs(graph_id, started_at DESC)
+  `,
+  `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_poc_k9_preparing_run ON poc_k9_refresh_runs(graph_id) WHERE status = 'PREPARING'
+  `
+]
+
+
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
@@ -390,6 +457,7 @@ export function createPocStateStore({ databasePool } = {}) {
   const memorySessions = new Map()
   const memoryUserTableGrants = new Map()
   let pool = databasePool
+  let studioPool
   let redis
   let startingDatabase
   let startingRedis
@@ -409,6 +477,14 @@ export function createPocStateStore({ databasePool } = {}) {
           password: process.env.POC_POSTGRES_PASSWORD || undefined,
           max: 4,
           idleTimeoutMillis: 30_000,
+        })
+      }
+      if (!studioPool && process.env.POC_K9_STUDIO_DATABASE_URL) {
+        studioPool = new Pool({
+          connectionString: process.env.POC_K9_STUDIO_DATABASE_URL.trim(),
+          max: 2,
+          idleTimeoutMillis: 30_000,
+          options: '-c default_transaction_read_only=on',
         })
       }
       await pool.query(`
@@ -438,6 +514,7 @@ export function createPocStateStore({ databasePool } = {}) {
       for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
       for (const statement of USER_TABLE_GRANT_SCHEMA) await pool.query(statement)
       for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await pool.query(statement)
+      for (const statement of K9_MANAGED_GRAPH_SCHEMA) await pool.query(statement)
     })()
     try {
       await startingDatabase
@@ -2034,9 +2111,11 @@ export function createPocStateStore({ databasePool } = {}) {
     await Promise.allSettled([
       redis?.isOpen ? redis.quit() : undefined,
       pool && !databasePool ? pool.end() : undefined,
+      studioPool ? studioPool.end() : undefined,
     ])
     redis = undefined
     if (!databasePool) pool = undefined
+    studioPool = undefined
   }
 
   async function requireKnowledgeDatabase() {
@@ -2118,6 +2197,339 @@ export function createPocStateStore({ databasePool } = {}) {
     return result.rows[0]
   }
 
+  async function verifyK9StudioAuthority(authCtx, expectedPolicy) {
+    await startDatabase()
+    if (!studioPool) throw new Error('K9 Studio authority verification requires a configured POC_K9_STUDIO_DATABASE_URL connection')
+    const query = `
+      SELECT g.id AS graph_id, g.graph_type,
+             sr.id AS release_id, sr.release_no, sr.tbox_hash, sr.contract_hash,
+             sr.accepted_proposal_id AS sr_proposal_id, sr.accepted_proposal_hash AS sr_proposal_hash,
+             sr.source_contract_hash AS sr_source_hash, sr.mapping_contract_hash AS sr_mapping_hash,
+             sr.managed_graph_type AS sr_managed_type,
+             d.id AS draft_id,
+             d.accepted_proposal_id AS d_proposal_id, d.accepted_proposal_hash AS d_proposal_hash,
+             d.source_contract_hash AS d_source_hash, d.mapping_contract_hash AS d_mapping_hash,
+             d.managed_graph_type AS d_managed_type,
+             ov.id AS ontology_id, ov.status AS ov_status, ov.checksum AS ov_checksum
+      FROM knowledge.graphs g
+      JOIN knowledge.studio_releases sr
+        ON sr.workspace_id = g.workspace_id AND sr.graph_id = g.id AND g.active_studio_release_id = sr.id
+      JOIN knowledge.studio_drafts d
+        ON d.workspace_id = sr.workspace_id AND sr.source_draft_id = d.id
+        AND d.materialized_graph_id = g.id AND d.published_studio_release_id = sr.id
+      JOIN knowledge.ontology_versions ov
+        ON ov.workspace_id = sr.workspace_id AND ov.graph_id = g.id AND sr.ontology_version_id = ov.id
+        AND d.materialized_ontology_version_id = ov.id
+      WHERE g.workspace_id = $1
+        AND sr.managed_intent = $2
+        AND d.managed_intent = $2
+        AND g.status = 'PUBLISHED'
+        AND sr.state = 'ACTIVE'
+        AND d.state = 'PUBLISHED'
+        AND ov.status = 'PUBLISHED'
+    `
+    const studioClient = await studioPool.connect()
+    let transactionStarted = false
+    let rows
+    try {
+      await studioClient.query('BEGIN READ ONLY')
+      transactionStarted = true
+      const readOnly = await studioClient.query('SHOW transaction_read_only')
+      if (readOnly.rows[0]?.transaction_read_only !== 'on') {
+        throw new Error('K9 Studio authority connection is not read-only')
+      }
+      const authorityResult = await studioClient.query(query, [authCtx.workspaceId, expectedPolicy.managed_intent])
+      rows = authorityResult.rows
+      await studioClient.query('COMMIT')
+      transactionStarted = false
+    } catch (error) {
+      if (transactionStarted) await studioClient.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      studioClient.release()
+    }
+    if (rows.length !== 1) throw new Error('Zero or duplicate canonical Studio publications for intent')
+    const row = rows[0]
+
+    if (row.graph_type !== expectedPolicy.name) throw new Error('Graph type drift')
+    if (row.sr_managed_type !== expectedPolicy.name || row.d_managed_type !== expectedPolicy.name) throw new Error('Managed graph type drift')
+    if (row.graph_id !== expectedPolicy.graph_id) throw new Error('Graph ID drift')
+    if (row.release_id !== expectedPolicy.studio_release_id) throw new Error('Release ID drift')
+    if (row.ontology_id !== expectedPolicy.ontology_version_id) throw new Error('Ontology ID drift')
+    if (row.release_no !== expectedPolicy.publication_version) throw new Error('Publication version drift')
+
+    if (row.tbox_hash !== expectedPolicy.tbox_hash) throw new Error('T-box hash drift')
+    if (row.ov_checksum !== expectedPolicy.tbox_hash) throw new Error('Ontology checksum drift')
+    if (row.contract_hash !== expectedPolicy.contract_hash) throw new Error('Contract hash drift')
+
+    if (row.sr_proposal_hash !== expectedPolicy.proposal_hash || row.d_proposal_hash !== expectedPolicy.proposal_hash) throw new Error('Proposal hash drift')
+    if (row.sr_proposal_id !== expectedPolicy.accepted_proposal_id || row.d_proposal_id !== expectedPolicy.accepted_proposal_id) throw new Error('Proposal ID drift')
+
+    if (row.sr_source_hash !== expectedPolicy.source_hash || row.d_source_hash !== expectedPolicy.source_hash) throw new Error('Source hash drift')
+    if (row.sr_mapping_hash !== expectedPolicy.mapping_hash || row.d_mapping_hash !== expectedPolicy.mapping_hash) throw new Error('Mapping hash drift')
+  }
+
+  async function getK9Policy(graphId) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 policies require PostgreSQL')
+    const { rows } = await pool.query('SELECT * FROM poc_k9_managed_graph_policies WHERE graph_id = $1', [graphId])
+    return rows[0]
+  }
+
+  async function ensureK9Policies(policies) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 policies require PostgreSQL')
+
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const p of policies) {
+        const { rows } = await client.query('SELECT * FROM poc_k9_managed_graph_policies WHERE graph_id = $1', [p.graph_id])
+        if (rows.length === 0) {
+          await client.query(`
+            INSERT INTO poc_k9_managed_graph_policies
+            (graph_id, name, status, classification, ontology_version_id, studio_release_id, publication_version, schedule, managed_intent, accepted_proposal_id, subject_id, workspace_id, policy_hash, tbox_hash, contract_hash, proposal_hash, source_hash, mapping_hash, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, clock_timestamp(), clock_timestamp())
+          `, [
+            p.graph_id, p.name, p.status || 'ACTIVE', p.classification, p.ontology_version_id, p.studio_release_id, p.publication_version, p.schedule, p.managed_intent, p.accepted_proposal_id, p.subject_id, p.workspace_id, p.policy_hash, p.tbox_hash, p.contract_hash, p.proposal_hash, p.source_hash, p.mapping_hash
+          ])
+        } else {
+          const row = rows[0]
+          if (row.name !== p.name || row.status !== p.status || row.classification !== p.classification ||
+              row.policy_hash !== p.policy_hash || row.tbox_hash !== p.tbox_hash || row.contract_hash !== p.contract_hash ||
+              row.proposal_hash !== p.proposal_hash || row.source_hash !== p.source_hash ||
+              row.mapping_hash !== p.mapping_hash || row.ontology_version_id !== p.ontology_version_id ||
+              row.studio_release_id !== p.studio_release_id || row.publication_version !== p.publication_version ||
+              row.schedule !== p.schedule || row.managed_intent !== p.managed_intent ||
+              row.accepted_proposal_id !== p.accepted_proposal_id ||
+              row.subject_id !== p.subject_id || row.workspace_id !== p.workspace_id) {
+            throw new Error('K9 policy drift detected against canonical PG state')
+          }
+        }
+      }
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
+  }
+
+  async function getK9PreparingRuns() {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const { rows } = await pool.query(`SELECT * FROM poc_k9_refresh_runs WHERE status = 'PREPARING'`)
+    return rows
+  }
+
+  async function getK9OrphanRuns(graphId, activePointer) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const { rows } = await pool.query(
+      `SELECT run_id, active_release_pointer FROM poc_k9_refresh_runs WHERE graph_id = $1 AND active_release_pointer IS NOT NULL AND active_release_pointer != $2`,
+      [graphId, activePointer]
+    )
+    return rows
+  }
+
+  async function createK9PreparingRun(run) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    try {
+      await pool.query(`
+        INSERT INTO poc_k9_refresh_runs
+        (run_id, graph_id, status, input_snapshot_hash, policy_hash, started_at)
+        VALUES ($1, $2, 'PREPARING', $3, $4, clock_timestamp())
+      `, [run.run_id, run.graph_id, run.input_snapshot_hash || null, run.policy_hash])
+      return true
+    } catch (e) {
+      if (e.code === '23505' && e.constraint === 'idx_poc_k9_preparing_run') {
+        throw new Error('Concurrent K9 refresh run for this graph is already in progress', { cause: e })
+      }
+      throw e
+    }
+  }
+
+  async function getLastK9Run(graphId) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const { rows } = await pool.query(`SELECT * FROM poc_k9_refresh_runs WHERE graph_id = $1 AND status = 'RUN' ORDER BY started_at DESC LIMIT 1`, [graphId])
+    return rows.length ? rows[0] : null
+  }
+
+  async function finalizeK9RunNoOp(runId, activePointer) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const updateResult = await pool.query(`
+      UPDATE poc_k9_refresh_runs current
+      SET status = 'NO_OP',
+          completed_at = clock_timestamp(),
+          active_release_pointer = $2,
+          input_snapshot_hash = prev.input_snapshot_hash,
+          manifest = prev.manifest,
+          canonical_release = prev.canonical_release
+      FROM poc_k9_refresh_runs prev
+      WHERE current.run_id = $1
+        AND current.status = 'PREPARING'
+        AND prev.graph_id = current.graph_id
+        AND prev.active_release_pointer = $2
+        AND prev.status = 'RUN'
+    `, [runId, activePointer])
+
+    if (updateResult.rowCount !== 1) {
+      throw new Error('NO_OP requires exactly one updated PREPARING row and one prior active RUN')
+    }
+  }
+
+  async function finalizeK9RunFailure(runId, errorMessage) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const updateResult = await pool.query(`
+      UPDATE poc_k9_refresh_runs r
+      SET status = 'FAILURE',
+          completed_at = clock_timestamp(),
+          error_message = $2,
+          active_release_pointer = (
+            SELECT active_release_pointer FROM poc_k9_managed_graph_policies WHERE graph_id = r.graph_id
+          )
+      WHERE run_id = $1 AND status = 'PREPARING'
+    `, [runId, errorMessage])
+    if (updateResult.rowCount !== 1) {
+      throw new Error('Run failure finalization failed: run was not in PREPARING state')
+    }
+  }
+
+  async function executeK9Transaction(graphId, runId, manifest, canonicalRelease, activePointer, manifestHash, inputSnapshotHash, policyHash) {
+    await startDatabase()
+    if (!pool) throw new Error('K9 runs require PostgreSQL')
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      const { rows: policyRows } = await client.query('SELECT policy_hash FROM poc_k9_managed_graph_policies WHERE graph_id = $1 FOR UPDATE', [graphId])
+      if (policyRows.length === 0 || policyRows[0].policy_hash !== policyHash) {
+        throw new Error('Policy not found or hash mismatch')
+      }
+
+      const { rows: runRows } = await client.query('SELECT status, graph_id, policy_hash FROM poc_k9_refresh_runs WHERE run_id = $1 FOR UPDATE', [runId])
+      if (runRows.length === 0 || runRows[0].status !== 'PREPARING' || runRows[0].graph_id !== graphId || runRows[0].policy_hash !== policyHash) {
+        throw new Error('Run not found, not in PREPARING status, or hash/graph mismatch')
+      }
+
+      const updateRun = await client.query(`
+        UPDATE poc_k9_refresh_runs
+        SET status = 'RUN', completed_at = clock_timestamp(), active_release_pointer = $2, manifest = $3::jsonb, canonical_release = $4::jsonb, input_snapshot_hash = $5
+        WHERE run_id = $1 AND status = 'PREPARING'
+      `, [runId, activePointer, JSON.stringify(manifest), JSON.stringify(canonicalRelease), inputSnapshotHash])
+
+      if (updateRun.rowCount !== 1) {
+        throw new Error('Run update failed')
+      }
+
+      const updatePolicy = await client.query(`
+        UPDATE poc_k9_managed_graph_policies
+        SET active_release_pointer = $2, active_release_hash = $3, updated_at = clock_timestamp()
+        WHERE graph_id = $1 AND policy_hash = $4
+      `, [graphId, activePointer, manifestHash, policyHash])
+
+      if (updatePolicy.rowCount !== 1) {
+        throw new Error('Policy update failed')
+      }
+
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
+  }
+
+  async function runK9Scheduler(command, task) {
+    if (!command || typeof command !== 'object' || typeof task !== 'function') {
+      throw new Error('The POC K9 scheduler command is invalid.')
+    }
+    const lockName = requireBoundedString(command.lockName, 'lockName', 255)
+    const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
+    const trigger = requireOneOf(command.trigger || 'scheduled', 'trigger', ['scheduled', 'manual'])
+    await startDatabase()
+    if (!pool) throw new Error('PostgreSQL is required for the POC K9 scheduler.')
+    const client = await pool.connect()
+    let locked = false
+    try {
+      const lock = await client.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired', [lockName])
+      locked = lock.rows[0]?.acquired === true
+      if (!locked) return { status: 'locked', scheduledFor }
+      const scope = 'k9-scheduler-v1:' + lockName
+      const current = await client.query('SELECT value FROM poc_state WHERE scope = $1', [scope])
+      const lastSuccessfulSchedule = current.rows.length === 0 ? null : explicitSchedulerTimestamp(current.rows[0]?.value?.last_successful_schedule, 'stored last_successful_schedule')
+      if (lastSuccessfulSchedule === scheduledFor) return { status: 'already_completed', scheduledFor }
+      if (lastSuccessfulSchedule !== null && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) return { status: 'stale', scheduledFor }
+      const result = await task()
+      const completedAt = new Date().toISOString()
+
+      if (result && result.status === 'FAILURE') {
+        const failureReceipt = {
+          ...(current.rows[0]?.value || {}),
+          version: 1,
+          last_successful_schedule: lastSuccessfulSchedule,
+          last_attempt: {
+            status: 'FAILURE',
+            reason: 'K9_REFRESH_FAILED',
+            scheduled_for: scheduledFor,
+            completed_at: completedAt,
+            trigger,
+          },
+        }
+        const failureWrite = await client.query(`
+          INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+            WHERE (poc_state.value ->> 'last_successful_schedule' = $3 OR ($3 IS NULL AND poc_state.value ->> 'last_successful_schedule' IS NULL))
+          RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule
+        `, [scope, JSON.stringify(failureReceipt), lastSuccessfulSchedule])
+        if (failureWrite.rows.length !== 1 || failureWrite.rows[0]?.last_successful_schedule !== lastSuccessfulSchedule) {
+          throw new Error('The POC K9 scheduler failure receipt was not persisted.')
+        }
+        return { status: 'failed', scheduledFor, completedAt, result }
+      }
+
+      const receipt = {
+        version: 1,
+        last_successful_schedule: scheduledFor,
+        completed_at: completedAt,
+        trigger,
+        last_attempt: {
+          status: 'SUCCESS',
+          scheduled_for: scheduledFor,
+          completed_at: completedAt,
+          trigger,
+        },
+      }
+
+      const receiptWrite = await client.query(`
+        INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+        ON CONFLICT (scope) DO UPDATE
+          SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+          WHERE (poc_state.value ->> 'last_successful_schedule' = $3 OR ($3 IS NULL AND poc_state.value ->> 'last_successful_schedule' IS NULL))
+            AND (poc_state.value ->> 'last_successful_schedule' IS NULL OR (poc_state.value ->> 'last_successful_schedule')::timestamptz < $4::timestamptz)
+        RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule
+      `, [scope, JSON.stringify(receipt), lastSuccessfulSchedule, scheduledFor])
+
+      if (receiptWrite.rows.length !== 1 || receiptWrite.rows[0]?.last_successful_schedule !== scheduledFor) {
+        throw new Error('The POC K9 scheduler receipt was not advanced.')
+      }
+
+      return { status: 'succeeded', scheduledFor, completedAt, result }
+    } finally {
+      if (locked) {
+        await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockName])
+      }
+      client.release()
+    }
+  }
+
   return {
     read,
     readFeatureSecurityPolicy,
@@ -2160,6 +2572,17 @@ export function createPocStateStore({ databasePool } = {}) {
     listKnowledgeIngestionJobs,
     insertKnowledgeIngestionJob,
     updateKnowledgeIngestionJob,
+    verifyK9StudioAuthority,
+    getK9Policy,
+    ensureK9Policies,
+    getK9PreparingRuns,
+    getK9OrphanRuns,
+    createK9PreparingRun,
+    getLastK9Run,
+    finalizeK9RunNoOp,
+    finalizeK9RunFailure,
+    executeK9Transaction,
+    runK9Scheduler,
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }

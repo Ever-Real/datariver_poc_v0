@@ -341,6 +341,8 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
+| `knowledge.managed_graph_policies` | `graph_id` PK, name/status/classification, tbox/contract/proposal hashes | canonical graph update policy and schedule contract |
+| `knowledge.refresh_runs` | `run_id` PK, `graph_id` FK, status/source/mapping/manifest hashes, active pointer, times/error | durable execution and idempotency receipt for exact pins |
 | `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED/ARCHIVED`, classification, separate active instance and Studio Release pointers, nullable legacy-safe domain UUID/kind/source-version, creator/editor provenance, archive actor/time, `version`, timestamps | consumable graph aggregate; Archive hides the aggregate without deleting immutable release evidence, and Studio schema/mapping activation never fabricates or changes the active instance release |
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, nullable schema-contract/base-ontology/creator provenance, timestamps | immutable typed ontology versions |
 | `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name, canonical endpoint alias plus bounded alias array, exact DOMAIN UUID/source version, classification, optional EDIT base pins, exact submitted receipt/reviewer/materialized graph/ontology/Studio Release references, autosave/review/publish/discard times, optimistic version | full-screen Studio aggregate; mutable author scope in DRAFT, reviewer-readable and locked in REVIEW, immutable evidence after Publish/Discard |
