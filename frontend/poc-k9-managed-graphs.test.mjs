@@ -101,6 +101,8 @@ test('K9 Managed Graphs - bootstrap creates authority, trigger requires it', asy
 
   const policies = stateStore.ensureK9Policies.mock.calls[0].arguments[0]
   assert.equal(policies.length, 2)
+  assert.ok(policies.every((policy) => policy.studio_release_no === 1))
+  assert.ok(policies.every((policy) => policy.publication_version === 6))
   assert.ok(policies[0].policy_hash)
 
   stateStore.getK9Policy.mock.mockImplementation(async () => policies.find(p => p.managed_intent === 'metadata-lineage'))

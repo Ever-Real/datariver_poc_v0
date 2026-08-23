@@ -2256,7 +2256,7 @@ export function createPocStateStore({ databasePool } = {}) {
     if (row.graph_id !== expectedPolicy.graph_id) throw new Error('Graph ID drift')
     if (row.release_id !== expectedPolicy.studio_release_id) throw new Error('Release ID drift')
     if (row.ontology_id !== expectedPolicy.ontology_version_id) throw new Error('Ontology ID drift')
-    if (row.release_no !== expectedPolicy.publication_version) throw new Error('Publication version drift')
+    if (row.release_no !== expectedPolicy.studio_release_no) throw new Error('Studio release number drift')
 
     if (row.tbox_hash !== expectedPolicy.tbox_hash) throw new Error('T-box hash drift')
     if (row.ov_checksum !== expectedPolicy.tbox_hash) throw new Error('Ontology checksum drift')
