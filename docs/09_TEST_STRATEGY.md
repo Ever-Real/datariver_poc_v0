@@ -1737,6 +1737,25 @@ fixture, a non-reused server connection or an unavailable PgBouncer admin consol
 therefore fails the gate. This probe is a prerequisite, not evidence that PgBouncer, a connection
 budget or a target `max_connections` value has been accepted for production.
 
+### K10 representative Knowledge portability and E2E gate
+
+Run `node --test poc-k10-portability.test.mjs` from `frontend/`, then run
+`node poc-k10-portability.mjs simulate`. The focused gate covers the accepted K9 input Product,
+separate exact canonical K9 Evidence provenance/content, K9 pins, `002`/`003` checksums, one
+classification per K1–K9 state, missing/corrupt/wrong artifacts, missing secret reference, wrong
+Workspace, Default Lineage and Managed Glossary `RUN -> NO_OP`, and PREPARING-run recovery. Cleanup
+must record non-zero simulated policy/run/Neo4j/file observations, explicitly remove them, re-observe
+zero, and fail otherwise. Transfer verification must remain read-only and requires an independently
+supplied expected input Product SHA outside the one-command local simulation.
+
+Representative supported-use-case acceptance reuses the existing Knowledge API/browser suites for
+Registry lifecycle, Studio Basic/T-Box/A-Box and recovery, Delivery Policy, Knowledge Chat citations,
+the fixed two-tool K8 MCP endpoint, and authorization denial. A browser smoke checks the Knowledge
+shell and deep links only; it must not claim Property Profile CRUD, direct Changeset mutation, old
+governed source-analysis jobs, a K9 management UI, or actual PREP/OPS deployment. K9 Default Lineage
+and Managed Glossary runtime acceptance comes from the isolated target simulation and the immutable
+K9 runtime evidence, not an invented HTTP route.
+
 ## Release gate
 
 CI success alone is insufficient. The acceptance report records commit/image digest, environment, dataset, commands, machine-readable reports, reviewer, exceptions and expiry. Image scanners run only in an isolated CI/release runner; never grant a third-party scanner a developer Docker socket merely to produce local evidence. Release is blocked by failed functional/ABAC/migration/recovery gates or unresolved Critical/High security findings. Performance variance is a documented block unless the acceptance owner approves a time-bounded exception with mitigation.

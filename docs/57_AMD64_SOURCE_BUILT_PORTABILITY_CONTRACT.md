@@ -135,3 +135,62 @@ These gates can run on the Mac without claiming target readiness:
 
 Passing them establishes the P0-A source contract only. Linux amd64 runtime proof remains OPEN
 until the preparation operator runs both stable commands on the intended target.
+
+## K10 Knowledge portability closeout
+
+K10 adds one POC-local, non-secret Knowledge portability contract; it does not replace
+`dev-publish`, `prep-update`, the preparation readiness manifest, release export, or Pilot deploy.
+`frontend/poc-k10-portability.mjs` binds the accepted K9 input Product identity, migrations `002`
+and `003`, the two exact K9 Studio/T-Box/source/mapping/policy pin sets, trigger-only
+`02:00 Asia/Seoul` schedule intent, and checksums for the minimum Product artifacts. It separately
+binds canonical K9 Evidence context
+`d45432f3e6773474442706c54f7cc9b67c2648d6`, its Git path and exact content checksum. The manifest
+contains secret key names only and rejects credential values. A non-local transfer or target check
+must receive the expected K9 input Product SHA independently with `--product-sha`; an omitted or
+wrong expectation fails closed. The later K10 Product checkpoint and final K10 Evidence commit are
+separate CONTROL_PLANE closeout identities and are not predicted by this bundle.
+
+Every K1–K9 state in the generated manifest has exactly one classification:
+
+| Classification | Transfer/recovery rule |
+|---|---|
+| `PORTABLE_IMMUTABLE_ARTIFACT` | checksum, K9 input Product and separate K9 Evidence provenance must match |
+| `ENVIRONMENT_LOCAL_CONFIGURATION` | provision from the target's ignored environment |
+| `ENVIRONMENT_LOCAL_SECRET` | provision or rotate through the target secret source; never bundle |
+| `REGENERATED_FROM_CANONICAL_SOURCE` | collect or project again through the existing bounded seam |
+| `PERSISTENT_RUNTIME_STATE` | migrate/restore PostgreSQL and retain exact lifecycle/pin evidence |
+| `NON_PORTABLE_DISPOSABLE_STATE` | discard and deterministically rebuild from canonical state |
+
+The representative local procedure is:
+
+```bash
+# Complete PREP-like -> Transfer-PC -> Target simulation with automatic disposable cleanup.
+node frontend/poc-k10-portability.mjs simulate
+
+# Focused validator and recovery checks.
+cd frontend && node --test poc-k10-portability.test.mjs
+```
+
+- PREP-like creates checksummed artifacts and the manifest only; it includes zero secrets.
+- Transfer-PC performs checksum/provenance verification only and proves zero PostgreSQL, Neo4j,
+  runtime-secret and materialization writes.
+- Target provisions local file references, verifies/applies the simulated `002`/`003` migration
+  ledger, reconciles the existing two K9 policies, materializes Default Lineage and Managed
+  Glossary, proves identical `NO_OP` replay, wrong-Workspace denial, classification failure and
+  PREPARING-run recovery, records the non-zero policy/run/Neo4j pre-cleanup observation, explicitly
+  clears those simulated stores, and fails unless a fresh observation is all zero. The enclosing
+  simulation then removes its generated bundles, references and secret fixtures and derives a zero
+  file count from the absence of its temporary root.
+
+For a real target, use its normal migration/bootstrap mechanisms and ignored environment instead of
+the simulation adapters. K8 requires a dedicated `POC_MCP_SUBJECT_ID`, exact
+`POC_MCP_WORKSPACE_ID` and target-injected `POC_MCP_SERVICE_TOKEN`. K9 requires a distinct dedicated
+Subject, exact Workspace, read-only Studio connection and Neo4j/PostgreSQL secrets. K9 has no public
+management route: Default Lineage reconcile and Managed Glossary remain internal, deterministic
+runtime behavior. The scheduler stays disabled by default and advances its durable successful
+boundary only after both refreshes succeed.
+
+This closeout reuses the accepted K1–K9 runtime evidence for unchanged semantics and adds only
+representative portability/recovery coverage. It does not claim an actual preparation-PC or
+operations deployment, WSL/amd64 acceptance, production recovery, exhaustive browser permutations,
+or a new K9 UI/API. PREP and OPS remain HOLD.

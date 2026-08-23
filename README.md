@@ -41,6 +41,7 @@ Detailed entry points:
 - [Knowledge Studio Phase 6 RC cutover preparation](docs/47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md)
 - [POC Change Management 제품화 기준서](docs/63_POC_CHANGE_MANAGEMENT_PRODUCTIZATION.md)
 - [POC MCL/Change History 운영 runbook](deploy/poc/MCL_CHANGE_HISTORY_RUNBOOK.md)
+- [K10 Knowledge portability and representative E2E contract](docs/57_AMD64_SOURCE_BUILT_PORTABILITY_CONTRACT.md#k10-knowledge-portability-closeout)
 
 Remaining WSL/external-provider/browser/load/physical-retention checks are explicit external gates.
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
@@ -225,6 +226,22 @@ No real `.env`, secret, uploaded object, database volume or generated Keycloak r
 ## Git and clean-clone portability
 
 Commit only the repository sources. A second PC clones the same tree, runs the matching bootstrap command below, sets its own DataHub URL/origins, and starts the desired overlays. Do not copy `.env`, `secrets/`, `runtime/`, volumes or uploaded objects through Git. The frozen Python and npm locks plus CI define the reproducible toolchain; production promotes digest-pinned images built from the reviewed commit.
+
+Knowledge portability uses `frontend/poc-k10-portability.mjs` to create and verify a non-secret
+manifest for the accepted K9 input Product, its canonical K9 Evidence context, K1–K9 artifacts and
+the numbered POC Knowledge migrations `002` and `003`. The later K10 Product checkpoint and K10
+Evidence are separate closeout identities. Its three-stage command is a local simulation only:
+
+```bash
+node frontend/poc-k10-portability.mjs simulate
+```
+
+The transfer stage verifies checksum and provenance without database, Neo4j, runtime-secret or
+materialization writes. Target configuration, the dedicated K8 MCP Subject/Workspace and service
+token, K9 Subject/Workspace/Studio connection, and all provider credentials remain target-local.
+K9 reconciles only Default Lineage and Managed Glossary through the existing trigger-only
+`02:00 Asia/Seoul` scheduler; there is no K9 management UI or public K9 API. Actual preparation-PC
+and operations deployment remain HOLD until their existing target gates are executed.
 
 ## 소스 없는 폐쇄망 amd64 Pilot 운영 배포
 
