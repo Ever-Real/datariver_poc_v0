@@ -312,7 +312,7 @@ describe('application shell contracts', () => {
     expect(screen.getByRole('menuitem', { name: '나가기' })).toBeInTheDocument()
   })
 
-  it('routes allowed administration and account actions explicitly', () => {
+  it('routes the single authorized administration entry and account actions explicitly', () => {
     const onAdmin = vi.fn()
     const onEnrollSecurityKey = vi.fn()
     const onSignOut = vi.fn()
@@ -321,7 +321,7 @@ describe('application shell contracts', () => {
         displayName="Administrator"
         workspace="workspace-one"
         deploymentTier="SINGLE_NODE_PILOT"
-        adminMenuItems={[{ id: 'retention', label: '보존·파기 거버넌스' }]}
+        adminMenuItems={[{ id: 'retention', label: '관리자 메뉴' }]}
         onAdmin={onAdmin}
         onWorkspaceChange={vi.fn()}
         onEnrollSecurityKey={onEnrollSecurityKey}
@@ -329,7 +329,8 @@ describe('application shell contracts', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: '보존·파기 거버넌스' }))
+    expect(screen.getAllByRole('menuitem', { name: '관리자 메뉴' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('menuitem', { name: '관리자 메뉴' }))
     fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'WebAuthn 보안키 등록' }))
     fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
@@ -337,37 +338,6 @@ describe('application shell contracts', () => {
     expect(onAdmin).toHaveBeenCalledWith('retention')
     expect(onEnrollSecurityKey).toHaveBeenCalledOnce()
     expect(onSignOut).toHaveBeenCalledOnce()
-  })
-
-  it('renders the requested admin-only profile entries from server-derived sections', () => {
-    const onAdmin = vi.fn()
-    render(
-      <ProfileMenu
-        displayName="Administrator"
-        workspace="workspace-one"
-        deploymentTier="SINGLE_NODE_PILOT"
-        adminMenuItems={[
-          { id: 'memberships', label: '계정/권한' },
-          { id: 'systemSettings', label: '시스템 설정' },
-          { id: 'retention', label: '보존·파기 거버넌스' },
-          { id: 'auditLogs', label: 'Audit/Log 조회' },
-          { id: 'dictionary', label: '용어사전' },
-        ]}
-        onAdmin={onAdmin}
-        onWorkspaceChange={vi.fn()}
-        onEnrollSecurityKey={vi.fn()}
-        onSignOut={vi.fn()}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
-    expect(screen.getByRole('menuitem', { name: '계정/권한' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: '시스템 설정' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: '보존·파기 거버넌스' })).toBeInTheDocument()
-    expect(screen.queryByRole('menuitem', { name: /LLM Provider|Legal Hold|파기 검토/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: 'Audit/Log 조회' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('menuitem', { name: '용어사전' }))
-    expect(onAdmin).toHaveBeenCalledWith('dictionary')
   })
 
   it('offers an explicit password reauthentication entry when the server requires it', () => {
@@ -417,7 +387,7 @@ describe('application shell contracts', () => {
         workspace="workspace-one"
         deploymentTier="SINGLE_NODE_PILOT"
         displayName="User"
-        adminMenuItems={[{ id: 'memberships', label: '계정/권한' }]}
+        adminMenuItems={[{ id: 'memberships', label: '관리자 메뉴' }]}
         externalSystemLinks={[{ system_id: 'datahub', label: 'DataHub', url: 'https://datahub.example.com' }]}
         onNavigate={onNavigate}
         onNavigateAdmin={vi.fn()}

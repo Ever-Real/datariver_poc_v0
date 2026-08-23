@@ -54,16 +54,25 @@ vi.mock('./api/useStableApiClient', () => ({
 
 vi.mock('./components/layout/AppShell', () => ({
   AppShell: ({
+    adminMenuItems = [],
     adminContextStatus,
     onNavigateAdmin,
     children,
   }: {
+    adminMenuItems?: Array<{ id: string; label: string }>
     adminContextStatus?: string
     onNavigateAdmin?: (section: string) => void
     children: ReactNode
   }) => (
     <div>
       <span data-testid="admin-status">{adminContextStatus}</span>
+      <div role="menu" aria-label="Test profile menu">
+        {adminMenuItems.map((item) => (
+          <button key={item.id} type="button" role="menuitem" onClick={() => onNavigateAdmin?.(item.id)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
       <button type="button" onClick={() => onNavigateAdmin?.('systems')}>Open systems admin</button>
       <button type="button" onClick={() => onNavigateAdmin?.('metadataLogs')}>Open metadata logs</button>
       {children}
@@ -138,6 +147,35 @@ describe('App authentication-bound Admin orchestration', () => {
       beginPasswordChange: vi.fn().mockResolvedValue(undefined),
       clearNotice: vi.fn(),
     })
+  })
+
+  it('projects one governed Admin entry and routes it to an allowed section', async () => {
+    window.history.replaceState({}, '', `/?page=dashboard&workspace=${WORKSPACE_ONE}`)
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') {
+        return Promise.resolve({
+          ...adminContext(),
+          allowed_operations: ['RETENTION_POLICY_READ'],
+        })
+      }
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+
+    const adminEntries = await screen.findAllByRole('menuitem', { name: '관리자 메뉴' })
+    expect(adminEntries).toHaveLength(1)
+    fireEvent.click(screen.getByRole('menuitem', { name: '관리자 메뉴' }))
+    await waitFor(() => expect(screen.getByTestId('admin-page')).toBeVisible())
+    expect(screen.getByTestId('admin-route')).toHaveTextContent('page=admin')
+    expect(screen.getByTestId('admin-route')).toHaveTextContent('adminSection=retention')
   })
 
   it('remounts the Admin surface for profile-menu deep links within the current page', async () => {
@@ -290,6 +328,7 @@ describe('App authentication-bound Admin orchestration', () => {
 
     await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('dashboard'))
     expect(screen.queryByTestId('admin-page')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '관리자 메뉴' })).not.toBeInTheDocument()
   })
 
   it('keeps the blocked Admin route available for server-requested reauthentication', async () => {

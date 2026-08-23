@@ -17,7 +17,6 @@ import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
 import { publicRuntimeConfig } from './runtimeConfig'
 import { allowedAdminSections } from './features/admin/adminSections'
-import { getAdminMessages } from './features/admin/messages'
 import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
 import { knowledgeStudioUrl } from './features/knowledge/routes/knowledgeLocation'
 
@@ -440,7 +439,9 @@ export function App() {
   ]
   const mayReadPolicyGovernance = Boolean(currentAdminContext && policyReadOperations
     .every((operation) => currentAdminContext.allowed_operations.includes(operation)))
-  const adminMessages = getAdminMessages()
+  const governedAdminSection = currentAdminContext
+    ? allowedAdminSections(currentAdminContext)[0]
+    : undefined
   const adminMenuItems: Array<{ id: string; label: string }> = pocMode
     ? [
         ...((pocRole === 'data_steward' || pocRole === 'manager' || pocRole === 'admin')
@@ -450,19 +451,12 @@ export function App() {
               { id: 'poc-quality', label: '품질관리' },
             ]
           : []),
-        ...(pocRole === 'admin'
-          ? [
-              { id: 'memberships', label: 'Admin — 접근관리' },
-              { id: 'users', label: '사용자 관리' },
-              { id: 'systems', label: 'System 관리' },
-              { id: 'metadataLogs', label: '메타데이터 변경 로그' },
-              { id: 'securityLogs', label: '시스템 보안 로그' },
-              { id: 'dictionary', label: '용어사전' },
-            ]
+        ...(pocRole === 'admin' && pocCapabilities.includes('admin.manage')
+          ? [{ id: 'memberships', label: '관리자 메뉴' }]
           : []),
       ]
-    : currentAdminContext
-      ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
+    : governedAdminSection
+      ? [{ id: governedAdminSection, label: '관리자 메뉴' }]
       : []
   const adminContextKey = cachedAdminContext
     ? [
