@@ -8,12 +8,18 @@ import {
 } from './navigation'
 
 describe('navigation contract', () => {
-  it('rejects unknown pages and preserves only typed destinations', () => {
+  it('keeps Monitoring and canonical Change Management hard-reload routes distinct', () => {
     expect(pageFromLocation('https://catalog.example/?page=knowledge')).toBe('knowledge')
     expect(pageFromLocation('https://catalog.example/?page=knowledge-studio')).toBe('knowledge-studio')
     expect(pageFromLocation('https://catalog.example/?page=change-management')).toBe('change-management')
     expect(pageFromLocation('https://catalog.example/?page=monitoring')).toBe('monitoring')
     expect(pageFromLocation('https://catalog.example/?page=not-a-page')).toBe('dashboard')
+  })
+
+  it('builds a direct Change Management bookmark with the current workspace intact', () => {
+    expect(pageUrl('change-management', {
+      href: 'https://catalog.example/app?page=monitoring&workspace=workspace-1',
+    })).toBe('/app?page=change-management&workspace=workspace-1')
   })
 
   it('encodes a global query without preloading catalog data', () => {

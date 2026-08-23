@@ -822,7 +822,7 @@ export function GovernancePage({
             <p>CR 요청 상태를 조회하고 감지된 변경 사항과 CR을 연결합니다.</p>
           </div>
           <button type="button" className="button button-secondary" onClick={() => onNavigate?.('monitoring')}>
-            Monitoring 상세 현황
+            Monitoring Dashboard
           </button>
         </header>
 

@@ -266,7 +266,7 @@ describe('GovernancePage', () => {
       .closest('.governance-combined-overview')
     expect(combined).toHaveAccessibleName('CR 및 감지 변경 현황')
     expect(within(combined as HTMLElement).queryByTestId('detected-change-cr-panel')).not.toBeInTheDocument()
-    fireEvent.click(within(combined as HTMLElement).getByRole('button', { name: 'Monitoring 상세 현황' }))
+    fireEvent.click(within(combined as HTMLElement).getByRole('button', { name: 'Monitoring Dashboard' }))
     expect(onNavigate).toHaveBeenCalledWith('monitoring')
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
   })

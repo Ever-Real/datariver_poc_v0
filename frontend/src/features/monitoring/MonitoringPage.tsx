@@ -19,9 +19,6 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { Dialog } from '../../components/common/Dialog'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
-import { DataChangeStatusPanel } from './DataChangeStatusPanel'
-
-const DATA_CHANGE_STATUS_TAB_ID = 'data-change-status'
 
 interface MonitoringDashboardDraft {
   id: string
@@ -45,7 +42,7 @@ export function MonitoringPage({
     items: [],
     version: 0,
   })
-  const [activeId, setActiveId] = useState(DATA_CHANGE_STATUS_TAB_ID)
+  const [activeId, setActiveId] = useState<string>()
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
   const [editorOpen, setEditorOpen] = useState(false)
@@ -67,10 +64,9 @@ export function MonitoringPage({
       if (controller.signal.aborted) return
       setConfiguration(response.monitoring_configuration)
       setActiveId((current) => (
-        current === DATA_CHANGE_STATUS_TAB_ID
-          || response.monitoring_configuration.items.some((item) => item.id === current)
+        current && response.monitoring_configuration.items.some((item) => item.id === current)
           ? current
-          : DATA_CHANGE_STATUS_TAB_ID
+          : response.monitoring_configuration.items[0]?.id
       ))
     } catch (next) {
       if (!controller.signal.aborted) setError(next)
@@ -89,15 +85,14 @@ export function MonitoringPage({
 
   useEffect(() => {
     setActiveId((current) => (
-      current === DATA_CHANGE_STATUS_TAB_ID
-        || configuration.items.some((item) => item.id === current)
+      current && configuration.items.some((item) => item.id === current)
         ? current
-        : DATA_CHANGE_STATUS_TAB_ID
+        : configuration.items[0]?.id
     ))
   }, [configuration.items])
 
   const dashboardIds = useMemo(
-    () => [DATA_CHANGE_STATUS_TAB_ID, ...configuration.items.map((item) => item.id)],
+    () => configuration.items.map((item) => item.id),
     [configuration.items],
   )
   const tabs = useRovingTabs({
@@ -200,14 +195,6 @@ export function MonitoringPage({
       <ErrorNotice error={error} />
       <div className="monitoring-tabs-shell">
         <div className="monitoring-tabs" role="tablist" aria-label="Monitoring dashboards">
-          <button
-            {...tabs.tabProps(DATA_CHANGE_STATUS_TAB_ID)}
-            className={activeId === DATA_CHANGE_STATUS_TAB_ID ? 'active' : ''}
-            onClick={() => setActiveId(DATA_CHANGE_STATUS_TAB_ID)}
-            type="button"
-          >
-            데이터 변경현황
-          </button>
           {configuration.items.map((dashboard) => (
             <button
               {...tabs.tabProps(dashboard.id)}
@@ -242,8 +229,10 @@ export function MonitoringPage({
         </div>
       </div>
       <div
-        {...tabs.panelProps(activeId)}
-        className={`monitoring-frame${activeId === DATA_CHANGE_STATUS_TAB_ID ? ' data-change-native-frame' : ''}`}
+        {...(activeId
+          ? tabs.panelProps(activeId)
+          : { role: 'region' as const, 'aria-label': 'Monitoring dashboard' })}
+        className="monitoring-frame"
         aria-busy={loading}
       >
         {loading ? (
@@ -251,8 +240,6 @@ export function MonitoringPage({
             <span className="loader" />
             <p>Monitoring Dashboard를 조회하고 있습니다.</p>
           </div>
-        ) : activeId === DATA_CHANGE_STATUS_TAB_ID ? (
-          <DataChangeStatusPanel client={client} />
         ) : activeDashboard ? (
           <MonitoringDashboardPanel dashboard={activeDashboard} />
         ) : (

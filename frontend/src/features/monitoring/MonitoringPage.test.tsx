@@ -60,25 +60,26 @@ function apiClient(request: (path: string, options?: RequestInit) => Promise<unk
 }
 
 describe('MonitoringPage', () => {
-  it('renders the fixed native tab first and keeps server-owned dashboards accessible', async () => {
+  it('omits the duplicate data-change tab and keeps every server-owned dashboard accessible', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/capabilities') return Promise.resolve(response())
       throw new Error(`Unexpected request: ${path}`)
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
-    const nativeTab = screen.getByRole('tab', { name: '데이터 변경현황' })
-    expect(nativeTab).toHaveAttribute(
-      'aria-selected',
-      'true',
-    )
     const platformTab = await screen.findByRole('tab', { name: 'Platform' })
-    expect(screen.getByRole('tab', { name: 'DataHub' })).toBeInTheDocument()
-    fireEvent.keyDown(nativeTab, { key: 'ArrowRight' })
+    const dataHubTab = screen.getByRole('tab', { name: 'DataHub' })
+    expect(screen.queryByRole('tab', { name: '데이터 변경현황' })).not.toBeInTheDocument()
     expect(platformTab).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('link', { name: 'Platform 열기' })).toHaveAttribute(
       'href',
       'https://grafana.example/d/platform',
+    )
+    fireEvent.keyDown(platformTab, { key: 'ArrowRight' })
+    expect(dataHubTab).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTitle('DataHub Monitoring Dashboard')).toHaveAttribute(
+      'src',
+      'https://grafana.example/d/datahub',
     )
     expect(screen.queryByText('Platform capability state')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '탭 수정' })).not.toBeInTheDocument()
@@ -130,7 +131,7 @@ describe('MonitoringPage', () => {
     )
   })
 
-  it('keeps the native view available while showing that no external dashboard is configured', async () => {
+  it('shows the existing empty-dashboard state without loading the removed native view', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/capabilities') {
         return Promise.resolve(response({
@@ -141,9 +142,11 @@ describe('MonitoringPage', () => {
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
-    expect(screen.getByRole('tab', { name: '데이터 변경현황' })).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByText('변경 이력이 없습니다.')).toBeInTheDocument()
     expect(await screen.findByText('등록된 Dashboard 없음')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Monitoring Dashboard가 없습니다.' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '데이터 변경현황' })).not.toBeInTheDocument()
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith('/capabilities', expect.any(Object))
   })
 
   it('allows an authorized administrator to edit and save the ordered tab configuration', async () => {
@@ -174,7 +177,6 @@ describe('MonitoringPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '탭 수정' }))
     const linkInputs = screen.getAllByLabelText('Dashboard Link')
     expect(linkInputs).toHaveLength(2)
-    expect(screen.queryByDisplayValue('데이터 변경현황')).not.toBeInTheDocument()
     expect(screen.queryByText('Grafana Dashboard URL')).not.toBeInTheDocument()
     const nameInputs = screen.getAllByLabelText('탭 이름')
     fireEvent.change(nameInputs[0]!, { target: { value: 'Core platform' } })
