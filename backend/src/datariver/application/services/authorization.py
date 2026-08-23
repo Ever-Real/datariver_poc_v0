@@ -516,7 +516,11 @@ class AuthorizationService:
             and not decision.allowed
             and bool(decision.reason_codes)
             and set(decision.reason_codes).issubset(
-                {"PHISHING_RESISTANT_AUTH_REQUIRED", "HUMAN_ACTOR_REQUIRED"}
+                {
+                    "PHISHING_RESISTANT_AUTH_REQUIRED",
+                    "HUMAN_ACTOR_REQUIRED",
+                    "AUTHENTICATION_TIME_REQUIRED",
+                }
             )
             and subject.job_function == "SERVICE_ACCOUNT"
             and subject.groups == frozenset({"service-accounts", "k9-publisher-checkers"})

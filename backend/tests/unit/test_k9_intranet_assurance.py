@@ -69,6 +69,7 @@ def create_subject(
     active: bool = True,
     clearance: Classification = Classification.INTERNAL,
     authentication_time: datetime | None | object = ...,
+    authentication_assurance: AuthenticationAssurance = AuthenticationAssurance.PASSWORD,
 ) -> SubjectAttributes:
     if authentication_time is ...:
         authentication_time = datetime.now()
@@ -85,7 +86,7 @@ def create_subject(
         workspace_id=workspace_id,
         allowed_system_ids=frozenset({system_id}),
         allowed_domain_ids=frozenset({domain_id}),
-        authentication_assurance=AuthenticationAssurance.PASSWORD,
+        authentication_assurance=authentication_assurance,
         authentication_time=cast(datetime | None, auth_time),
         active=active,
     )
@@ -113,6 +114,8 @@ async def test_authorization_assurance(
         domain_id,
         groups={"service-accounts", "k9-publisher-checkers"},
         allowed_actions={Action.KG_PUBLISH, Action.KG_REVIEW, Action.KG_READ},
+        authentication_assurance=AuthenticationAssurance.UNKNOWN,
+        authentication_time=None,
     )
 
     decision = await authz.authorize(
@@ -217,41 +220,6 @@ async def test_authorization_assurance_fails_on_inactive(
         groups={"service-accounts", "k9-publisher-checkers"},
         allowed_actions={Action.KG_PUBLISH, Action.KG_REVIEW, Action.KG_READ},
         active=False,
-    )
-
-    with pytest.raises(ForbiddenError):
-        await authz.authorize(
-            subject=subject,
-            resource=resource,
-            action=Action.KG_PUBLISH,
-            environment=env,
-            request_id="req1",
-        )
-
-
-@pytest.mark.asyncio
-async def test_authorization_assurance_fails_on_missing_auth(
-    workspace_id: UUID,
-    system_id: UUID,
-    domain_id: UUID,
-    env: EnvironmentAttributes,
-    resource: ResourceAttributes,
-) -> None:
-    checker_id = uuid4()
-    authz = AuthorizationService(
-        decision_writer=AsyncMock(),
-        knowledge_studio_intranet_publication_assurance_mode="INTRANET_DISTINCT_PRINCIPAL",
-        knowledge_studio_intranet_publisher_checker_subject_id=checker_id,
-    )
-
-    subject = create_subject(
-        checker_id,
-        workspace_id,
-        system_id,
-        domain_id,
-        groups={"service-accounts", "k9-publisher-checkers"},
-        allowed_actions={Action.KG_PUBLISH, Action.KG_REVIEW, Action.KG_READ},
-        authentication_time=None,
     )
 
     with pytest.raises(ForbiddenError):
