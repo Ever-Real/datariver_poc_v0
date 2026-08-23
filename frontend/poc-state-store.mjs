@@ -2513,7 +2513,10 @@ export function createPocStateStore({ databasePool } = {}) {
       if (!locked) return { status: 'locked', scheduledFor }
       const scope = 'k9-scheduler-v1:' + lockName
       const current = await client.query('SELECT value FROM poc_state WHERE scope = $1', [scope])
-      const lastSuccessfulSchedule = current.rows.length === 0 ? null : explicitSchedulerTimestamp(current.rows[0]?.value?.last_successful_schedule, 'stored last_successful_schedule')
+      const storedSuccessfulSchedule = current.rows[0]?.value?.last_successful_schedule
+      const lastSuccessfulSchedule = storedSuccessfulSchedule == null
+        ? null
+        : explicitSchedulerTimestamp(storedSuccessfulSchedule, 'stored last_successful_schedule')
       if (lastSuccessfulSchedule === scheduledFor) return { status: 'already_completed', scheduledFor }
       if (lastSuccessfulSchedule !== null && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) return { status: 'stale', scheduledFor }
       const result = await task()
