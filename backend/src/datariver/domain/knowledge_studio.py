@@ -349,14 +349,26 @@ def validate_tbox_element_set(elements: tuple[TBoxElementInput, ...]) -> None:
     if len(elements) > 500:
         raise ValidationError("A T-Box Draft can contain at most 500 elements.")
     by_id: dict[str, TBoxElementInput] = {}
-    names: set[tuple[TBoxElementKind, str]] = set()
+    names: set[tuple[TBoxElementKind, str, str | None, str | None]] = set()
     for element in elements:
         element.validate()
         if element.stable_element_id in by_id:
             raise ValidationError("A stable T-Box element ID can appear only once.")
-        name_identity = (element.kind, element.canonical_name.casefold())
+
+        name_identity: tuple[TBoxElementKind, str, str | None, str | None] = (
+            element.kind,
+            element.canonical_name.casefold(),
+            element.source_stable_element_id if element.kind is TBoxElementKind.RELATION else None,
+            element.target_stable_element_id if element.kind is TBoxElementKind.RELATION else None,
+        )
+
         if name_identity in names:
-            raise ValidationError("A canonical T-Box name can appear only once per kind.")
+            if element.kind is TBoxElementKind.RELATION:
+                raise ValidationError(
+                    "A canonical T-Box Relation name and endpoint pair can appear only once."
+                )
+            else:
+                raise ValidationError("A canonical T-Box name can appear only once per kind.")
         by_id[element.stable_element_id] = element
         names.add(name_identity)
     for element in elements:

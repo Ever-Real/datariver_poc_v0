@@ -302,3 +302,72 @@ def test_abox_mapping_rejects_unreturned_fields_and_duplicate_subject_ids() -> N
                 ),
             ),
         )
+
+
+def test_tbox_relation_name_identity_allows_distinct_endpoint_pairs() -> None:
+    source1 = TBoxElementInput(
+        stable_element_id="class:source1",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="SourceOne",
+        display_name="Source One",
+    )
+    source2 = TBoxElementInput(
+        stable_element_id="class:source2",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="SourceTwo",
+        display_name="Source Two",
+    )
+    target1 = TBoxElementInput(
+        stable_element_id="class:target1",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="TargetOne",
+        display_name="Target One",
+    )
+    target2 = TBoxElementInput(
+        stable_element_id="class:target2",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="TargetTwo",
+        display_name="Target Two",
+    )
+    rel1 = TBoxElementInput(
+        stable_element_id="rel:one",
+        kind=TBoxElementKind.RELATION,
+        canonical_name="has_target",
+        display_name="Has Target",
+        source_stable_element_id="class:source1",
+        target_stable_element_id="class:target1",
+    )
+    rel2 = TBoxElementInput(
+        stable_element_id="rel:two",
+        kind=TBoxElementKind.RELATION,
+        canonical_name="has_target",
+        display_name="Has Target",
+        source_stable_element_id="class:source2",
+        target_stable_element_id="class:target2",
+    )
+
+    # Should not raise an error
+    validate_tbox_element_set((source1, source2, target1, target2, rel1, rel2))
+
+    rel3 = TBoxElementInput(
+        stable_element_id="rel:three",
+        kind=TBoxElementKind.RELATION,
+        canonical_name="has_target",
+        display_name="Has Target",
+        source_stable_element_id="class:source1",
+        target_stable_element_id="class:target1",
+    )
+    with pytest.raises(
+        ValidationError, match="Relation name and endpoint pair can appear only once"
+    ):
+        validate_tbox_element_set((source1, target1, rel1, rel3))
+
+    # Test class name uniqueness preserved
+    class_dup = TBoxElementInput(
+        stable_element_id="class:dup",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="SourceOne",
+        display_name="Dup",
+    )
+    with pytest.raises(ValidationError, match="per kind"):
+        validate_tbox_element_set((source1, class_dup))
