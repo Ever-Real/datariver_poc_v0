@@ -3,6 +3,7 @@ import type { CatalogLineage, KnowledgeSnapshot } from '../../api/types'
 import {
   catalogLineageToReadGraph,
   cytoscapeLayout,
+  lineageRoleGaps,
   knowledgeSnapshotToReadGraph,
   mergeReadGraphs,
   toCytoscapeElements,
@@ -87,7 +88,7 @@ describe('Cytoscape graph adapter', () => {
   })
 
   it('uses graph-type layout configuration and merges expansions by canonical identity', () => {
-    expect(cytoscapeLayout('LINEAGE')).toMatchObject({ name: 'cola', fit: false, randomize: false, flow: { axis: 'x' } })
+    expect(cytoscapeLayout('LINEAGE')).toMatchObject({ name: 'cola', fit: false, randomize: false })
     expect(cytoscapeLayout('METADATA_MASTER')).toMatchObject({ name: 'cola', animate: true, fit: false, randomize: false })
 
     const base = knowledgeSnapshotToReadGraph(snapshot, 'METADATA_MASTER', 'node-a')
@@ -99,5 +100,15 @@ describe('Cytoscape graph adapter', () => {
     expect(merged.nodes).toHaveLength(2)
     expect(merged.edges).toHaveLength(1)
     expect(merged.nodes.find((node) => node.id === 'node-b')?.label).toBe('Business B')
+  })
+
+  it('turns canonical lineage roles into upstream-root-downstream Cola constraints', () => {
+    const graph = catalogLineageToReadGraph(lineage)
+
+    expect(lineageRoleGaps(graph)).toEqual([
+      { axis: 'x', leftId: 'table:upstream', rightId: 'table:current', gap: 160 },
+      { axis: 'x', leftId: 'table:current', rightId: 'table:downstream', gap: 160 },
+    ])
+    expect(lineageRoleGaps({ ...graph, kind: 'METADATA_MASTER' })).toEqual([])
   })
 })

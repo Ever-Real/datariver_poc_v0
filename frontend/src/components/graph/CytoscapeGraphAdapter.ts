@@ -37,6 +37,13 @@ export interface ReadGraphModel {
   edges: ReadGraphEdge[]
 }
 
+export interface LineageRoleGap {
+  axis: 'x'
+  leftId: string
+  rightId: string
+  gap: number
+}
+
 function displayValue(properties: Record<string, unknown>, fallback: string): string {
   const value = properties.display_name ?? properties.business_name ?? properties.name
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback
@@ -274,8 +281,20 @@ export function cytoscapeLayout(kind: ReadGraphKind): LayoutOptions {
     centerGraph: false,
     convergenceThreshold: 0.02,
   }
-  return {
-    ...common,
-    ...(kind === 'LINEAGE' ? { flow: { axis: 'x', minSeparation: 150 } } : {}),
-  }
+  return common
+}
+
+export function lineageRoleGaps(graph: ReadGraphModel, gap = 160): LineageRoleGap[] {
+  if (graph.kind !== 'LINEAGE' || !graph.rootId) return []
+  const rootId = graph.rootId
+  return graph.nodes.flatMap((node) => {
+    if (node.id === rootId) return []
+    if (node.role === 'UPSTREAM') {
+      return [{ axis: 'x' as const, leftId: node.id, rightId: rootId, gap }]
+    }
+    if (node.role === 'DOWNSTREAM') {
+      return [{ axis: 'x' as const, leftId: rootId, rightId: node.id, gap }]
+    }
+    return []
+  })
 }

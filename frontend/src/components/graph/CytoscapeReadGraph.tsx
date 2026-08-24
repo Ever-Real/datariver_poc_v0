@@ -20,6 +20,7 @@ import type {
 } from 'cytoscape'
 import {
   cytoscapeLayout,
+  lineageRoleGaps,
   toCytoscapeElements,
   type ReadGraphEdge,
   type ReadGraphModel,
@@ -329,8 +330,20 @@ export function CytoscapeReadGraph({
       ? anchor.closedNeighborhood()
       : cy.elements()
     const layoutOwner = typeof scope.layout === 'function' ? scope : cy
+    const scopedNodeIds = typeof scope.nodes === 'function'
+      ? new Set(scope.nodes().map((node) => node.id()))
+      : new Set<string>()
+    const gapInequalities = lineageRoleGaps(graphRef.current)
+      .filter(({ leftId, rightId }) => scopedNodeIds.has(leftId) && scopedNodeIds.has(rightId))
+      .map(({ axis, leftId, rightId, gap }) => ({
+        axis,
+        left: cy.getElementById(leftId),
+        right: cy.getElementById(rightId),
+        gap,
+      }))
     const layout = layoutOwner.layout({
       ...cytoscapeLayout(graphRef.current.kind),
+      ...(gapInequalities.length > 0 ? { gapInequalities } : {}),
       maxSimulationTime: options.maximumMs ?? (options.initial ? 1_500 : 850),
       fit: false,
       randomize: false,
