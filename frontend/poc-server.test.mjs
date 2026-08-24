@@ -228,6 +228,19 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
   }), [asset]), /inconsistent route/)
 })
 
+test('managed graph entity resolution prefers nodes connected in the requested traversal direction', async () => {
+  const { managedGraphNodeSupportsDirection } = await import('./poc-server.mjs?managed-graph-resolution-contract')
+  const release = { edges: [
+    { source: 'dependent', target: 'upstream' },
+    { source: 'view', target: 'dependent' },
+  ] }
+  assert.equal(managedGraphNodeSupportsDirection(release, 'isolated', 'BOTH'), false)
+  assert.equal(managedGraphNodeSupportsDirection(release, 'dependent', 'OUT'), true)
+  assert.equal(managedGraphNodeSupportsDirection(release, 'dependent', 'IN'), true)
+  assert.equal(managedGraphNodeSupportsDirection(release, 'upstream', 'OUT'), false)
+  assert.equal(managedGraphNodeSupportsDirection(release, 'upstream', 'IN'), true)
+})
+
 test('managed graph snapshots retain request-time Table authorization boundaries', async () => {
   const { authorizeManagedK9Release } = await import('./poc-server.mjs?managed-graph-authorization-contract')
   const tableA = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.table_a,DEV)'

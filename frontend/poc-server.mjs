@@ -4250,11 +4250,13 @@ function inventoryEvidenceAnswer(request, evidence) {
 async function datahubChatEvidence(question, route, evidenceLimit, principal) {
   const exact = await exactCatalogEvidence(question, 3, principal)
   if (exact.length) return exact
+  const entityResolutionLimit = route.entity_resolution_required
+    ? Math.min(evidenceLimit, Math.max(1, Math.min(20, Number(route.entity_resolution_candidate_limit) || 3)))
+    : evidenceLimit
   if (llm.embedding && (route.semantic_retrieval_required || route.entity_resolution_required)) {
     try {
-      const limit = route.entity_resolution_required ? Math.min(3, evidenceLimit) : evidenceLimit
       const semantic = await semanticCatalogEvidence(
-        question, limit, { summaryOnly: evidenceLimit > 5 }, principal,
+        question, entityResolutionLimit, { summaryOnly: evidenceLimit > 5 }, principal,
       )
       if (semantic.length) return semantic
     } catch {
@@ -4271,7 +4273,7 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal) {
     for (const item of catalog.items) results.set(item.id, item)
     if (results.size >= evidenceLimit) break
   }
-  return [...results.values()].slice(0, route.entity_resolution_required ? Math.min(3, evidenceLimit) : evidenceLimit)
+  return [...results.values()].slice(0, entityResolutionLimit)
 }
 
 function knowledgeAssetSearchTokens(value) {
@@ -4718,13 +4720,16 @@ async function resolveManagedGraphStart(question, route, scope, principal) {
     ...route,
     entity_resolution_required: true,
     semantic_retrieval_required: true,
-  }, 3, principal)
+    entity_resolution_candidate_limit: 20,
+  }, 20, principal)
   const nodeIds = new Set(scope.canonicalRelease.nodes.map((node) => node.id))
+  const direction = graphTraversalDirection(route.relation_intent)
+  let fallback = null
   for (const candidate of candidates) {
     const urn = candidate.external_urn || candidate.id
     const tableId = typeof urn === 'string' ? `TABLE:${urn}` : null
     if (tableId && nodeIds.has(tableId)) {
-      return {
+      const resolved = {
         startNodeId: tableId,
         entities: [{
           id: tableId,
@@ -4733,15 +4738,25 @@ async function resolveManagedGraphStart(question, route, scope, principal) {
           method: candidate.retrieval_method || candidate.extraction_method || 'DATAHUB_METADATA',
         }],
       }
+      fallback ||= resolved
+      const connected = managedGraphNodeSupportsDirection(scope.canonicalRelease, tableId, direction)
+      if (connected) return resolved
     }
   }
-  return { startNodeId: null, entities: [] }
+  return fallback || { startNodeId: null, entities: [] }
 }
 
 function graphTraversalDirection(relationIntent) {
   if (['UPSTREAM', 'DEPENDENCY', 'PROVENANCE'].includes(relationIntent)) return 'OUT'
   if (['DOWNSTREAM', 'IMPACT'].includes(relationIntent)) return 'IN'
   return 'BOTH'
+}
+
+export function managedGraphNodeSupportsDirection(release, nodeId, direction) {
+  return Array.isArray(release?.edges) && release.edges.some((edge) => (
+    (direction !== 'IN' && edge.source === nodeId)
+    || (direction !== 'OUT' && edge.target === nodeId)
+  ))
 }
 
 function knowledgeMainChatEvidence(selection, result) {

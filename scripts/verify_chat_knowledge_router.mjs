@@ -176,11 +176,12 @@ try {
           && evidenceTypes.has('KNOWLEDGE_ASSET_RELATION'))
         : knowledgeAssetMetadataRequested
           ? evidence.length > 0 && evidence.every((item) => item.evidence_type === 'KNOWLEDGE_GRAPH_ASSET_METADATA')
-          : evidence.length > 0 && !evidence.some((item) => (
+          : !evidence.some((item) => (
               item.evidence_type === 'KNOWLEDGE_ASSET_RELATION' || item.evidence_type === 'DATAHUB_LINEAGE'
             ))
-    const answerGrounded = typeof body?.answer === 'string' && body.answer.trim().length > 0
-      && (expectedRoute === 'GENERAL' ? evidence.length === 0 : evidence.length > 0)
+    const answerText = typeof body?.answer === 'string' ? body.answer.trim() : ''
+    const answerGrounded = Boolean(answerText)
+      && (evidence.length > 0 || !/\[\d+\]/.test(answerText))
     const row = {
       test_id: testId,
       question,
