@@ -2,12 +2,12 @@
 
 ## Fixed release identity and boundary
 
-This runbook prepares, but does not claim, the first WSL/Linux amd64 runtime acceptance for the
-read-only Cytoscape refinement. The accepted runtime source is:
+This runbook prepares, but does not claim, the WSL/Linux amd64 runtime acceptance for the
+UX2 Product refinement. The accepted runtime source is:
 
 ```text
-Product  179093643f4cfa2dd808c0c27240f7f49f68063c
-Evidence 192f26863e89636d33f9d50c7346a92d7dae2aba
+Product  ced6ffeedc9ee9786abc6d12c41c30540201f600
+Evidence 6098200d86f5c3058eb1ac3343f585d78f1a635a
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -33,8 +33,8 @@ git fetch origin dev
 git checkout dev
 git pull --ff-only origin dev
 
-PRODUCT_SHA=179093643f4cfa2dd808c0c27240f7f49f68063c
-EVIDENCE_SHA=192f26863e89636d33f9d50c7346a92d7dae2aba
+PRODUCT_SHA=ced6ffeedc9ee9786abc6d12c41c30540201f600
+EVIDENCE_SHA=6098200d86f5c3058eb1ac3343f585d78f1a635a
 test "$(uname -m)" = x86_64
 test "$(docker info --format '{{.Architecture}}')" = x86_64 \
   || test "$(docker info --format '{{.Architecture}}')" = amd64

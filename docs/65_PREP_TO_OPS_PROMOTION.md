@@ -12,8 +12,8 @@ On PREP, keep the accepted `datariver-prep39083` containers running and the chec
 
 ```bash
 set -eu
-PRODUCT_SHA=179093643f4cfa2dd808c0c27240f7f49f68063c
-EVIDENCE_SHA=192f26863e89636d33f9d50c7346a92d7dae2aba
+PRODUCT_SHA=ced6ffeedc9ee9786abc6d12c41c30540201f600
+EVIDENCE_SHA=6098200d86f5c3058eb1ac3343f585d78f1a635a
 python3 scripts/prep39083_release.py export \
   --product-sha "$PRODUCT_SHA" \
   --evidence-sha "$EVIDENCE_SHA" \
