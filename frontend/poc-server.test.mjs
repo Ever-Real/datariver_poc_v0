@@ -249,6 +249,22 @@ test('managed graph snapshots retain request-time Table authorization boundaries
     'table-a->column-a',
     'table-a->term-shared',
   ])
+  const servicePrincipal = {
+    ...principal,
+    allowedFeatureSecurityCells: new Set(),
+  }
+  const serviceAuthorized = authorizeManagedK9Release(servicePrincipal, release, { knowledgeAdapter: 'MCP' })
+  assert.deepEqual(serviceAuthorized.nodes.map((node) => node.id), ['table-a', 'column-a', 'term-shared'])
+  assert.deepEqual(serviceAuthorized.edges.map((edge) => `${edge.source}->${edge.target}`), [
+    'table-a->column-a',
+    'table-a->term-shared',
+  ])
+  const insufficientClearance = authorizeManagedK9Release({
+    ...servicePrincipal,
+    maxSecurityGrade: 'normal',
+  }, release, { knowledgeAdapter: 'MCP' })
+  assert.deepEqual(insufficientClearance.nodes, [])
+  assert.deepEqual(insufficientClearance.edges, [])
   assert.equal(authorizeManagedK9Release({ role: 'admin' }, release), release)
 })
 

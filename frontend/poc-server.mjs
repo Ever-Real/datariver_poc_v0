@@ -6351,7 +6351,7 @@ function managedK9NodeDatasetUrn(node) {
   return isCanonicalDatahubDatasetUrn(candidate) ? candidate : null
 }
 
-export function authorizeManagedK9Release(principal, canonicalRelease) {
+export function authorizeManagedK9Release(principal, canonicalRelease, { knowledgeAdapter = null } = {}) {
   if (principal?.role === 'admin') return canonicalRelease
   const nodes = Array.isArray(canonicalRelease?.nodes) ? canonicalRelease.nodes : []
   const edges = Array.isArray(canonicalRelease?.edges) ? canonicalRelease.edges : []
@@ -6362,11 +6362,15 @@ export function authorizeManagedK9Release(principal, canonicalRelease) {
     if (!datasetUrn) continue
     dataNodeIds.add(node.id)
     const securityGrade = k9ClassificationToGrade[node.classification]
-    if (securityGrade && canReadAsset(principal, {
+    const serviceTableAllowed = knowledgeAdapter === 'MCP'
+      && securityGrade
+      && securityGradeRank(principal.maxSecurityGrade) >= securityGradeRank(securityGrade)
+      && principal.activeTableGrantUrns?.has(datasetUrn)
+    if (serviceTableAllowed || (knowledgeAdapter !== 'MCP' && securityGrade && canReadAsset(principal, {
       id: datasetUrn,
       dataset_kind: 'TABLE',
       security_grade: securityGrade,
-    }, 'knowledge')) {
+    }, 'knowledge'))) {
       allowedNodeIds.add(node.id)
     }
   }
@@ -6434,7 +6438,9 @@ function managedK9ScopeFromRow(context, row, requestedReleaseId) {
     || !Array.isArray(activeCanonicalRelease.edges)) {
     throw knowledgeProjectionError(409, 'K9_ACTIVE_RELEASE_INVALID', 'The active managed graph release is inconsistent.')
   }
-  const canonicalRelease = authorizeManagedK9Release(context.principal, activeCanonicalRelease)
+  const canonicalRelease = authorizeManagedK9Release(context.principal, activeCanonicalRelease, {
+    knowledgeAdapter: context.knowledgeAdapter,
+  })
   const definition = k9GraphAssetDefinition(row.graph_id)
   const grade = k9ClassificationToGrade[row.classification]
   return Object.freeze({
