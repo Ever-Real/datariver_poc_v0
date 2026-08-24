@@ -160,6 +160,7 @@
     "eval_credential_enabled": false,
     "credential_version": 11,
     "revoked_sessions": 3,
+    "active_eval_sessions": 0,
     "browser_tabs": 0,
     "temporary_secret_directory": "TRASHED_RECOVERABLE",
     "temporary_candidate_container": 0,

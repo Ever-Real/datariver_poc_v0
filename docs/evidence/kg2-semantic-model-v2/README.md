@@ -104,8 +104,9 @@ static verification and diff-check all PASS. Static verification scans productio
 builder/router files for domain vocabulary and forbidden synonym/graph keyword/question
 route maps. `DOMAIN_SPECIFIC_PRODUCTION_HARDCODING = NONE`.
 
-The temporary eval credential was disabled at version 11 and three sessions were
-revoked. The temporary secret directory was moved to the system Trash (recoverable), the
+The temporary eval credential was disabled at version 11, three sessions were revoked,
+and a direct read-back reported zero active eval sessions. The temporary secret directory
+was moved to the system Trash (recoverable), the
 candidate container was removed, browser tabs are 0, and inactive embedding bindings
 were pruned only after the final generation was active. The retained active binding has
 2,002 rows. Canonical DataHub data and both active managed graph namespaces were
