@@ -480,6 +480,7 @@ export function createPocStateStore({ databasePool } = {}) {
           idleTimeoutMillis: 30_000,
         })
       }
+      pool.on?.('error', () => undefined)
       if (!studioPool && process.env.POC_K9_STUDIO_DATABASE_URL) {
         studioPool = new Pool({
           connectionString: process.env.POC_K9_STUDIO_DATABASE_URL.trim(),
@@ -487,6 +488,7 @@ export function createPocStateStore({ databasePool } = {}) {
           idleTimeoutMillis: 30_000,
           options: '-c default_transaction_read_only=on',
         })
+        studioPool.on?.('error', () => undefined)
       }
       await pool.query(`
         CREATE TABLE IF NOT EXISTS poc_state (

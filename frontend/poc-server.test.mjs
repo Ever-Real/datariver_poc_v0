@@ -929,6 +929,17 @@ test('aborts a Catalog Embedding producer when its PostgreSQL ownership session 
   await assert.rejects(task, /Catalog Embedding generation ownership was lost/)
 })
 
+test('handles an idle PostgreSQL pool connection loss without terminating the Product process', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs?postgres-idle-pool-loss')
+  const databasePool = new EventEmitter()
+  databasePool.query = async () => ({ rows: [] })
+  databasePool.end = async () => undefined
+  const store = createPocStateStore({ databasePool })
+  await store.catalogEmbeddingHashes('7'.repeat(64))
+  assert.doesNotThrow(() => databasePool.emit('error', new Error('idle connection lost')))
+  await store.close()
+})
+
 test('commits the PostgreSQL Embedding generation and active pointer in one fenced transaction', async () => {
   const { createPocStateStore } = await import('./poc-state-store.mjs?postgres-generation-contract')
   const statements = []
