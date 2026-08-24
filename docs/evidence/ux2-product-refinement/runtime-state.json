@@ -1,0 +1,96 @@
+{
+  "phase": "UX2 PRODUCT REFINEMENT",
+  "status": "COMPLETE_RUNTIME_VERIFIED",
+  "observed_at": "2026-08-24T22:18:34Z",
+  "base": {
+    "product_sha": "179093643f4cfa2dd808c0c27240f7f49f68063c",
+    "evidence_sha": "192f26863e89636d33f9d50c7346a92d7dae2aba",
+    "handoff_commit": "43c93f821e40b07174525a2a013cc1548f5deac5"
+  },
+  "product_sha": "ced6ffeedc9ee9786abc6d12c41c30540201f600",
+  "runtime": {
+    "oci_tag": "datariver-poc:ced6ffeedc9ee9786abc6d12c41c30540201f600",
+    "oci_revision": "ced6ffeedc9ee9786abc6d12c41c30540201f600",
+    "port_39083_http": 200,
+    "container_health": "healthy",
+    "container_restarts": 0,
+    "port_39090_http": 200
+  },
+  "source_gates": {
+    "focused_catalog_reload": "1 file / 21 tests PASS",
+    "ui": "90 files / 658 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS",
+    "static": "PASS",
+    "diff_check": "PASS",
+    "backend_touched": false,
+    "router_retrieval_touched": false,
+    "router_60_rerun": false
+  },
+  "search_lineage": {
+    "profile": "SEARCH_LINEAGE_CLASSIC",
+    "renderer": "Cytoscape.js",
+    "shape": "rounded rectangle",
+    "legend": ["UPSTREAM L2", "UPSTREAM L1", "CURRENT", "DOWNSTREAM L1", "DOWNSTREAM L2"],
+    "depth": 2,
+    "node_cap": 200,
+    "edge_cap": 400,
+    "canonical_navigation": "PASS",
+    "browser_back_query_preservation": "PASS",
+    "hard_reload": "PASS",
+    "other_graph_profile_regression": "PASS"
+  },
+  "change_management": {
+    "canonical_ledger_events": 73,
+    "schema_events": 17,
+    "metadata_events": 56,
+    "active_exact_table_system_mappings": 0,
+    "authorized_runtime_rows": 0,
+    "authorization": "FAIL-CLOSED / PASS",
+    "production_authorization_widened": false,
+    "populated_presentation": "focused integration PASS",
+    "browser_empty_state": "PASS",
+    "monitoring_non_regression": "PASS"
+  },
+  "governance_editor": {
+    "commands": [
+      "heading 1", "heading 2", "heading 3", "bold", "italic", "underline",
+      "strikethrough", "bullet list", "numbered list", "blockquote", "code block",
+      "add link", "edit link", "remove link", "clear formatting", "undo", "redo",
+      "insert table"
+    ],
+    "toolbar_buttons_with_tooltips": 26,
+    "hover_tooltip": "PASS",
+    "focus_tooltip": "PASS",
+    "active_disabled_state": "PASS",
+    "save_hard_reload_reopen": "PASS",
+    "formatting_persistence": "PASS",
+    "javascript_link_rejected": "PASS",
+    "temporary_active_documents_after_cleanup": 0
+  },
+  "representative_regression": {
+    "admin_profile": "PASS",
+    "search": "PASS",
+    "change_management": "PASS",
+    "monitoring": "PASS",
+    "governance": "PASS",
+    "chat_general": "PASS / retrieval not executed",
+    "chat_vector": "PASS / focused V18 production-path verifier",
+    "chat_graph": "PASS / focused R01 actual traversal verifier",
+    "knowledge_graph": "PASS",
+    "knowledge_studio": "PASS / authoring boundary unchanged"
+  },
+  "cleanup": {
+    "disabled_test_credentials": 3,
+    "active_test_sessions": 0,
+    "temporary_active_documents": 0,
+    "temporary_event_mapping_fixtures": 0,
+    "browser_tabs": 0,
+    "temporary_files": 0,
+    "durable_canonical_state_deleted": false
+  },
+  "actual_prep": "NOT EXECUTED",
+  "actual_ops": "NOT EXECUTED",
+  "current_blocker": "NONE"
+}
