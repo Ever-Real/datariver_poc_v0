@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import process from 'node:process'
 import { after, before, test } from 'node:test'
-import { URL } from 'node:url'
+import { URL, URLSearchParams } from 'node:url'
 
 let server
 let origin
@@ -116,6 +116,24 @@ test('labels missing database metadata without inventing a database identity', a
     'postgres · Database 메타데이터 없음',
   )
   assert.equal(catalogDatabaseBranchLabel('', ''), 'Database 메타데이터 없음')
+})
+
+test('accepts only bounded DataHub lineage direction and depth', async () => {
+  const { datahubLineageProjectionOptions } = await import('./poc-server.mjs?lineage-projection-contract')
+
+  assert.deepEqual(
+    datahubLineageProjectionOptions(new URLSearchParams('direction=downstream&depth=2')),
+    { direction: 'DOWNSTREAM', depth: 2 },
+  )
+  assert.deepEqual(datahubLineageProjectionOptions(new URLSearchParams()), { direction: 'BOTH', depth: 1 })
+  assert.throws(
+    () => datahubLineageProjectionOptions(new URLSearchParams('direction=SIDEWAYS&depth=2')),
+    { statusCode: 400, code: 'LINEAGE_DIRECTION_INVALID' },
+  )
+  assert.throws(
+    () => datahubLineageProjectionOptions(new URLSearchParams('direction=UPSTREAM&depth=3')),
+    { statusCode: 400, code: 'LINEAGE_DEPTH_INVALID' },
+  )
 })
 
 test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph Asset capability selection', async () => {

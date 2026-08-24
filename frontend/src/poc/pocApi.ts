@@ -2267,7 +2267,12 @@ class PocApiClient {
     if (path.endsWith('/lineage') && path.startsWith('/catalog/assets/')) {
       const assetId = decodeURIComponent(path.split('/')[3] ?? '')
       if (runtimeFlags().datahub && assetId.startsWith('urn:li:')) {
-        return gatewayRequest(`/poc-api/datahub/lineage?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
+        const parameters = new URLSearchParams({ urn: assetId })
+        const direction = url.searchParams.get('direction')
+        const depth = url.searchParams.get('depth')
+        if (direction) parameters.set('direction', direction)
+        if (depth) parameters.set('depth', depth)
+        return gatewayRequest(`/poc-api/datahub/lineage?${parameters.toString()}`, { signal: options.signal })
       }
       throw new Error(`DataHub lineage를 사용할 수 없는 자산입니다: ${assetId}`)
     }

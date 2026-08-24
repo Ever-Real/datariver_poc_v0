@@ -316,6 +316,17 @@ function installGatewayMock() {
         source_version: 'datahub-live',
       }))
     }
+    if (url.pathname === '/poc-api/datahub/lineage') {
+      return Promise.resolve(json({
+        center_asset_id: url.searchParams.get('urn'),
+        nodes: [],
+        edges: [],
+        direction: url.searchParams.get('direction') ?? 'BOTH',
+        depth: Number(url.searchParams.get('depth') ?? 1),
+        truncated: false,
+        meta,
+      }))
+    }
     if (url.pathname === '/poc-api/datahub/manual-metadata') {
       return Promise.resolve(json({
         urn: liveAssets[0]!.id,
@@ -839,6 +850,19 @@ describe('POC live-provider compatibility adapter', () => {
     expect(detail.schema_fields[0]).toMatchObject({ fieldPath: 'wafer_id' })
     expect(detail.schema_fields[0]?.globalTags).toEqual({ tags: [{ tag: { name: 'identifier' } }] })
     expect(detail.schema_fields[0]?.glossaryTerms).toEqual({ terms: [{ term: { name: 'Wafer ID' } }] })
+  })
+
+  it('forwards bounded lineage direction and depth through the POC gateway', async () => {
+    const lineage = await useStableApiClient().request<{ direction: string; depth: number }>(
+      `/catalog/assets/${liveAssets[0]!.id}/lineage?direction=DOWNSTREAM&depth=2`,
+    )
+
+    expect(lineage).toMatchObject({ direction: 'DOWNSTREAM', depth: 2 })
+    const requestUrl = vi.mocked(fetch).mock.calls
+      .map(([input]) => new URL(input instanceof Request ? input.url : String(input), 'https://poc.invalid'))
+      .find((url) => url.pathname === '/poc-api/datahub/lineage')
+    expect(requestUrl?.searchParams.get('direction')).toBe('DOWNSTREAM')
+    expect(requestUrl?.searchParams.get('depth')).toBe('2')
   })
 
   it('resolves an opaque active System through its exact schema scopes and preserves provider-platform routing', async () => {

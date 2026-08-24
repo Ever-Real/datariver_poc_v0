@@ -3340,63 +3340,104 @@ async function knowledgeCatalogDetail(searchParameters, principal) {
   return { dataset: knowledgeCatalogDataset(asset, { detail: true }), observed_at: new Date().toISOString() }
 }
 
-async function datahubLineage(urn, principal) {
+export function datahubLineageProjectionOptions(searchParameters) {
+  const direction = (searchParameters.get('direction') || 'BOTH').trim().toUpperCase()
+  const depth = Number(searchParameters.get('depth') || 1)
+  if (!['UPSTREAM', 'DOWNSTREAM', 'BOTH'].includes(direction)) {
+    throw accessError(400, 'LINEAGE_DIRECTION_INVALID', 'Lineage direction must be UPSTREAM, DOWNSTREAM, or BOTH.')
+  }
+  if (!Number.isSafeInteger(depth) || depth < 1 || depth > 2) {
+    throw accessError(400, 'LINEAGE_DEPTH_INVALID', 'Lineage depth must be 1 or 2.')
+  }
+  return { direction, depth }
+}
+
+async function datahubLineage(urn, principal, { direction = 'BOTH', depth = 1 } = {}) {
   const center = await datahubAsset(urn)
   if (!canReadAsset(principal, center, 'catalog')) {
     throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current Table scope.')
   }
-  const directions = await Promise.all(['UPSTREAM', 'DOWNSTREAM'].map(async (direction) => {
-    const data = await datahubGraphql(datahubLineageQuery, {
-      urn,
-      input: {
-        direction,
-        start: 0,
-        count: 100,
-        // A catalog table graph must not split sibling representations or
-        // surface DataHub ghost entities as clickable table assets.
-        separateSiblings: false,
-        includeGhostEntities: false,
-      },
-    })
-    return {
-      direction,
-      total: Number(data.dataset?.lineage?.total || 0),
-      relationships: data.dataset?.lineage?.relationships || [],
-    }
-  }))
+  const requestedDirections = direction === 'BOTH' ? ['UPSTREAM', 'DOWNSTREAM'] : [direction]
+  const maximumNodes = 200
+  const maximumEdges = 400
   const nodes = new Map([[urn, center]])
   const edges = []
   const edgeIds = new Set()
-  for (const group of directions) {
-    for (const relationship of group.relationships) {
-      const entity = relationship.entity
-      const relatedUrn = entity?.urn
-      // The Catalog detail pane can resolve Dataset assets only. Data jobs or
-      // processes remain represented by DataHub's Dataset-to-Dataset lineage,
-      // rather than by a synthetic view_<hash> placeholder node.
-      if (!relatedUrn || relatedUrn === urn || entity?.type !== 'DATASET') continue
-      const relatedAsset = datasetAsset(entity)
-      if (!canReadAsset(principal, relatedAsset, 'catalog')) continue
-      if (!nodes.has(relatedUrn)) nodes.set(relatedUrn, relatedAsset)
-      const edge = group.direction === 'UPSTREAM'
-        ? { source_asset_id: relatedUrn, target_asset_id: urn }
-        : { source_asset_id: urn, target_asset_id: relatedUrn }
-      const edgeId = `${edge.source_asset_id}\u0000${edge.target_asset_id}`
-      if (!edgeIds.has(edgeId)) {
-        edgeIds.add(edgeId)
-        edges.push(edge)
+  let authorizedBoundReached = false
+  let providerTruncated = false
+  for (const currentDirection of requestedDirections) {
+    const visited = new Set([urn])
+    let frontier = [urn]
+    for (let currentDepth = 1; currentDepth <= depth && frontier.length > 0; currentDepth += 1) {
+      const groups = []
+      for (let offset = 0; offset < frontier.length; offset += 4) {
+        groups.push(...await Promise.all(frontier.slice(offset, offset + 4).map(async (currentUrn) => {
+          const data = await datahubGraphql(datahubLineageQuery, {
+            urn: currentUrn,
+            input: {
+              direction: currentDirection,
+              start: 0,
+              count: 100,
+              // A catalog table graph must not split sibling representations or
+              // surface DataHub ghost entities as clickable table assets.
+              separateSiblings: false,
+              includeGhostEntities: false,
+            },
+          })
+          return {
+            currentUrn,
+            total: Number(data.dataset?.lineage?.total || 0),
+            relationships: data.dataset?.lineage?.relationships || [],
+          }
+        })))
       }
+      const nextFrontier = []
+      for (const group of groups) {
+        if (group.total > group.relationships.length) providerTruncated = true
+        for (const relationship of group.relationships) {
+          const entity = relationship.entity
+          const relatedUrn = entity?.urn
+          // The Catalog detail pane can resolve Dataset assets only. Data jobs or
+          // processes remain represented by DataHub's Dataset-to-Dataset lineage,
+          // rather than by a synthetic view_<hash> placeholder node.
+          if (!relatedUrn || relatedUrn === group.currentUrn || entity?.type !== 'DATASET') continue
+          const relatedAsset = datasetAsset(entity)
+          if (!canReadAsset(principal, relatedAsset, 'catalog')) continue
+          if (!nodes.has(relatedUrn)) {
+            if (nodes.size >= maximumNodes) {
+              authorizedBoundReached = true
+              continue
+            }
+            nodes.set(relatedUrn, relatedAsset)
+          }
+          const edge = currentDirection === 'UPSTREAM'
+            ? { source_asset_id: relatedUrn, target_asset_id: group.currentUrn }
+            : { source_asset_id: group.currentUrn, target_asset_id: relatedUrn }
+          const edgeId = `${edge.source_asset_id}\u0000${edge.target_asset_id}`
+          if (!edgeIds.has(edgeId)) {
+            if (edges.length >= maximumEdges) {
+              authorizedBoundReached = true
+              continue
+            }
+            edgeIds.add(edgeId)
+            edges.push(edge)
+          }
+          if (!visited.has(relatedUrn)) {
+            visited.add(relatedUrn)
+            nextFrontier.push(relatedUrn)
+          }
+        }
+      }
+      frontier = nextFrontier
     }
   }
   return {
     center_asset_id: urn,
     nodes: [...nodes.values()],
     edges,
-    direction: 'BOTH',
-    depth: 1,
-    truncated: principal.role === 'admin'
-      ? directions.some((group) => group.total > group.relationships.length)
-      : false,
+    direction,
+    depth,
+    truncated: authorizedBoundReached || (principal.role === 'admin' && providerTruncated),
     meta: catalogMeta(),
   }
 }
@@ -8933,8 +8974,9 @@ async function api(request, response, url, context) {
     return json(response, 200, asset)
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/lineage') {
+    const projection = datahubLineageProjectionOptions(url.searchParams)
     return json(response, 200, await datahubLineage(
-      boundedString(url.searchParams.get('urn'), 4096), context.principal,
+      boundedString(url.searchParams.get('urn'), 4096), context.principal, projection,
     ))
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/datahub/manual-metadata') {
