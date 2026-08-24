@@ -4219,6 +4219,18 @@ export function parseChatRouteDecision(value, graphAssets = []) {
     ...parsed,
     selected_graph_asset: selectedGraph?.asset_id ?? parsed.selected_graph_asset,
   }
+  const firstPrimaryConcept = normalized.primary_concepts[0]?.normalize('NFKC').trim().toLocaleLowerCase() || ''
+  const canonicalAssetType = firstPrimaryConcept.replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const targetsKnowledgeAsset = canonicalAssetType === 'knowledge graph asset'
+    || canonicalAssetType === 'knowledge asset'
+    || graphAssets.some((asset) => {
+      const name = String(asset.name || '').normalize('NFKC').trim().toLocaleLowerCase()
+      return name && (firstPrimaryConcept === name || firstPrimaryConcept.includes(name))
+    })
+  if (normalized.mode === 'GRAPH' && targetsKnowledgeAsset
+    && graphAssetMetadataConceptsOnly(normalized, graphAssets)) {
+    normalized.mode = 'VECTOR'
+  }
   if (normalized.mode === 'GENERAL') {
     Object.assign(normalized, {
       intent: 'GENERAL_CONVERSATION',
@@ -4232,14 +4244,6 @@ export function parseChatRouteDecision(value, graphAssets = []) {
       retrieval_method: 'NONE',
     })
   } else if (normalized.mode === 'VECTOR') {
-    const firstPrimaryConcept = normalized.primary_concepts[0]?.normalize('NFKC').trim().toLocaleLowerCase() || ''
-    const canonicalAssetType = firstPrimaryConcept.replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-    const targetsKnowledgeAsset = canonicalAssetType === 'knowledge graph asset'
-      || canonicalAssetType === 'knowledge asset'
-      || graphAssets.some((asset) => {
-        const name = String(asset.name || '').normalize('NFKC').trim().toLocaleLowerCase()
-        return name && (firstPrimaryConcept === name || firstPrimaryConcept.includes(name))
-      })
     const exactIntent = ['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(normalized.intent)
     const semanticIntent = ['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(normalized.intent)
     normalized.intent = exactIntent || semanticIntent ? normalized.intent : 'SEMANTIC_DISCOVERY'
@@ -4269,6 +4273,25 @@ export function parseChatRouteDecision(value, graphAssets = []) {
     throw new Error('The Chat route classifier returned an inconsistent route.')
   }
   return normalized
+}
+
+function graphAssetMetadataConceptsOnly(route, graphAssets) {
+  const remainingConcepts = [...route.primary_concepts.slice(1), ...route.secondary_concepts]
+  if (remainingConcepts.length === 0) return true
+  const metadataTokens = new Set(graphAssets.flatMap((asset) => [
+    asset.name,
+    asset.graph_type,
+    ...(Array.isArray(asset.supported_intents) ? asset.supported_intents : []),
+    ...(Array.isArray(asset.semantic_capabilities) ? asset.semantic_capabilities : []),
+  ]).flatMap(plannerConceptTokens))
+  return remainingConcepts.every((concept) => plannerConceptTokens(concept)
+    .some((token) => metadataTokens.has(token)))
+}
+
+function plannerConceptTokens(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}]+/gu)
+    .filter((token) => token.length >= 4)
 }
 
 function boundedConceptList(value) {

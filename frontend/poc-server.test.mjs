@@ -286,6 +286,33 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
     selected_graph_asset: asset.name,
     retrieval_method: 'GRAPH_TRAVERSAL',
   }), [asset]).selected_graph_asset, asset.asset_id)
+  const assetMetadataPlan = parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GRAPH',
+    intent: 'LINEAGE',
+    entity_resolution_required: true,
+    graph_traversal_required: true,
+    relation_intent: 'PATH',
+    primary_concepts: ['Knowledge Graph Asset', 'data lineage'],
+    entity_type_hints: ['DATASET', 'TABLE'],
+    selected_graph_asset: asset.asset_id,
+    retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
+  }), [asset])
+  assert.equal(assetMetadataPlan.mode, 'VECTOR')
+  assert.deepEqual(assetMetadataPlan.entity_type_hints, ['KNOWLEDGE_ASSET'])
+  assert.equal(assetMetadataPlan.relation_intent, null)
+  assert.equal(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GRAPH',
+    intent: 'LINEAGE',
+    entity_resolution_required: true,
+    graph_traversal_required: true,
+    relation_intent: 'DOWNSTREAM',
+    primary_concepts: ['Knowledge Graph Asset', 'cost_ledger_lithography'],
+    entity_type_hints: ['TABLE'],
+    selected_graph_asset: asset.asset_id,
+    retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
+  }), [asset]).mode, 'GRAPH')
   assert.throws(() => parseChatRouteDecision(JSON.stringify({
     ...base,
     mode: 'GRAPH',
