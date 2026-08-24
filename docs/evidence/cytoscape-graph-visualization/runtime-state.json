@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-24T05:56:36Z",
+  "phase": "GRAPH VISUALIZATION — CYTOSCAPE.JS",
+  "starting_product_sha": "698669d8e1ded3c9a8927415fbdee377d163ed56",
+  "starting_evidence_sha": "8b63a041fd7cc4f16feebf20eec0ecab4eea5924",
+  "final_product_sha": "4d49a815301a1d4f8d74f02a49601daf7cd9e333",
+  "runtime": {
+    "oci_tag": "datariver-poc:4d49a815301a1d4f8d74f02a49601daf7cd9e333",
+    "oci_revision": "4d49a815301a1d4f8d74f02a49601daf7cd9e333",
+    "health": "healthy",
+    "port_39083_http": 200,
+    "port_39090_http": 200,
+    "prep_executed": false,
+    "ops_executed": false
+  },
+  "dependency": {
+    "name": "cytoscape",
+    "version": "3.34.1",
+    "license": "MIT",
+    "pinned": true,
+    "external_cdn": false,
+    "renderer_chunk_bytes": 435440,
+    "renderer_chunk_gzip_bytes": 136503
+  },
+  "inventory": {
+    "migrated": [
+      "Catalog asset lineage",
+      "Managed Knowledge Graph release preview/explorer",
+      "Knowledge GraphRAG evidence preview",
+      "Change Request impact graph",
+      "Chat catalog evidence lineage through the catalog detail surface"
+    ],
+    "excluded_studio": [
+      "Knowledge Studio GraphBuilder T-Box authoring",
+      "Knowledge Studio Data Enricher A-Box authoring",
+      "Knowledge ingestion authoring canvas"
+    ],
+    "other_non_graph_visualizations": "OUT_OF_SCOPE"
+  },
+  "architecture": {
+    "canonical_backend_dto_preserved": true,
+    "frontend_adapter": "CytoscapeGraphAdapter",
+    "stable_canonical_ids": true,
+    "backend_cytoscape_coupling": false,
+    "lineage_layout": "breadthfirst-rightward",
+    "semantic_layout": "cose-bounded",
+    "studio_renderer": "React Flow"
+  },
+  "lineage": {
+    "managed_asset_total_nodes": 1001,
+    "managed_asset_total_edges": 1950,
+    "managed_initial_nodes": 15,
+    "managed_initial_edges": 23,
+    "managed_layout_ms": 12.5,
+    "managed_first_usable_render_ms": 34.3,
+    "catalog_asset": "cost_ledger_lithography",
+    "catalog_nodes": 4,
+    "catalog_edges": 3,
+    "catalog_request_ms": 47.2,
+    "catalog_layout_ms": 3.7,
+    "catalog_first_usable_render_ms": 17.3,
+    "hard_reload": "PASS"
+  },
+  "metadata_master": {
+    "managed_asset_total_nodes": 12281,
+    "managed_asset_total_edges": 24556,
+    "initial_maximum_nodes": 48,
+    "initial_maximum_edges": 96,
+    "initial_maximum_hops": 1,
+    "observed_initial_nodes": 48,
+    "observed_initial_edges": 47,
+    "observed_transfer_bytes": 103015,
+    "initial_request_ms": 385.8,
+    "transform_ms": 0.1,
+    "layout_ms": 72.7,
+    "first_usable_render_ms": 119.9,
+    "remote_focus_query": "yield_summary_lithography",
+    "remote_focus_nodes": 3,
+    "remote_focus_edges": 2,
+    "remote_focus_request_ms": 610.1,
+    "remote_focus_transfer_bytes": 6284,
+    "expand_request_ms": 345.0,
+    "node_filter_example": "class.table",
+    "node_filter_result_nodes": 1,
+    "node_filter_result_edges": 0,
+    "full_graph_eager_load": false,
+    "server_side_authorization_first": true,
+    "explicit_bounded_result_notice": true
+  },
+  "interactions": {
+    "node_and_edge_selection": "PASS",
+    "zoom_pan_fit_reset": "PASS",
+    "search_focus": "PASS",
+    "upstream_downstream_path_highlight": "PASS",
+    "expand_collapse": "PASS",
+    "depth_node_relation_filters": "PASS",
+    "detail_provenance_legend": "PASS",
+    "keyboard_controls": "PASS",
+    "dom_accessible_detail": "PASS"
+  },
+  "lifecycle": {
+    "repeated_open_close_cycles": 4,
+    "settled_closed_sections": 0,
+    "settled_closed_canvas_hosts": 0,
+    "settled_closed_canvases": 0,
+    "reopened_sections": 1,
+    "reopened_canvas_hosts": 1,
+    "reopened_canvases": 3,
+    "duplicate_listener_test": "PASS",
+    "cytoscape_destroy_test": "PASS",
+    "inflight_abort_test": "PASS"
+  },
+  "authorization": {
+    "authorized_bounded_payload": "PASS",
+    "unauthenticated_snapshot_status": 401,
+    "unauthenticated_snapshot_code": "SESSION_REQUIRED",
+    "shared_semantic_node_leakage_test": "PASS",
+    "mcp_existing_authorization_unchanged": "PASS",
+    "frontend_full_graph_prefetch": false
+  },
+  "managed_assets": [
+    {
+      "name": "Default Lineage Graph",
+      "type": "LINEAGE",
+      "version": 6,
+      "nodes": 1001,
+      "edges": 1950,
+      "status": "READY",
+      "refresh": "DAILY",
+      "last_result": "NO_OP"
+    },
+    {
+      "name": "Metadata Master Graph",
+      "type": "METADATA_MASTER",
+      "version": 6,
+      "nodes": 12281,
+      "edges": 24556,
+      "status": "READY",
+      "refresh": "DAILY",
+      "last_result": "SUCCESS"
+    }
+  ],
+  "source_gates": {
+    "server": "116/116 PASS",
+    "ui": "90 files / 641 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "static": "PASS",
+    "build": "PASS",
+    "diff_check": "PASS"
+  },
+  "browser_gates": {
+    "knowledge_assets": "PASS",
+    "default_lineage_cytoscape": "PASS",
+    "metadata_master_cytoscape": "PASS",
+    "graphrag_preview_cytoscape": "PASS",
+    "catalog_lineage_cytoscape": "PASS",
+    "general_chat": "PASS_NO_RETRIEVAL",
+    "vector_chat": "PASS_MANAGED_ASSET_EVIDENCE",
+    "graph_chat": "PASS_ACTUAL_NODE_RELATION_EVIDENCE",
+    "admin_profile": "PASS",
+    "search": "PASS",
+    "change_management": "PASS",
+    "monitoring": "PASS",
+    "hard_reload": "PASS",
+    "studio_opens": "PASS",
+    "studio_react_flow_instances": 1,
+    "studio_cytoscape_instances": 0
+  },
+  "preserved_regression": {
+    "router_general": "20/20",
+    "router_vector": "20/20",
+    "router_graph": "20/20",
+    "router_total": "60/60",
+    "router_boundary": "8/8",
+    "full_router_rerun": false,
+    "reason": "Renderer-only work did not change router, retrieval, traversal, or authorization semantics."
+  },
+  "cleanup": {
+    "temporary_credential_login_enabled": false,
+    "temporary_active_sessions": 0,
+    "temporary_password_file_present": false,
+    "clipboard_cleared": true,
+    "browser_tabs": 0,
+    "temporary_graph_fixtures": 0,
+    "temporary_graph_assets": 0,
+    "preparing_refresh_runs": 0,
+    "canonical_graphs_preserved": true
+  },
+  "status": "COMPLETE_RUNTIME_VERIFIED"
+}
