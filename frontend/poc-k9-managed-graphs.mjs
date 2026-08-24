@@ -12,6 +12,7 @@ import {
 } from './poc-knowledge-k9-contracts.mjs'
 
 const INTERNAL_CLASSIFICATION = 'INTERNAL'
+const NEO4J_WRITE_BATCH_SIZE = 500
 
 export function buildK9GlossaryScrollVariables(scrollId) {
   return {
@@ -324,18 +325,32 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         { namespace: stagingNamespace }
       )
 
-      for (const node of mappedData.nodes) {
+      for (let offset = 0; offset < mappedData.nodes.length; offset += NEO4J_WRITE_BATCH_SIZE) {
+        const nodes = mappedData.nodes.slice(offset, offset + NEO4J_WRITE_BATCH_SIZE).map((node) => ({
+          id: node.id,
+          type: node.type,
+          classification: node.classification,
+          properties: canonicalStringify(node.properties || {}),
+        }))
         await neo4j.run(
-          'CREATE (n:K9Node { namespace: $ns, id: $id, type: $type, classification: $classification, properties: $props })',
-          { ns: stagingNamespace, id: node.id, type: node.type, classification: node.classification, props: canonicalStringify(node.properties || {}) }
+          'UNWIND $nodes AS node ' +
+          'CREATE (n:K9Node { namespace: $ns, id: node.id, type: node.type, classification: node.classification, properties: node.properties })',
+          { ns: stagingNamespace, nodes }
         )
       }
 
-      for (const edge of mappedData.edges) {
+      for (let offset = 0; offset < mappedData.edges.length; offset += NEO4J_WRITE_BATCH_SIZE) {
+        const edges = mappedData.edges.slice(offset, offset + NEO4J_WRITE_BATCH_SIZE).map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          type: edge.type,
+          properties: canonicalStringify(edge.properties || {}),
+        }))
         await neo4j.run(
-          'MATCH (source:K9Node { namespace: $ns, id: $sourceId }), (target:K9Node { namespace: $ns, id: $targetId }) ' +
-          'CREATE (source)-[r:K9Edge { type: $type, properties: $props }]->(target)',
-          { ns: stagingNamespace, sourceId: edge.source, targetId: edge.target, type: edge.type, props: canonicalStringify(edge.properties || {}) }
+          'UNWIND $edges AS edge ' +
+          'MATCH (source:K9Node { namespace: $ns, id: edge.source }), (target:K9Node { namespace: $ns, id: edge.target }) ' +
+          'CREATE (source)-[r:K9Edge { type: edge.type, properties: edge.properties }]->(target)',
+          { ns: stagingNamespace, edges }
         )
       }
 

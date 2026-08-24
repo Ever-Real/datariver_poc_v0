@@ -220,6 +220,29 @@ test('K9 Managed Graphs - identical NO_OP', async () => {
   assert.equal(stateStore.finalizeK9RunNoOp.mock.calls.length, 1)
 })
 
+test('K9 Managed Graphs writes large staging projections in bounded batches', async () => {
+  const stateStore = createBaseStateStore()
+  const neo4j = createBaseNeo4j()
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j })
+  await k9.bootstrapK9Policies(authCtx)
+  const policy = stateStore.ensureK9Policies.mock.calls[0].arguments[0]
+    .find((item) => item.managed_intent === 'metadata-lineage')
+  stateStore.getK9Policy.mock.mockImplementation(async () => policy)
+  const ids = Array.from({ length: 1001 }, (_, index) => (
+    `TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,T${String(index).padStart(4, '0')},PROD)`
+  ))
+  const result = await k9.triggerLineagePublish(authCtx, async () => ({
+    authority_pin: validAuthorityPin,
+    nodes: ids.map((id) => ({ id, classification: 'INTERNAL' })),
+    edges: ids.slice(1).map((target, index) => ({ source_asset_id: ids[index], target_asset_id: target })),
+  }))
+  assert.equal(result.status, 'FAILURE')
+  const nodeWrites = neo4j.run.mock.calls.filter((call) => call.arguments[0].includes('UNWIND $nodes AS node'))
+  const edgeWrites = neo4j.run.mock.calls.filter((call) => call.arguments[0].includes('UNWIND $edges AS edge'))
+  assert.deepEqual(nodeWrites.map((call) => call.arguments[1].nodes.length), [500, 500, 1])
+  assert.deepEqual(edgeWrites.map((call) => call.arguments[1].edges.length), [500, 500])
+})
+
 test('K9 Managed Graphs - PREPARING->FAILURE cleanup on Neo4j mismatch', async () => {
   const stateStore = createBaseStateStore()
   const neo4j = createBaseNeo4j()
