@@ -109,6 +109,22 @@ function defaultRequest(path: string, options?: RequestOptions): Promise<unknown
 }
 
 describe('catalog workspace', () => {
+  it('restores the canonical asset detail from a hard-reloaded catalog URL', async () => {
+    const originalUrl = window.location.href
+    const directUrl = new URL(window.location.href)
+    directUrl.search = `?page=catalog&q=wafer&catalogAsset=${asset.id}`
+    window.history.replaceState(window.history.state, '', directUrl)
+
+    render(<TestCatalogPage client={clientWith(defaultRequest)} initialQuery="wafer" />)
+
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText('wafer_events')).toBeInTheDocument()
+    expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBe(asset.id)
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('wafer')
+
+    window.history.replaceState(window.history.state, '', originalUrl)
+  })
+
   it('submits the full multi-term query when no autocomplete option is selected', async () => {
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options

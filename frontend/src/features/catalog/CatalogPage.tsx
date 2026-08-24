@@ -378,6 +378,7 @@ export function CatalogPage({
         setSelectedAssetId(assetId)
       } else setSelectedAssetId(undefined)
     }
+    restoreAsset()
     window.addEventListener('popstate', restoreAsset)
     return () => window.removeEventListener('popstate', restoreAsset)
   }, [])
