@@ -6368,7 +6368,13 @@ export function authorizeManagedK9Release(principal, canonicalRelease) {
 
 async function managedK9Assets(context) {
   if (typeof context.stateStore.listK9ManagedGraphAssets !== 'function') return []
-  const rows = await context.stateStore.listK9ManagedGraphAssets()
+  let rows
+  try {
+    rows = await context.stateStore.listK9ManagedGraphAssets()
+  } catch (error) {
+    if (!context.stateStore.configured?.postgres) return []
+    throw error
+  }
   const bindingHash = catalogEmbeddingBindingHash()
   const semanticIndexReady = Boolean(
     bindingHash && await context.stateStore.catalogEmbeddingActiveGeneration(bindingHash),

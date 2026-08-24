@@ -10,6 +10,53 @@ import {
 } from './poc-access-document.mjs'
 import { approvedDefaultFeatureSecurityPolicy } from './poc-feature-security-policy.mjs'
 import { applyTableSystemMappingCommand } from './poc-table-system-mappings.mjs'
+import { K9_POLICIES } from './poc-k9-managed-graphs.mjs'
+
+const managedLineageGraphId = K9_POLICIES.METADATA_LINEAGE.graph_id
+const providerSourceUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.RAW.source_events,PROD)'
+const providerWaferUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+const providerViewUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.view_f09ab31,PROD)'
+const managedK9Nodes = [
+  { id: `TABLE:${providerSourceUrn}`, type: 'class.table', classification: 'INTERNAL', properties: { external_urn: providerSourceUrn, name: 'source_events' } },
+  { id: `TABLE:${providerWaferUrn}`, type: 'class.table', classification: 'INTERNAL', properties: { external_urn: providerWaferUrn, name: 'wafer_events' } },
+  { id: `TABLE:${providerViewUrn}`, type: 'class.table', classification: 'INTERNAL', properties: { external_urn: providerViewUrn, name: 'wafer_quality_view' } },
+]
+const managedK9Edges = [
+  { source: `TABLE:${providerWaferUrn}`, target: `TABLE:${providerSourceUrn}`, type: 'rel.dataset_depends_on', properties: {} },
+  { source: `TABLE:${providerViewUrn}`, target: `TABLE:${providerWaferUrn}`, type: 'rel.dataset_depends_on', properties: {} },
+]
+const managedK9Row = {
+  graph_id: managedLineageGraphId,
+  name: 'Metadata Lineage',
+  status: 'ACTIVE',
+  classification: 'INTERNAL',
+  ontology_version_id: 'provider-ontology-v1',
+  studio_release_id: 'provider-studio-release-v1',
+  publication_version: 1,
+  schedule: '0 2 * * *',
+  managed_intent: 'CATALOG_MIRROR',
+  policy_hash: 'provider-policy-hash',
+  active_input_snapshot_hash: 'provider-input-hash',
+  active_release_pointer: 'provider-managed-release-v1',
+  active_release_hash: 'provider-release-hash',
+  active_completed_at: '2026-08-24T00:00:00.000Z',
+  latest_completed_at: '2026-08-24T00:00:00.000Z',
+  latest_result: 'RUN',
+  created_at: '2026-08-24T00:00:00.000Z',
+  updated_at: '2026-08-24T00:00:00.000Z',
+  active_manifest: { node_count: managedK9Nodes.length, edge_count: managedK9Edges.length },
+  active_canonical_release: {
+    manifest: {
+      graph_id: managedLineageGraphId,
+      policy_hash: 'provider-policy-hash',
+      input_snapshot_hash: 'provider-input-hash',
+      node_count: managedK9Nodes.length,
+      edge_count: managedK9Edges.length,
+    },
+    nodes: managedK9Nodes,
+    edges: managedK9Edges,
+  },
+}
 
 const requests = []
 const objects = new Map()
@@ -83,26 +130,54 @@ function providerHandler(request, response) {
           summary: '사용자는 wafer_events 메타데이터를 확인했고 후속 컬럼 조회를 원합니다.',
         }) } }] })
       }
-      if (systemPrompt.includes('Classify one untrusted Data Catalog question')) {
-        const question = payload.messages?.[1]?.content || ''
-        const graph = /lineage|upstream|impact/i.test(question)
+      if (systemPrompt.includes('Plan one untrusted Data Catalog question')) {
+        const plannerInput = payload.messages?.[1]?.content || ''
+        const question = plannerInput.split('\n\nQuestion:\n').at(-1) || ''
+        const graph = /lineage|upstream|downstream|impact|연결 관계/i.test(question)
         const exact = /wafer_events/i.test(question)
-        const decision = graph
+        const inventory = /몇 개|나열/i.test(question)
+        const general = /나의 이름/i.test(question)
+        const graphAvailable = plannerInput.includes(managedLineageGraphId)
+        const decision = general
+          ? {
+              mode: 'GENERAL', confidence: 0.99, intent: 'GENERAL_CONVERSATION',
+              entity_resolution_required: false, graph_traversal_required: false,
+              semantic_retrieval_required: false, fallback_mode: null,
+              primary_concepts: [], secondary_concepts: [], relation_intent: null,
+              entity_type_hints: [], selected_graph_asset: null, retrieval_method: 'NONE',
+            }
+          : graph && graphAvailable
           ? {
               mode: 'GRAPH', confidence: 0.98, intent: 'LINEAGE',
               entity_resolution_required: true, graph_traversal_required: true,
               semantic_retrieval_required: false, fallback_mode: 'VECTOR',
+              primary_concepts: exact ? ['wafer_events'] : ['lineage'], secondary_concepts: [],
+              relation_intent: /upstream/i.test(question) ? 'UPSTREAM' : /downstream|impact/i.test(question) ? 'DOWNSTREAM' : 'DEPENDENCY',
+              entity_type_hints: ['TABLE'], selected_graph_asset: managedLineageGraphId,
+              retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
             }
-          : exact
+          : inventory
+            ? {
+                mode: 'VECTOR', confidence: 0.99, intent: 'CATALOG_INVENTORY',
+                entity_resolution_required: false, graph_traversal_required: false,
+                semantic_retrieval_required: false, fallback_mode: null,
+                primary_concepts: ['table inventory'], secondary_concepts: [], relation_intent: null,
+                entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
+              }
+            : exact
             ? {
                 mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
                 entity_resolution_required: true, graph_traversal_required: false,
                 semantic_retrieval_required: false, fallback_mode: 'GENERAL',
+                primary_concepts: ['wafer_events'], secondary_concepts: [], relation_intent: null,
+                entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
               }
             : {
                 mode: 'VECTOR', confidence: 0.92, intent: 'SEMANTIC_DISCOVERY',
                 entity_resolution_required: false, graph_traversal_required: false,
                 semantic_retrieval_required: true, fallback_mode: 'GENERAL',
+                primary_concepts: ['metadata'], secondary_concepts: [], relation_intent: null,
+                entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'SEMANTIC',
               }
         return sendJson(response, { choices: [{ message: { content: forcedClassifierResponse ?? JSON.stringify(decision) } }] })
       }
@@ -336,6 +411,18 @@ function providerHandler(request, response) {
       const payload = JSON.parse(body.toString('utf8'))
       const query = payload.statements?.[0]?.statement || ''
       const parameters = payload.statements?.[0]?.parameters || {}
+      if (query.includes('MATCH (node:K9Node)')) {
+        const nodeIds = new Set(parameters.nodeIds || [])
+        return sendJson(response, { errors: [], results: [{ data: managedK9Nodes
+          .filter((node) => nodeIds.has(node.id))
+          .map((node) => ({ row: [node.id, node.type, node.classification, JSON.stringify(node.properties)] })) }] })
+      }
+      if (query.includes('[relation:K9Edge]')) {
+        const nodeIds = new Set(parameters.nodeIds || [])
+        return sendJson(response, { errors: [], results: [{ data: managedK9Edges
+          .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+          .map((edge) => ({ row: [edge.source, edge.target, edge.type, JSON.stringify(edge.properties)] })) }] })
+      }
       if (query.includes('KNOWLEDGE_CHAT_NODES_V1')) {
         const expected = parameters.nodeEvidence || []
         const maximum = Number(parameters.maximumNodes || 200)
@@ -511,6 +598,10 @@ before(async () => {
   const { createPocStateStore } = await import('./poc-state-store.mjs?provider-contract-test')
   const module = await import('./poc-server.mjs?provider-contract-test')
   providerStateStore = createPocStateStore()
+  providerStateStore.listK9ManagedGraphAssets = async () => [managedK9Row]
+  providerStateStore.getK9ManagedGraphAsset = async (graphId) => (
+    graphId === managedLineageGraphId ? managedK9Row : null
+  )
   await providerStateStore.write('change-history-access-v1', {
     schema_version: 1,
     active_subject_id: 'provider-test-subject',
@@ -687,13 +778,13 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.ok(JSON.parse(catalogBatch.body).input.every((document) => document.includes('Columns (')))
   const classifierRequest = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
-    return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')
   })
   const classifierPayload = JSON.parse(classifierRequest.body)
   assert.equal(classifierPayload.response_format.type, 'json_schema')
   assert.equal(classifierPayload.reasoning_effort, 'none')
   assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
-  assert.equal(classifierPayload.max_tokens, 320)
+  assert.equal(classifierPayload.max_tokens, 640)
 })
 
 test('counts the complete DataHub table inventory and returns the requested list cardinality', async () => {
@@ -713,7 +804,7 @@ test('counts the complete DataHub table inventory and returns the requested list
   assert.match(payload.answer, /테이블 2개/)
   assert.match(payload.answer, /inspection_results/)
   assert.match(payload.answer, /wafer_events/)
-  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore)
+  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore + 1)
 })
 
 test('streams real Chat workflow stages before the final provider result', async () => {
@@ -800,7 +891,7 @@ test('compacts exactly five bounded Chat turns and rejects oversized question or
 
 test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -813,13 +904,13 @@ test('routes a high-confidence Korean discovery question to the full vector inve
   assert.ok(payload.evidence.length > 0)
   assert.ok(payload.evidence.every((item) => item.retrieval_method === 'PGVECTOR_COSINE'))
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
-  assert.equal(classifiersAfter, classifiersBefore)
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore + 1)
 })
 
 test('resolves an exact table name and composes detailed DataHub metadata evidence', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -839,18 +930,18 @@ test('resolves an exact table name and composes detailed DataHub metadata eviden
   assert.equal(payload.evidence[0].dataset_kind, 'TABLE')
   const composer = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
-    return !JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
+    return !JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')
   })
   assert.equal(JSON.parse(composer.body).max_tokens, 896)
   assert.doesNotMatch(JSON.parse(composer.body).messages[0].content, /concisely/i)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
-  assert.equal(classifiersAfter, classifiersBefore)
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore + 1)
 })
 
-test('routes an exact Korean relationship question deterministically before the classifier', async () => {
+test('routes an exact Korean relationship question through one semantic planner and the managed graph', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
   const completionsBefore = requests.filter((request) => request.path.endsWith('/chat/completions')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
@@ -860,14 +951,16 @@ test('routes an exact Korean relationship question deterministically before the 
   assert.equal(response.status, 200)
   const payload = await response.json()
   assert.equal(payload.route.selected_mode, 'GRAPH')
-  assert.equal(payload.route.intent, 'RELATIONSHIP')
-  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
-  assert.match(payload.answer, /source_events/)
-  assert.match(payload.answer, /wafer_quality_view/)
+  assert.equal(payload.route.intent, 'LINEAGE')
+  assert.equal(payload.route.selected_graph_asset, managedLineageGraphId)
+  assert.equal(payload.route.knowledge_scope.selection_source, 'MANAGED_ASSET_CAPABILITY')
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_NODE'))
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION'))
+  assert.ok(payload.evidence.some((item) => item.name === 'source_events'))
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
-  assert.equal(classifiersAfter, classifiersBefore)
-  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore)
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore + 1)
+  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore + 2)
 })
 
 test('resolves an exact graph asset from the cached provider inventory when DataHub text ranking omits it', async () => {
@@ -880,15 +973,16 @@ test('resolves an exact graph asset from the cached provider inventory when Data
     })
     assert.equal(response.status, 200)
     const payload = await response.json()
-    const lineage = payload.evidence.find((item) => item.evidence_type === 'DATAHUB_LINEAGE')
-    assert.equal(lineage.entity_resolution_method, 'CATALOG_EXACT')
+    assert.equal(payload.route.selected_graph_asset, managedLineageGraphId)
+    assert.equal(payload.route.resolved_entities[0].method, 'CATALOG_EXACT')
+    assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION'))
     assert.doesNotMatch(payload.answer, /가장 가까운 후보/)
   } finally {
     hideExactFromTextSearch = false
   }
 })
 
-test('routes lineage questions through DataHub lineage only without generic Neo4j evidence', async () => {
+test('routes lineage questions through the capability-selected managed graph only', async () => {
   const genericNeo4jReadsBefore = requests.filter((request) => (
     request.path === '/db/neo4j/tx/commit'
     && request.body.includes('MATCH (source)-[relation]->(target)')
@@ -901,15 +995,11 @@ test('routes lineage questions through DataHub lineage only without generic Neo4
   assert.equal(response.status, 200)
   const payload = await response.json()
   assert.equal(payload.route.selected_mode, 'GRAPH')
-  assert.equal(payload.route.reason, 'GRAPH_INTENT')
-  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
-  assert.ok(payload.evidence.every((item) => item.evidence_type !== 'KNOWLEDGE_GRAPH'))
-  const lineage = payload.evidence.find((item) => item.evidence_type === 'DATAHUB_LINEAGE')
-  assert.match(lineage.description, /Upstream datasets: source_events/)
-  assert.match(lineage.description, /Downstream datasets: wafer_quality_view/)
-  assert.doesNotMatch(lineage.description, /view_f09ab31/)
-  assert.doesNotMatch(lineage.description, /Columns \(/)
-  assert.ok(payload.workflow.some((item) => item.detail_code === 'DATAHUB_LINEAGE_EVIDENCE_BOUND'))
+  assert.equal(payload.route.reason, 'GRAPH_ASSET_CAPABILITY')
+  assert.equal(payload.route.selected_graph_asset, managedLineageGraphId)
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_NODE'))
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION'))
+  assert.ok(payload.workflow.some((item) => item.detail_code === 'AUTHORIZED_KNOWLEDGE_ASSET_EVIDENCE_BOUND'))
   assert.equal(requests.filter((request) => (
     request.path === '/db/neo4j/tx/commit'
     && request.body.includes('MATCH (source)-[relation]->(target)')
@@ -953,6 +1043,8 @@ test('routes general Korean conversation without probing DataHub as arbitrary as
     mode: 'GENERAL', confidence: 0.99, intent: 'GENERAL_CONVERSATION',
     entity_resolution_required: false, graph_traversal_required: false,
     semantic_retrieval_required: false, fallback_mode: null,
+    primary_concepts: [], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: [], selected_graph_asset: null, retrieval_method: 'NONE',
   })
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1587,8 +1679,8 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     const graphsResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
     assert.equal(graphsResponse.status, 200, await graphsResponse.clone().text())
     const graphs = await graphsResponse.json()
-    assert.deepEqual(graphs.map((item) => item.id), [graphId])
-    assert.equal(graphs[0].active_release_id, releaseId)
+    assert.deepEqual(new Set(graphs.map((item) => item.id)), new Set([graphId, managedLineageGraphId]))
+    assert.equal(graphs.find((item) => item.id === graphId).active_release_id, releaseId)
     const releasesResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases`)
     assert.equal(releasesResponse.status, 200, await releasesResponse.clone().text())
     assert.deepEqual((await releasesResponse.json()).map((item) => item.id), [releaseId])
@@ -1617,13 +1709,13 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     assert.ok(graphRag.citations.every((item) => item.source_locator.includes(tableUrn)))
     const mainChatResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'AUTO' }),
+      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'GRAPH' }),
     })
     assert.equal(mainChatResponse.status, 200, await mainChatResponse.clone().text())
     const mainChat = await mainChatResponse.json()
     assert.equal(mainChat.answer, 'Live provider answer [1]')
     assert.equal(mainChat.route.reason, 'KNOWLEDGE_ASSET_POLICY')
-    assert.equal(mainChat.route.intent, 'KNOWLEDGE_RELATIONSHIP')
+    assert.equal(mainChat.route.intent, 'EXPLICIT_SELECTION')
     assert.equal(mainChat.route.knowledge_scope.graph_id, graphId)
     assert.equal(mainChat.route.knowledge_scope.release_id, releaseId)
     assert.equal(mainChat.route.knowledge_scope.policy_id, 'knowledge-k7-policy')
@@ -1642,7 +1734,7 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     await providerStateStore.write('feature-security-policy-v1', approvedDefaultFeatureSecurityPolicy())
     const policyHidden = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
     assert.equal(policyHidden.status, 200)
-    assert.deepEqual(await policyHidden.json(), [])
+    assert.deepEqual((await policyHidden.json()).map((item) => item.id), [managedLineageGraphId])
     await providerStateStore.write('feature-security-policy-v1', knowledgePolicy)
     await providerStateStore.write('change-history-access-v1', {
       schema_version: 1,
@@ -1670,12 +1762,12 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     })
     const hiddenGraphs = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
     assert.equal(hiddenGraphs.status, 200)
-    assert.deepEqual(await hiddenGraphs.json(), [])
+    assert.deepEqual((await hiddenGraphs.json()).map((item) => item.id), [managedLineageGraphId])
     const hiddenSnapshot = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
     assert.equal(hiddenSnapshot.status, 404)
     const hiddenMainChatResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'AUTO' }),
+      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'GRAPH' }),
     })
     assert.equal(hiddenMainChatResponse.status, 200, await hiddenMainChatResponse.clone().text())
     const hiddenMainChat = await hiddenMainChatResponse.json()
