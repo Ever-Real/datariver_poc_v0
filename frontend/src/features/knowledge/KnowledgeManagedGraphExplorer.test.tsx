@@ -71,12 +71,12 @@ describe('KnowledgeManagedGraphExplorer', () => {
     expect(request.mock.calls[0]?.[0]).toContain('maximum_hops=1')
     expect(request.mock.calls[0]?.[0]).not.toContain('maximum_nodes=12281')
 
-    const expandButton = screen.getByRole('button', { name: '선택 확장' })
-    await waitFor(() => expect(expandButton).toBeEnabled())
-    expandButton.click()
+    screen.getAllByRole('button', { name: 'Upstream 2-level 확장' })[0]?.click()
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
     expect(request.mock.calls[1]?.[0]).toContain('root_node_id=table-a')
-    expect(await screen.findByText(/3 nodes \/ 2 edges를 권한 범위에서 확장/)).toBeInTheDocument()
+    expect(request.mock.calls[1]?.[0]).toContain('maximum_hops=2')
+    expect(request.mock.calls[1]?.[0]).toContain('direction=UPSTREAM')
+    expect(await screen.findByText(/UPSTREAM 2-level · 3 nodes \/ 2 edges를 권한 범위에서 확장/)).toBeInTheDocument()
   })
 
   it('reloads server-side type filters without exposing the full canonical graph', async () => {

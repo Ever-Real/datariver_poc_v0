@@ -942,6 +942,7 @@ export interface KnowledgeSnapshot {
   bounds?: {
     root_node_id: string
     maximum_hops: number
+    direction?: 'UPSTREAM' | 'DOWNSTREAM' | 'BOTH'
     node_limit: number
     edge_limit: number
     returned_nodes: number

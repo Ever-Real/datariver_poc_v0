@@ -359,6 +359,7 @@ export function CatalogDetailPane({
         {lineage && <div className="catalog-lineage">
           <div className="catalog-lineage-summary"><Network size={15} /><span>{lineage.nodes.length} nodes · {lineage.edges.length} edges</span>{lineage.truncated && <b>일부 경로 생략</b>}</div>
           <CatalogLineageGraph
+            client={client}
             lineage={lineage}
             onSelectAsset={onSelectAsset ?? (() => undefined)}
           />

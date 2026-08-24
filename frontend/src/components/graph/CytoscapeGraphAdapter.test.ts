@@ -71,6 +71,15 @@ describe('Cytoscape graph adapter', () => {
     expect(elements.find((element) => element.data.id === 'edge-a-b')?.data).toMatchObject({ source: 'node-a', target: 'node-b' })
   })
 
+  it('projects managed lineage visually from upstream left to downstream right without changing edge identity', () => {
+    const graph = knowledgeSnapshotToReadGraph(snapshot, 'LINEAGE', 'node-a')
+    expect(graph.nodes.map(({ id, role }) => [id, role])).toEqual([
+      ['node-a', 'ROOT'],
+      ['node-b', 'UPSTREAM'],
+    ])
+    expect(graph.edges[0]).toMatchObject({ id: 'edge-a-b', source: 'node-b', target: 'node-a' })
+  })
+
   it('rejects duplicate identities and missing canonical endpoints before rendering', () => {
     const graph = knowledgeSnapshotToReadGraph(snapshot, 'SEMANTIC')
     expect(() => toCytoscapeElements({ ...graph, nodes: [...graph.nodes, graph.nodes[0]!] })).toThrow(/Duplicate/)
@@ -78,9 +87,8 @@ describe('Cytoscape graph adapter', () => {
   })
 
   it('uses graph-type layout configuration and merges expansions by canonical identity', () => {
-    expect(cytoscapeLayout('LINEAGE')).toMatchObject({ name: 'breadthfirst', direction: 'rightward' })
-    expect(cytoscapeLayout('LINEAGE')).not.toHaveProperty('roots')
-    expect(cytoscapeLayout('METADATA_MASTER')).toMatchObject({ name: 'cose', animate: false })
+    expect(cytoscapeLayout('LINEAGE')).toMatchObject({ name: 'cola', fit: false, randomize: false, flow: { axis: 'x' } })
+    expect(cytoscapeLayout('METADATA_MASTER')).toMatchObject({ name: 'cola', animate: true, fit: false, randomize: false })
 
     const base = knowledgeSnapshotToReadGraph(snapshot, 'METADATA_MASTER', 'node-a')
     const merged = mergeReadGraphs(base, [{
@@ -90,6 +98,6 @@ describe('Cytoscape graph adapter', () => {
     }])
     expect(merged.nodes).toHaveLength(2)
     expect(merged.edges).toHaveLength(1)
-    expect(merged.nodes.find((node) => node.id === 'node-b')?.label).toBe('Updated B')
+    expect(merged.nodes.find((node) => node.id === 'node-b')?.label).toBe('Business B')
   })
 })

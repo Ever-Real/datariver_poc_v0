@@ -345,6 +345,18 @@ test('managed visualization resolves and bounds only the authorization-filtered 
   assert.equal(selected.truncated, true)
   assert.equal(JSON.stringify(selected).includes('table-b'), false)
   assert.equal(JSON.stringify(selected).includes('Hidden Table'), false)
+
+  const upstream = selectManagedKnowledgeVisualization(authorized, {
+    rootNodeId: 'table-a', maximumNodes: 3, maximumEdges: 2, maximumHops: 2,
+    direction: 'UPSTREAM',
+  })
+  assert.deepEqual(upstream.nodes.map((node) => node.id), ['table-a', 'column-a', 'term-shared'])
+  const downstream = selectManagedKnowledgeVisualization(authorized, {
+    rootNodeId: 'column-a', maximumNodes: 3, maximumEdges: 2, maximumHops: 2,
+    direction: 'DOWNSTREAM',
+  })
+  assert.deepEqual(downstream.nodes.map((node) => node.id), ['table-a', 'column-a'])
+  assert.equal(JSON.stringify(downstream).includes('table-b'), false)
 })
 
 test('serves the POC at the root with the runtime boundary', async () => {

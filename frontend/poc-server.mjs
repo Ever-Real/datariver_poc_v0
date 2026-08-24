@@ -6658,6 +6658,7 @@ export function selectManagedKnowledgeVisualization(canonicalRelease, {
   maximumNodes,
   maximumEdges,
   maximumHops,
+  direction = 'BOTH',
   nodeTypes = [],
   edgeTypes = [],
 }) {
@@ -6680,8 +6681,11 @@ export function selectManagedKnowledgeVisualization(canonicalRelease, {
     const next = []
     for (const edge of candidateEdges) {
       let neighbor
-      if (frontierIds.has(edge.source)) neighbor = edge.target
-      else if (frontierIds.has(edge.target)) neighbor = edge.source
+      if ((direction === 'BOTH' || direction === 'UPSTREAM') && frontierIds.has(edge.source)) {
+        neighbor = edge.target
+      } else if ((direction === 'BOTH' || direction === 'DOWNSTREAM') && frontierIds.has(edge.target)) {
+        neighbor = edge.source
+      }
       if (neighbor && !visited.has(neighbor) && visited.size < maximumNodes) {
         visited.add(neighbor)
         next.push(neighbor)
@@ -6711,6 +6715,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
         maximumNodes: boundedMaximumNodes,
         maximumEdges: managedVisualization.maximumEdges,
         maximumHops: managedMaximumHops,
+        direction: managedVisualization.direction,
         nodeTypes: managedVisualization.nodeTypes,
         edgeTypes: managedVisualization.edgeTypes,
       })
@@ -6917,9 +6922,13 @@ function knowledgeVisualizationBounds(parameters) {
   }
   const rootNodeId = parameters.get('root_node_id') || ''
   const focusQuery = parameters.get('focus_query') || ''
+  const direction = (parameters.get('direction') || 'BOTH').toLocaleUpperCase()
   if ((rootNodeId && focusQuery) || rootNodeId.length > 8192 || focusQuery.length > 240
     || hasAccessControlCharacter(rootNodeId) || hasAccessControlCharacter(focusQuery)) {
     throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_FOCUS_INVALID', 'Use one bounded root_node_id or focus_query value.')
+  }
+  if (!['UPSTREAM', 'DOWNSTREAM', 'BOTH'].includes(direction)) {
+    throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_DIRECTION_INVALID', 'direction must be UPSTREAM, DOWNSTREAM, or BOTH.')
   }
   return {
     maximumNodes,
@@ -6927,6 +6936,7 @@ function knowledgeVisualizationBounds(parameters) {
     maximumHops,
     rootNodeId,
     focusQuery,
+    direction,
     nodeTypes: knowledgeVisualizationTypeParameters(parameters, 'node_type'),
     edgeTypes: knowledgeVisualizationTypeParameters(parameters, 'edge_type'),
   }
@@ -6956,6 +6966,7 @@ async function knowledgeVisualizationSnapshot(scope, parameters) {
       maximumNodes: options.maximumNodes,
       maximumEdges: options.maximumEdges,
       maximumHops: options.maximumHops,
+      direction: options.direction,
     })
     const selectedNodeIds = new Set(selected.nodes.map((node) => node.id))
     const selectedEdgeIds = new Set(selected.edges.map((edge) => edge.id))
@@ -6967,6 +6978,7 @@ async function knowledgeVisualizationSnapshot(scope, parameters) {
       bounds: {
         root_node_id: root.id,
         maximum_hops: options.maximumHops,
+        direction: options.direction,
         node_limit: options.maximumNodes,
         edge_limit: options.maximumEdges,
         returned_nodes: selectedNodeIds.size,
@@ -7001,6 +7013,7 @@ async function knowledgeVisualizationSnapshot(scope, parameters) {
     bounds: {
       root_node_id: root.id,
       maximum_hops: options.maximumHops,
+      direction: options.direction,
       node_limit: options.maximumNodes,
       edge_limit: options.maximumEdges,
       returned_nodes: snapshot.nodes.length,
@@ -7730,7 +7743,7 @@ async function knowledgeChatApi(request, response, url, context) {
     decodeURIComponent(releasePath[2]),
   )
   if (request.method === 'GET' && releasePath[3] === 'snapshot') {
-    const visualizationRequest = ['maximum_edges', 'maximum_hops', 'root_node_id', 'focus_query', 'node_type', 'edge_type']
+    const visualizationRequest = ['maximum_edges', 'maximum_hops', 'root_node_id', 'focus_query', 'direction', 'node_type', 'edge_type']
       .some((key) => url.searchParams.has(key))
     if (visualizationRequest) {
       return json(response, 200, await knowledgeVisualizationSnapshot(scope, url.searchParams))

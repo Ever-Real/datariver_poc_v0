@@ -699,7 +699,7 @@ describe('catalog workspace', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Lineage' }))
     const assetCallsBeforeSelection = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?')).length
     const lineageGraph = await screen.findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
-    fireEvent.click(within(lineageGraph).getByLabelText(`${lineageAsset.name}, DATASET · 근거 1`))
+    fireEvent.click(within(lineageGraph).getByLabelText(`${lineageAsset.name} 상세 열기`))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
     expect(await within(detail).findByText(lineageAsset.name)).toBeInTheDocument()
@@ -780,7 +780,7 @@ describe('catalog workspace', () => {
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
       path.includes('/lineage?direction=BOTH&depth=2') && options?.signal instanceof AbortSignal
     ))).toBe(true))
-    expect(within(lineageGraph).getByLabelText('wafer_events, DATASET · 근거 1')).toHaveAttribute('aria-pressed', 'true')
+    expect(within(lineageGraph).getByLabelText('wafer_events, DATASET 선택 · 근거 1')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
   })
 

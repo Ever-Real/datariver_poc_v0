@@ -1,16 +1,50 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ApiClient } from '../../api/client'
 import type { CatalogLineage } from '../../api/types'
 import { CytoscapeReadGraph } from '../../components/graph/CytoscapeReadGraph'
-import { catalogLineageToReadGraph } from '../../components/graph/CytoscapeGraphAdapter'
+import { catalogLineageToReadGraph, mergeReadGraphs } from '../../components/graph/CytoscapeGraphAdapter'
 
 export function CatalogLineageGraph({
+  client,
   lineage,
   onSelectAsset,
 }: {
+  client: ApiClient
   lineage: CatalogLineage
   onSelectAsset: (assetId: string) => void
 }) {
-  const graph = useMemo(() => catalogLineageToReadGraph(lineage), [lineage])
+  const [expansions, setExpansions] = useState<Record<string, CatalogLineage>>({})
+  const controllers = useRef(new Set<AbortController>())
+  useEffect(() => {
+    const active = controllers.current
+    setExpansions({})
+    return () => {
+      active.forEach((controller) => controller.abort())
+      active.clear()
+    }
+  }, [lineage.center_asset_id])
+  const graph = useMemo(() => mergeReadGraphs(
+    catalogLineageToReadGraph(lineage),
+    Object.values(expansions).map(catalogLineageToReadGraph),
+  ), [expansions, lineage])
+  const expand = async (nodeId: string, request: { direction: 'UPSTREAM' | 'DOWNSTREAM'; depth: 2 }) => {
+    const key = `${request.direction}:${nodeId}`
+    if (expansions[key]) return
+    const controller = new AbortController()
+    controllers.current.add(controller)
+    try {
+      const snapshot = await client.request<CatalogLineage>(
+        `/catalog/assets/${nodeId}/lineage?direction=${request.direction}&depth=${request.depth}`,
+        { cache: 'no-store', signal: controller.signal },
+      )
+      if (!controller.signal.aborted) setExpansions((current) => ({ ...current, [key]: snapshot }))
+    } finally {
+      controllers.current.delete(controller)
+    }
+  }
+  const collapse = (nodeId: string) => setExpansions((current) => Object.fromEntries(
+    Object.entries(current).filter(([key]) => !key.endsWith(`:${nodeId}`)),
+  ))
   return (
     <CytoscapeReadGraph
       ariaLabel="권한 필터링된 DataHub Lineage 그래프"
@@ -18,7 +52,8 @@ export function CatalogLineageGraph({
       graph={graph}
       height={420}
       onActivateNode={onSelectAsset}
-      onSelectNode={onSelectAsset}
+      onCollapseNode={collapse}
+      onExpandNode={expand}
       selectedElementId={lineage.center_asset_id}
     />
   )

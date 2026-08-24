@@ -64,6 +64,37 @@ function lineageDistances(start: string, edges: CatalogLineage['edges'], directi
   return distances
 }
 
+function knowledgeLineageRoles(
+  snapshot: Pick<KnowledgeSnapshot, 'nodes' | 'edges'>,
+  rootId?: string,
+): Map<string, ReadGraphRole> {
+  const roles = new Map<string, ReadGraphRole>()
+  if (!rootId) return roles
+  roles.set(rootId, 'ROOT')
+  // Managed lineage relations are stored as dependent -> dependency.  Following
+  // source to target therefore walks upstream; the inverse walks downstream.
+  const walk = (direction: 'UPSTREAM' | 'DOWNSTREAM') => {
+    const frontier = [rootId]
+    const visited = new Set(frontier)
+    while (frontier.length > 0) {
+      const current = frontier.shift()
+      if (!current) continue
+      for (const edge of snapshot.edges) {
+        const next = direction === 'UPSTREAM'
+          ? edge.source_id === current ? edge.target_id : undefined
+          : edge.target_id === current ? edge.source_id : undefined
+        if (!next || visited.has(next)) continue
+        visited.add(next)
+        frontier.push(next)
+        if (!roles.has(next)) roles.set(next, direction)
+      }
+    }
+  }
+  walk('UPSTREAM')
+  walk('DOWNSTREAM')
+  return roles
+}
+
 function catalogNodeProperties(asset: CatalogAsset): Record<string, unknown> {
   return {
     external_urn: asset.external_urn,
@@ -124,6 +155,9 @@ export function knowledgeSnapshotToReadGraph(
   kind: ReadGraphKind,
   rootId?: string,
 ): ReadGraphModel {
+  const lineageRoles = kind === 'LINEAGE'
+    ? knowledgeLineageRoles(snapshot, rootId)
+    : new Map<string, ReadGraphRole>()
   return {
     kind,
     rootId,
@@ -132,14 +166,17 @@ export function knowledgeSnapshotToReadGraph(
       label: displayValue(node.properties, node.id),
       subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`,
       entityType: node.entity_type,
-      role: node.id === rootId ? 'ROOT' : 'NEUTRAL',
+      role: node.id === rootId ? 'ROOT' : lineageRoles.get(node.id) ?? 'NEUTRAL',
       properties: node.properties,
       provenance: node.provenance,
     })),
     edges: snapshot.edges.map((edge: KnowledgeGraphEdge) => ({
       id: edge.id,
-      source: edge.source_id,
-      target: edge.target_id,
+      // The canonical managed lineage relation is dependent -> dependency.
+      // The read view reverses only its visual endpoints so every lineage
+      // surface consistently reads upstream (left) -> downstream (right).
+      source: kind === 'LINEAGE' ? edge.target_id : edge.source_id,
+      target: kind === 'LINEAGE' ? edge.source_id : edge.target_id,
       label: edge.edge_type,
       relationType: edge.edge_type,
       properties: edge.properties,
@@ -152,7 +189,10 @@ export function mergeReadGraphs(base: ReadGraphModel, additions: ReadGraphModel[
   const nodes = new Map(base.nodes.map((node) => [node.id, node]))
   const edges = new Map(base.edges.map((edge) => [edge.id, edge]))
   for (const addition of additions) {
-    for (const node of addition.nodes) nodes.set(node.id, node)
+    // Preserve an already-rendered node's role and view identity.  Expansion
+    // snapshots may describe the same node as their local ROOT, but that must
+    // not rewrite the branch context in the existing view.
+    for (const node of addition.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node)
     for (const edge of addition.edges) edges.set(edge.id, edge)
   }
   return { ...base, nodes: [...nodes.values()], edges: [...edges.values()] }
@@ -166,8 +206,14 @@ function nodeShape(entityType: string): string {
   return 'rectangle'
 }
 
+function compactCanvasLabel(value: string, maximum = 28): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum - 1)}…`
+}
+
 export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] {
   const nodeIds = new Set<string>()
+  const nodeRoles = new Map(graph.nodes.map((node) => [node.id, node.role ?? 'NEUTRAL']))
   const edgeIds = new Set<string>()
   const elements: ElementDefinition[] = []
   for (const node of graph.nodes) {
@@ -178,7 +224,7 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
       data: {
         id: node.id,
         label: node.label,
-        canvasLabel: `${node.label}\n${node.entityType}`,
+        canvasLabel: `${compactCanvasLabel(node.label)}\n${compactCanvasLabel(node.entityType, 22)}`,
         subtitle: node.subtitle ?? '',
         entityType: node.entityType,
         role: node.role ?? 'NEUTRAL',
@@ -200,6 +246,11 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
         target: edge.target,
         label: edge.label,
         relationType: edge.relationType,
+        branch: nodeRoles.get(edge.source) === 'UPSTREAM' || nodeRoles.get(edge.target) === 'UPSTREAM'
+          ? 'UPSTREAM'
+          : nodeRoles.get(edge.source) === 'DOWNSTREAM' || nodeRoles.get(edge.target) === 'DOWNSTREAM'
+            ? 'DOWNSTREAM'
+            : 'NEUTRAL',
       },
     })
   }
@@ -207,27 +258,24 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
 }
 
 export function cytoscapeLayout(kind: ReadGraphKind): LayoutOptions {
-  if (kind === 'LINEAGE') {
-    return {
-      name: 'breadthfirst',
-      directed: true,
-      direction: 'rightward',
-      circle: false,
-      spacingFactor: 1.35,
-      padding: 36,
-      animate: false,
-    }
+  const common = {
+    name: 'cola',
+    animate: true,
+    refresh: 1,
+    maxSimulationTime: kind === 'LINEAGE' ? 1_200 : 1_500,
+    ungrabifyWhileSimulating: false,
+    fit: false,
+    padding: 0,
+    randomize: false,
+    avoidOverlap: true,
+    handleDisconnected: true,
+    nodeSpacing: kind === 'LINEAGE' ? 32 : 38,
+    edgeLength: kind === 'LINEAGE' ? 170 : 135,
+    centerGraph: false,
+    convergenceThreshold: 0.02,
   }
   return {
-    name: 'cose',
-    animate: false,
-    fit: true,
-    padding: 36,
-    nodeRepulsion: 7600,
-    idealEdgeLength: 120,
-    edgeElasticity: 120,
-    gravity: 0.28,
-    numIter: 700,
-    randomize: true,
+    ...common,
+    ...(kind === 'LINEAGE' ? { flow: { axis: 'x', minSeparation: 150 } } : {}),
   }
 }

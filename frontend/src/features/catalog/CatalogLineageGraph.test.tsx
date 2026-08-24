@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import type { ApiClient } from '../../api/client'
 import type { CatalogLineage } from '../../api/types'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
 
@@ -33,10 +34,11 @@ const lineage: CatalogLineage = {
     { source_asset_id: 'center', target_asset_id: 'downstream' },
   ],
 }
+const client = { request: vi.fn() } as unknown as ApiClient
 
 describe('CatalogLineageGraph', () => {
   it('renders the authorized lineage through the dedicated Cytoscape read boundary', async () => {
-    render(<CatalogLineageGraph lineage={lineage} onSelectAsset={vi.fn()} />)
+    render(<CatalogLineageGraph client={client} lineage={lineage} onSelectAsset={vi.fn()} />)
 
     expect(screen.getByRole('img', { name: /권한 필터링된 DataHub Lineage 그래프 canvas/ })).toBeInTheDocument()
     expect(screen.getByLabelText('선택한 그래프 요소 상세')).toHaveTextContent('center_table')
@@ -45,7 +47,7 @@ describe('CatalogLineageGraph', () => {
   })
 
   it('shows truncation as an explicit bounded-result notice', () => {
-    render(<CatalogLineageGraph lineage={{ ...lineage, truncated: true }} onSelectAsset={vi.fn()} />)
+    render(<CatalogLineageGraph client={client} lineage={{ ...lineage, truncated: true }} onSelectAsset={vi.fn()} />)
     expect(screen.getByText('서버 조회 한도에 따라 일부 관계가 생략되었습니다.')).toBeInTheDocument()
   })
 })

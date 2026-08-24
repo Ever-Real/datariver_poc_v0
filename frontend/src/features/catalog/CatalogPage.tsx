@@ -357,6 +357,31 @@ export function CatalogPage({
     setSelectedAssetId(assetId)
   }
 
+  const navigateAsset = (assetId: string) => {
+    const current = new URL(window.location.href)
+    if (selectedAssetId && !current.searchParams.has('catalogAsset')) {
+      current.searchParams.set('catalogAsset', selectedAssetId)
+      window.history.replaceState(window.history.state, '', current)
+    }
+    const destination = new URL(window.location.href)
+    destination.searchParams.set('catalogAsset', assetId)
+    window.history.pushState(window.history.state, '', destination)
+    selectAsset(assetId)
+  }
+
+  useEffect(() => {
+    const restoreAsset = () => {
+      const assetId = new URL(window.location.href).searchParams.get('catalogAsset')
+      if (assetId) {
+        setTreeAssetId(undefined)
+        setFocusedAssetId(assetId)
+        setSelectedAssetId(assetId)
+      } else setSelectedAssetId(undefined)
+    }
+    window.addEventListener('popstate', restoreAsset)
+    return () => window.removeEventListener('popstate', restoreAsset)
+  }, [])
+
   const focusTreeAsset = (assetId: string) => {
     setTreeAssetId(assetId)
     setFocusedAssetId(undefined)
@@ -476,7 +501,7 @@ export function CatalogPage({
           client={client}
           assetId={selectedAssetId}
           onClose={closeSelectedAsset}
-          onSelectAsset={selectAsset}
+          onSelectAsset={navigateAsset}
           onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
           width={detailWidth}
           qualitySummary={qualityByAsset.get(selectedAssetId)}

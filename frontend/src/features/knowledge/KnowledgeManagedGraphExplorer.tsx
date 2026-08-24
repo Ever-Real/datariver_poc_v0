@@ -28,6 +28,7 @@ function snapshotPath(
     depth: number
     rootNodeId?: string
     focusQuery?: string
+    direction?: 'UPSTREAM' | 'DOWNSTREAM'
     nodeTypes: string[]
     edgeTypes: string[]
   },
@@ -39,6 +40,7 @@ function snapshotPath(
   })
   if (options.rootNodeId) parameters.set('root_node_id', options.rootNodeId)
   if (options.focusQuery) parameters.set('focus_query', options.focusQuery)
+  if (options.direction) parameters.set('direction', options.direction)
   options.nodeTypes.forEach((value) => parameters.append('node_type', value))
   options.edgeTypes.forEach((value) => parameters.append('edge_type', value))
   return `/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?${parameters}`
@@ -87,6 +89,7 @@ export function KnowledgeManagedGraphExplorer({
     rootNodeId?: string
     focusQuery?: string
     requestDepth?: number
+    direction?: 'UPSTREAM' | 'DOWNSTREAM'
   } = {}) => {
     const started = performance.now()
     const controller = new AbortController()
@@ -96,6 +99,7 @@ export function KnowledgeManagedGraphExplorer({
         depth: options.requestDepth ?? depth,
         rootNodeId: options.rootNodeId,
         focusQuery: options.focusQuery,
+        direction: options.direction,
         nodeTypes,
         edgeTypes,
       }), { cache: 'no-store', signal: controller.signal })
@@ -153,29 +157,27 @@ export function KnowledgeManagedGraphExplorer({
     )))
   }, [base, expansions, kind])
 
-  const expand = async (nodeId: string) => {
-    if (expansions[nodeId]) {
+  const expand = async (nodeId: string, request: { direction: 'UPSTREAM' | 'DOWNSTREAM'; depth: 2 }) => {
+    const key = `${request.direction}:${nodeId}`
+    if (expansions[key]) {
       setNotice('선택한 entity의 bounded neighborhood가 이미 열려 있습니다.')
       return
     }
-    const snapshot = await requestSnapshot({ rootNodeId: nodeId, requestDepth: 1 })
+    const snapshot = await requestSnapshot({ rootNodeId: nodeId, requestDepth: request.depth, direction: request.direction })
     if (!mountedRef.current) return
     const candidate = mergeReadGraphs(graph, [knowledgeSnapshotToReadGraph(snapshot, kind, nodeId)])
     if (candidate.nodes.length > MAXIMUM_MERGED_NODES || candidate.edges.length > MAXIMUM_MERGED_EDGES) {
       setNotice(`현재 view 한도 ${MAXIMUM_MERGED_NODES} nodes / ${MAXIMUM_MERGED_EDGES} edges에 도달했습니다. 일부 관계를 임의로 자르지 않고 확장을 중단했습니다.`)
       return
     }
-    setExpansions((current) => ({ ...current, [nodeId]: snapshot }))
-    setNotice(`${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges를 권한 범위에서 확장했습니다.`)
+    setExpansions((current) => ({ ...current, [key]: snapshot }))
+    setNotice(`${request.direction} ${request.depth}-level · ${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges를 권한 범위에서 확장했습니다.`)
   }
 
   const collapse = (nodeId: string) => {
-    setExpansions((current) => {
-      if (!current[nodeId]) return current
-      const next = { ...current }
-      delete next[nodeId]
-      return next
-    })
+    setExpansions((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => !key.endsWith(`:${nodeId}`)),
+    ))
     setNotice('선택한 entity의 확장 neighborhood를 접었습니다.')
   }
 
