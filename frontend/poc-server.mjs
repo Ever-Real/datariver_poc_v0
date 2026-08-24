@@ -6326,7 +6326,20 @@ function managedK9AssetSummary(row, semanticIndexReady, schedulerConfig) {
 function assertManagedK9AssetGrade(context, classification) {
   const grade = k9ClassificationToGrade[classification]
   if (!grade) throw knowledgeChatNotFound()
+  // The dedicated MCP adapter is authenticated before this context marker is
+  // attached (exact token, active local subject, and exact workspace).  Its
+  // managed-graph visibility is therefore bounded by the subject clearance
+  // here and by exact DataHub table grants in authorizeManagedK9Release(), not
+  // by the interactive UI feature matrix.  Native/browser requests can never
+  // set this server-owned marker and retain the existing feature policy.
+  if (context.knowledgeAdapter === 'MCP') {
+    if (securityGradeRank(context.principal.maxSecurityGrade) < securityGradeRank(grade)) {
+      throw knowledgeChatNotFound()
+    }
+    return grade
+  }
   assertKnowledgeChatAssetGrade(context, { classification: grade })
+  return grade
 }
 
 function managedK9NodeDatasetUrn(node) {
@@ -6818,7 +6831,10 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     tokenHash: 'mcp-service-session',
     mustChangePassword: false,
   }
-  const requestContext = await authenticatedRequestContext(baseContext, authentication)
+  const requestContext = {
+    ...await authenticatedRequestContext(baseContext, authentication),
+    knowledgeAdapter: 'MCP',
+  }
   const profile = authenticatedPocProfile(requestContext.accessUser)
   if (profile.default_workspace_id !== mcpWorkspaceId) {
     return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'Configured MCP workspace does not match the subject default workspace.')

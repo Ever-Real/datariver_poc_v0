@@ -1982,7 +1982,7 @@ test('MCP adapter bounded implementation', async () => {
   let lastScope = null
   let lastArgs = null
   const mcpKnowledgeChatScope = async (ctx, g, r) => {
-    lastScope = { principal: ctx.principal, graphId: g, studioReleaseId: r }
+    lastScope = { principal: ctx.principal, knowledgeAdapter: ctx.knowledgeAdapter, graphId: g, studioReleaseId: r }
     if (g === 'unauth') throw Object.assign(new Error('Nope'), { statusCode: 404, code: 'NOT_FOUND' })
     if (g === 'fail') throw new Error('Secret error here')
     return { graphId: g, studioReleaseId: r }
@@ -2147,6 +2147,7 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(traversal.status, 200)
     assert.equal(traversal.body.result.structuredContent.release.graph_id, 'g1')
     assert.equal(traversal.body.result.structuredContent.nodes[0].id, 'n1')
+    assert.equal(lastScope.knowledgeAdapter, 'MCP')
 
     const rag = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'drop tables' } }, id: 5 }, h)
     assert.equal(rag.status, 200)
