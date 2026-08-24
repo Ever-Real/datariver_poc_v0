@@ -67,6 +67,9 @@
 | 69 | [POC 모듈 경계와 provider 이식성 계획](adr/0124-poc-modular-product-architecture.md) | feature isolation, provider-neutral ports와 단계적 modularization | Proposed backlog plan; no refactor approved |
 | 70 | [Node POC exact Table ↔ System binding](adr/0125-poc-explicit-table-system-binding.md) | stable System lifecycle, exact DataHub Table N:M CAS and non-inheriting bulk selection | Accepted for PHASE 1C-1 |
 | 71 | [Node POC security hardening and fixed feature policy](adr/0126-poc-security-hardening-and-fixed-feature-policy.md) | canonical grade/current-Table predicates, admin/session invariants, exact-first System transition, migration audit, bounded 120-cell policy | Accepted for PHASE 1C-2H/1C-3 management state |
+| 72 | [PREP39083 source build and acceptance](64_PREP39083_HANDOFF.md) | isolated 39083 Linux/amd64 source build, smoke, browser, acceptance and rollback commands | DEV-authored operator handoff; target gates open |
+| 73 | [PREP39083 to OPS image promotion](65_PREP_TO_OPS_PROMOTION.md) | exact tested-image export, checksum/manifest, no-build OPS import and rollback | DEV-authored operator handoff; target gates open |
+| 74 | [DEV → PREP39083 → OPS release cycle](66_RELEASE_CYCLE.md) | serial Product/Evidence, source, artifact and persistent-state authority | PREP handoff contract |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

@@ -1,0 +1,15 @@
+# Merge with deploy/poc/docker-compose.poc.yaml only on OPS. The Compose-spec
+# !reset tag removes the canonical source-build section; every service must use
+# an image already loaded from the exact PREP-tested release bundle.
+name: datariver-ops39083
+
+services:
+  web:
+    build: !reset null
+    pull_policy: never
+  neo4j:
+    pull_policy: never
+  pgvector:
+    pull_policy: never
+  redis:
+    pull_policy: never
