@@ -3766,7 +3766,8 @@ async function chatRoute(question, requestedMode, principal) {
       : selectedMode === 'VECTOR' ? 'SEMANTIC_INTENT' : 'GENERAL_DEFAULT'
   }
   const ready = selectedMode === 'VECTOR'
-    ? Boolean(datahub && (['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(intent) || llm.embedding))
+    ? Boolean(entityTypeHints.includes('KNOWLEDGE_ASSET')
+      || (datahub && (['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(intent) || llm.embedding)))
     : selectedMode === 'GRAPH'
       ? Boolean(datahub && (requestedMode !== 'AUTO' || selectedGraphAsset))
       : true
@@ -4261,6 +4262,70 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal) {
     if (results.size >= evidenceLimit) break
   }
   return [...results.values()].slice(0, route.entity_resolution_required ? Math.min(3, evidenceLimit) : evidenceLimit)
+}
+
+function knowledgeAssetSearchTokens(value) {
+  return new Set(String(value || '').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu)?.filter((token) => token.length > 1) || [])
+}
+
+async function managedK9AssetMetadataEvidence(route, context, evidenceLimit) {
+  const assets = await managedK9Assets(context)
+  const concepts = [...route.primary_concepts, ...route.secondary_concepts]
+    .map((concept) => String(concept || '').normalize('NFKC').trim())
+    .filter(Boolean)
+  const conceptTokens = knowledgeAssetSearchTokens(concepts.join(' '))
+  const scored = assets.map((asset) => {
+    const normalizedName = asset.name.normalize('NFKC').toLocaleLowerCase()
+    const exact = concepts.some((concept) => {
+      const normalizedConcept = concept.toLocaleLowerCase()
+      return normalizedConcept === normalizedName || normalizedConcept.includes(normalizedName)
+    })
+    const document = [
+      asset.name, asset.description, asset.graph_type, asset.canonical_graph_type,
+      asset.source, ...asset.supported_intents, ...asset.semantic_capabilities,
+      ...asset.supported_entity_types,
+    ].filter(Boolean).join(' ')
+    const documentTokens = knowledgeAssetSearchTokens(document)
+    const overlap = [...conceptTokens].filter((token) => documentTokens.has(token)).length
+    return { asset, exact, score: exact ? 1_000 + overlap : overlap }
+  }).filter((item) => item.score > 0)
+  const maximumScore = Math.max(0, ...scored.map((item) => item.score))
+  return scored
+    .filter((item) => item.score === maximumScore)
+    .sort((left, right) => left.asset.name.localeCompare(right.asset.name))
+    .slice(0, evidenceLimit)
+    .map(({ asset, exact }) => ({
+      id: asset.id,
+      name: asset.name,
+      provider_description: asset.description,
+      description: [
+        asset.description,
+        `Type: ${asset.graph_type}. Source: ${asset.source}. Default: ${asset.is_default ? 'Yes' : 'No'}.`,
+        `Status: ${asset.status}. Version: ${asset.version}. Nodes: ${asset.node_count}. Edges: ${asset.edge_count}.`,
+        `Refresh: ${asset.refresh_mode}${asset.schedule ? ` (${asset.schedule})` : ''}. Last result: ${asset.last_result}.`,
+        `Semantic / Vector Index: ${asset.semantic_index_status}.`,
+        `Supported intents: ${asset.supported_intents.join(', ') || 'none'}.`,
+        `Semantic capabilities: ${asset.semantic_capabilities.join(', ') || 'none'}.`,
+      ].join('\n'),
+      classification: asset.classification,
+      dataset_kind: 'KNOWLEDGE_ASSET',
+      platform: 'Knowledge Registry',
+      database_name: '',
+      schema_name: '',
+      owner: asset.creator_name,
+      domain: asset.domain_name || '',
+      tags: asset.semantic_capabilities,
+      terms: asset.supported_intents,
+      lifecycle: asset.status,
+      observed_at: asset.updated_at,
+      matches: [],
+      evidence_type: 'KNOWLEDGE_GRAPH_ASSET_METADATA',
+      extraction_method: 'K9_MANAGED_ASSET_REGISTRY',
+      retrieval_method: exact ? 'K9_REGISTRY_EXACT' : 'K9_REGISTRY_SEMANTIC_METADATA',
+      source_locator: `knowledge-asset:${asset.id}`,
+      source_version: asset.active_release_id || asset.active_studio_release_id,
+    }))
 }
 
 function catalogEmbeddingBindingHash() {
@@ -4773,6 +4838,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     await revalidateKnowledgeMainChatSelection(context, knowledgeSelection)
     evidence = knowledgeMainChatEvidence(knowledgeSelection, result)
     knowledgeAnswer = result.answer
+  } else if (route.selected_mode === 'VECTOR' && route.entity_type_hints.includes('KNOWLEDGE_ASSET')) {
+    evidence = await managedK9AssetMetadataEvidence(route, context, evidenceLimit)
   } else if (datahub && route.selected_mode !== 'GENERAL') {
     if (route.intent === 'CATALOG_INVENTORY') {
       const inventory = await datahubInventoryEvidence(resolvedQuestion, principal)

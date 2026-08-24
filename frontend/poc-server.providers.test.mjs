@@ -908,6 +908,36 @@ test('routes a high-confidence Korean discovery question to the full vector inve
   assert.equal(classifiersAfter, classifiersBefore + 1)
 })
 
+test('retrieves Knowledge Graph Asset metadata from the authorized managed registry instead of DataHub tables', async () => {
+  forcedClassifierResponse = JSON.stringify({
+    mode: 'VECTOR', confidence: 0.99, intent: 'SEMANTIC_DISCOVERY',
+    entity_resolution_required: false, graph_traversal_required: false,
+    semantic_retrieval_required: true, fallback_mode: null,
+    primary_concepts: ['Default Lineage Graph'], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: ['KNOWLEDGE_ASSET'], selected_graph_asset: null, retrieval_method: 'SEMANTIC',
+  })
+  try {
+    const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'Show the Default Lineage Graph Asset metadata', mode: 'AUTO' }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.route.selected_mode, 'VECTOR')
+    assert.equal(payload.route.entity_type_hints[0], 'KNOWLEDGE_ASSET')
+    assert.equal(payload.evidence.length, 1)
+    assert.equal(payload.evidence[0].id, managedLineageGraphId)
+    assert.equal(payload.evidence[0].name, 'Default Lineage Graph')
+    assert.equal(payload.evidence[0].evidence_type, 'KNOWLEDGE_GRAPH_ASSET_METADATA')
+    assert.equal(payload.evidence[0].retrieval_method, 'K9_REGISTRY_EXACT')
+    assert.match(payload.evidence[0].description, /Source: DataHub/)
+    assert.match(payload.evidence[0].description, /Semantic \/ Vector Index:/)
+  } finally {
+    forcedClassifierResponse = undefined
+  }
+})
+
 test('resolves an exact table name and composes detailed DataHub metadata evidence', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length

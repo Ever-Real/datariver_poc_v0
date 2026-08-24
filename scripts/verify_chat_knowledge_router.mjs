@@ -112,6 +112,7 @@ function metrics(results) {
   const totals = results.map((row) => row.total_latency_ms).filter(Number.isFinite)
   return {
     route_correct: results.filter((row) => row.route_pass).length,
+    runtime_pass: results.filter((row) => row.pass).length,
     route_total: results.length,
     precision_recall,
     confusion_matrix: matrix,
@@ -165,8 +166,19 @@ try {
     const evidence = Array.isArray(body?.evidence) ? body.evidence : []
     const actualRoute = route.selected_mode || 'ERROR'
     const routePass = actualRoute === expectedRoute
-    const retrievalRequired = expectedRoute !== 'GENERAL'
-    const retrievalPass = retrievalRequired ? evidence.length > 0 : evidence.length === 0
+    const evidenceTypes = new Set(evidence.map((item) => item.evidence_type))
+    const knowledgeAssetMetadataRequested = route.entity_type_hints?.includes('KNOWLEDGE_ASSET')
+    const retrievalPass = expectedRoute === 'GENERAL'
+      ? evidence.length === 0
+      : expectedRoute === 'GRAPH'
+        ? Boolean(route.selected_graph_asset
+          && evidenceTypes.has('KNOWLEDGE_ASSET_NODE')
+          && evidenceTypes.has('KNOWLEDGE_ASSET_RELATION'))
+        : knowledgeAssetMetadataRequested
+          ? evidence.length > 0 && evidence.every((item) => item.evidence_type === 'KNOWLEDGE_GRAPH_ASSET_METADATA')
+          : evidence.length > 0 && !evidence.some((item) => (
+              item.evidence_type === 'KNOWLEDGE_ASSET_RELATION' || item.evidence_type === 'DATAHUB_LINEAGE'
+            ))
     const answerGrounded = typeof body?.answer === 'string' && body.answer.trim().length > 0
       && (expectedRoute === 'GENERAL' ? evidence.length === 0 : evidence.length > 0)
     const row = {
@@ -191,7 +203,7 @@ try {
       answer_grounded_pass: answerGrounded,
       authorization_pass: status === 200,
       llm_call_count: route.llm_call_count ?? null,
-      pass: routePass && status === 200,
+      pass: routePass && status === 200 && retrievalPass && answerGrounded,
       failure_reason: failureReason,
     }
     results.push(row)
@@ -216,4 +228,5 @@ const report = {
 }
 await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
 process.stdout.write(`${JSON.stringify(report.metrics)}\n`)
-if (report.metrics.route_correct !== report.metrics.route_total) process.exitCode = 1
+if (report.metrics.route_correct !== report.metrics.route_total
+  || report.metrics.runtime_pass !== report.metrics.route_total) process.exitCode = 1
