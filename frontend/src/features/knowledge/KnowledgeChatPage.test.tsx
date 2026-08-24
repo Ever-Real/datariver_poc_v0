@@ -4,6 +4,23 @@ import type { ApiClient } from '../../api/client'
 import type { KnowledgeRelease } from '../../api/types'
 import { KnowledgeChatPage } from './KnowledgeChatPage'
 
+const graphElements = {
+  addClass: vi.fn().mockReturnThis(),
+  removeClass: vi.fn().mockReturnThis(),
+  unselect: vi.fn().mockReturnThis(),
+}
+vi.mock('cytoscape', () => ({ default: vi.fn(() => ({
+  destroy: vi.fn(),
+  elements: vi.fn(() => graphElements),
+  fit: vi.fn(),
+  getElementById: vi.fn(() => ({ length: 0, select: vi.fn() })),
+  layout: vi.fn(() => ({ one: (_event: string, callback: () => void) => callback(), run: vi.fn() })),
+  on: vi.fn(),
+  removeAllListeners: vi.fn(),
+  resize: vi.fn(),
+  zoom: vi.fn(() => 1),
+})) }))
+
 const release: KnowledgeRelease = {
   id: 'release-1',
   graph_id: 'graph-1',
@@ -32,7 +49,7 @@ describe('KnowledgeChatPage', () => {
         status: 'ACTIVE', classification: 'INTERNAL', active_release_id: 'release-1', version: 2,
       }])
       if (path === '/knowledge/graphs/graph-1/releases') return Promise.resolve([release])
-      if (path === '/knowledge/graphs/graph-1/releases/release-1/snapshot?maximum_nodes=200') {
+      if (path === '/knowledge/graphs/graph-1/releases/release-1/snapshot?maximum_nodes=48&maximum_edges=96&maximum_hops=1') {
         return Promise.resolve({
           release,
           filtered: false,
@@ -90,7 +107,7 @@ describe('KnowledgeChatPage', () => {
         status: 'ACTIVE', classification: 'INTERNAL', active_release_id: 'release-1', version: 2,
       }])
       if (path === '/knowledge/graphs/graph-1/releases') return Promise.resolve([release])
-      if (path === '/knowledge/graphs/graph-1/releases/release-1/snapshot?maximum_nodes=200') {
+      if (path === '/knowledge/graphs/graph-1/releases/release-1/snapshot?maximum_nodes=48&maximum_edges=96&maximum_hops=1') {
         return Promise.resolve({
           release,
           filtered: true,

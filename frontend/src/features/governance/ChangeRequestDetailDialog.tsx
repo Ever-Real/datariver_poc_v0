@@ -14,7 +14,8 @@ import { AssuranceNotice, type AssuranceActions } from '../../components/Assuran
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { Dialog } from '../../components/common/Dialog'
-import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode } from '../../components/common/FlowCanvas'
+import { CytoscapeReadGraph } from '../../components/graph/CytoscapeReadGraph'
+import { catalogLineageToReadGraph, mergeReadGraphs, type ReadGraphModel } from '../../components/graph/CytoscapeGraphAdapter'
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { WorkflowStepper, type WorkflowStep } from '../../components/common/WorkflowStepper'
@@ -359,23 +360,10 @@ export function ChangeRequestDetailDialog({
     return () => controller.abort()
   }, [client, open, selectedStage, value])
 
-  const flowNodes = useMemo<FlowCanvasNode[]>(() => {
-    const values = new Map<string, FlowCanvasNode>()
-    lineage.forEach((result) => result.nodes.forEach((node) => values.set(node.id, {
-      id: node.id,
-      label: node.name,
-      subtitle: [node.platform, node.schema_name, node.asset_type].filter(Boolean).join(' · '),
-      kind: node.id === result.center_asset_id ? 'target' : 'source',
-    })))
-    return Array.from(values.values())
-  }, [lineage])
-  const flowEdges = useMemo<FlowCanvasEdge[]>(() => {
-    const values = new Map<string, FlowCanvasEdge>()
-    lineage.forEach((result) => result.edges.forEach((edge) => {
-      const id = `${edge.source_asset_id}:${edge.target_asset_id}`
-      values.set(id, { id, source: edge.source_asset_id, target: edge.target_asset_id, label: 'LINEAGE' })
-    }))
-    return Array.from(values.values())
+  const impactGraph = useMemo<ReadGraphModel>(() => {
+    if (lineage.length === 0) return { kind: 'LINEAGE', nodes: [], edges: [] }
+    const [first, ...rest] = lineage.map(catalogLineageToReadGraph)
+    return mergeReadGraphs(first!, rest)
   }, [lineage])
 
   const requestClose = useCallback(() => { if (!busyRef.current) onClose() }, [onClose])
@@ -618,7 +606,7 @@ export function ChangeRequestDetailDialog({
             <div><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Impact Analysis</span><h3 id="review-stage-heading" className="my-1 text-lg font-black text-navy-900">검토 및 영향도</h3><p className="m-0 text-xs text-slate-500">Upstream 소스 정합성과 Downstream 파생 범위를 권한 필터된 DataHub 계보로 확인합니다.</p></div>
             {lineageLoading && <p role="status" className="m-0 text-xs text-slate-500">실제 계보를 불러오는 중입니다.</p>}
             <ErrorNotice error={lineageError} />
-            <FlowCanvas ariaLabel="변경 대상 영향도 계보" nodes={flowNodes} edges={flowEdges} height={440} emptyTitle="조회 가능한 Lineage가 없습니다." emptyDescription="수동 신규 대상이거나 현재 권한 범위에 연결된 계보가 없습니다." />
+            <CytoscapeReadGraph ariaLabel="변경 대상 영향도 계보" graph={impactGraph} height={440} loading={lineageLoading} emptyTitle="조회 가능한 Lineage가 없습니다." emptyDescription="수동 신규 대상이거나 현재 권한 범위에 연결된 계보가 없습니다." />
             {lineage.some((item) => item.truncated) && <p className="m-0 text-xs font-bold text-amber-800">서버 조회 한도에 따라 일부 계보가 생략되었습니다.</p>}
             <label className="grid gap-2 rounded-enterprise border border-slate-300 bg-white p-4 text-xs font-black text-navy-900">REVIEWER COMMENTS · Data Steward 검토 의견
               <textarea className="min-h-24 resize-y border border-slate-300 p-3 text-sm font-normal" maxLength={4000} placeholder="승인·보완 요청 사유로 기록할 검토 의견을 입력하세요." value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} />

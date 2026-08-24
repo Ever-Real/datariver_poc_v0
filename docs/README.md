@@ -252,6 +252,8 @@ Canonical managed-graph Registry reconciliation, DataHub-driven Metadata Master 
 configuration-driven refresh, capability-based semantic routing, and the shared native/MCP adapter
 boundary are defined by
 [ADR-0128](adr/0128-chat-knowledge-router-and-managed-metadata-projections.md).
+
+[ADR-0129](adr/0129-read-only-cytoscape-graph-visualization.md).
 Workspace-scoped Monitoring dashboard tabs, administrator updates and the exact-origin frame
 boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.md). Registration of
 credential-free HTTP(S) links from any origin, while preserving the existing disabled-first iframe

@@ -301,6 +301,52 @@ test('managed graph snapshots retain request-time Table authorization boundaries
   assert.equal(authorizeManagedK9Release({ role: 'admin' }, release), release)
 })
 
+test('managed visualization resolves and bounds only the authorization-filtered canonical projection', async () => {
+  const {
+    authorizeManagedK9Release,
+    knowledgeVisualizationRoot,
+    selectManagedKnowledgeVisualization,
+  } = await import('./poc-server.mjs?managed-cytoscape-visualization-contract')
+  const tableA = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.allowed_table,DEV)'
+  const tableB = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.hidden_table,DEV)'
+  const canonical = {
+    nodes: [
+      { id: 'table-a', type: 'class.table', classification: 'CONFIDENTIAL', properties: { external_urn: tableA, name: 'Allowed Table' } },
+      { id: 'column-a', type: 'class.column', classification: 'CONFIDENTIAL', properties: { dataset_urn: tableA, name: 'allowed_id' } },
+      { id: 'table-b', type: 'class.table', classification: 'CONFIDENTIAL', properties: { external_urn: tableB, name: 'Hidden Table' } },
+      { id: 'term-shared', type: 'class.glossary_term', classification: 'CONFIDENTIAL', properties: { name: 'Shared term' } },
+    ],
+    edges: [
+      { source: 'table-a', target: 'column-a', type: 'rel.contains' },
+      { source: 'table-a', target: 'term-shared', type: 'rel.has_term' },
+      { source: 'table-b', target: 'term-shared', type: 'rel.has_term' },
+    ],
+  }
+  const authorized = authorizeManagedK9Release({
+    role: 'data_steward',
+    maxSecurityGrade: 'credential',
+    activeTableGrantUrns: new Set([tableA]),
+    allowedFeatureSecurityCells: new Set(['knowledge\u0000data_steward\u0000credential']),
+  }, canonical)
+
+  assert.deepEqual(authorized.nodes.map((node) => node.id), ['table-a', 'column-a', 'term-shared'])
+  const root = knowledgeVisualizationRoot(authorized.nodes, authorized.edges, { focusQuery: 'Allowed Table' })
+  assert.equal(root.id, 'table-a')
+  assert.equal(knowledgeVisualizationRoot(authorized.nodes, authorized.edges, { focusQuery: 'Hidden Table' }), null)
+
+  const selected = selectManagedKnowledgeVisualization(authorized, {
+    rootNodeId: root.id,
+    maximumNodes: 2,
+    maximumEdges: 1,
+    maximumHops: 1,
+  })
+  assert.deepEqual(selected.nodes.map((node) => node.id), ['table-a', 'column-a'])
+  assert.deepEqual(selected.edges.map((edge) => `${edge.source}->${edge.target}`), ['table-a->column-a'])
+  assert.equal(selected.truncated, true)
+  assert.equal(JSON.stringify(selected).includes('table-b'), false)
+  assert.equal(JSON.stringify(selected).includes('Hidden Table'), false)
+})
+
 test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)

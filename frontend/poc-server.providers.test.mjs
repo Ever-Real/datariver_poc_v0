@@ -1739,6 +1739,19 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     assert.equal(snapshot.edges.length, 1)
     assert.equal(snapshot.edges[0].source_id, relationPreview.graph.edges[0].source_node_id)
     assert.equal(snapshot.edges[0].target_id, relationPreview.graph.edges[0].target_node_id)
+    const visualizationResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?maximum_nodes=1&maximum_edges=0&maximum_hops=0&root_node_id=${encodeURIComponent(snapshot.nodes[0].id)}`,
+    )
+    assert.equal(visualizationResponse.status, 200, await visualizationResponse.clone().text())
+    const visualization = await visualizationResponse.json()
+    assert.equal(visualization.nodes.length, 1)
+    assert.equal(visualization.edges.length, 0)
+    assert.equal(visualization.bounds.root_node_id, snapshot.nodes[0].id)
+    assert.equal(visualization.bounds.node_limit, 1)
+    assert.equal(visualization.bounds.edge_limit, 0)
+    assert.equal(visualization.bounds.total_authorized_nodes, 2)
+    assert.equal(visualization.bounds.total_authorized_edges, 1)
+    assert.equal(visualization.bounds.truncated, true)
     const graphRagResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

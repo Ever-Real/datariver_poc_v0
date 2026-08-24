@@ -6600,11 +6600,124 @@ function knowledgeChatProvenance(sourceUrn, rowKey, sourceHash, method) {
   }]
 }
 
-async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeId = null, managedMaximumHops = 3) {
+function knowledgeVisualizationComparable(value) {
+  return String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase()
+}
+
+function knowledgeVisualizationNodeText(node) {
+  const properties = node?.properties && typeof node.properties === 'object' ? node.properties : {}
+  return [
+    node?.id,
+    node?.type ?? node?.entity_type,
+    properties.name,
+    properties.display_name,
+    properties.business_name,
+    properties.external_urn,
+    properties.dataset_urn,
+    properties.description,
+  ].filter((value) => typeof value === 'string' || typeof value === 'number')
+    .map(knowledgeVisualizationComparable)
+}
+
+export function knowledgeVisualizationRoot(nodes, edges, { rootNodeId = '', focusQuery = '' } = {}) {
+  if (!nodes.length) return null
+  if (rootNodeId) return nodes.find((node) => node.id === rootNodeId) ?? null
+  const query = knowledgeVisualizationComparable(focusQuery)
+  if (query) {
+    const terms = [...new Set(query.split(/[^\p{L}\p{N}_]+/u).filter(Boolean))]
+    const ranked = nodes.map((node) => {
+      const values = knowledgeVisualizationNodeText(node)
+      const exact = values.some((value) => value === query)
+      const prefix = values.some((value) => value.startsWith(query))
+      const contained = values.some((value) => value.includes(query))
+      const tokenMatches = terms.reduce((count, term) => (
+        count + (values.some((value) => value.includes(term)) ? 1 : 0)
+      ), 0)
+      const tokenScore = terms.length > 0 && tokenMatches === terms.length ? tokenMatches * 100 : 0
+      return { node, score: exact ? 10_000 : prefix ? 5_000 : contained ? 2_000 : tokenScore }
+    }).filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score || left.node.id.localeCompare(right.node.id))
+    return ranked[0]?.node ?? null
+  }
+  const degree = new Map(nodes.map((node) => [node.id, 0]))
+  for (const edge of edges) {
+    const source = edge.source ?? edge.source_id
+    const target = edge.target ?? edge.target_id
+    if (degree.has(source) && degree.has(target)) {
+      degree.set(source, (degree.get(source) ?? 0) + 1)
+      degree.set(target, (degree.get(target) ?? 0) + 1)
+    }
+  }
+  return [...nodes].sort((left, right) => (
+    (degree.get(right.id) ?? 0) - (degree.get(left.id) ?? 0) || left.id.localeCompare(right.id)
+  ))[0]
+}
+
+export function selectManagedKnowledgeVisualization(canonicalRelease, {
+  rootNodeId,
+  maximumNodes,
+  maximumEdges,
+  maximumHops,
+  nodeTypes = [],
+  edgeTypes = [],
+}) {
+  const allowedNodeTypes = new Set(nodeTypes)
+  const allowedEdgeTypes = new Set(edgeTypes)
+  const candidateNodes = canonicalRelease.nodes.filter((node) => (
+    allowedNodeTypes.size === 0 || allowedNodeTypes.has(node.type)
+  ))
+  const candidateNodeIds = new Set(candidateNodes.map((node) => node.id))
+  const candidateEdges = canonicalRelease.edges.filter((edge) => (
+    candidateNodeIds.has(edge.source)
+    && candidateNodeIds.has(edge.target)
+    && (allowedEdgeTypes.size === 0 || allowedEdgeTypes.has(edge.type))
+  ))
+  if (!candidateNodeIds.has(rootNodeId)) return { nodes: [], edges: [], truncated: false }
+  const visited = new Set([rootNodeId])
+  let frontier = [rootNodeId]
+  for (let depth = 0; depth < maximumHops && frontier.length && visited.size < maximumNodes; depth += 1) {
+    const frontierIds = new Set(frontier)
+    const next = []
+    for (const edge of candidateEdges) {
+      let neighbor
+      if (frontierIds.has(edge.source)) neighbor = edge.target
+      else if (frontierIds.has(edge.target)) neighbor = edge.source
+      if (neighbor && !visited.has(neighbor) && visited.size < maximumNodes) {
+        visited.add(neighbor)
+        next.push(neighbor)
+      }
+    }
+    frontier = next
+  }
+  const nodes = candidateNodes.filter((node) => visited.has(node.id))
+  const completeEdges = candidateEdges.filter((edge) => visited.has(edge.source) && visited.has(edge.target))
+  const edges = completeEdges.slice(0, maximumEdges)
+  return {
+    nodes,
+    edges,
+    truncated: nodes.length < candidateNodes.length || edges.length < candidateEdges.length,
+  }
+}
+
+async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeId = null, managedMaximumHops = 3, managedVisualization) {
   const boundedMaximumNodes = Math.max(1, Math.min(200, Number(maximumNodes) || 200))
   if (scope.managed) {
     let expectedNodes
-    if (managedSeedNodeId && scope.canonicalRelease.nodes.some((node) => node.id === managedSeedNodeId)) {
+    let expectedEdges
+    let visualizationTruncated = false
+    if (managedVisualization && managedSeedNodeId) {
+      const selected = selectManagedKnowledgeVisualization(scope.canonicalRelease, {
+        rootNodeId: managedSeedNodeId,
+        maximumNodes: boundedMaximumNodes,
+        maximumEdges: managedVisualization.maximumEdges,
+        maximumHops: managedMaximumHops,
+        nodeTypes: managedVisualization.nodeTypes,
+        edgeTypes: managedVisualization.edgeTypes,
+      })
+      expectedNodes = selected.nodes
+      expectedEdges = selected.edges
+      visualizationTruncated = selected.truncated
+    } else if (managedSeedNodeId && scope.canonicalRelease.nodes.some((node) => node.id === managedSeedNodeId)) {
       const visited = new Set([managedSeedNodeId])
       let frontier = [managedSeedNodeId]
       for (let depth = 0; depth < managedMaximumHops && frontier.length && visited.size < boundedMaximumNodes; depth += 1) {
@@ -6625,7 +6738,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
       expectedNodes = scope.canonicalRelease.nodes.slice(0, boundedMaximumNodes)
     }
     const expectedNodeIds = new Set(expectedNodes.map((node) => node.id))
-    const expectedEdges = scope.canonicalRelease.edges.filter((edge) => (
+    expectedEdges ??= scope.canonicalRelease.edges.filter((edge) => (
       expectedNodeIds.has(edge.source) && expectedNodeIds.has(edge.target)
     ))
     const nodeRows = await neo4jQuery(`
@@ -6688,7 +6801,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
         classification,
         provenance: provenance(`${edge.source}->${edge.target}`),
       })),
-      filtered: expectedNodes.length < scope.canonicalRelease.nodes.length
+      filtered: visualizationTruncated || expectedNodes.length < scope.canonicalRelease.nodes.length
         || expectedEdges.length < scope.canonicalRelease.edges.length,
     }
   }
@@ -6780,6 +6893,124 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
     nodes,
     edges,
     filtered: !complete || nodes.length < scope.nodeEvidence.length || edges.length < scope.relationEvidence.length,
+  }
+}
+
+function knowledgeVisualizationTypeParameters(parameters, key) {
+  const values = parameters.getAll(key)
+  if (values.length > 12 || values.some((value) => (
+    !value || value.length > 128 || !/^[\p{L}\p{N}_.:-]+$/u.test(value)
+  ))) {
+    throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_FILTER_INVALID', `${key} accepts at most 12 canonical type values.`)
+  }
+  return [...new Set(values)]
+}
+
+function knowledgeVisualizationBounds(parameters) {
+  const maximumNodes = Number(parameters.get('maximum_nodes') || 60)
+  const maximumEdges = Number(parameters.get('maximum_edges') || 180)
+  const maximumHops = Number(parameters.get('maximum_hops') || 1)
+  if (!Number.isSafeInteger(maximumNodes) || maximumNodes < 1 || maximumNodes > 200
+    || !Number.isSafeInteger(maximumEdges) || maximumEdges < 0 || maximumEdges > 400
+    || !Number.isSafeInteger(maximumHops) || maximumHops < 0 || maximumHops > 3) {
+    throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_BOUNDS_INVALID', 'Knowledge visualization accepts 1-200 nodes, 0-400 edges, and 0-3 hops.')
+  }
+  const rootNodeId = parameters.get('root_node_id') || ''
+  const focusQuery = parameters.get('focus_query') || ''
+  if ((rootNodeId && focusQuery) || rootNodeId.length > 8192 || focusQuery.length > 240
+    || hasAccessControlCharacter(rootNodeId) || hasAccessControlCharacter(focusQuery)) {
+    throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_FOCUS_INVALID', 'Use one bounded root_node_id or focus_query value.')
+  }
+  return {
+    maximumNodes,
+    maximumEdges,
+    maximumHops,
+    rootNodeId,
+    focusQuery,
+    nodeTypes: knowledgeVisualizationTypeParameters(parameters, 'node_type'),
+    edgeTypes: knowledgeVisualizationTypeParameters(parameters, 'edge_type'),
+  }
+}
+
+async function knowledgeVisualizationSnapshot(scope, parameters) {
+  const options = knowledgeVisualizationBounds(parameters)
+  if (!scope.managed) {
+    const snapshot = await knowledgeChatSnapshot(scope, 200)
+    const candidateNodes = snapshot.nodes.filter((node) => (
+      options.nodeTypes.length === 0 || options.nodeTypes.includes(node.entity_type)
+    ))
+    const candidateNodeIds = new Set(candidateNodes.map((node) => node.id))
+    const candidateEdges = snapshot.edges.filter((edge) => (
+      candidateNodeIds.has(edge.source_id)
+      && candidateNodeIds.has(edge.target_id)
+      && (options.edgeTypes.length === 0 || options.edgeTypes.includes(edge.edge_type))
+    ))
+    const root = knowledgeVisualizationRoot(candidateNodes, candidateEdges, options)
+    if (!root) throw knowledgeChatNotFound()
+    const canonical = {
+      nodes: candidateNodes.map((node) => ({ ...node, type: node.entity_type })),
+      edges: candidateEdges.map((edge) => ({ ...edge, source: edge.source_id, target: edge.target_id, type: edge.edge_type })),
+    }
+    const selected = selectManagedKnowledgeVisualization(canonical, {
+      rootNodeId: root.id,
+      maximumNodes: options.maximumNodes,
+      maximumEdges: options.maximumEdges,
+      maximumHops: options.maximumHops,
+    })
+    const selectedNodeIds = new Set(selected.nodes.map((node) => node.id))
+    const selectedEdgeIds = new Set(selected.edges.map((edge) => edge.id))
+    return {
+      ...snapshot,
+      nodes: snapshot.nodes.filter((node) => selectedNodeIds.has(node.id)),
+      edges: snapshot.edges.filter((edge) => selectedEdgeIds.has(edge.id)),
+      filtered: snapshot.filtered || selected.truncated,
+      bounds: {
+        root_node_id: root.id,
+        maximum_hops: options.maximumHops,
+        node_limit: options.maximumNodes,
+        edge_limit: options.maximumEdges,
+        returned_nodes: selectedNodeIds.size,
+        returned_edges: selectedEdgeIds.size,
+        total_authorized_nodes: candidateNodes.length,
+        total_authorized_edges: candidateEdges.length,
+        available_node_types: [...new Set(snapshot.nodes.map((node) => node.entity_type))].sort(),
+        available_edge_types: [...new Set(snapshot.edges.map((edge) => edge.edge_type))].sort(),
+        truncated: snapshot.filtered || selected.truncated,
+      },
+    }
+  }
+  const candidateNodes = scope.canonicalRelease.nodes.filter((node) => (
+    options.nodeTypes.length === 0 || options.nodeTypes.includes(node.type)
+  ))
+  const candidateNodeIds = new Set(candidateNodes.map((node) => node.id))
+  const candidateEdges = scope.canonicalRelease.edges.filter((edge) => (
+    candidateNodeIds.has(edge.source) && candidateNodeIds.has(edge.target)
+    && (options.edgeTypes.length === 0 || options.edgeTypes.includes(edge.type))
+  ))
+  const root = knowledgeVisualizationRoot(candidateNodes, candidateEdges, options)
+  if (!root) throw knowledgeChatNotFound()
+  const snapshot = await knowledgeChatSnapshot(
+    scope,
+    options.maximumNodes,
+    root.id,
+    options.maximumHops,
+    options,
+  )
+  return {
+    ...snapshot,
+    bounds: {
+      root_node_id: root.id,
+      maximum_hops: options.maximumHops,
+      node_limit: options.maximumNodes,
+      edge_limit: options.maximumEdges,
+      returned_nodes: snapshot.nodes.length,
+      returned_edges: snapshot.edges.length,
+      total_authorized_nodes: scope.canonicalRelease.nodes.length,
+      total_authorized_edges: scope.canonicalRelease.edges.length,
+      available_node_types: [...new Set(scope.canonicalRelease.nodes.map((node) => node.type))].sort(),
+      available_edge_types: [...new Set(scope.canonicalRelease.edges.map((edge) => edge.type))].sort(),
+      truncated: snapshot.filtered,
+    },
   }
 }
 
@@ -7499,6 +7730,11 @@ async function knowledgeChatApi(request, response, url, context) {
     decodeURIComponent(releasePath[2]),
   )
   if (request.method === 'GET' && releasePath[3] === 'snapshot') {
+    const visualizationRequest = ['maximum_edges', 'maximum_hops', 'root_node_id', 'focus_query', 'node_type', 'edge_type']
+      .some((key) => url.searchParams.has(key))
+    if (visualizationRequest) {
+      return json(response, 200, await knowledgeVisualizationSnapshot(scope, url.searchParams))
+    }
     const requested = Number(url.searchParams.get('maximum_nodes') || 200)
     if (!Number.isSafeInteger(requested) || requested < 1 || requested > 200) {
       throw knowledgeProjectionError(400, 'KNOWLEDGE_SNAPSHOT_BOUNDS_INVALID', 'Knowledge snapshots accept 1-200 nodes.')

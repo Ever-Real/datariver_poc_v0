@@ -25,11 +25,8 @@ import type {
 } from '../../api/types'
 import type { Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
-import {
-  FlowCanvas,
-  type FlowCanvasEdge,
-  type FlowCanvasNode,
-} from '../../components/common/FlowCanvas'
+import { CytoscapeReadGraph } from '../../components/graph/CytoscapeReadGraph'
+import { knowledgeSnapshotToReadGraph, type ReadGraphKind } from '../../components/graph/CytoscapeGraphAdapter'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { SafeMarkdown } from '../chat/SafeMarkdown'
 import { KnowledgeWorkspaceLayout } from './KnowledgeWorkspaceLayout'
@@ -128,7 +125,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
     const controller = new AbortController()
     setLoading(true)
     void client.request<KnowledgeSnapshot>(
-      `/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?maximum_nodes=200`,
+      `/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?maximum_nodes=48&maximum_edges=96&maximum_hops=1`,
       { signal: controller.signal },
     )
       .then((result) => {
@@ -186,27 +183,38 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
     }
   }
 
-  const flowNodes = useMemo<FlowCanvasNode[]>(() => (
-    analysis?.nodes ?? snapshot?.nodes ?? []
-  ).map((node) => ({
-    id: node.id,
-    label: label(node.properties, node.id),
-    subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`,
-    kind: node.id === nodeId ? 'target' : 'neutral',
-  })), [analysis, nodeId, snapshot])
-
-  const flowEdges = useMemo<FlowCanvasEdge[]>(() => (
-    analysis?.edges ?? snapshot?.edges ?? []
-  ).map((edge) => ({
-    id: edge.id,
-    source: edge.source_id,
-    target: edge.target_id,
-    label: edge.edge_type,
-  })), [analysis, snapshot])
-
   const activeGraph = graphs.find((graph) => graph.id === graphId)
   const activeRelease = releases.find((release) => release.id === releaseId)
   const activeNode = snapshot?.nodes.find((node) => node.id === nodeId)
+  const readGraphKind = useMemo<ReadGraphKind>(() => {
+    const type = activeGraph?.graph_type.toLocaleUpperCase() ?? ''
+    if (type.includes('LINEAGE') || type.includes('CATALOG_MIRROR')) return 'LINEAGE'
+    if (type.includes('METADATA_MASTER') || type.includes('CURATED_KNOWLEDGE')) return 'METADATA_MASTER'
+    return 'SEMANTIC'
+  }, [activeGraph?.graph_type])
+  const evidenceGraph = useMemo(() => knowledgeSnapshotToReadGraph({
+    nodes: analysis?.nodes ?? snapshot?.nodes ?? [],
+    edges: analysis?.edges ?? snapshot?.edges ?? [],
+  }, readGraphKind, nodeId || snapshot?.bounds?.root_node_id), [analysis, nodeId, readGraphKind, snapshot])
+
+  const resolveGraphEntity = async (searchQuery: string) => {
+    if (!graphId || !releaseId) return undefined
+    const parameters = new URLSearchParams({
+      maximum_nodes: '48',
+      maximum_edges: '96',
+      maximum_hops: '1',
+      focus_query: searchQuery,
+    })
+    const result = await client.request<KnowledgeSnapshot>(
+      `/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?${parameters}`,
+      { cache: 'no-store' },
+    )
+    setSnapshot(result)
+    setAnalysis(undefined)
+    const resolved = result.bounds?.root_node_id
+    if (resolved) setNodeId(resolved)
+    return resolved
+  }
 
   return (
     <div className="knowledge-chat-shell">
@@ -357,18 +365,23 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
                     </small>
                   ) : null}
                 </header>
-                <FlowCanvas
+                <CytoscapeReadGraph
                   ariaLabel="GraphRAG 근거 그래프"
-                  edges={flowEdges}
                   emptyDescription="권한 범위의 선택된 릴리스에 표시 가능한 노드가 없습니다."
                   emptyTitle="표시할 릴리스 미리보기가 없습니다."
+                  graph={evidenceGraph}
                   height={390}
-                  nodes={flowNodes}
-                  onNodeActivate={(selectedNodeId) => {
+                  loading={loading && !analysis}
+                  onActivateNode={(selectedNodeId) => {
                     if (snapshot?.nodes.some((node) => node.id === selectedNodeId)) {
                       setNodeId(selectedNodeId)
                     }
                   }}
+                  onResolveSearch={resolveGraphEntity}
+                  onSelectNode={(selectedNodeId) => {
+                    if (snapshot?.nodes.some((node) => node.id === selectedNodeId)) setNodeId(selectedNodeId)
+                  }}
+                  selectedElementId={nodeId || snapshot?.bounds?.root_node_id}
                 />
               </section>
               <aside className="knowledge-evidence-list">

@@ -17,24 +17,16 @@ import type {
   KnowledgeAssetVersionHistoryItem,
   KnowledgeAssetVersionHistoryPage,
   KnowledgeRelease,
-  KnowledgeSnapshot,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { Dialog } from '../../components/common/Dialog'
-import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode } from '../../components/common/FlowCanvas'
 import { archiveKnowledgeAsset, KNOWLEDGE_ARCHIVE_CONFIRMATION } from './knowledgeRegistryApi'
+import { KnowledgeManagedGraphExplorer } from './KnowledgeManagedGraphExplorer'
 
 const DEFAULT_DRAWER_MAX_WIDTH = 672
 const DRAWER_MIN_WIDTH = 440
-
-function nodeLabel(properties: Record<string, unknown>, fallback: string): string {
-  const candidate = properties.name ?? properties.display_name
-  return typeof candidate === 'string' || typeof candidate === 'number'
-    ? String(candidate)
-    : fallback
-}
 
 function localTime(value: string | undefined): string {
   if (!value) return '—'
@@ -90,10 +82,8 @@ export function KnowledgeRegistry({
   const [focusedReleaseId, setFocusedReleaseId] = useState<string>()
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
   const [versionHistory, setVersionHistory] = useState<KnowledgeAssetVersionHistoryPage>()
-  const [snapshot, setSnapshot] = useState<KnowledgeSnapshot>()
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [previewNotice, setPreviewNotice] = useState('')
   const [archiving, setArchiving] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<KnowledgeAssetSummary>()
   const [error, setError] = useState<unknown>()
@@ -161,7 +151,6 @@ export function KnowledgeRegistry({
   const refresh = useCallback(async () => {
     setLoading(true)
     setError(undefined)
-    setPreviewNotice('')
     try {
       const parameters = new URLSearchParams({
         limit: '25',
@@ -197,7 +186,6 @@ export function KnowledgeRegistry({
       setReleases([])
       setVersionHistory(undefined)
       setFocusedReleaseId(undefined)
-      setSnapshot(undefined)
       return
     }
     const controller = new AbortController()
@@ -206,7 +194,6 @@ export function KnowledgeRegistry({
     setReleases([])
     setVersionHistory(undefined)
     setDetail(undefined)
-    setSnapshot(undefined)
     void Promise.all([
       client.request<KnowledgeRelease[]>(
         `/knowledge/graphs/${selected.id}/releases`,
@@ -244,51 +231,6 @@ export function KnowledgeRegistry({
       })
     return () => controller.abort()
   }, [client, selected])
-
-  useEffect(() => {
-    if (!selected || !focusedReleaseId) {
-      setSnapshot(undefined)
-      return
-    }
-    const controller = new AbortController()
-    setDetailLoading(true)
-    setError(undefined)
-    setSnapshot(undefined)
-    setPreviewNotice('')
-    void client.request<KnowledgeSnapshot>(
-      `/knowledge/graphs/${selected.id}/releases/${focusedReleaseId}/snapshot?maximum_nodes=200`,
-      { cache: 'no-store', signal: controller.signal },
-    )
-      .then((nextSnapshot) => {
-        if (!controller.signal.aborted) setSnapshot(nextSnapshot)
-      })
-      .catch((next) => {
-        if (!controller.signal.aborted) {
-          setPreviewNotice(
-            next instanceof Error
-              ? `이 버전의 bounded 미리보기를 표시하지 못했습니다: ${next.message}`
-              : '이 버전의 bounded 미리보기를 표시하지 못했습니다.',
-          )
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setDetailLoading(false)
-      })
-    return () => controller.abort()
-  }, [client, focusedReleaseId, selected])
-
-  const flowNodes = useMemo<FlowCanvasNode[]>(() => (snapshot?.nodes ?? []).map((node) => ({
-    id: node.id,
-    label: nodeLabel(node.properties, node.id),
-    subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`,
-    kind: 'neutral',
-  })), [snapshot])
-  const flowEdges = useMemo<FlowCanvasEdge[]>(() => (snapshot?.edges ?? []).map((edge) => ({
-    id: edge.id,
-    source: edge.source_id,
-    target: edge.target_id,
-    label: edge.edge_type,
-  })), [snapshot])
 
   const columns = useMemo<ColumnDef<KnowledgeAssetSummary>[]>(() => [
     {
@@ -894,24 +836,15 @@ export function KnowledgeRegistry({
                 title="그래프 미리보기"
                 summary={detailLoading
                   ? '불러오는 중'
-                  : snapshot
-                    ? `${snapshot.nodes.length} nodes`
+                  : focusedReleaseId
+                    ? `${selected.node_count ?? 0} canonical nodes`
                     : '미발행'}
                 expanded={expandedSections.has('graph-preview')}
                 onToggle={() => toggleSection('graph-preview')}
               >
-                <FlowCanvas
-                  ariaLabel="선택 버전 그래프 미리보기"
-                  nodes={flowNodes}
-                  edges={flowEdges}
-                  height={420}
-                  showMiniMap
-                />
-                {previewNotice && (
-                  <p role="status" className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                    {previewNotice} 버전 메타데이터와 카운트는 계속 확인할 수 있습니다.
-                  </p>
-                )}
+                {focusedReleaseId
+                  ? <KnowledgeManagedGraphExplorer client={client} graphId={selected.id} graphType={selected.graph_type} releaseId={focusedReleaseId} />
+                  : <p className="m-0 text-xs text-slate-500">발행된 graph release가 없어 read-only visualization을 열 수 없습니다.</p>}
               </AccordionItem>
               <AccordionItem
                 itemId="ingestion-history"

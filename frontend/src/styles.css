@@ -231,35 +231,7 @@ body.catalog-overlay-open { overflow: hidden; }
 .catalog-detail--overlay { position: fixed; z-index: 59; top: 56px; right: 12px; bottom: 12px; width: min(580px, calc(100vw - 24px)); height: auto; max-height: calc(100vh - 68px); border: 1px solid #8da0b3; box-shadow: 0 20px 60px rgba(7, 20, 38, .38); overflow: hidden; }
 .catalog-lineage-summary { display: flex; align-items: center; gap: 6px; padding: 6px; color: var(--blue-700); font-size: 10px; background: var(--blue-100); }
 .catalog-lineage-summary b { margin-left: auto; color: #745b00; }
-.catalog-lineage, .catalog-lineage-graph { min-width: 0; max-width: 100%; }
-.catalog-lineage-graph { box-sizing: border-box; width: 100%; overflow: hidden; overflow: clip; border-top: 1px solid var(--line-200); background: #f8fafb; }
-.catalog-lineage-controls { display: flex; align-items: center; justify-content: space-between; gap: 7px; border-bottom: 1px solid var(--line-200); padding: 4px 6px; color: var(--text-500); background: #fff; font-size: 9px; }
-.catalog-lineage-controls > span { display: inline-flex; min-width: 0; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.catalog-lineage-controls > div { display: flex; flex: 0 0 auto; gap: 2px; }
-.catalog-lineage-controls button { display: grid; width: 23px; height: 23px; place-items: center; border: 1px solid var(--line-300); padding: 0; color: var(--blue-700); background: #fff; }
-.catalog-lineage-controls button:hover, .catalog-lineage-controls button:focus-visible { border-color: var(--blue-700); background: var(--blue-100); }
-.catalog-lineage-viewport { position: relative; box-sizing: border-box; width: 100%; max-width: 100%; height: clamp(320px, 45vh, 460px); min-height: 0; overflow: hidden; overflow: clip; contain: layout paint; touch-action: none; cursor: grab; background-color: #f8fafb; background-image: linear-gradient(#dfe7ec 1px, transparent 1px), linear-gradient(90deg, #dfe7ec 1px, transparent 1px); background-size: 18px 18px; }
-.catalog-lineage-viewport:active { cursor: grabbing; }
-.catalog-lineage-world { position: relative; box-sizing: border-box; width: 100%; max-width: 100%; height: 100%; overflow: hidden; overflow: clip; contain: layout paint; }
-.catalog-lineage-stage { position: absolute; transform-origin: 0 0; will-change: transform; }
-.catalog-lineage-canvas { position: relative; }
-.catalog-lineage-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
-.catalog-lineage-edges path { fill: none; stroke: #6a859f; stroke-width: 1.4; }
-.catalog-lineage-edges marker path { fill: #6a859f; }
-.catalog-lineage-node { position: absolute; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-content: center; gap: 1px 6px; overflow: hidden; border: 1px solid #8da0b3; border-left: 5px solid #537da4; border-radius: 0; padding: 5px 2px 0 7px; color: var(--navy-900); text-align: left; touch-action: none; background: white; box-shadow: 0 1px 2px rgba(21, 43, 65, .12); cursor: move; }
-.catalog-lineage-node:has(.catalog-lineage-node-title:hover), .catalog-lineage-node:has(.catalog-lineage-node-title:focus-visible) { z-index: 2; border-color: var(--blue-700); outline: 2px solid #b9d4e8; outline-offset: 1px; }
-.catalog-lineage-node-title { min-width: 0; border: 0; padding: 0; overflow: hidden; color: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; cursor: pointer; }
-.catalog-lineage-node-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 900; }
-.catalog-lineage-node-metadata { grid-column: 1 / -1; min-width: 0; padding-bottom: 5px; overflow: hidden; color: var(--text-500); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.catalog-lineage-node-detail { align-self: center; margin-right: 6px; border: 1px solid #9ab0c3; border-radius: 0; padding: 2px 4px; color: var(--blue-700); font-size: 9px; font-weight: 800; background: #fff; cursor: pointer; }
-.catalog-lineage-node-detail:hover, .catalog-lineage-node-detail:focus-visible { border-color: var(--blue-700); background: #eaf4fa; }
-.catalog-lineage-node-role { width: 48px; min-width: 48px; box-sizing: border-box; align-self: start; overflow: hidden; border: 1px solid var(--line-300); padding: 1px 3px; color: var(--text-500); text-align: center; text-overflow: clip; white-space: nowrap; font-size: 10px; font-weight: 900; }
-.catalog-lineage-node-center { border: 3px solid var(--blue-700); border-left-width: 6px; background: #eef6fb; }
-.catalog-lineage-node-upstream_2 { border-left-color: #7c3d67; }
-.catalog-lineage-node-upstream_1 { border-left-color: #9b6a29; }
-.catalog-lineage-node-downstream_1 { border-left-color: #367a57; }
-.catalog-lineage-node-downstream_2 { border-left-color: #356e9d; }
-.catalog-lineage-node-related { border-left-color: #7b6a99; }
+.catalog-lineage { min-width: 0; max-width: 100%; }
 .governance-intake-form { min-width: 980px; }
 .governance-create-form textarea.governance-request-reason { height: 40px; min-height: 40px; resize: vertical; }
 .governance-intake-search { display: flex; align-items: end; }

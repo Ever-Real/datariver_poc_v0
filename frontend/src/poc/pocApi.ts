@@ -4193,7 +4193,7 @@ class PocApiClient {
     const graphSnapshotPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases\/([^/]+)\/snapshot$/)
     if (graphSnapshotPath) {
       if (runtimeFlags().pocState) {
-        return gatewayRequest<KnowledgeSnapshot>(`/poc-api${path}`, { signal: options.signal })
+        return gatewayRequest<KnowledgeSnapshot>(`/poc-api${path}${url.search}`, { signal: options.signal })
       }
       const graphId = decodeURIComponent(graphSnapshotPath[1] ?? '')
       const releaseId = decodeURIComponent(graphSnapshotPath[2] ?? '')

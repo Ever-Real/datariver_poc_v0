@@ -6,6 +6,24 @@ import type { ApiClient, RequestOptions } from '../../api/client'
 import type { CatalogAsset } from '../../api/types'
 import { CatalogPage } from './CatalogPage'
 
+const graphElements = {
+  addClass: vi.fn().mockReturnThis(),
+  removeClass: vi.fn().mockReturnThis(),
+  unselect: vi.fn().mockReturnThis(),
+}
+vi.mock('cytoscape', () => ({ default: vi.fn(() => ({
+  animate: vi.fn(),
+  destroy: vi.fn(),
+  elements: vi.fn(() => graphElements),
+  fit: vi.fn(),
+  getElementById: vi.fn(() => ({ length: 0, select: vi.fn() })),
+  layout: vi.fn(() => ({ one: (_event: string, callback: () => void) => callback(), run: vi.fn() })),
+  on: vi.fn(),
+  removeAllListeners: vi.fn(),
+  resize: vi.fn(),
+  zoom: vi.fn(() => 1),
+})) }))
+
 const meta = {
   observed_at: '2026-07-17T00:00:00Z',
   projection_version: 7,
@@ -680,7 +698,8 @@ describe('catalog workspace', () => {
     fireEvent.click(await screen.findByText('wafer_events'))
     fireEvent.click(await screen.findByRole('tab', { name: 'Lineage' }))
     const assetCallsBeforeSelection = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?')).length
-    fireEvent.click(await screen.findByRole('button', { name: `${lineageAsset.name} 선택` }))
+    const lineageGraph = await screen.findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
+    fireEvent.click(within(lineageGraph).getByLabelText(`${lineageAsset.name}, DATASET · 근거 1`))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
     expect(await within(detail).findByText(lineageAsset.name)).toBeInTheDocument()
@@ -756,11 +775,12 @@ describe('catalog workspace', () => {
     expect(detail).toHaveStyle('width: 614px')
     expect(request.mock.calls.some(([path]) => String(path).includes('/lineage?'))).toBe(false)
     fireEvent.click(screen.getByRole('tab', { name: 'Lineage' }))
-    expect(await screen.findByText('1 nodes · 0 edges')).toBeInTheDocument()
+    const lineageGraph = await screen.findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
+    expect(within(lineageGraph).getByText('1 nodes · 0 edges')).toBeInTheDocument()
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
       path.includes('/lineage?direction=BOTH&depth=2') && options?.signal instanceof AbortSignal
     ))).toBe(true))
-    expect(screen.getByRole('button', { name: 'wafer_events 선택' })).toHaveAttribute('title', 'wafer_events 상세 정보 열기')
+    expect(within(lineageGraph).getByLabelText('wafer_events, DATASET · 근거 1')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
   })
 

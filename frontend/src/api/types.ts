@@ -939,6 +939,19 @@ export interface KnowledgeSnapshot {
   nodes: KnowledgeGraphNode[]
   edges: KnowledgeGraphEdge[]
   filtered: boolean
+  bounds?: {
+    root_node_id: string
+    maximum_hops: number
+    node_limit: number
+    edge_limit: number
+    returned_nodes: number
+    returned_edges: number
+    total_authorized_nodes: number
+    total_authorized_edges: number
+    available_node_types: string[]
+    available_edge_types: string[]
+    truncated: boolean
+  }
 }
 
 export interface KnowledgeNeighborAnalysis {
