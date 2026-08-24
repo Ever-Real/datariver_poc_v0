@@ -79,6 +79,10 @@
 .governance-editor-toolbar button:focus-visible, .governance-editor-toolbar select:focus-visible { outline: 2px solid var(--blue-700); outline-offset: 1px; }
 .governance-editor-toolbar button.active, .governance-editor-toolbar button[aria-pressed="true"] { border-color: #9ebdcb; color: var(--blue-700); background: #dfeef4; box-shadow: inset 0 -2px var(--blue-700); }
 .governance-editor-toolbar button:disabled { color: #98a6ac; }
+.governance-editor-toolbar-action { position: relative; display: inline-grid; place-items: center; }
+.governance-editor-tooltip { position: absolute; z-index: 8; top: calc(100% + 7px); left: 50%; width: max-content; max-width: 220px; transform: translateX(-50%) translateY(-2px); border-radius: 4px; padding: 5px 7px; color: #fff; background: var(--navy-900); box-shadow: 0 4px 12px rgba(10, 25, 47, .22); font-size: 9px; font-weight: 700; line-height: 1.3; opacity: 0; pointer-events: none; transition: opacity .12s ease, transform .12s ease; }
+.governance-editor-toolbar-action:hover .governance-editor-tooltip, .governance-editor-toolbar-action:focus-within .governance-editor-tooltip { transform: translateX(-50%) translateY(0); opacity: 1; }
+.governance-editor-tooltip::before { position: absolute; top: -4px; left: calc(50% - 4px); border-right: 4px solid transparent; border-bottom: 4px solid var(--navy-900); border-left: 4px solid transparent; content: ''; }
 .governance-editor-block-style select, .governance-editor-font-size select { height: 30px; border: 1px solid #b8c8d0; border-radius: 3px; padding: 0 24px 0 8px; color: var(--navy-900); background-color: #fff; font-size: 10px; font-weight: 800; }
 .governance-editor-block-style select { width: 94px; }
 .governance-editor-font-size select { width: 94px; }
@@ -89,6 +93,12 @@
 .governance-editor-surface { min-height: 545px; padding: 32px clamp(28px, 5vw, 72px); overflow-wrap: anywhere; color: var(--text-700); font-size: 12px; line-height: 1.75; outline: none; }
 .governance-editor-surface:focus { box-shadow: inset 0 0 0 2px var(--blue-700); }
 .governance-editor-surface p:first-child { margin-top: 0; }
+.governance-editor-surface h1 { margin: 1.2em 0 .55em; color: var(--navy-900); font-size: 2em; line-height: 1.25; }
+.governance-editor-surface h2 { margin: 1.15em 0 .5em; color: var(--navy-900); font-size: 1.55em; line-height: 1.3; }
+.governance-editor-surface h3 { margin: 1.1em 0 .45em; color: var(--navy-900); font-size: 1.25em; line-height: 1.35; }
+.governance-editor-surface ul, .governance-editor-surface ol { padding-left: 2em; }
+.governance-editor-surface blockquote { margin: 1em 0; border-left: 4px solid var(--blue-700); padding: .35em 1em; color: var(--text-600); background: #f4f8fa; }
+.governance-editor-surface pre { overflow: auto; border-radius: 4px; padding: 12px; color: #e5edf3; background: var(--navy-900); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 .governance-editor-surface table { width: 100%; border-collapse: collapse; }
 .governance-editor-surface th, .governance-editor-surface td { min-width: 80px; border: 1px solid var(--line-300); padding: 6px 8px; vertical-align: top; }
 .governance-editor-surface th { color: var(--navy-900); background: #edf4f6; }

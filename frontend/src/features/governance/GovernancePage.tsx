@@ -858,6 +858,12 @@ export function GovernancePage({
         />
         <ErrorNotice error={listError} />
 
+        <DetectedChangeCrPanel
+          client={client}
+          changeRequests={requests}
+          dateRange={dateRange}
+        />
+
       </section>
 
       <section className="governance-list-panel panel" aria-labelledby="governance-list-heading">

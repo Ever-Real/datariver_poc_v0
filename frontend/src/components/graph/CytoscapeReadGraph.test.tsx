@@ -95,6 +95,25 @@ describe('CytoscapeReadGraph', () => {
     expect(edge['line-color']).toBe('#a5b1bd')
   })
 
+  it('applies the classic rectangular role and depth profile only when explicitly requested', () => {
+    const styles = graphStyles(document.createElement('div'), 'SEARCH_LINEAGE_CLASSIC')
+    const style = (selector: string) => (styles.filter((entry) => entry.selector === selector).at(-1) as unknown as {
+      style: Record<string, unknown>
+    }).style
+
+    expect(style('node')).toMatchObject({
+      shape: 'round-rectangle', width: 156, height: 52, 'text-opacity': 1,
+    })
+    expect(style('node[role = "UPSTREAM"][lineageDepth = 1]')).toMatchObject({
+      'background-color': '#fff1cf',
+    })
+    expect(style('node[role = "DOWNSTREAM"][lineageDepth >= 2]')).toMatchObject({
+      'background-color': '#effaf4',
+    })
+    expect(style('node:selected')).not.toHaveProperty('width')
+    expect(graphStyles(document.createElement('div')).filter((entry) => entry.selector === 'node')).toHaveLength(1)
+  })
+
   it('distinguishes a rendered label hit from the node body without changing click cadence', () => {
     const node = {
       renderedBoundingBox: () => ({ x1: 20, x2: 80, y1: 30, y2: 50 }),

@@ -22,6 +22,11 @@
 .cy-read-graph-legend span[data-shape="root"]::before { border-color: #fff; box-shadow: 0 0 0 2px var(--blue-700); background: #4e79a7; }
 .cy-read-graph-legend span[data-shape="upstream"]::before { border-color: #fff; box-shadow: 0 0 0 1px #9b6a29; background: #f28e2b; }
 .cy-read-graph-legend span[data-shape="downstream"]::before { border-color: #fff; box-shadow: 0 0 0 1px #367a57; background: #59a14f; }
+.cy-read-graph[data-visual-profile="SEARCH_LINEAGE_CLASSIC"] .cy-read-graph-legend span::before { width: 12px; border-radius: 3px; }
+.cy-read-graph-legend span[data-shape="upstream-l2"]::before { border-color: #bd8b49; background: #fff8e8; }
+.cy-read-graph-legend span[data-shape="upstream-l1"]::before { border-color: #9b6a29; background: #fff1cf; }
+.cy-read-graph-legend span[data-shape="downstream-l1"]::before { border-color: #367a57; background: #dff5e9; }
+.cy-read-graph-legend span[data-shape="downstream-l2"]::before { border-color: #65947a; background: #effaf4; }
 .cy-read-graph-detail { display: grid; gap: 5px; border-top: 1px solid var(--line-200); padding: 8px; color: var(--text-600); background: #fff; font-size: 10px; }
 .cy-read-graph-detail header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .cy-read-graph-detail header strong { color: var(--navy-900); font-size: 12px; }

@@ -32,6 +32,7 @@ import {
 import './CytoscapeReadGraph.css'
 
 export type CytoscapeExpansionDirection = 'UPSTREAM' | 'DOWNSTREAM'
+export type CytoscapeVisualProfile = 'ORGANIC' | 'SEARCH_LINEAGE_CLASSIC'
 
 export interface CytoscapeExpandRequest {
   direction: CytoscapeExpansionDirection
@@ -67,6 +68,7 @@ interface CytoscapeReadGraphProps {
   onReset?: () => void
   onMetrics?: (metrics: CytoscapeGraphMetrics) => void
   boundNotice?: string
+  visualProfile?: CytoscapeVisualProfile
 }
 
 export const CYTOSCAPE_NODE_GEOMETRY = Object.freeze({
@@ -99,11 +101,14 @@ function colorValue(element: HTMLElement, token: string, fallback: string): stri
   return value || fallback
 }
 
-export function graphStyles(element: HTMLElement): StylesheetJson {
+export function graphStyles(
+  element: HTMLElement,
+  visualProfile: CytoscapeVisualProfile = 'ORGANIC',
+): StylesheetJson {
   const navy = colorValue(element, '--navy-900', '#0a192f')
   const blue = colorValue(element, '--blue-700', '#004b87')
   const selection = colorValue(element, '--orange-700', '#c2410c')
-  return [
+  const styles: StylesheetJson = [
     {
       selector: 'node',
       style: {
@@ -197,6 +202,47 @@ export function graphStyles(element: HTMLElement): StylesheetJson {
     },
     { selector: 'edge.graph-hover-edge', style: { opacity: 1, 'text-opacity': 0, width: 2.8 } },
   ]
+  if (visualProfile === 'SEARCH_LINEAGE_CLASSIC') {
+    styles.push(
+      {
+        selector: 'node',
+        style: {
+          'background-color': '#f7fafc',
+          'border-color': '#8fa1ad',
+          'border-width': 2,
+          color: navy,
+          'font-size': 10,
+          'font-weight': 750,
+          height: 52,
+          padding: '7px',
+          shape: 'round-rectangle',
+          'text-halign': 'center',
+          'text-margin-y': 0,
+          'text-max-width': '136px',
+          'text-opacity': 1,
+          'text-valign': 'center',
+          width: 156,
+        },
+      },
+      { selector: 'node[role = "ROOT"]', style: { 'background-color': '#d9edf7', 'border-color': '#12648b' } },
+      { selector: 'node[role = "UPSTREAM"][lineageDepth = 1]', style: { 'background-color': '#fff1cf', 'border-color': '#9b6a29' } },
+      { selector: 'node[role = "UPSTREAM"][lineageDepth >= 2]', style: { 'background-color': '#fff8e8', 'border-color': '#bd8b49' } },
+      { selector: 'node[role = "DOWNSTREAM"][lineageDepth = 1]', style: { 'background-color': '#dff5e9', 'border-color': '#367a57' } },
+      { selector: 'node[role = "DOWNSTREAM"][lineageDepth >= 2]', style: { 'background-color': '#effaf4', 'border-color': '#65947a' } },
+      {
+        selector: 'node:selected',
+        style: {
+          'border-width': 2,
+          'text-opacity': 1,
+          'underlay-padding': 5,
+        },
+      },
+      { selector: 'node.graph-hover-neighbor', style: { 'text-opacity': 1 } },
+      { selector: 'node.graph-hover', style: { 'text-opacity': 1 } },
+      { selector: 'edge', style: { 'text-opacity': 0, width: 2.2 } },
+    )
+  }
+  return styles
 }
 
 export function isRenderedLabelHit(node: NodeSingular, renderedPosition?: Position): boolean {
@@ -291,6 +337,7 @@ export function CytoscapeReadGraph({
   onReset,
   onMetrics,
   boundNotice,
+  visualProfile = 'ORGANIC',
 }: CytoscapeReadGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const cyRef = useRef<Core | undefined>(undefined)
@@ -465,7 +512,7 @@ export function CytoscapeReadGraph({
         instance = cytoscape({
           container,
           elements,
-          style: graphStyles(container),
+          style: graphStyles(container, visualProfile),
           layout: { name: 'grid', animate: false, fit: false, padding: 0 },
           minZoom: 0.08,
           maxZoom: 3,
@@ -565,7 +612,7 @@ export function CytoscapeReadGraph({
       instance?.destroy()
       if (cyRef.current === instance) cyRef.current = undefined
     }
-  }, [performExpand, renderable, runPhysics, selectNode, stopLayout])
+  }, [performExpand, renderable, runPhysics, selectNode, stopLayout, visualProfile])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -716,7 +763,7 @@ export function CytoscapeReadGraph({
   }
 
   return (
-    <section className="cy-read-graph" aria-label={ariaLabel} data-graph-kind={graph.kind}>
+    <section className="cy-read-graph" aria-label={ariaLabel} data-graph-kind={graph.kind} data-visual-profile={visualProfile}>
       <div className="cy-read-graph-toolbar" aria-label="그래프 조작 도구">
         <form onSubmit={(event) => void search(event)} role="search">
           <label className="sr-only" htmlFor={searchId}>그래프 entity 검색</label>
@@ -760,8 +807,10 @@ export function CytoscapeReadGraph({
       </div>
       <div className="cy-read-graph-legend" aria-label="그래프 범례">
         <strong>범례</strong>
-        {graph.kind === 'LINEAGE' && <><span data-shape="root">현재</span><span data-shape="upstream">Upstream</span><span data-shape="downstream">Downstream</span></>}
-        {entityTypes.map((entityType) => <span
+        {visualProfile === 'SEARCH_LINEAGE_CLASSIC'
+          ? <><span data-shape="upstream-l2">Upstream L2</span><span data-shape="upstream-l1">Upstream L1</span><span data-shape="root">Current</span><span data-shape="downstream-l1">Downstream L1</span><span data-shape="downstream-l2">Downstream L2</span></>
+          : graph.kind === 'LINEAGE' && <><span data-shape="root">현재</span><span data-shape="upstream">Upstream</span><span data-shape="downstream">Downstream</span></>}
+        {visualProfile !== 'SEARCH_LINEAGE_CLASSIC' && entityTypes.map((entityType) => <span
           key={entityType}
           data-shape="entity"
           style={{ '--graph-group-color': nodeGroupColor(entityType) } as CSSProperties}

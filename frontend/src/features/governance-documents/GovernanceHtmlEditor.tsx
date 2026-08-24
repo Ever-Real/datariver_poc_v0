@@ -1,4 +1,4 @@
-import { memo, useEffect, type ReactNode } from 'react'
+import { memo, useEffect, useId, type ReactNode } from 'react'
 import { Extension } from '@tiptap/core'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
@@ -9,10 +9,13 @@ import {
   AlignRight,
   Bold,
   Code2,
+  Eraser,
+  FileCode2,
   IndentDecrease,
   IndentIncrease,
   Italic,
   Link2,
+  Link2Off,
   List,
   ListOrdered,
   Minus,
@@ -24,6 +27,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import { safeGovernancePresentation } from './governancePresentationStyle'
+import { safeGovernanceHref } from './governanceDocumentMarkup'
 
 const fontSizes = ['10px', '12px', '14px', '16px', '18px', '24px', '32px'] as const
 const maximumIndentLevel = 6
@@ -109,23 +113,30 @@ function ToolbarButton({
   disabled = false,
   children,
   onClick,
+  shortcut,
 }: {
   label: string
   active?: boolean
   disabled?: boolean
   children: ReactNode
   onClick: () => void
+  shortcut?: string
 }) {
-  return <button
-    type="button"
-    aria-label={label}
-    title={label}
-    aria-pressed={active || undefined}
-    className={active ? 'active' : undefined}
-    disabled={disabled}
-    onMouseDown={(event) => event.preventDefault()}
-    onClick={onClick}
-  >{children}</button>
+  const tooltipId = useId()
+  const tooltip = shortcut ? `${label} (${shortcut})` : label
+  return <span className="governance-editor-toolbar-action">
+    <button
+      type="button"
+      aria-label={label}
+      aria-describedby={tooltipId}
+      aria-pressed={active || undefined}
+      className={active ? 'active' : undefined}
+      disabled={disabled}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+    >{children}</button>
+    <span className="governance-editor-tooltip" id={tooltipId} role="tooltip">{tooltip}</span>
+  </span>
 }
 
 function setLink(editor: Editor) {
@@ -137,17 +148,21 @@ function setLink(editor: Editor) {
     editor.chain().focus().extendMarkRange('link').unsetLink().run()
     return
   }
-  editor.chain().focus().extendMarkRange('link').setLink({ href: normalized }).run()
+  const safeHref = safeGovernanceHref(normalized)
+  if (!safeHref) return
+  editor.chain().focus().extendMarkRange('link').setLink({ href: safeHref }).run()
 }
 
 export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
   initialHtml,
   disabled,
   onHtmlChange,
+  onEditorReady,
 }: {
   initialHtml: string
   disabled: boolean
   onHtmlChange: (html: string) => void
+  onEditorReady?: (editor: Editor) => void
 }) {
   const editor = useEditor({
     immediatelyRender: false,
@@ -178,30 +193,36 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
     editor?.setEditable(!disabled)
   }, [disabled, editor])
 
+  useEffect(() => {
+    if (editor) onEditorReady?.(editor)
+  }, [editor, onEditorReady])
+
   if (!editor) return <div className="governance-editor-loading" role="status">문서 편집기를 준비하는 중입니다.</div>
 
   const commandDisabled = disabled || !editor.isEditable
   return <section className="governance-html-editor" aria-label="거버넌스 문서 HTML 편집기">
     <div className="governance-editor-toolbar" role="toolbar" aria-label="문서 서식">
       <div className="governance-editor-tool-group" aria-label="실행 취소">
-        <ToolbarButton label="실행 취소" disabled={commandDisabled || !editor.can().chain().focus().undo().run()} onClick={() => editor.chain().focus().undo().run()}><Undo2 size={14} /></ToolbarButton>
-        <ToolbarButton label="다시 실행" disabled={commandDisabled || !editor.can().chain().focus().redo().run()} onClick={() => editor.chain().focus().redo().run()}><Redo2 size={14} /></ToolbarButton>
+        <ToolbarButton label="실행 취소" shortcut="Ctrl/Cmd+Z" disabled={commandDisabled || !editor.can().chain().focus().undo().run()} onClick={() => editor.chain().focus().undo().run()}><Undo2 size={14} /></ToolbarButton>
+        <ToolbarButton label="다시 실행" shortcut="Ctrl/Cmd+Shift+Z" disabled={commandDisabled || !editor.can().chain().focus().redo().run()} onClick={() => editor.chain().focus().redo().run()}><Redo2 size={14} /></ToolbarButton>
       </div>
       <div className="governance-editor-tool-group governance-editor-block-style" aria-label="문단 스타일">
         <select
           aria-label="문단 스타일"
           title="문단 스타일"
           disabled={commandDisabled}
-          value={editor.isActive('heading', { level: 1 }) ? 'heading-1' : editor.isActive('heading', { level: 2 }) ? 'heading-2' : 'paragraph'}
+          value={editor.isActive('heading', { level: 1 }) ? 'heading-1' : editor.isActive('heading', { level: 2 }) ? 'heading-2' : editor.isActive('heading', { level: 3 }) ? 'heading-3' : 'paragraph'}
           onChange={(event) => {
             if (event.target.value === 'heading-1') editor.chain().focus().setHeading({ level: 1 }).run()
             else if (event.target.value === 'heading-2') editor.chain().focus().setHeading({ level: 2 }).run()
+            else if (event.target.value === 'heading-3') editor.chain().focus().setHeading({ level: 3 }).run()
             else editor.chain().focus().setParagraph().run()
           }}
         >
           <option value="paragraph">본문</option>
           <option value="heading-1">제목 1</option>
           <option value="heading-2">제목 2</option>
+          <option value="heading-3">제목 3</option>
         </select>
       </div>
       <div className="governance-editor-tool-group governance-editor-font-size" aria-label="글자 크기">
@@ -221,17 +242,19 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
         </select>
       </div>
       <div className="governance-editor-tool-group" aria-label="문자 스타일">
-        <ToolbarButton label="굵게" active={editor.isActive('bold')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBold().run()}><Bold size={14} /></ToolbarButton>
-        <ToolbarButton label="기울임" active={editor.isActive('italic')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleItalic().run()}><Italic size={14} /></ToolbarButton>
-        <ToolbarButton label="밑줄" active={editor.isActive('underline')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleUnderline().run()}><UnderlineIcon size={14} /></ToolbarButton>
+        <ToolbarButton label="굵게" shortcut="Ctrl/Cmd+B" active={editor.isActive('bold')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBold().run()}><Bold size={14} /></ToolbarButton>
+        <ToolbarButton label="기울임" shortcut="Ctrl/Cmd+I" active={editor.isActive('italic')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleItalic().run()}><Italic size={14} /></ToolbarButton>
+        <ToolbarButton label="밑줄" shortcut="Ctrl/Cmd+U" active={editor.isActive('underline')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleUnderline().run()}><UnderlineIcon size={14} /></ToolbarButton>
         <ToolbarButton label="취소선" active={editor.isActive('strike')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleStrike().run()}><Strikethrough size={14} /></ToolbarButton>
         <ToolbarButton label="인라인 코드" active={editor.isActive('code')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleCode().run()}><Code2 size={14} /></ToolbarButton>
-        <ToolbarButton label="링크" active={editor.isActive('link')} disabled={commandDisabled} onClick={() => setLink(editor)}><Link2 size={14} /></ToolbarButton>
+        <ToolbarButton label="링크 추가 또는 편집" active={editor.isActive('link')} disabled={commandDisabled} onClick={() => setLink(editor)}><Link2 size={14} /></ToolbarButton>
+        <ToolbarButton label="링크 제거" disabled={commandDisabled || !editor.isActive('link')} onClick={() => editor.chain().focus().extendMarkRange('link').unsetLink().run()}><Link2Off size={14} /></ToolbarButton>
       </div>
       <div className="governance-editor-tool-group" aria-label="목록과 인용">
         <ToolbarButton label="글머리 기호 목록" active={editor.isActive('bulletList')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBulletList().run()}><List size={14} /></ToolbarButton>
         <ToolbarButton label="번호 목록" active={editor.isActive('orderedList')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleOrderedList().run()}><ListOrdered size={14} /></ToolbarButton>
         <ToolbarButton label="인용문" active={editor.isActive('blockquote')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote size={14} /></ToolbarButton>
+        <ToolbarButton label="코드 블록" active={editor.isActive('codeBlock')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleCodeBlock().run()}><FileCode2 size={14} /></ToolbarButton>
         <ToolbarButton label="구분선" disabled={commandDisabled} onClick={() => editor.chain().focus().setHorizontalRule().run()}><Minus size={14} /></ToolbarButton>
         <ToolbarButton label="내어쓰기" disabled={commandDisabled || currentIndentLevel(editor) === 0} onClick={() => changeIndent(editor, -1)}><IndentDecrease size={14} /></ToolbarButton>
         <ToolbarButton label="들여쓰기" disabled={commandDisabled || currentIndentLevel(editor) >= maximumIndentLevel} onClick={() => changeIndent(editor, 1)}><IndentIncrease size={14} /></ToolbarButton>
@@ -241,6 +264,7 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
         <ToolbarButton label="가운데 정렬" active={activePresentation(editor).get('text-align') === 'center'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'center')}><AlignCenter size={14} /></ToolbarButton>
         <ToolbarButton label="오른쪽 정렬" active={activePresentation(editor).get('text-align') === 'right'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'right')}><AlignRight size={14} /></ToolbarButton>
         <ToolbarButton label="3열 표 삽입" disabled={commandDisabled} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><Table2 size={14} /></ToolbarButton>
+        <ToolbarButton label="서식 지우기" disabled={commandDisabled} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><Eraser size={14} /></ToolbarButton>
       </div>
       {editor.isActive('table') && <div className="governance-editor-tool-group governance-editor-table-tools" aria-label="표 편집">
         <ToolbarButton label="행 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addRowAfter().run()}>+행</ToolbarButton>

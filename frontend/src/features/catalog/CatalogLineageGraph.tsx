@@ -55,6 +55,7 @@ export function CatalogLineageGraph({
       onCollapseNode={collapse}
       onExpandNode={expand}
       selectedElementId={lineage.center_asset_id}
+      visualProfile="SEARCH_LINEAGE_CLASSIC"
     />
   )
 }

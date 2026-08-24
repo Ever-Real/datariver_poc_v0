@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { X } from 'lucide-react'
 import type { ApiClient, ApiResponse } from '../../api/client'
@@ -10,6 +10,7 @@ import type {
   ChangeHistoryEventDetail,
   ChangeHistoryEvent,
   ChangeHistoryEventPage,
+  ChangeHistoryChangeType,
   ChangeHistoryLinkAction,
   ChangeHistoryLinkPage,
   ChangeHistoryStage,
@@ -56,6 +57,11 @@ export interface DetectedChangeSelection {
   dateTo: string
 }
 
+export interface DetectedChangeDateRange {
+  from: string
+  to: string
+}
+
 const eventColumns: ColumnDef<ChangeHistoryEvent>[] = [
   { accessorKey: 'source_occurred_at', header: '발생 시각', size: 150, enableSorting: false, cell: ({ row }) => row.original.source_occurred_at ? formatKst(row.original.source_occurred_at) : '시간 미상' },
   { id: 'change', header: '변경', size: 190, enableSorting: false, cell: ({ row }) => `${row.original.category} · ${row.original.operation}` },
@@ -64,24 +70,41 @@ const eventColumns: ColumnDef<ChangeHistoryEvent>[] = [
   { id: 'cr', header: 'CR', size: 180, enableSorting: false, cell: ({ row }) => row.original.current_primary ? `${row.original.current_primary.change_request_id} · round ${row.original.current_primary.change_request_round}` : '미연결' },
 ]
 
+const historyColumns: ColumnDef<ChangeHistoryEvent>[] = [
+  { accessorKey: 'detected_at', header: '감지 시각', size: 150, enableSorting: false, cell: ({ row }) => formatKst(row.original.detected_at) },
+  { accessorKey: 'change_type', header: '유형', size: 130, enableSorting: false },
+  { id: 'location', header: '시스템 / Database / Schema', size: 240, enableSorting: false, cell: ({ row }) => {
+    const event = row.original
+    return [event.system.system_id ?? '시스템 미지정', event.locator?.database_name, event.locator?.schema_name].filter(Boolean).join(' · ')
+  } },
+  { id: 'target', header: '영향 대상', size: 190, enableSorting: false, cell: ({ row }) => row.original.locator?.asset_name ?? row.original.entity_key },
+  { id: 'summary', header: '변경 요약', size: 180, enableSorting: false, cell: ({ row }) => `${row.original.operation} · ${row.original.category}` },
+  { id: 'status', header: '상태 / 관련 CR', size: 180, enableSorting: false, cell: ({ row }) => row.original.current_primary ? `${row.original.current_stage} · ${row.original.current_primary.change_request_id}` : `${row.original.current_stage} · 미연결` },
+  { id: 'source', header: 'Source', size: 160, enableSorting: false, cell: ({ row }) => `DataHub · ${row.original.source_aspect}` },
+]
+
 export function DetectedChangeCrPanel({
   client,
   changeRequests,
   selection,
+  dateRange,
   onClose,
 }: {
   client: ApiClient
   changeRequests: ChangeRequestSummary[]
   selection?: DetectedChangeSelection
+  dateRange?: DetectedChangeDateRange
   onClose?: () => void
 }) {
   const api = useMemo(() => new ChangeHistoryApi(client), [client])
+  const headingId = useId()
   const weekStart = useMemo(() => currentKstWeekStart(), [])
   const [weekly, setWeekly] = useState<ChangeHistoryWeeklySummary>()
   const [page, setPage] = useState<ChangeHistoryEventPage>()
   const [eventCursor, setEventCursor] = useState<string>()
   const [eventCursorStack, setEventCursorStack] = useState<string[]>([])
   const [activeFilterKey, setActiveFilterKey] = useState<WeeklyFilterKey>('total_count')
+  const [activeChangeType, setActiveChangeType] = useState<'' | ChangeHistoryChangeType>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
   const [detail, setDetail] = useState<FreshDetail>()
@@ -108,6 +131,15 @@ export function DetectedChangeCrPanel({
         cursor,
       }, signal)
     }
+    if (dateRange) {
+      return api.events({
+        dateFrom: dateRange.from,
+        dateTo: dateRange.to,
+        changeType: activeChangeType || undefined,
+        limit: EVENT_LIMIT,
+        cursor,
+      }, signal)
+    }
     const filter = weeklyFilters.find((candidate) => candidate.key === filterKey)
     return api.events({
       weekStart,
@@ -116,7 +148,7 @@ export function DetectedChangeCrPanel({
       limit: EVENT_LIMIT,
       cursor,
     }, signal)
-  }, [api, selection, weekStart])
+  }, [activeChangeType, api, dateRange, selection, weekStart])
 
   const load = useCallback(async () => {
     loadController.current?.abort()
@@ -129,7 +161,7 @@ export function DetectedChangeCrPanel({
     setEventCursor(undefined)
     setEventCursorStack([])
     try {
-      const [weeklyResult, eventResult] = selection
+      const [weeklyResult, eventResult] = selection || dateRange
         ? [undefined, await fetchEvents(activeFilterKey, controller.signal)]
         : await Promise.all([
           api.weekly(weekStart, controller.signal),
@@ -146,7 +178,7 @@ export function DetectedChangeCrPanel({
         setLoading(false)
       }
     }
-  }, [activeFilterKey, api, fetchEvents, selection, weekStart])
+  }, [activeFilterKey, api, dateRange, fetchEvents, selection, weekStart])
 
   useEffect(() => {
     void load()
@@ -274,17 +306,17 @@ export function DetectedChangeCrPanel({
   const allowedActions = detail?.event.data.allowed_link_actions ?? []
 
   const content = (
-    <section className="detected-change-cr" aria-labelledby="detected-change-cr-title" aria-busy={loading}>
+    <section className="detected-change-cr" aria-labelledby={headingId} aria-busy={loading}>
       <header className="detected-change-cr-header">
         <div>
           <span className="governance-kicker">Detected Change → CR</span>
-          <h2 id="detected-change-cr-title">{selection ? `${selection.schemaName} 이벤트` : '감지 변경과 CR 연결'}</h2>
-          <p>{selection ? `${selection.systemName ?? '시스템 미지정'} · ${selection.dateFrom}–${selection.dateTo} · 서버 권한 범위` : 'KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.'}</p>
+          <h2 id={headingId}>{selection ? `${selection.schemaName} 이벤트` : dateRange ? 'Schema / Metadata 감지 변경 이력' : '감지 변경과 CR 연결'}</h2>
+          <p>{selection ? `${selection.systemName ?? '시스템 미지정'} · ${selection.dateFrom}–${selection.dateTo} · 서버 권한 범위` : dateRange ? `${dateRange.from}–${dateRange.to} · Monitoring과 동일한 canonical change ledger · 서버 권한 범위` : 'KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.'}</p>
         </div>
         <div className="detected-change-header-actions"><button className="button button-secondary" type="button" disabled={loading} onClick={() => void load()}>새로고침</button>{selection && <button type="button" aria-label="이벤트 상세 닫기" onClick={onClose}><X size={16} /></button>}</div>
       </header>
       <ErrorNotice error={error} />
-      {!selection && weekly && (
+      {!selection && !dateRange && weekly && (
         <div className="detected-change-weekly" aria-label="주간 변경 7개 집계">
           {weeklyFilters.map((card) => (
             <button key={card.key} type="button" className={activeFilterKey === card.key ? 'active' : ''} aria-pressed={activeFilterKey === card.key} onClick={() => chooseFilter(card.key)}>
@@ -293,14 +325,24 @@ export function DetectedChangeCrPanel({
           ))}
         </div>
       )}
-      <p className="detected-change-window">{selection ? `${page?.total.toLocaleString() ?? 0}개 권한 행 · 현재 페이지 최대 ${EVENT_LIMIT}건` : `${weekStart} · 서버 이벤트 최대 ${EVENT_LIMIT}건`}</p>
+      {dateRange && !selection ? <div className="detected-change-type-filters" role="group" aria-label="감지 변경 유형 필터">
+        {([['', '전체'], ['SCHEMA_CHANGE', 'Schema Change'], ['METADATA_CHANGE', 'Metadata Change']] as const).map(([value, label]) => <button
+          key={value || 'ALL'}
+          type="button"
+          aria-pressed={activeChangeType === value}
+          className={activeChangeType === value ? 'active' : ''}
+          disabled={loading}
+          onClick={() => setActiveChangeType(value)}
+        >{label}</button>)}
+      </div> : null}
+      <p className="detected-change-window">{selection || dateRange ? `${page?.total.toLocaleString() ?? 0}개 권한 행 · 현재 페이지 최대 ${EVENT_LIMIT}건` : `${weekStart} · 서버 이벤트 최대 ${EVENT_LIMIT}건`}</p>
       {loading && !page ? <p role="status">변경 이벤트를 불러오는 중입니다.</p> : null}
-      {selection && page ? <DenseDataTable
-        caption={`${selection.schemaName} 권한 범위의 감지 변경 이벤트`}
-        columns={eventColumns}
+      {(selection || dateRange) && page ? <DenseDataTable
+        caption={selection ? `${selection.schemaName} 권한 범위의 감지 변경 이벤트` : '현재 기간과 권한 범위의 Schema 및 Metadata 감지 변경 이력'}
+        columns={selection ? eventColumns : historyColumns}
         data={page.items}
         getRowId={(event) => event.event_id}
-        emptyMessage="선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다."
+        emptyMessage={selection ? '선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다.' : '선택한 기간과 변경 유형에 조회 가능한 감지 이력이 없습니다.'}
         onRowActivate={(event) => void loadDetail(event.event_id)}
       /> : page ? (
         <div className="detected-change-table-wrap">
@@ -319,7 +361,7 @@ export function DetectedChangeCrPanel({
           </table>
         </div>
       ) : null}
-      {selection && page ? <nav className="detected-change-pagination" aria-label="이벤트 페이지 이동">
+      {(selection || dateRange) && page ? <nav className="detected-change-pagination" aria-label="이벤트 페이지 이동">
         <button className="button button-secondary" type="button" disabled={loading || !eventCursorStack.length} onClick={() => void changeEventPage(eventCursorStack.at(-1) || undefined, 'previous')}>이전</button>
         <button className="button button-secondary" type="button" disabled={loading || !page.next_cursor} onClick={() => void changeEventPage(page.next_cursor ?? undefined, 'next')}>다음</button>
       </nav> : null}
@@ -327,7 +369,14 @@ export function DetectedChangeCrPanel({
       <ErrorNotice error={actionError} />
       {detail ? (
         <section className="detected-change-linker" aria-label="선택 이벤트 CR 연결">
-          <header><strong>{detail.event.data.entity_key}</strong><small>event ETag {detail.event.etag} · link ETag {detail.links.etag}</small></header>
+          <header><strong>{detail.event.data.locator?.asset_name ?? detail.event.data.entity_key}</strong><small>{detail.event.data.change_type} · {detail.event.data.operation} · {formatKst(detail.event.data.detected_at)}</small></header>
+          <dl className="detected-change-event-detail">
+            <div><dt>System / Database / Schema</dt><dd>{[detail.event.data.system.system_id ?? '시스템 미지정', detail.event.data.locator?.database_name, detail.event.data.locator?.schema_name].filter(Boolean).join(' · ')}</dd></div>
+            <div><dt>Source / Provenance</dt><dd>DataHub · {detail.event.data.source_aspect} · {detail.event.data.precision ?? 'precision 미지정'}</dd></div>
+            <div><dt>Before</dt><dd><pre>{formatDiff(detail.event.data.before)}</pre></dd></div>
+            <div><dt>After</dt><dd><pre>{formatDiff(detail.event.data.after)}</pre></dd></div>
+          </dl>
+          <small className="detected-change-etag">event ETag {detail.event.etag} · link ETag {detail.links.etag}</small>
           {allowedActions.length === 0 ? <p>현재 권한과 이벤트 상태에서 허용된 연결 작업이 없습니다.</p> : (
             <form onSubmit={(event) => void submit(event)}>
               <label>허용 작업<select aria-label="허용 작업" value={action} onChange={(event) => setAction(event.target.value as ChangeHistoryLinkAction | '')} disabled={saving}><option value="">선택</option>{allowedActions.map((value) => <option key={value} value={value}>{actionLabel(value)}</option>)}</select></label>
@@ -386,6 +435,10 @@ function actionLabel(action: ChangeHistoryLinkAction) {
 
 function formatKst(value: string) {
   return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
+}
+
+function formatDiff(value: Record<string, unknown> | null) {
+  return value === null ? '없음' : JSON.stringify(value, null, 2)
 }
 
 function currentKstWeekStart() {

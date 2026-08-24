@@ -42,7 +42,8 @@ describe('CatalogLineageGraph', () => {
 
     expect(screen.getByRole('img', { name: /권한 필터링된 DataHub Lineage 그래프 canvas/ })).toBeInTheDocument()
     expect(screen.getByLabelText('선택한 그래프 요소 상세')).toHaveTextContent('center_table')
-    expect(screen.getByLabelText('그래프 범례')).toHaveTextContent('Upstream')
+    expect(screen.getByLabelText('그래프 범례')).toHaveTextContent('Upstream L2Upstream L1CurrentDownstream L1Downstream L2')
+    expect(screen.getByLabelText('권한 필터링된 DataHub Lineage 그래프')).toHaveAttribute('data-visual-profile', 'SEARCH_LINEAGE_CLASSIC')
     await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(1))
   })
 

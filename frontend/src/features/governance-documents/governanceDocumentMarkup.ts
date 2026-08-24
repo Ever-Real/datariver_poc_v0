@@ -201,7 +201,7 @@ function sanitizeNode(node: Node, output: Document): Node | undefined {
     return fragment
   }
   if (tag === 'a') {
-    const href = safeHref(node.getAttribute('href'))
+    const href = safeGovernanceHref(node.getAttribute('href'))
     if (!href) {
       const fragment = output.createDocumentFragment()
       fragment.append(...children)
@@ -264,7 +264,7 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
-function safeHref(value: string | null): string | undefined {
+export function safeGovernanceHref(value: string | null): string | undefined {
   if (!value) return undefined
   const normalized = value.trim()
   if (!normalized || normalized.startsWith('//') || normalized.includes('\\')) return undefined

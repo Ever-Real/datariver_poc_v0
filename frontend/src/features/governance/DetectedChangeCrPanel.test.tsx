@@ -84,6 +84,37 @@ describe('DetectedChangeCrPanel', () => {
     expect(screen.queryByText('선택한 주간 단계에 조회 가능한 이벤트가 없습니다.')).not.toBeInTheDocument()
   })
 
+  it('uses the Change Management date range and canonical type filter for visible detection history', async () => {
+    const request = vi.fn((path: string) => path.startsWith('/change-history/events?')
+      ? Promise.resolve(eventPage([event()]))
+      : Promise.reject(new Error(`Unexpected path: ${path}`)))
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, detailTransport([]))}
+      changeRequests={[]}
+      dateRange={{ from: '2026-08-01', to: '2026-08-24' }}
+    />)
+
+    expect(await screen.findByRole('heading', { name: 'Schema / Metadata 감지 변경 이력' })).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      '감지 시각', '유형', '시스템 / Database / Schema', '영향 대상', '변경 요약', '상태 / 관련 CR', 'Source',
+    ])
+    expect(screen.getByText('SCHEMA_CHANGE')).toBeInTheDocument()
+    expect(screen.getByText('DataHub · schemaMetadata')).toBeInTheDocument()
+    let url = new URL(eventPaths(request)[0]!, 'https://datariver.invalid')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ limit: '50', date_from: '2026-08-01', date_to: '2026-08-24' })
+    expect(weeklyPaths(request)).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Schema Change' }))
+    await waitFor(() => expect(eventPaths(request)).toHaveLength(2))
+    url = new URL(eventPaths(request)[1]!, 'https://datariver.invalid')
+    expect(url.searchParams.get('change_type')).toBe('SCHEMA_CHANGE')
+
+    fireEvent.click(screen.getByText('orders').closest('tr')!)
+    const detail = await screen.findByLabelText('선택 이벤트 CR 연결')
+    expect(within(detail).getByText('DataHub · schemaMetadata · EXACT_MCL')).toBeInTheDocument()
+    expect(within(detail).getAllByText('{}')).toHaveLength(2)
+  })
+
   it('hides every mutation control when the fresh event grants no link actions', async () => {
     setCurrentWeek()
     const request = vi.fn((path: string) => listResponse(path, [event()]))

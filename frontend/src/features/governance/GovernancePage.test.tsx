@@ -11,9 +11,15 @@ import type { ChangeHistoryEvent } from '../change-history/types'
 import { GovernancePage } from './GovernancePage'
 
 vi.mock('./DetectedChangeCrPanel', () => ({
-  DetectedChangeCrPanel: ({ selection }: { selection: { schemaName: string; systemId: string | null; systemResolution: string } }) => (
+  DetectedChangeCrPanel: ({
+    selection,
+    dateRange,
+  }: {
+    selection?: { schemaName: string; systemId: string | null; systemResolution: string }
+    dateRange?: { from: string; to: string }
+  }) => selection ? (
     <section data-testid="detected-change-cr-panel" data-system-id={selection.systemId ?? ''} data-system-resolution={selection.systemResolution}>{selection.schemaName}</section>
-  ),
+  ) : <section data-testid="detected-change-history-panel">{dateRange?.from}–{dateRange?.to}</section>,
 }))
 
 function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequestRecord {

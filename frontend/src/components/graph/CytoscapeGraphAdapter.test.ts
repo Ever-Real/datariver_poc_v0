@@ -55,10 +55,10 @@ describe('Cytoscape graph adapter', () => {
     const first = catalogLineageToReadGraph(lineage)
     const second = catalogLineageToReadGraph(structuredClone(lineage))
 
-    expect(first.nodes.map(({ id, role }) => [id, role])).toEqual([
-      ['table:upstream', 'UPSTREAM'],
-      ['table:current', 'ROOT'],
-      ['table:downstream', 'DOWNSTREAM'],
+    expect(first.nodes.map(({ id, role, lineageDepth }) => [id, role, lineageDepth])).toEqual([
+      ['table:upstream', 'UPSTREAM', 1],
+      ['table:current', 'ROOT', 0],
+      ['table:downstream', 'DOWNSTREAM', 1],
     ])
     expect(first.edges.map((edge) => edge.id)).toEqual(second.edges.map((edge) => edge.id))
     expect(first.edges[0]?.id).toContain('table%3Aupstream')
@@ -77,6 +77,7 @@ describe('Cytoscape graph adapter', () => {
       nodeGroup: 'GLOSSARY_TERM',
       groupColor: nodeGroupColor('GLOSSARY_TERM'),
       canvasLabel: 'Business B',
+      lineageDepth: 0,
     })
   })
 

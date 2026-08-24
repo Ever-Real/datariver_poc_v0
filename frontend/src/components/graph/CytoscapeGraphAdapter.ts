@@ -16,6 +16,7 @@ export interface ReadGraphNode {
   subtitle?: string
   entityType: string
   role?: ReadGraphRole
+  lineageDepth?: number
   properties: Record<string, unknown>
   provenance: unknown[]
 }
@@ -134,6 +135,9 @@ export function catalogLineageToReadGraph(lineage: CatalogLineage): ReadGraphMod
           : downstream.has(asset.id)
             ? 'DOWNSTREAM'
             : 'NEUTRAL',
+      lineageDepth: asset.id === lineage.center_asset_id
+        ? 0
+        : upstream.get(asset.id) ?? downstream.get(asset.id),
       properties: catalogNodeProperties(asset),
       provenance: [{
         source_ref: asset.external_urn,
@@ -268,6 +272,7 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
         nodeGroup: canonicalNodeGroup(node.entityType),
         groupColor: nodeGroupColor(node.entityType),
         role: node.role ?? 'NEUTRAL',
+        lineageDepth: node.lineageDepth ?? 0,
         shape: 'ellipse',
       },
     })

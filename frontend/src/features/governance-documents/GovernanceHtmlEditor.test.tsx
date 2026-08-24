@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import type { Editor } from '@tiptap/react'
 import { GovernanceHtmlEditor } from './GovernanceHtmlEditor'
 
 describe('GovernanceHtmlEditor', () => {
@@ -15,7 +16,7 @@ describe('GovernanceHtmlEditor', () => {
     expect(editor).toHaveTextContent('운영 정책')
     expect(editor.querySelector('table')).not.toBeNull()
     const blockStyle = screen.getByRole('combobox', { name: '문단 스타일' })
-    expect(within(blockStyle).getAllByRole('option').map((option) => option.textContent)).toEqual(['본문', '제목 1', '제목 2'])
+    expect(within(blockStyle).getAllByRole('option').map((option) => option.textContent)).toEqual(['본문', '제목 1', '제목 2', '제목 3'])
     fireEvent.change(blockStyle, { target: { value: 'heading-2' } })
     fireEvent.click(screen.getByRole('button', { name: '구분선' }))
     await waitFor(() => expect(onHtmlChange).toHaveBeenCalled())
@@ -71,5 +72,64 @@ describe('GovernanceHtmlEditor', () => {
     render(<GovernanceHtmlEditor initialHtml="<p>본문</p>" disabled onHtmlChange={vi.fn()} />)
     expect(await screen.findByRole('button', { name: '굵게' })).toBeDisabled()
     expect(screen.getByRole('textbox', { name: '문서 본문' })).toHaveAttribute('contenteditable', 'false')
+  })
+
+  it('executes the required formatting commands against the document model', async () => {
+    const onHtmlChange = vi.fn()
+    let tiptap: Editor | undefined
+    render(<GovernanceHtmlEditor
+      initialHtml="<p>정책 본문</p>"
+      disabled={false}
+      onHtmlChange={onHtmlChange}
+      onEditorReady={(editor) => { tiptap = editor }}
+    />)
+    await screen.findByRole('textbox', { name: '문서 본문' })
+    await waitFor(() => expect(tiptap).toBeDefined())
+
+    const selectDocumentText = () => tiptap?.commands.setTextSelection({ from: 1, to: Math.max(1, tiptap.state.doc.content.size - 1) })
+    const reset = (html = '<p>정책 본문</p>') => {
+      tiptap?.commands.setContent(html)
+      selectDocumentText()
+    }
+    const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
+
+    reset(); click('굵게'); expect(tiptap?.getHTML()).toContain('<strong>정책 본문</strong>')
+    reset(); click('기울임'); expect(tiptap?.getHTML()).toContain('<em>정책 본문</em>')
+    reset(); click('밑줄'); expect(tiptap?.getHTML()).toContain('<u>정책 본문</u>')
+    reset(); fireEvent.change(screen.getByRole('combobox', { name: '문단 스타일' }), { target: { value: 'heading-3' } }); expect(tiptap?.getHTML()).toContain('<h3>정책 본문</h3>')
+    reset(); click('글머리 기호 목록'); expect(tiptap?.getHTML()).toContain('<ul>')
+    reset(); click('번호 목록'); expect(tiptap?.getHTML()).toContain('<ol>')
+    reset(); click('인용문'); expect(tiptap?.getHTML()).toContain('<blockquote>')
+    reset(); click('코드 블록'); expect(tiptap?.getHTML()).toContain('<pre><code>정책 본문</code></pre>')
+
+    reset('<p><strong>정책 본문</strong></p>'); click('서식 지우기'); expect(tiptap?.getHTML()).toBe('<p>정책 본문</p>')
+    tiptap?.commands.setContent('<p>첫 문단</p>')
+    tiptap?.commands.insertContent('<p>둘째 문단</p>')
+    const beforeUndo = tiptap?.getHTML()
+    click('실행 취소'); expect(tiptap?.getHTML()).not.toBe(beforeUndo)
+    click('다시 실행'); expect(tiptap?.getHTML()).toBe(beforeUndo)
+  })
+
+  it('provides accessible focus tooltips and rejects unsafe link schemes', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('javascript:alert(1)')
+    let tiptap: Editor | undefined
+    render(<GovernanceHtmlEditor
+      initialHtml="<p>정책 링크</p>"
+      disabled={false}
+      onHtmlChange={vi.fn()}
+      onEditorReady={(editor) => { tiptap = editor }}
+    />)
+    await waitFor(() => expect(tiptap).toBeDefined())
+    tiptap?.commands.setTextSelection({ from: 1, to: 6 })
+
+    const bold = screen.getByRole('button', { name: '굵게' })
+    fireEvent.focus(bold)
+    const tooltip = screen.getByRole('tooltip', { name: '굵게 (Ctrl/Cmd+B)' })
+    expect(bold).toHaveAttribute('aria-describedby', tooltip.id)
+
+    fireEvent.click(screen.getByRole('button', { name: '링크 추가 또는 편집' }))
+    expect(prompt).toHaveBeenCalledOnce()
+    expect(tiptap?.getHTML()).not.toContain('javascript:')
+    expect(tiptap?.getHTML()).not.toContain('<a')
   })
 })
