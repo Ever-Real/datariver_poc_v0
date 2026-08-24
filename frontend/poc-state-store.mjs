@@ -452,6 +452,7 @@ export function createPocStateStore({ databasePool } = {}) {
   const redisUrl = process.env.POC_REDIS_URL?.trim()
   const memory = new Map()
   const memoryCatalogEmbeddings = new Map()
+  const memoryCatalogEmbeddingGenerationLocks = new Map()
   const memoryCredentialsBySubject = new Map()
   const memoryCredentialSubjectByUsername = new Map()
   const memorySessions = new Map()
@@ -1567,6 +1568,42 @@ export function createPocStateStore({ databasePool } = {}) {
     return { embedding_rows: embeddingRows, active_pointers: activePointers }
   }
 
+  async function withCatalogEmbeddingGenerationLock(bindingHashValue, sourceGenerationValue, task) {
+    const bindingHash = requireSha256(bindingHashValue, 'bindingHash')
+    const sourceGeneration = requireSha256(sourceGenerationValue, 'sourceGeneration')
+    if (typeof task !== 'function') throw new Error('The Catalog Embedding generation task is invalid.')
+    await startDatabase()
+    const lockName = `datariver:poc:catalog-embedding-generation:v1:${bindingHash}:${sourceGeneration}`
+    if (pool) {
+      const client = await pool.connect()
+      let locked = false
+      try {
+        await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockName])
+        locked = true
+        return await task()
+      } finally {
+        if (locked) {
+          await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockName])
+        }
+        client.release()
+      }
+    }
+    let releaseLock
+    const currentLock = new Promise((resolvePromise) => { releaseLock = resolvePromise })
+    const priorLock = memoryCatalogEmbeddingGenerationLocks.get(lockName) || Promise.resolve()
+    const tail = priorLock.then(() => currentLock)
+    memoryCatalogEmbeddingGenerationLocks.set(lockName, tail)
+    await priorLock
+    try {
+      return await task()
+    } finally {
+      releaseLock()
+      if (memoryCatalogEmbeddingGenerationLocks.get(lockName) === tail) {
+        memoryCatalogEmbeddingGenerationLocks.delete(lockName)
+      }
+    }
+  }
+
   async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit, allowedUrnsScope) {
     if (allowedUrnsScope !== 'ADMIN_UNRESTRICTED' && (!allowedUrnsScope || allowedUrnsScope.size === 0)) return []
     await startDatabase()
@@ -2651,6 +2688,7 @@ export function createPocStateStore({ databasePool } = {}) {
     catalogEmbeddingActiveGeneration,
     replaceCatalogEmbeddingGeneration,
     pruneInactiveCatalogEmbeddingBindings,
+    withCatalogEmbeddingGenerationLock,
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
     readChangeHistoryProjection,

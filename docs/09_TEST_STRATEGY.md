@@ -1771,6 +1771,13 @@ counts by entity/relation type, explicit/inferred, duplicate/orphan, degree/top 
 Table/Column lineage coverage. An authorization negative uses one shared semantic hub and proves the
 denied Table identity, edge and existence are absent from native, browser and MCP payloads.
 
+The semantic generation ownership gate launches two independent Product processes against the same
+PostgreSQL database and exact synthetic `(binding_hash, source_generation)` lock identity. Evidence
+must show one advisory-lock owner at a time, the second process waiting and then rechecking/reusing
+the active generation, with no duplicate materialization. Unit coverage also proves process-local
+serialization and the exact PostgreSQL advisory lock/unlock statements. A bounded timeout retry on
+fixed DataHub refresh reads must not retry operator cancellation or a non-timeout provider error.
+
 Because KG2 changes retrieval evidence, the final exact Product runs GENERAL 20, VECTOR 20, GRAPH
 20 and Boundary 8 once after focused correction. Route, resolution, retrieval, grounding, actual
 traversal, provenance and authorization are separate assertions. `scripts/verify_static.py` scans

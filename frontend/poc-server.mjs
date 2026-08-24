@@ -2009,6 +2009,18 @@ async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, s
   return payload.data
 }
 
+async function datahubRefreshGraphql(query, variables, signal) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await datahubGraphql(query, variables, 60_000, signal)
+    } catch (error) {
+      if (signal?.aborted || attempt === 2
+        || !['TimeoutError', 'AbortError'].includes(error?.name)) throw error
+    }
+  }
+  throw new Error('The bounded DataHub refresh retry was exhausted.')
+}
+
 let datahubRuntimeIdentityPromise
 
 async function datahubRuntimeIdentity() {
@@ -4773,48 +4785,52 @@ async function ensureCatalogEmbeddingIndex(signal = serverBackgroundAbortControl
     if (catalogEmbeddingSnapshot.promise) return catalogEmbeddingSnapshot.promise
     return catalogEmbeddingSnapshot
   }
-  const promise = (async () => {
-    const activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
-    if (activeGeneration === sourceGeneration) {
+  const promise = pocStateStore.withCatalogEmbeddingGenerationLock(
+    bindingHash,
+    sourceGeneration,
+    async () => {
+      const activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
+      if (activeGeneration === sourceGeneration) {
+        return {
+          bindingHash,
+          generation: sourceGeneration,
+          indexed: documents.length,
+          refreshed: 0,
+        }
+      }
+      const hashes = await pocStateStore.catalogEmbeddingHashes(bindingHash)
+      const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
+      const replacements = []
+      for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
+        signal?.throwIfAborted()
+        const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
+        const vectors = await embedCatalogTexts(batch.map((item) => item.contentText), signal)
+        replacements.push(...batch.map((item, index) => ({
+          bindingHash,
+          assetUrn: item.asset.id,
+          sourceHash: item.sourceHash,
+          sourceGeneration,
+          contentText: item.contentText,
+          metadata: item.asset,
+          embedding: vectors[index],
+        })))
+      }
+      signal?.throwIfAborted()
+      await pocStateStore.replaceCatalogEmbeddingGeneration(
+        bindingHash,
+        datahubInventoryStateScope,
+        sourceGeneration,
+        replacements,
+        documents.map((item) => item.asset.id),
+      )
       return {
         bindingHash,
         generation: sourceGeneration,
         indexed: documents.length,
-        refreshed: 0,
+        refreshed: changed.length,
       }
-    }
-    const hashes = await pocStateStore.catalogEmbeddingHashes(bindingHash)
-    const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
-    const replacements = []
-    for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
-      signal?.throwIfAborted()
-      const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
-      const vectors = await embedCatalogTexts(batch.map((item) => item.contentText), signal)
-      replacements.push(...batch.map((item, index) => ({
-        bindingHash,
-        assetUrn: item.asset.id,
-        sourceHash: item.sourceHash,
-        sourceGeneration,
-        contentText: item.contentText,
-        metadata: item.asset,
-        embedding: vectors[index],
-      })))
-    }
-    signal?.throwIfAborted()
-    await pocStateStore.replaceCatalogEmbeddingGeneration(
-      bindingHash,
-      datahubInventoryStateScope,
-      sourceGeneration,
-      replacements,
-      documents.map((item) => item.asset.id),
-    )
-    return {
-      bindingHash,
-      generation: sourceGeneration,
-      indexed: documents.length,
-      refreshed: changed.length,
-    }
-  })()
+    },
+  )
   catalogEmbeddingSnapshot = { generation: sourceGeneration, promise }
   try {
     const completed = await promise
@@ -10035,10 +10051,10 @@ export async function startPocServer({ stateStore } = {}) {
         const traceSet = new Set()
         while (true) {
           if (pages >= 10002) throw new Error('Exceeded lineage page limit')
-          const data = await datahubGraphql(datahubLineageQuery, {
+          const data = await datahubRefreshGraphql(datahubLineageQuery, {
             urn: itemUrn,
             input: { direction, start, count: 100, separateSiblings: false, includeGhostEntities: false }
-          })
+          }, serverBackgroundAbortController?.signal)
           pages++
           const lineage = data.dataset?.lineage
           if (!lineage || typeof lineage.total !== 'number') throw new Error('Malformed lineage response')
@@ -10233,12 +10249,12 @@ export async function startPocServer({ stateStore } = {}) {
       const relationships = [...(first?.relationships || [])]
       let start = relationships.length
       while (start < total) {
-        const data = await datahubGraphql(datahubEntityRelationshipsQuery, {
+        const data = await datahubRefreshGraphql(datahubEntityRelationshipsQuery, {
           urn: entity.urn,
           input: {
             types: [], direction: 'OUTGOING', start, count: 100, includeSoftDelete: false,
           },
-        }, 60_000, serverBackgroundAbortController?.signal)
+        }, serverBackgroundAbortController?.signal)
         const page = data.entity?.relationships
         if (!page || Number(page.total) !== total || Number(page.start) !== start) {
           throw new Error('Glossary relationship pagination changed during collection')
@@ -10254,10 +10270,9 @@ export async function startPocServer({ stateStore } = {}) {
 
     while (true) {
       if (pages >= 10002) throw new Error('Exceeded glossary inventory page limit')
-      const data = await datahubGraphql(
+      const data = await datahubRefreshGraphql(
         datahubGlossaryQuery,
         buildK9GlossaryScrollVariables(nextScrollId),
-        60_000,
         serverBackgroundAbortController?.signal,
       )
       pages++

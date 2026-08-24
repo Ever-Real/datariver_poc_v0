@@ -1,4 +1,4 @@
-/* global Buffer, fetch, structuredClone */
+/* global Buffer, fetch, setTimeout, structuredClone */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import process from 'node:process'
@@ -852,6 +852,32 @@ test('atomically fences in-memory Catalog embeddings to the active current gener
   )
 })
 
+test('serializes same-generation Catalog Embedding producers before materialization', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs?memory-generation-owner-contract')
+  const store = createPocStateStore()
+  const bindingHash = '7'.repeat(64)
+  const sourceGeneration = '8'.repeat(64)
+  let active = 0
+  let maximumActive = 0
+  const order = []
+  const producer = (name, delay) => store.withCatalogEmbeddingGenerationLock(
+    bindingHash,
+    sourceGeneration,
+    async () => {
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      order.push(`${name}:start`)
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, delay))
+      order.push(`${name}:end`)
+      active -= 1
+      return name
+    },
+  )
+  assert.deepEqual(await Promise.all([producer('first', 15), producer('second', 0)]), ['first', 'second'])
+  assert.equal(maximumActive, 1)
+  assert.deepEqual(order, ['first:start', 'first:end', 'second:start', 'second:end'])
+})
+
 test('commits the PostgreSQL Embedding generation and active pointer in one fenced transaction', async () => {
   const { createPocStateStore } = await import('./poc-state-store.mjs?postgres-generation-contract')
   const statements = []
@@ -939,6 +965,14 @@ test('commits the PostgreSQL Embedding generation and active pointer in one fenc
     5,
     ['asset-current'],
   ])
+
+  assert.equal(await store.withCatalogEmbeddingGenerationLock(
+    bindingHash,
+    sourceGeneration,
+    async () => 'owned',
+  ), 'owned')
+  assert.ok(statements.some((entry) => entry.sql.startsWith('SELECT pg_advisory_lock(hashtextextended($1, 0))')))
+  assert.ok(statements.some((entry) => entry.sql.startsWith('SELECT pg_advisory_unlock(hashtextextended($1, 0))')))
 })
 
 test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {

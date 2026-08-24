@@ -123,6 +123,18 @@ contract is versioned. Promotion remains generation-fenced and last-known-good; 
 may be deleted only after the current binding and generation are verified active. Native Chat and
 MCP continue to call the same Core Knowledge functions.
 
+Semantic materialization ownership is fenced across Product processes by one PostgreSQL session
+advisory lock derived from the exact `(binding_hash, source_generation)`. A waiting process acquires
+the lock only after the current owner exits or finishes, then rechecks the durable active-generation
+pointer before performing provider work. It therefore reuses a generation that another process
+already promoted instead of embedding the same documents again. The existing process-local promise
+remains an optimization only; it is not the cross-process authority. A process crash closes its
+dedicated database session and releases the lock.
+
+Fixed DataHub refresh reads use a 60-second request bound and at most one retry for timeout/abort
+conditions not caused by the refresh cancellation signal. Other provider errors fail closed. This
+does not weaken source completeness or LKG preservation.
+
 ### 7. Domain independence is a release gate
 
 Production graph-building, routing, retrieval and unit logic may contain only platform-generic
@@ -150,7 +162,7 @@ path.
 2. Mapper tests cover stable identity, explicit/direct hierarchy, Tag/Term/Domain hubs, no pairwise
    clique, provenance, units, duplicate/dangling rejection and deterministic hashes.
 3. Refresh tests cover shared snapshot identity, NO_OP, staging read-back, atomic promotion,
-   failure-safe LKG, recovery and orphan cleanup.
+   failure-safe LKG, recovery, orphan cleanup and same-generation producer serialization.
 4. Quality evidence reports before/after counts and zero duplicate edges/nodes.
 5. Authorization tests prove an allowed semantic hub cannot reveal another denied Dataset or edge;
    MCP and native structured results remain consistent.
