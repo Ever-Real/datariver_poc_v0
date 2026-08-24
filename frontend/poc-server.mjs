@@ -6246,7 +6246,7 @@ function managedK9AssetSummary(row, semanticIndexReady, schedulerConfig) {
   const manifest = row.active_manifest && typeof row.active_manifest === 'object'
     ? row.active_manifest
     : {}
-  const latestResult = row.latest_result || 'NOT_RUN'
+  const latestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
     : (latestResult === 'FAILURE' ? 'FAILED' : 'PENDING')
