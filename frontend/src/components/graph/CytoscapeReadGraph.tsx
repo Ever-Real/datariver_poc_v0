@@ -335,11 +335,12 @@ export function CytoscapeReadGraph({
       : new Set<string>()
     const gapInequalities = lineageRoleGaps(graphRef.current)
       .filter(({ leftId, rightId }) => scopedNodeIds.has(leftId) && scopedNodeIds.has(rightId))
-      .map(({ axis, leftId, rightId, gap }) => ({
+      .map(({ axis, leftId, rightId, gap, equality }) => ({
         axis,
         left: cy.getElementById(leftId),
         right: cy.getElementById(rightId),
         gap,
+        equality,
       }))
     const layout = layoutOwner.layout({
       ...cytoscapeLayout(graphRef.current.kind),

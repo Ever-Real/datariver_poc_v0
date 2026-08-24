@@ -106,8 +106,8 @@ describe('Cytoscape graph adapter', () => {
     const graph = catalogLineageToReadGraph(lineage)
 
     expect(lineageRoleGaps(graph)).toEqual([
-      { axis: 'x', leftId: 'table:upstream', rightId: 'table:current', gap: 160 },
-      { axis: 'x', leftId: 'table:current', rightId: 'table:downstream', gap: 160 },
+      { axis: 'x', leftId: 'table:upstream', rightId: 'table:current', gap: 190, equality: true },
+      { axis: 'x', leftId: 'table:current', rightId: 'table:downstream', gap: 190, equality: true },
     ])
     expect(lineageRoleGaps({ ...graph, kind: 'METADATA_MASTER' })).toEqual([])
   })

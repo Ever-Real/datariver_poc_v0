@@ -42,6 +42,7 @@ export interface LineageRoleGap {
   leftId: string
   rightId: string
   gap: number
+  equality: true
 }
 
 function displayValue(properties: Record<string, unknown>, fallback: string): string {
@@ -284,16 +285,53 @@ export function cytoscapeLayout(kind: ReadGraphKind): LayoutOptions {
   return common
 }
 
-export function lineageRoleGaps(graph: ReadGraphModel, gap = 160): LineageRoleGap[] {
+function lineageRoleDistances(
+  graph: ReadGraphModel,
+  direction: 'UPSTREAM' | 'DOWNSTREAM',
+): Map<string, number> {
+  if (!graph.rootId) return new Map()
+  const distances = new Map<string, number>([[graph.rootId, 0]])
+  const queue = [graph.rootId]
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+    const nextDistance = (distances.get(current) ?? 0) + 1
+    for (const edge of graph.edges) {
+      const next = direction === 'UPSTREAM'
+        ? edge.target === current ? edge.source : undefined
+        : edge.source === current ? edge.target : undefined
+      if (!next || distances.has(next)) continue
+      distances.set(next, nextDistance)
+      queue.push(next)
+    }
+  }
+  return distances
+}
+
+export function lineageRoleGaps(graph: ReadGraphModel, gap = 190): LineageRoleGap[] {
   if (graph.kind !== 'LINEAGE' || !graph.rootId) return []
   const rootId = graph.rootId
+  const upstreamDistances = lineageRoleDistances(graph, 'UPSTREAM')
+  const downstreamDistances = lineageRoleDistances(graph, 'DOWNSTREAM')
   return graph.nodes.flatMap((node) => {
     if (node.id === rootId) return []
     if (node.role === 'UPSTREAM') {
-      return [{ axis: 'x' as const, leftId: node.id, rightId: rootId, gap }]
+      return [{
+        axis: 'x' as const,
+        leftId: node.id,
+        rightId: rootId,
+        gap: gap * (upstreamDistances.get(node.id) ?? 1),
+        equality: true as const,
+      }]
     }
     if (node.role === 'DOWNSTREAM') {
-      return [{ axis: 'x' as const, leftId: rootId, rightId: node.id, gap }]
+      return [{
+        axis: 'x' as const,
+        leftId: rootId,
+        rightId: node.id,
+        gap: gap * (downstreamDistances.get(node.id) ?? 1),
+        equality: true as const,
+      }]
     }
     return []
   })
