@@ -1,0 +1,97 @@
+{
+  "phase": "KNOWLEDGE GRAPH VISUAL REFINEMENT",
+  "status": "COMPLETE_RUNTIME_VERIFIED",
+  "base": {
+    "product_sha": "e8040e6fedb3b675c5b26854292d08e2010e2ba8",
+    "evidence_sha": "84fd42f96592c42ca136f8221fec9ef3b45d4bb9"
+  },
+  "product_sha": "179093643f4cfa2dd808c0c27240f7f49f68063c",
+  "runtime": {
+    "oci_tag": "datariver-poc:179093643f4cfa2dd808c0c27240f7f49f68063c",
+    "oci_revision": "179093643f4cfa2dd808c0c27240f7f49f68063c",
+    "port_39083_root_http": 200,
+    "port_39083_health_http": 200,
+    "container_health": "healthy",
+    "container_restarts": 0,
+    "port_39090_http": 200
+  },
+  "source_gates": {
+    "focused_graph_tests": "2 files / 20 tests PASS",
+    "ui": "90 files / 653 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS",
+    "static": "PASS",
+    "diff_check": "PASS",
+    "backend_touched": false,
+    "router_retrieval_touched": false,
+    "router_60_rerun": false
+  },
+  "visual_contract": {
+    "node_shape": "circle",
+    "node_geometry_px": "36x36 fixed before/after selection",
+    "selected_geometry_change": 0,
+    "labels_default": "HIDDEN",
+    "hover": "hovered label + direct-neighbor/edge highlight + unrelated opacity 0.14",
+    "group_source": "canonical platform-generic entity type",
+    "edge_base": "solid light gray 2.1px with directional arrow",
+    "force_layout": "cytoscape-cola lazy bounded settle",
+    "viewport_fit_after_interaction": false,
+    "knowledge_studio_touched": false,
+    "backend_contract_touched": false
+  },
+  "browser": {
+    "catalog_lineage": {
+      "nodes": 7,
+      "edges": 6,
+      "transform_ms": 0.1,
+      "layout_ms": 46.5,
+      "initial_settle_ms": 891.3,
+      "post_drag_settle_ms": 657.8,
+      "hover": "PASS",
+      "direction": "PASS",
+      "bounded_depth_2": "PASS",
+      "viewport": "PASS"
+    },
+    "metadata_master": {
+      "bounded_nodes": 48,
+      "bounded_edges": 47,
+      "total_nodes": 12336,
+      "total_edges": 45775,
+      "transform_ms": 0.3,
+      "layout_ms": 48.3,
+      "initial_settle_ms": 1559.8,
+      "post_drag_settle_ms": 765.4,
+      "group_colors": "PASS",
+      "hover": "PASS",
+      "eager_full_graph": false
+    },
+    "default_lineage": {
+      "bounded_nodes": 15,
+      "bounded_edges": 23,
+      "total_nodes": 1001,
+      "total_edges": 1950,
+      "transform_ms": 0.1,
+      "layout_ms": 21.3,
+      "settle_ms": 350.9,
+      "direction": "PASS"
+    },
+    "hard_reload": "PASS",
+    "chat_general": "PASS / retrieval skipped",
+    "chat_vector": "PASS / canonical managed Asset evidence",
+    "chat_graph": "PASS / actual authorized relation evidence",
+    "studio_non_regression": "PASS / existing authoring flow, no Cytoscape canvas",
+    "change_request_impact": "shared renderer source/UI suite PASS; no authorized runtime CR row in current bounded window"
+  },
+  "cleanup": {
+    "temporary_graphs": 0,
+    "temporary_assets": 0,
+    "temporary_credentials": 0,
+    "debug_flags": 0,
+    "environment_overrides": 0,
+    "durable_state_deleted": false
+  },
+  "actual_prep": "NOT EXECUTED",
+  "actual_ops": "NOT EXECUTED",
+  "current_blocker": "NONE"
+}
