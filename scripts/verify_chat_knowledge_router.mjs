@@ -71,6 +71,17 @@ const cases = [
   ['R20', 'GRAPH', 'defect 관련 데이터가 어떤 테이블들을 거쳐 최종 분석 데이터로 전달되는지 보여줘.'],
 ]
 
+const boundaryCases = [
+  ['B01', 'GENERAL', '계보가 뭐야?'],
+  ['B02', 'GRAPH', '우리 데이터의 계보를 찾아줘.'],
+  ['B03', 'VECTOR', 'Lineage Graph Asset 설명 보여줘.'],
+  ['B04', 'VECTOR', `${TABLE_A} 관련 정보 보여줘.`],
+  ['B05', 'GRAPH', `${TABLE_A} 때문에 영향을 받는 것 보여줘.`],
+  ['B06', 'GENERAL', 'wafer가 뭐야?'],
+  ['B07', 'VECTOR', 'wafer 관련 테이블 찾아줘.'],
+  ['B08', 'GRAPH', 'wafer 관련 원천 테이블에서 downstream까지 보여줘.'],
+]
+
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
   return index >= 0 ? process.argv[index + 1] : fallback
@@ -112,8 +123,9 @@ const origin = argument('--origin', 'http://127.0.0.1:39083')
 const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
+const suite = argument('--suite', 'curated')
 const onlyIds = new Set((argument('--ids', '') || '').split(',').filter(Boolean))
-if (!username || !passwordFile || !output) {
+if (!username || !passwordFile || !output || !['curated', 'boundary'].includes(suite)) {
   throw new Error('Required: --username, --password-file, and --output')
 }
 const password = (await readFile(passwordFile, 'utf8')).trim()
@@ -126,7 +138,8 @@ if (!login.ok) throw new Error(`Evaluation login failed with HTTP ${login.status
 const cookie = login.headers.get('set-cookie')?.split(';', 1)[0]
 if (!cookie) throw new Error('Evaluation login did not return an opaque session cookie')
 
-const selectedCases = onlyIds.size ? cases.filter(([id]) => onlyIds.has(id)) : cases
+const suiteCases = suite === 'boundary' ? boundaryCases : cases
+const selectedCases = onlyIds.size ? suiteCases.filter(([id]) => onlyIds.has(id)) : suiteCases
 const results = []
 try {
   for (const [testId, expectedRoute, question] of selectedCases) {
@@ -196,6 +209,7 @@ const report = {
   schema_version: 1,
   generated_at: new Date().toISOString(),
   placeholders: { table_a: TABLE_A, table_b: TABLE_B, column_a: COLUMN_A },
+  suite,
   production_path: '/poc-api/llm/chat AUTO',
   cases: results,
   metrics: metrics(results),
