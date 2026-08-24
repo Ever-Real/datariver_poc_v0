@@ -5,6 +5,7 @@ import {
   buildK9GlossaryScrollVariables,
   createK9ManagedGraphs,
   K9_GRAPH_ASSET_DEFINITIONS,
+  projectionDiffMetrics,
 } from './poc-k9-managed-graphs.mjs'
 
 const authCtx = {
@@ -18,8 +19,8 @@ const validAuthorityPin = {
   subject_id: 'test-k9-id',
   workspace_id: 'test-workspace',
   classification_ceiling: 'INTERNAL',
-  projection_version: 1,
-  policy_version: 'POC_LIVE_PROVIDER_V1',
+  projection_version: 2,
+  policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
   classification_policy_version: 1,
   authorization_generation: 1
 }
@@ -63,6 +64,33 @@ test('K9 exact canonical graph identities expose domain-independent capability m
   assert.equal(entries.find(([, item]) => item.graph_type === 'LINEAGE')[1].display_name, 'Default Lineage Graph')
   assert.equal(entries.find(([, item]) => item.graph_type === 'METADATA_MASTER')[1].display_name, 'Metadata Master Graph')
   assert.doesNotMatch(JSON.stringify(entries), /wafer|semiconductor|반도체|yield|\bCMP\b|etching|photolithography/iu)
+})
+
+test('KG2 projection reconciliation reports added, removed and changed canonical entities', () => {
+  const previous = {
+    source_snapshot: { source_snapshot_id: 'a'.repeat(64) },
+    nodes: [
+      { id: 'kept', type: 'class.table', properties: { name: 'before' } },
+      { id: 'removed', type: 'class.table', properties: {} },
+    ],
+    edges: [
+      { source: 'kept', target: 'removed', type: 'rel.old', properties: {} },
+      { source: 'kept', target: 'removed', type: 'rel.changed', properties: { confidence: 1 } },
+    ],
+  }
+  assert.deepEqual(projectionDiffMetrics(previous, [
+    { id: 'kept', type: 'class.table', properties: { name: 'after' } },
+    { id: 'added', type: 'class.tag', properties: {} },
+  ], [
+    { source: 'kept', target: 'added', type: 'rel.new', properties: {} },
+    { source: 'kept', target: 'removed', type: 'rel.changed', properties: { confidence: 0.9 } },
+  ]), {
+    baseline_available: true,
+    nodes: { added: 1, removed: 1, changed: 1 },
+    edges: { added: 1, removed: 1, changed: 1 },
+    stale_entity_count: 1,
+    previous_source_snapshot_id: 'a'.repeat(64),
+  })
 })
 
 test('K9 Managed Graphs - missing policy no-publish', async () => {
@@ -167,6 +195,116 @@ test('K9 Managed Graphs - mapper deduplication and deterministic sorting', async
   const glossaryResult = k9.mapGlossary(glossaryDataSafe)
   assert.equal(glossaryResult.nodes.length, 4)
   assert.equal(glossaryResult.edges[0].type, 'rel.table_contains_column')
+})
+
+test('KG2 Metadata Master uses typed hubs, explicit provenance and evidence-derived aliases and units', () => {
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+  const sourceSnapshot = {
+    source_snapshot_id: '1'.repeat(64),
+    observed_at: '2026-08-24T00:00:00.000Z',
+  }
+  const tableA = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD)'
+  const tableB = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,B,PROD)'
+  const columnA = `${tableA.replace('TABLE:', 'COLUMN:')}:metric`
+  const term = 'urn:li:glossaryTerm:shared'
+  const group = 'urn:li:glossaryNode:root'
+  const tag = 'urn:li:tag:shared'
+  const propertiesA = {
+    external_urn: tableA.slice('TABLE:'.length),
+    name: 'A',
+    custom_properties: [
+      { key: 'aliases', value: 'Primary A; Alternate A' },
+      { key: 'unit_of_measure', value: 'explicit-unit' },
+    ],
+  }
+  const result = k9.mapGlossary({
+    source_snapshot: sourceSnapshot,
+    table_nodes: [
+      { id: tableA, classification: 'INTERNAL', properties: propertiesA },
+      { id: tableB, classification: 'INTERNAL', properties: { external_urn: tableB.slice('TABLE:'.length), name: 'B' } },
+    ],
+    column_nodes: [{
+      id: columnA,
+      classification: 'INTERNAL',
+      properties: {
+        external_urn: columnA,
+        dataset_urn: tableA.slice('TABLE:'.length),
+        name: 'metric',
+        description: 'Measured value (unit: inferred-unit)',
+      },
+    }],
+    table_column_edges: [{ table_id: tableA, column_id: columnA }],
+    terms: [{ urn: term, name: 'Shared term', description: 'Canonical meaning' }],
+    parent_nodes: [{ urn: group, name: 'Root' }],
+    tags: [{ urn: tag, name: 'Shared tag' }],
+    glossary_relationships: [{
+      source_urn: term,
+      target_urn: group,
+      source_type: 'GLOSSARY_TERM',
+      target_type: 'GLOSSARY_NODE',
+      relationship_type: 'IsPartOf',
+    }],
+    table_assignments: [
+      { id: tableA, term_urn: term, classification: 'INTERNAL', properties: propertiesA },
+      { id: tableB, term_urn: term, classification: 'INTERNAL', properties: { external_urn: tableB.slice('TABLE:'.length), name: 'B' } },
+    ],
+    column_assignments: [],
+    table_tag_assignments: [
+      { source_id: tableA, target_id: tag },
+      { source_id: tableB, target_id: tag },
+    ],
+  })
+
+  assert.equal(result.edges.filter((edge) => edge.type === 'rel.table_has_glossary_term').length, 2)
+  assert.equal(result.edges.filter((edge) => edge.type === 'rel.table_has_tag').length, 2)
+  assert.equal(result.edges.filter((edge) => edge.type === 'rel.glossary_in_term_group').length, 1)
+  assert.equal(result.edges.some((edge) => /same_(?:tag|term)|pairwise|similar_to/i.test(edge.type)), false)
+  assert.equal(result.edges.filter((edge) => edge.type === 'rel.has_explicit_unit').length, 1)
+  assert.equal(result.edges.filter((edge) => edge.type === 'rel.has_inferred_unit_candidate').length, 1)
+  assert.ok(result.edges.every((edge) => edge.properties.source === 'DataHub'
+    && edge.properties.source_aspect
+    && ['EXPLICIT', 'INFERRED'].includes(edge.properties.explicit_or_inferred)
+    && edge.properties.projection_version === 2
+    && edge.properties.source_snapshot_id === sourceSnapshot.source_snapshot_id))
+  const mappedTableA = result.nodes.find((node) => node.id === tableA)
+  assert.deepEqual(mappedTableA.properties.aliases, ['a', 'alternate a', 'primary a'])
+  assert.ok(mappedTableA.properties.alias_evidence.some((item) => item.explicit && item.source_aspect === 'customProperties'))
+})
+
+test('KG2 Default Lineage preserves table and column provenance without fabricating traversal', () => {
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+  const tableA = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,A,PROD)'
+  const tableB = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:hive,B,PROD)'
+  const columnA = `${tableA.replace('TABLE:', 'COLUMN:')}:id`
+  const columnB = `${tableB.replace('TABLE:', 'COLUMN:')}:id`
+  const result = k9.mapLineage({
+    source_snapshot: { source_snapshot_id: '2'.repeat(64) },
+    nodes: [
+      { id: tableA, classification: 'INTERNAL', properties: { external_urn: tableA.slice('TABLE:'.length), name: 'A' } },
+      { id: tableB, classification: 'INTERNAL', properties: { external_urn: tableB.slice('TABLE:'.length), name: 'B' } },
+      { id: columnA, classification: 'INTERNAL', properties: { dataset_urn: tableA.slice('TABLE:'.length), name: 'id' } },
+      { id: columnB, classification: 'INTERNAL', properties: { dataset_urn: tableB.slice('TABLE:'.length), name: 'id' } },
+    ],
+    edges: [
+      {
+        source_asset_id: tableA,
+        target_asset_id: tableB,
+        properties: { source_aspect: 'upstreamLineage', source_entity_urn: tableB.slice('TABLE:'.length), lineage_level: 'TABLE' },
+      },
+      {
+        source_asset_id: columnA,
+        target_asset_id: columnB,
+        properties: { source_aspect: 'fineGrainedLineages', source_entity_urn: tableB.slice('TABLE:'.length), lineage_level: 'COLUMN', transformation_query: 'SELECT id' },
+      },
+    ],
+  })
+  assert.deepEqual(result.edges.map((edge) => edge.type), ['rel.column_depends_on', 'rel.dataset_depends_on'])
+  assert.equal(result.edges.find((edge) => edge.type === 'rel.column_depends_on').properties.transformation_query, 'SELECT id')
+  assert.deepEqual(result.quality_metrics.source_coverage, {
+    catalog_assets: 2,
+    table_lineage_edges: 1,
+    column_lineage_edges: 1,
+  })
 })
 
 test('K9 Managed Graphs - identical NO_OP', async () => {

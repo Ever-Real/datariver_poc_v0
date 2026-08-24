@@ -46,6 +46,44 @@ after(async () => {
   await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
 })
 
+test('binds graph and semantic projections to one deterministic DataHub source snapshot', async () => {
+  const { buildDatahubKnowledgeSourceSnapshot } = await import('./poc-server.mjs?kg2-source-snapshot-contract')
+  const generation = '1'.repeat(64)
+  const bindingHash = '2'.repeat(64)
+  const input = {
+    inventoryProjection: { source_generation: generation, observed_at: '2026-08-24T00:00:00.000Z' },
+    datahubIdentity: { version: 'v1.6.0', commit: 'source-commit' },
+    lineageSource: { nodes: [{ id: 'table-a' }], edges: [], completeness_metadata: {} },
+    metadataSource: {
+      table_nodes: [{ id: 'table-a' }], column_nodes: [], table_column_edges: [],
+      terms: [], parent_nodes: [], term_parent_edges: [], node_parent_edges: [],
+      glossary_relationships: [], table_assignments: [], column_assignments: [],
+      tags: [], domains: [], containers: [], platform_instances: [],
+      table_tag_assignments: [], column_tag_assignments: [], table_domain_assignments: [],
+      table_container_assignments: [], table_platform_instance_assignments: [],
+      completeness_metadata: {},
+    },
+    semanticIndex: { bindingHash, generation },
+  }
+  const first = buildDatahubKnowledgeSourceSnapshot(input)
+  const observedLater = buildDatahubKnowledgeSourceSnapshot({
+    ...input,
+    inventoryProjection: { ...input.inventoryProjection, observed_at: '2026-08-24T01:00:00.000Z' },
+  })
+  assert.equal(first.source_snapshot_id, observedLater.source_snapshot_id)
+  assert.notEqual(first.observed_at, observedLater.observed_at)
+  assert.equal(first.semantic_index_generation, generation)
+  assert.equal(first.semantic_index_binding_hash, bindingHash)
+  assert.notEqual(buildDatahubKnowledgeSourceSnapshot({
+    ...input,
+    metadataSource: { ...input.metadataSource, tags: [{ urn: 'urn:li:tag:new' }] },
+  }).source_snapshot_id, first.source_snapshot_id)
+  assert.throws(() => buildDatahubKnowledgeSourceSnapshot({
+    ...input,
+    semanticIndex: { bindingHash, generation: '3'.repeat(64) },
+  }), /semantic index is not bound/)
+})
+
 test('normalizes only controlled DataHub manual-metadata read-back fields', async () => {
   const { manualMetadataAspectComparableDocument } = await import('./poc-server.mjs?manual-metadata-readback-contract')
   const auditStamp = { actor: 'urn:li:corpuser:datahub', time: 1 }
@@ -268,6 +306,42 @@ test('managed graph entity resolution prefers nodes connected in the requested t
   assert.equal(managedGraphNodeSupportsDirection(release, 'dependent', 'IN'), true)
   assert.equal(managedGraphNodeSupportsDirection(release, 'upstream', 'OUT'), false)
   assert.equal(managedGraphNodeSupportsDirection(release, 'upstream', 'IN'), true)
+})
+
+test('managed graph entity resolution confirms authorized candidates through Metadata Master semantic hubs', async () => {
+  const { metadataMasterCandidateContext } = await import('./poc-server.mjs?metadata-master-resolution-contract')
+  const tableA = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.table_a,DEV)'
+  const tableB = 'urn:li:dataset:(urn:li:dataPlatform:oracle,scope.table_b,DEV)'
+  const tableAId = `TABLE:${tableA}`
+  const release = {
+    nodes: [
+      { id: tableAId, type: 'class.table', properties: { name: 'table_a', external_urn: tableA } },
+      { id: 'urn:li:glossaryTerm:shared', type: 'class.business_term', properties: { name: 'Shared term' } },
+    ],
+    edges: [{
+      source: tableAId,
+      target: 'urn:li:glossaryTerm:shared',
+      type: 'rel.table_has_glossary_term',
+      properties: {
+        source_aspect: 'glossaryTerms', explicit_or_inferred: 'EXPLICIT', confidence: 1,
+      },
+    }],
+  }
+  const matches = metadataMasterCandidateContext(release, [
+    { id: tableA, external_urn: tableA, name: 'table_a' },
+    { id: tableB, external_urn: tableB, name: 'table_b' },
+  ])
+  assert.equal(matches.length, 1)
+  assert.equal(matches[0].tableId, tableAId)
+  assert.deepEqual(matches[0].semanticContext, [{
+    id: 'urn:li:glossaryTerm:shared',
+    entity_type: 'class.business_term',
+    name: 'Shared term',
+    relation_type: 'rel.table_has_glossary_term',
+    source_aspect: 'glossaryTerms',
+    explicit_or_inferred: 'EXPLICIT',
+    confidence: 1,
+  }])
 })
 
 test('managed graph snapshots retain request-time Table authorization boundaries', async () => {
@@ -751,6 +825,31 @@ test('atomically fences in-memory Catalog embeddings to the active current gener
   assert.deepEqual(await store.searchCatalogEmbeddings(
     bindingHash, projectionScope, firstGeneration, [1, 0], 5, 'ADMIN_UNRESTRICTED'
   ), [])
+
+  const inactiveBindingHash = 'c'.repeat(64)
+  const inactiveRecord = {
+    ...record('asset-old-binding', secondGeneration, [1, 0]),
+    bindingHash: inactiveBindingHash,
+    sourceHash: 'd'.repeat(64),
+  }
+  await store.replaceCatalogEmbeddingGeneration(
+    inactiveBindingHash,
+    projectionScope,
+    secondGeneration,
+    [inactiveRecord],
+    ['asset-old-binding'],
+  )
+  assert.equal(await store.catalogEmbeddingActiveGeneration(inactiveBindingHash), secondGeneration)
+  assert.deepEqual(await store.pruneInactiveCatalogEmbeddingBindings(bindingHash), {
+    embedding_rows: 1,
+    active_pointers: 1,
+  })
+  assert.equal(await store.catalogEmbeddingActiveGeneration(inactiveBindingHash), undefined)
+  assert.equal(await store.catalogEmbeddingActiveGeneration(bindingHash), secondGeneration)
+  await assert.rejects(
+    store.pruneInactiveCatalogEmbeddingBindings('f'.repeat(64)),
+    /cannot be pruned before the requested binding is active/,
+  )
 })
 
 test('commits the PostgreSQL Embedding generation and active pointer in one fenced transaction', async () => {

@@ -307,4 +307,86 @@ describe('KnowledgeRegistry', () => {
     fireEvent.click(glossaryAdd)
     expect(onCreate).toHaveBeenCalledWith('data-glossary')
   })
+
+  it('shows the admin-only managed V2 snapshot and typed graph quality receipt', async () => {
+    const managed: KnowledgeAssetSummary = {
+      ...asset,
+      id: '01a02d2a-f90d-74fe-bd96-aa596276cb87',
+      name: 'Metadata Master Graph',
+      graph_type: 'METADATA_MASTER',
+      status: 'READY',
+      managed: true,
+      source: 'DataHub',
+      is_default: true,
+      active_release_id: 'k9-stage-v2',
+      active_projection: 'k9-stage-v2',
+      graph_model_version: 2,
+      source_snapshot_id: '1'.repeat(64),
+      source_snapshot_observed_at: '2026-08-24T00:00:00.000Z',
+      source_datahub_version: 'v1.6.0',
+      source_datahub_commit: 'source-commit',
+      semantic_index_status: 'READY',
+      semantic_index_generation: '2'.repeat(64),
+      refresh_mode: 'DAILY',
+      last_result: 'SUCCESS',
+      quality_metrics: {
+        entity_count_by_type: { 'class.table': 2, 'class.tag': 1 },
+        relation_count_by_type: { 'rel.table_has_tag': 2 },
+        explicit_edge_count: 2,
+        inferred_edge_count: 0,
+        orphan_node_count: 0,
+        duplicate_node_count: 0,
+        duplicate_edge_count: 0,
+        average_degree: 1.3333,
+        maximum_degree: 2,
+        top_hubs: [],
+        pairwise_clique_count: 0,
+        semantic_candidate_count: 0,
+        unit_explicit_count: 0,
+        unit_inferred_count: 0,
+        lineage_table_edge_count: 0,
+        lineage_column_edge_count: 0,
+        reconciliation: {
+          baseline_available: true,
+          nodes: { added: 1, removed: 0, changed: 2 },
+          edges: { added: 2, removed: 0, changed: 0 },
+          stale_entity_count: 0,
+          previous_source_snapshot_id: '3'.repeat(64),
+        },
+      },
+    }
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({ items: [managed], next_cursor: null, limit: 25 })
+      }
+      if (path === `/knowledge/graphs/${managed.id}/releases`) return Promise.resolve([])
+      if (path === `/knowledge/registry/assets/${managed.id}/detail`) {
+        return Promise.resolve({ asset: managed, schema_elements: [], bindings: [], projections: [] })
+      }
+      if (path === `/knowledge/registry/assets/${managed.id}/versions?limit=50`) {
+        return Promise.resolve({ items: [], next_cursor: null, limit: 50 })
+      }
+      if (path.includes(`/knowledge/graphs/${managed.id}/releases/${managed.active_release_id}/snapshot`)) {
+        return Promise.resolve({
+          release: currentRelease,
+          nodes: [], edges: [], filtered: false,
+          bounds: {
+            root_node_id: null, maximum_nodes: 60, maximum_edges: 120, maximum_hops: 1,
+            returned_nodes: 0, returned_edges: 0, total_authorized_nodes: 0,
+            total_authorized_edges: 0, truncated: false, available_node_types: [],
+            available_edge_types: [],
+          },
+        })
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<KnowledgeRegistry client={{ request } as unknown as ApiClient} onCreate={vi.fn()} onEdit={vi.fn()} />)
+    fireEvent.click(await screen.findByText('Metadata Master Graph'))
+    const drawer = await screen.findByRole('complementary', { name: 'Metadata Master Graph 지식 에셋 상세' })
+    expect(within(drawer).getByText('Graph Model')).toBeInTheDocument()
+    expect(within(drawer).getByText('v2')).toBeInTheDocument()
+    expect(within(drawer).getByText('class.table: 2 · class.tag: 1')).toBeInTheDocument()
+    expect(within(drawer).getByText('rel.table_has_tag: 2')).toBeInTheDocument()
+    expect(within(drawer).getByText('Nodes 1 / 0 / 2 · Edges 2 / 0 / 0')).toBeInTheDocument()
+  })
 })

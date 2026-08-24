@@ -1609,8 +1609,13 @@ query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) 
           name
           subTypes { typeNames }
           platform { urn name }
-          properties { name description created customProperties { key value } }
+          properties { name qualifiedName description created customProperties { key value } }
           editableProperties { description }
+          container { urn properties { name qualifiedName description customProperties { key value } } subTypes { typeNames } }
+          dataPlatformInstance {
+            urn instanceId
+            properties { name description customProperties { key value } }
+          }
           browsePathV2 {
             path {
               name
@@ -1623,26 +1628,59 @@ query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) 
               }
             }
           }
-          domain { domain { urn } }
+          domain { domain { urn properties { name description } } }
+          structuredProperties {
+            properties {
+              structuredProperty {
+                urn
+                definition { qualifiedName displayName description cardinality }
+              }
+              values {
+                ... on StringValue { stringValue }
+                ... on NumberValue { numberValue }
+              }
+              associatedUrn
+            }
+          }
           ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
-          globalTags: tags { tags { tag { urn name properties { name } } } }
-          glossaryTerms { terms { term { urn name } } }
+          globalTags: tags { tags { tag { urn name properties { name description } } } }
+          glossaryTerms { terms { term { urn name properties { name description } } } }
           schemaMetadata(version: 0) {
             fields {
-              fieldPath label type nativeDataType description
-              globalTags { tags { tag { urn name properties { name } } } }
-              glossaryTerms { terms { term { urn name } } }
+              fieldPath label type nativeDataType description nullable isPartOfKey isPartitioningKey jsonPath
+              globalTags { tags { tag { urn name properties { name description } } } }
+              glossaryTerms { terms { term { urn name properties { name description } } } }
               schemaFieldEntity {
-                globalTags: tags { tags { tag { urn name properties { name } } } }
-                glossaryTerms { terms { term { urn name } } }
+                urn type
+                globalTags: tags { tags { tag { urn name properties { name description } } } }
+                glossaryTerms { terms { term { urn name properties { name description } } } }
+                structuredProperties {
+                  properties {
+                    structuredProperty {
+                      urn
+                      definition { qualifiedName displayName description cardinality }
+                    }
+                    values {
+                      ... on StringValue { stringValue }
+                      ... on NumberValue { numberValue }
+                    }
+                    associatedUrn
+                  }
+                }
               }
             }
+          }
+          fineGrainedLineages {
+            upstreams { urn path }
+            downstreams { urn path }
+            query
+            transformOperation
           }
           editableSchemaMetadata {
             editableSchemaFieldInfo {
               fieldPath description
-              globalTags { tags { tag { urn name properties { name } } } }
-              glossaryTerms { terms { term { urn name } } }
+              globalTags { tags { tag { urn name properties { name description } } } }
+              glossaryTerms { terms { term { urn name properties { name description } } } }
             }
           }
           latestFullTableProfile: datasetProfiles(limit: 10) {
@@ -1663,8 +1701,13 @@ query DataRiverPocAsset($urn: String!) {
       name
       subTypes { typeNames }
       platform { urn name }
-      properties { name description created customProperties { key value } }
+      properties { name qualifiedName description created customProperties { key value } }
       editableProperties { description }
+      container { urn properties { name qualifiedName description customProperties { key value } } subTypes { typeNames } }
+      dataPlatformInstance {
+        urn instanceId
+        properties { name description customProperties { key value } }
+      }
       browsePathV2 {
         path {
           name
@@ -1677,27 +1720,59 @@ query DataRiverPocAsset($urn: String!) {
           }
         }
       }
-      domain { domain { urn } }
+      domain { domain { urn properties { name description } } }
+      structuredProperties {
+        properties {
+          structuredProperty {
+            urn
+            definition { qualifiedName displayName description cardinality }
+          }
+          values {
+            ... on StringValue { stringValue }
+            ... on NumberValue { numberValue }
+          }
+          associatedUrn
+        }
+      }
       ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
-      globalTags: tags { tags { tag { urn name properties { name } } } }
-      glossaryTerms { terms { term { urn name } } }
+      globalTags: tags { tags { tag { urn name properties { name description } } } }
+      glossaryTerms { terms { term { urn name properties { name description } } } }
       schemaMetadata(version: 0) {
         fields {
-          fieldPath label type nativeDataType description
-          globalTags { tags { tag { urn name properties { name } } } }
-          glossaryTerms { terms { term { urn name } } }
+          fieldPath label type nativeDataType description nullable isPartOfKey isPartitioningKey jsonPath
+          globalTags { tags { tag { urn name properties { name description } } } }
+          glossaryTerms { terms { term { urn name properties { name description } } } }
           schemaFieldEntity {
             urn type
-            globalTags: tags { tags { tag { urn name properties { name } } } }
-            glossaryTerms { terms { term { urn name } } }
+            globalTags: tags { tags { tag { urn name properties { name description } } } }
+            glossaryTerms { terms { term { urn name properties { name description } } } }
+            structuredProperties {
+              properties {
+                structuredProperty {
+                  urn
+                  definition { qualifiedName displayName description cardinality }
+                }
+                values {
+                  ... on StringValue { stringValue }
+                  ... on NumberValue { numberValue }
+                }
+                associatedUrn
+              }
+            }
           }
         }
+      }
+      fineGrainedLineages {
+        upstreams { urn path }
+        downstreams { urn path }
+        query
+        transformOperation
       }
       editableSchemaMetadata {
         editableSchemaFieldInfo {
           fieldPath description
-          globalTags { tags { tag { urn name properties { name } } } }
-          glossaryTerms { terms { term { urn name } } }
+          globalTags { tags { tag { urn name properties { name description } } } }
+          glossaryTerms { terms { term { urn name properties { name description } } } }
         }
       }
       latestFullTableProfile: datasetProfiles(limit: 10) {
@@ -1729,12 +1804,14 @@ query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
     lineage(input: $input) {
       total
       relationships {
+        type
         entity {
           urn type
           ... on Dataset {
             name
+            subTypes { typeNames }
             platform { urn name }
-            properties { name description created customProperties { key value } }
+            properties { name qualifiedName description created customProperties { key value } }
             editableProperties { description }
             browsePathV2 {
               path {
@@ -1748,12 +1825,19 @@ query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
                 }
               }
             }
-            domain { domain { urn } }
+            domain { domain { urn properties { name description } } }
             ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
             globalTags: tags { tags { tag { urn name properties { name } } } }
             glossaryTerms { terms { term { urn name } } }
           }
         }
+        createdActor { urn }
+        createdOn
+        updatedActor { urn }
+        updatedOn
+        degree
+        isManual
+        paths { path { urn type } }
       }
     }
   }
@@ -1769,6 +1853,18 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
         ... on GlossaryTerm {
           hierarchicalName
           properties { name description }
+          glossaryTermInfo { name description termSource sourceRef sourceUrl customProperties { key value } }
+          domain { domain { urn properties { name description } } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+              values {
+                ... on StringValue { stringValue }
+                ... on NumberValue { numberValue }
+              }
+              associatedUrn
+            }
+          }
           parentNodes {
             nodes {
               urn type
@@ -1789,17 +1885,58 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
             count: 0
             includeSoftDelete: false
           }) { total }
+          outgoingRelationships: relationships(input: {
+            types: []
+            direction: OUTGOING
+            start: 0
+            count: 100
+            includeSoftDelete: false
+          }) {
+            total
+            relationships { type direction entity { urn type } }
+          }
         }
         ... on GlossaryNode {
-          properties { name description }
+          properties { name description customProperties { key value } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+              values {
+                ... on StringValue { stringValue }
+                ... on NumberValue { numberValue }
+              }
+              associatedUrn
+            }
+          }
           parentNodes {
             nodes {
               urn type
               ... on GlossaryNode { properties { name description } }
             }
           }
+          outgoingRelationships: relationships(input: {
+            types: []
+            direction: OUTGOING
+            start: 0
+            count: 100
+            includeSoftDelete: false
+          }) {
+            total
+            relationships { type direction entity { urn type } }
+          }
         }
       }
+    }
+  }
+}`
+
+const datahubEntityRelationshipsQuery = `
+query DataRiverPocEntityRelationships($urn: String!, $input: RelationshipsInput!) {
+  entity(urn: $urn) {
+    urn type
+    relationships(input: $input) {
+      start count total
+      relationships { type direction entity { urn type } }
     }
   }
 }`
@@ -1872,6 +2009,32 @@ async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, s
   return payload.data
 }
 
+let datahubRuntimeIdentityPromise
+
+async function datahubRuntimeIdentity() {
+  if (!datahubRuntimeIdentityPromise) {
+    datahubRuntimeIdentityPromise = (async () => {
+      const response = await providerFetch(joinProviderUrl(datahub.url, '/config'), {
+        headers: datahubHeaders(),
+      })
+      await requireOk(response, 'DataHub configuration')
+      const payload = await response.json()
+      const release = payload?.versions?.['acryldata/datahub']
+      if (typeof release?.version !== 'string' || !release.version.trim()) {
+        throw new Error('DataHub did not expose a canonical runtime version.')
+      }
+      return Object.freeze({
+        version: release.version.trim(),
+        commit: typeof release.commit === 'string' && release.commit.trim() ? release.commit.trim() : null,
+      })
+    })().catch((error) => {
+      datahubRuntimeIdentityPromise = undefined
+      throw error
+    })
+  }
+  return datahubRuntimeIdentityPromise
+}
+
 function datahubHeaders(extra = {}) {
   return {
     ...(datahub?.token ? { Authorization: `Bearer ${datahub.token}` } : {}),
@@ -1913,6 +2076,65 @@ function canonicalJson(value) {
 
 function canonicalHash(value) {
   return sha256(canonicalJson(value))
+}
+
+export function buildDatahubKnowledgeSourceSnapshot({
+  inventoryProjection,
+  datahubIdentity,
+  lineageSource,
+  metadataSource,
+  semanticIndex,
+}) {
+  const catalogGeneration = inventoryProjection?.source_generation
+  if (typeof catalogGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(catalogGeneration)) {
+    throw new Error('The shared DataHub Catalog generation is unavailable for K9 refresh')
+  }
+  if (semanticIndex?.generation !== catalogGeneration
+    || typeof semanticIndex?.bindingHash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(semanticIndex.bindingHash)) {
+    throw new Error('The semantic index is not bound to the shared DataHub Catalog generation')
+  }
+  const snapshotDocument = {
+    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_SNAPSHOT_V2',
+    datahub_version: datahubIdentity?.version || null,
+    datahub_commit: datahubIdentity?.commit || null,
+    catalog_generation: catalogGeneration,
+    semantic_index_contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+    semantic_index_binding_hash: semanticIndex.bindingHash,
+    semantic_index_generation: semanticIndex.generation,
+    lineage_hash: canonicalHash({
+      nodes: lineageSource?.nodes,
+      edges: lineageSource?.edges,
+      completeness_metadata: lineageSource?.completeness_metadata,
+    }),
+    metadata_hash: canonicalHash({
+      table_nodes: metadataSource?.table_nodes,
+      column_nodes: metadataSource?.column_nodes,
+      table_column_edges: metadataSource?.table_column_edges,
+      terms: metadataSource?.terms,
+      parent_nodes: metadataSource?.parent_nodes,
+      term_parent_edges: metadataSource?.term_parent_edges,
+      node_parent_edges: metadataSource?.node_parent_edges,
+      glossary_relationships: metadataSource?.glossary_relationships,
+      table_assignments: metadataSource?.table_assignments,
+      column_assignments: metadataSource?.column_assignments,
+      tags: metadataSource?.tags,
+      domains: metadataSource?.domains,
+      containers: metadataSource?.containers,
+      platform_instances: metadataSource?.platform_instances,
+      table_tag_assignments: metadataSource?.table_tag_assignments,
+      column_tag_assignments: metadataSource?.column_tag_assignments,
+      table_domain_assignments: metadataSource?.table_domain_assignments,
+      table_container_assignments: metadataSource?.table_container_assignments,
+      table_platform_instance_assignments: metadataSource?.table_platform_instance_assignments,
+      completeness_metadata: metadataSource?.completeness_metadata,
+    }),
+  }
+  return {
+    ...snapshotDocument,
+    source_snapshot_id: canonicalHash(snapshotDocument),
+    observed_at: inventoryProjection?.observed_at || null,
+  }
 }
 
 function malformedDatahubReadback(aspectName) {
@@ -2228,8 +2450,48 @@ function datasetIdentity(entity) {
 function tagReferences(entity) {
   return (entity.globalTags?.tags || []).flatMap((item) => {
     const name = item.tag?.properties?.name || item.tag?.name
-    return name ? [{ urn: item.tag?.urn || null, name }] : []
+    return name ? [{
+      urn: item.tag?.urn || null,
+      name,
+      description: item.tag?.properties?.description || '',
+    }] : []
   })
+}
+
+function customPropertyReferences(properties) {
+  return (properties?.customProperties || []).flatMap((item) => (
+    typeof item?.key === 'string' && item.key.trim()
+      && typeof item?.value === 'string' && item.value.trim()
+      ? [{ key: item.key.trim(), value: item.value.trim() }]
+      : []
+  )).sort((left, right) => left.key.localeCompare(right.key) || left.value.localeCompare(right.value))
+}
+
+function structuredPropertyReferences(value) {
+  return (value?.properties || []).flatMap((item) => {
+    const property = item?.structuredProperty
+    const urn = typeof property?.urn === 'string' ? property.urn : ''
+    const qualifiedName = typeof property?.definition?.qualifiedName === 'string'
+      ? property.definition.qualifiedName.trim()
+      : ''
+    if (!urn || !qualifiedName) return []
+    const values = (item.values || []).flatMap((candidate) => {
+      if (typeof candidate?.stringValue === 'string') return [candidate.stringValue]
+      if (typeof candidate?.numberValue === 'number' && Number.isFinite(candidate.numberValue)) {
+        return [candidate.numberValue]
+      }
+      return []
+    })
+    return [{
+      urn,
+      qualified_name: qualifiedName,
+      display_name: property.definition?.displayName || qualifiedName,
+      description: property.definition?.description || '',
+      cardinality: property.definition?.cardinality || null,
+      values,
+      associated_urn: item.associatedUrn || null,
+    }]
+  }).sort((left, right) => left.urn.localeCompare(right.urn))
 }
 
 function datahubCreatedAt(properties) {
@@ -2268,28 +2530,64 @@ function datasetAsset(entity) {
   const classificationTag = tags.find((tag) => tag.toUpperCase().startsWith('CLASSIFICATION:'))
   const classification = classificationTag?.split(':').at(-1)?.toUpperCase() || 'INTERNAL'
   const owner = urnTail(entity.ownership?.owners?.[0]?.owner?.urn) || 'DataHub'
-  const domain = urnTail(entity.domain?.domain?.urn) || ''
+  const domainEntity = entity.domain?.domain
+  const domain = domainEntity?.properties?.name || urnTail(domainEntity?.urn) || ''
   const description = entity.editableProperties?.description || entity.properties?.description || ''
+  const container = entity.container
+  const platformInstance = entity.dataPlatformInstance
   return {
     id: entity.urn,
     external_urn: entity.urn,
     asset_type: entity.type || 'DATASET',
     dataset_kind: datahubDatasetKind(entity),
     name: identity.tableName,
+    qualified_name: entity.properties?.qualifiedName || identity.tableName,
     description,
     platform: entity.platform?.name || urnTail(entity.platform?.urn),
     database_name: identity.databaseName,
     schema_name: identity.schemaName,
     owner,
     domain,
+    domain_reference: domainEntity?.urn ? {
+      urn: domainEntity.urn,
+      name: domain,
+      description: domainEntity.properties?.description || '',
+    } : null,
+    container_reference: container?.urn ? {
+      urn: container.urn,
+      name: container.properties?.name || urnTail(container.urn),
+      qualified_name: container.properties?.qualifiedName || '',
+      description: container.properties?.description || '',
+      custom_properties: customPropertyReferences(container.properties),
+      sub_types: [...new Set(container.subTypes?.typeNames || [])].sort(),
+    } : null,
+    platform_instance_reference: platformInstance?.urn ? {
+      urn: platformInstance.urn,
+      instance_id: platformInstance.instanceId || '',
+      name: platformInstance.properties?.name || platformInstance.instanceId || urnTail(platformInstance.urn),
+      description: platformInstance.properties?.description || '',
+      custom_properties: customPropertyReferences(platformInstance.properties),
+    } : null,
+    custom_properties: customPropertyReferences(entity.properties),
+    structured_properties: structuredPropertyReferences(entity.structuredProperties),
     tags,
     tag_references: tagReferencesValue,
-    terms: (entity.glossaryTerms?.terms || []).map((item) => item.term?.name).filter(Boolean),
+    terms: (entity.glossaryTerms?.terms || []).map((item) => item.term?.properties?.name || item.term?.name).filter(Boolean),
     term_references: (entity.glossaryTerms?.terms || []).flatMap((item) => (
-      item.term?.urn && item.term?.name
-        ? [{ urn: item.term.urn, name: item.term.name }]
+      item.term?.urn && (item.term?.properties?.name || item.term?.name)
+        ? [{
+            urn: item.term.urn,
+            name: item.term.properties?.name || item.term.name,
+            description: item.term.properties?.description || '',
+          }]
         : []
     )),
+    fine_grained_lineages: (entity.fineGrainedLineages || []).map((item) => ({
+      upstreams: (item.upstreams || []).map((reference) => ({ urn: reference.urn, path: reference.path })),
+      downstreams: (item.downstreams || []).map((reference) => ({ urn: reference.urn, path: reference.path })),
+      query: item.query || null,
+      transform_operation: item.transformOperation || null,
+    })),
     created_at: datahubCreatedAt(entity.properties),
     classification,
     lifecycle: 'ACTIVE',
@@ -3141,7 +3439,11 @@ function datahubSchemaFields(entity) {
       glossaryTerms: mergedMetadataReferences(
         [base.glossaryTerms, fieldEntity.glossaryTerms, editable.glossaryTerms], 'terms', 'term',
       ),
-      nullable: true,
+      structured_properties: structuredPropertyReferences(fieldEntity.structuredProperties),
+      nullable: base.nullable ?? true,
+      isPartOfKey: base.isPartOfKey ?? false,
+      isPartitioningKey: base.isPartitioningKey ?? false,
+      jsonPath: base.jsonPath ?? null,
     }
   })
 }
@@ -3219,7 +3521,8 @@ function detailedDatasetAsset(entity) {
     })),
     glossary_terms: (entity.glossaryTerms?.terms || []).map((item) => ({
       urn: item.term?.urn,
-      name: item.term?.name,
+      name: item.term?.properties?.name || item.term?.name,
+      description: item.term?.properties?.description || '',
     })),
     schema_fields: fields,
     schema_fields_total: fields.length,
@@ -4154,11 +4457,32 @@ function catalogDetailEvidence(asset) {
   const fields = (asset.schema_fields || []).map((field) => {
     const name = field.fieldPath || field.label || 'unnamed_column'
     const type = field.nativeDataType || field.type || 'type unknown'
-    const tags = (field.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
-    const terms = (field.glossaryTerms?.terms || []).map((item) => item.term?.name).filter(Boolean)
-    return `- ${name} (${type})${field.description ? `: ${field.description}` : ''}${tags.length ? ` [tags: ${tags.join(', ')}]` : ''}${terms.length ? ` [terms: ${terms.join(', ')}]` : ''}`
+    const tags = (field.globalTags?.tags || []).map((item) => {
+      const name = item.tag?.properties?.name || item.tag?.name
+      const description = item.tag?.properties?.description
+      return name ? `${name}${description ? ` (${description})` : ''}` : null
+    }).filter(Boolean)
+    const terms = (field.glossaryTerms?.terms || []).map((item) => {
+      const name = item.term?.properties?.name || item.term?.name
+      const description = item.term?.properties?.description
+      return name ? `${name}${description ? ` (${description})` : ''}` : null
+    }).filter(Boolean)
+    const structured = (field.structured_properties || []).flatMap((property) => (
+      (property.values || []).map((value) => `${property.qualified_name}=${value}`)
+    ))
+    return `- ${name} (${type})${field.description ? `: ${field.description}` : ''}${tags.length ? ` [tags: ${tags.join(', ')}]` : ''}${terms.length ? ` [terms: ${terms.join(', ')}]` : ''}${structured.length ? ` [properties: ${structured.join(', ')}]` : ''}`
   })
   const quality = asset.quality || {}
+  const customProperties = (asset.custom_properties || []).map((property) => `${property.key}=${property.value}`)
+  const structuredProperties = (asset.structured_properties || []).flatMap((property) => (
+    (property.values || []).map((value) => `${property.qualified_name}=${value}`)
+  ))
+  const tagEvidence = (asset.tag_references || []).map((tag) => (
+    `${tag.name}${tag.description ? ` (${tag.description})` : ''}`
+  ))
+  const termEvidence = (asset.term_references || []).map((term) => (
+    `${term.name}${term.description ? ` (${term.description})` : ''}`
+  ))
   return [
     `Name: ${asset.name}`,
     `Qualified name: ${[asset.platform, asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.')}`,
@@ -4166,8 +4490,10 @@ function catalogDetailEvidence(asset) {
     asset.domain ? `Domain: ${asset.domain}` : '',
     asset.owner ? `Owner: ${asset.owner}` : '',
     asset.description ? `Description: ${asset.description}` : 'Description is not registered in DataHub.',
-    asset.tags?.length ? `Tags: ${asset.tags.join(', ')}` : '',
-    asset.terms?.length ? `Glossary terms: ${asset.terms.join(', ')}` : '',
+    tagEvidence.length ? `Tags: ${tagEvidence.join(', ')}` : asset.tags?.length ? `Tags: ${asset.tags.join(', ')}` : '',
+    termEvidence.length ? `Glossary terms: ${termEvidence.join(', ')}` : asset.terms?.length ? `Glossary terms: ${asset.terms.join(', ')}` : '',
+    customProperties.length ? `Custom properties: ${customProperties.join(', ')}` : '',
+    structuredProperties.length ? `Structured properties: ${structuredProperties.join(', ')}` : '',
     Number.isInteger(quality.rowCount) ? `Rows: ${quality.rowCount}` : '',
     Number.isInteger(quality.columnCount) ? `Profiled columns: ${quality.columnCount}` : '',
     Number.isInteger(quality.sizeInBytes) ? `Size bytes: ${quality.sizeInBytes}` : '',
@@ -4395,7 +4721,7 @@ function catalogEmbeddingBindingHash() {
     source: datahubCacheScope,
     endpoint: llm.embedding.url,
     model: llm.embedding.model,
-    contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
   }))
 }
 
@@ -4540,7 +4866,7 @@ function catalogEmbeddingStatus(principal) {
           : catalogEmbeddingLastError
             ? 'FAILED'
             : 'NOT_STARTED',
-    contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
     indexed: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.indexed ?? null : null,
     refreshed: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.refreshed ?? null : null,
     generation: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.generation ?? null : null,
@@ -4757,7 +5083,73 @@ async function revalidateKnowledgeMainChatSelection(context, selection) {
   }
 }
 
-async function resolveManagedGraphStart(question, route, scope, principal) {
+const METADATA_MASTER_DATA_NODE_TYPES = new Set([
+  'class.dataset', 'class.table', 'class.view', 'class.column',
+])
+
+export function metadataMasterCandidateContext(canonicalRelease, candidates, maximumSemanticNodes = 8) {
+  const nodes = Array.isArray(canonicalRelease?.nodes) ? canonicalRelease.nodes : []
+  const edges = Array.isArray(canonicalRelease?.edges) ? canonicalRelease.edges : []
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const boundedMaximum = Math.max(0, Math.min(20, Number(maximumSemanticNodes) || 0))
+  return candidates.flatMap((candidate) => {
+    const urn = candidate?.external_urn || candidate?.id
+    const tableId = typeof urn === 'string' && urn.startsWith('urn:li:dataset:')
+      ? `TABLE:${urn}`
+      : null
+    const tableNode = tableId ? byId.get(tableId) : null
+    if (!tableNode || !METADATA_MASTER_DATA_NODE_TYPES.has(tableNode.type)) return []
+    const semanticContext = edges.flatMap((edge) => {
+      let neighborId = null
+      if (edge.source === tableId) neighborId = edge.target
+      else if (edge.target === tableId) neighborId = edge.source
+      if (!neighborId) return []
+      const neighbor = byId.get(neighborId)
+      if (!neighbor || METADATA_MASTER_DATA_NODE_TYPES.has(neighbor.type)) return []
+      return [{
+        id: neighbor.id,
+        entity_type: neighbor.type,
+        name: neighbor.properties?.display_name || neighbor.properties?.name || neighbor.id,
+        relation_type: edge.type,
+        source_aspect: edge.properties?.source_aspect || null,
+        explicit_or_inferred: edge.properties?.explicit_or_inferred || 'EXPLICIT',
+        confidence: Number(edge.properties?.confidence ?? 1),
+      }]
+    }).sort((left, right) => (
+      left.relation_type.localeCompare(right.relation_type)
+      || left.id.localeCompare(right.id)
+    )).slice(0, boundedMaximum)
+    return [{ candidate, tableId, tableNode, semanticContext }]
+  })
+}
+
+async function metadataMasterResolutionContext(context, candidates, lineageScope) {
+  const assets = await managedK9Assets(context)
+  const metadataAsset = assets.find((asset) => asset.graph_type === 'METADATA_MASTER')
+  if (!metadataAsset) return { available: false, asset: null, matches: [] }
+  const scope = await knowledgeChatScope(context, metadataAsset.id)
+  const metadataSnapshotId = scope.canonicalRelease.manifest?.source_snapshot?.source_snapshot_id
+  const lineageSnapshotId = lineageScope.canonicalRelease.manifest?.source_snapshot?.source_snapshot_id
+  if (typeof metadataSnapshotId !== 'string' || metadataSnapshotId !== lineageSnapshotId) {
+    throw knowledgeProjectionError(
+      409,
+      'K9_SOURCE_SNAPSHOT_MISMATCH',
+      'Metadata Master and Default Lineage are not bound to the same DataHub source snapshot.',
+    )
+  }
+  return {
+    available: true,
+    asset: {
+      id: metadataAsset.id,
+      name: metadataAsset.name,
+      release_id: metadataAsset.active_release_id,
+      source_snapshot_id: metadataSnapshotId,
+    },
+    matches: metadataMasterCandidateContext(scope.canonicalRelease, candidates),
+  }
+}
+
+async function resolveManagedGraphStart(question, route, scope, principal, context) {
   if (!scope.managed) return { startNodeId: null, entities: [] }
   const resolutionQuestion = route.primary_concepts[0] || question
   const candidates = await datahubChatEvidence(resolutionQuestion, {
@@ -4766,10 +5158,20 @@ async function resolveManagedGraphStart(question, route, scope, principal) {
     semantic_retrieval_required: true,
     entity_resolution_candidate_limit: 20,
   }, 20, principal)
+  const metadataResolution = await metadataMasterResolutionContext(context, candidates, scope)
+  const resolvedCandidates = metadataResolution.available
+    ? metadataResolution.matches.map((match) => ({
+        ...match.candidate,
+        metadata_master: {
+          ...metadataResolution.asset,
+          semantic_context: match.semanticContext,
+        },
+      }))
+    : candidates
   const nodeIds = new Set(scope.canonicalRelease.nodes.map((node) => node.id))
   const direction = graphTraversalDirection(route.relation_intent)
   let fallback = null
-  for (const candidate of candidates) {
+  for (const candidate of resolvedCandidates) {
     const urn = candidate.external_urn || candidate.id
     const tableId = typeof urn === 'string' ? `TABLE:${urn}` : null
     if (tableId && nodeIds.has(tableId)) {
@@ -4779,7 +5181,18 @@ async function resolveManagedGraphStart(question, route, scope, principal) {
           id: tableId,
           urn,
           name: candidate.name,
-          method: candidate.retrieval_method || candidate.extraction_method || 'DATAHUB_METADATA',
+          method: metadataResolution.available
+            ? 'METADATA_MASTER_SEMANTIC_RESOLUTION'
+            : candidate.retrieval_method || candidate.extraction_method || 'DATAHUB_METADATA',
+          metadata_master_asset: candidate.metadata_master
+            ? {
+                id: candidate.metadata_master.id,
+                name: candidate.metadata_master.name,
+                release_id: candidate.metadata_master.release_id,
+                source_snapshot_id: candidate.metadata_master.source_snapshot_id,
+              }
+            : null,
+          semantic_context: candidate.metadata_master?.semantic_context || [],
         }],
       }
       fallback ||= resolved
@@ -4899,7 +5312,9 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     progress('RETRIEVAL', 'IN_PROGRESS', 'RETRIEVAL_IN_PROGRESS')
   }
   if (knowledgeSelection) {
-    const resolution = await resolveManagedGraphStart(resolvedQuestion, route, knowledgeSelection.scope, principal)
+    const resolution = await resolveManagedGraphStart(
+      resolvedQuestion, route, knowledgeSelection.scope, principal, context,
+    )
     route = { ...route, resolved_entities: resolution.entities }
     compositionLlmCalls = 1
     const result = await knowledgeGraphRag(knowledgeSelection.scope, {
@@ -6406,12 +6821,22 @@ function isoValue(value) {
   return typeof value === 'string' ? value : null
 }
 
-function managedK9AssetSummary(row, semanticIndexReady, schedulerConfig) {
+function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQualityMetrics = false) {
   const definition = k9GraphAssetDefinition(row.graph_id)
   if (!definition) throw knowledgeProjectionError(409, 'K9_ASSET_DEFINITION_MISSING', 'The managed graph Asset definition is missing.')
   const manifest = row.active_manifest && typeof row.active_manifest === 'object'
     ? row.active_manifest
     : {}
+  const sourceSnapshot = manifest.source_snapshot && typeof manifest.source_snapshot === 'object'
+    ? manifest.source_snapshot
+    : {}
+  const qualityMetrics = manifest.quality_metrics && typeof manifest.quality_metrics === 'object'
+    ? manifest.quality_metrics
+    : null
+  const semanticIndexMatchesSnapshot = semanticIndex?.ready && (
+    !sourceSnapshot.catalog_generation
+    || semanticIndex.generation === sourceSnapshot.catalog_generation
+  )
   const latestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
@@ -6465,7 +6890,19 @@ function managedK9AssetSummary(row, semanticIndexReady, schedulerConfig) {
     last_refresh: isoValue(row.latest_completed_at),
     last_result: latestResult,
     last_error_code: latestResult === 'FAILURE' ? 'K9_REFRESH_FAILED' : null,
-    semantic_index_status: semanticIndexReady ? 'READY' : 'PENDING',
+    semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
+    semantic_index_contract: semanticIndex?.contract || null,
+    semantic_index_generation: semanticIndex?.generation || null,
+    semantic_index_binding_hash: semanticIndex?.bindingHash || null,
+    graph_model_version: Number(manifest.model_version || 1),
+    source_snapshot_id: sourceSnapshot.source_snapshot_id || null,
+    source_snapshot_observed_at: sourceSnapshot.observed_at || null,
+    source_catalog_generation: sourceSnapshot.catalog_generation || null,
+    source_datahub_version: sourceSnapshot.datahub_version || null,
+    source_datahub_commit: sourceSnapshot.datahub_commit || null,
+    active_projection: row.active_release_pointer || null,
+    lineage_source: definition.graph_type === 'LINEAGE' ? 'DataHub upstreamLineage / fineGrainedLineages' : null,
+    quality_metrics: includeQualityMetrics ? qualityMetrics : null,
     supported_intents: definition.supported_intents,
     semantic_capabilities: definition.semantic_capabilities,
     supported_entity_types: definition.supported_entity_types,
@@ -6558,13 +6995,24 @@ async function managedK9Assets(context) {
     throw error
   }
   const bindingHash = catalogEmbeddingBindingHash()
-  const semanticIndexReady = Boolean(
-    bindingHash && await context.stateStore.catalogEmbeddingActiveGeneration(bindingHash),
-  )
+  const semanticIndexGeneration = bindingHash
+    ? await context.stateStore.catalogEmbeddingActiveGeneration(bindingHash)
+    : null
+  const semanticIndex = {
+    ready: Boolean(bindingHash && semanticIndexGeneration),
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+    bindingHash: bindingHash || null,
+    generation: semanticIndexGeneration || null,
+  }
   return rows.flatMap((row) => {
     try {
       assertManagedK9AssetGrade(context, row.classification)
-      return [managedK9AssetSummary(row, semanticIndexReady, context.k9SchedulerConfig)]
+      return [managedK9AssetSummary(
+        row,
+        semanticIndex,
+        context.k9SchedulerConfig,
+        context.principal.role === 'admin',
+      )]
     } catch (error) {
       if (error?.code === 'KNOWLEDGE_GRAPH_NOT_FOUND') return []
       throw error
@@ -9467,7 +9915,7 @@ export async function startPocServer({ stateStore } = {}) {
       dataset_urn: field ? datasetUrn : undefined,
       parent_table_id: field ? `TABLE:${datasetUrn}` : undefined,
       name: field?.fieldPath || asset.name,
-      qualified_name: field ? `${asset.name}.${field.fieldPath}` : asset.name,
+      qualified_name: field ? `${asset.qualified_name || asset.name}.${field.fieldPath}` : asset.qualified_name || asset.name,
       platform: asset.platform,
       dataset_kind: asset.dataset_kind,
       database_name: asset.database_name,
@@ -9475,12 +9923,23 @@ export async function startPocServer({ stateStore } = {}) {
       description: source.description || '',
       domain: asset.domain || '',
       business_name: field?.label || asset.name,
+      data_type: field?.type || undefined,
+      native_data_type: field?.nativeDataType || undefined,
+      nullable: field ? field.nullable !== false : undefined,
+      is_part_of_key: field?.isPartOfKey === true || undefined,
+      is_partitioning_key: field?.isPartitioningKey === true || undefined,
+      json_path: field?.jsonPath || undefined,
+      custom_properties: field ? undefined : asset.custom_properties,
+      structured_properties: field ? field.structured_properties : asset.structured_properties,
       tags: [...new Set(field
-        ? (field.globalTags?.tags || []).map((item) => item.tag?.name).filter(Boolean)
+        ? (field.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
         : asset.tags || [])].sort(),
       terms: [...new Set(field
-        ? (field.glossaryTerms?.terms || []).map((item) => item.term?.name).filter(Boolean)
+        ? (field.glossaryTerms?.terms || []).map((item) => item.term?.properties?.name || item.term?.name).filter(Boolean)
         : asset.terms || [])].sort(),
+      source_aspects: field
+        ? ['schemaMetadata', 'editableSchemaMetadata', 'globalTags', 'glossaryTerms', 'structuredProperties']
+        : ['datasetProperties', 'editableDatasetProperties', 'globalTags', 'glossaryTerms', 'domains', 'structuredProperties'],
     }
     return Object.fromEntries(Object.entries(properties).filter(([, value]) => (
       value !== undefined && value !== null && value !== ''
@@ -9497,9 +9956,62 @@ export async function startPocServer({ stateStore } = {}) {
     const authorizedByUrn = new Map(authorizedInventory.map((entry) => [k9AssetUrn(entry.item), entry]))
     const nodes = []
     const edges = []
-    const edgeSet = new Set()
+    const edgeMap = new Map()
     const nodeSet = new Set()
+    const columnNodeMap = new Map()
     const completeness_metadata = { per_asset: {} }
+
+    const registerLineageEdge = (source, target, relationship, sourceEntityUrn) => {
+      const key = `${source}->${target}`
+      const observation = {
+        source: 'DataHub',
+        source_aspect: 'upstreamLineage',
+        source_relationship_type: relationship?.type || 'TRANSFORMED',
+        explicit_or_inferred: 'EXPLICIT',
+        confidence: 1,
+        source_entity_urn: sourceEntityUrn,
+        observed_at: relationship?.updatedOn || relationship?.createdOn || null,
+        created_actor: relationship?.createdActor?.urn || null,
+        updated_actor: relationship?.updatedActor?.urn || null,
+        is_manual: relationship?.isManual === true,
+        degree: relationship?.degree || null,
+        lineage_paths: (relationship?.paths || []).map((path) => (
+          (path.path || []).map((entity) => ({ urn: entity.urn, type: entity.type }))
+        )),
+        lineage_level: 'TABLE',
+      }
+      const existing = edgeMap.get(key)
+      if (existing) {
+        const observations = [...(existing.properties.lineage_observations || []), observation]
+        const unique = new Map(observations.map((item) => [canonicalJson(item), item]))
+        existing.properties.lineage_observations = [...unique.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([, item]) => item)
+      } else {
+        edgeMap.set(key, {
+          source_asset_id: source,
+          target_asset_id: target,
+          properties: { ...observation, lineage_observations: [observation] },
+        })
+      }
+    }
+
+    const registerColumnNode = (datasetUrn, path) => {
+      if (!isCanonicalDatahubDatasetUrn(datasetUrn) || typeof path !== 'string' || !path.trim()) return null
+      const authorized = authorizedByUrn.get(datasetUrn)
+      if (!authorized) return null
+      const field = datahubSchemaFields(authorized.item).find((candidate) => candidate.fieldPath === path.trim())
+      if (!field) return null
+      const id = `COLUMN:${datasetUrn}:${path.trim()}`
+      if (!columnNodeMap.has(id)) {
+        columnNodeMap.set(id, {
+          id,
+          classification: authorized.classification,
+          properties: k9MetadataProperties(authorized.item, field),
+        })
+      }
+      return id
+    }
 
     for (const { item, classification } of authorizedInventory) {
       if (!['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
@@ -9546,10 +10058,7 @@ export async function startPocServer({ stateStore } = {}) {
                 const edgeKey = `${source}->${target}`
                 if (traceSet.has(edgeKey)) throw new Error('Duplicate edge identity within trace: ' + edgeKey)
                 traceSet.add(edgeKey)
-                if (!edgeSet.has(edgeKey)) {
-                  edgeSet.add(edgeKey)
-                  edges.push({ source_asset_id: source, target_asset_id: target })
-                }
+                registerLineageEdge(source, target, rel, itemUrn)
               }
             }
           }
@@ -9560,9 +10069,62 @@ export async function startPocServer({ stateStore } = {}) {
         completeness_metadata.per_asset[itemUrn][direction] = { fetched: fetchedCount, total: lastTotal === -1 ? 0 : lastTotal }
         if (fetchedCount !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Completeness reconciliation failed')
       }
+
+      for (const fine of item.fine_grained_lineages || []) {
+        for (const upstream of fine.upstreams || []) {
+          const upstreamId = registerColumnNode(upstream.urn, upstream.path)
+          if (!upstreamId) continue
+          for (const downstream of fine.downstreams || []) {
+            const downstreamId = registerColumnNode(downstream.urn, downstream.path)
+            if (!downstreamId) continue
+            const key = `${upstreamId}->${downstreamId}`
+            const observation = {
+              source_entity_urn: itemUrn,
+              source_relationship_type: fine.transform_operation || 'COLUMN_TRANSFORM',
+              transformation_query: fine.query || null,
+            }
+            const existing = edgeMap.get(key)
+            if (existing) {
+              const observations = [...(existing.properties.lineage_observations || []), observation]
+              const unique = new Map(observations.map((item) => [canonicalJson(item), item]))
+              existing.properties.lineage_observations = [...unique.entries()]
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([, item]) => item)
+              continue
+            }
+            edgeMap.set(key, {
+              source_asset_id: upstreamId,
+              target_asset_id: downstreamId,
+              properties: {
+                source: 'DataHub',
+                source_aspect: 'fineGrainedLineages',
+                source_relationship_type: fine.transform_operation || 'COLUMN_TRANSFORM',
+                explicit_or_inferred: 'EXPLICIT',
+                confidence: 1,
+                source_entity_urn: itemUrn,
+                observed_at: null,
+                lineage_level: 'COLUMN',
+                transformation_query: fine.query || null,
+                lineage_observations: [observation],
+              },
+            })
+          }
+        }
+      }
     }
+    nodes.push(...columnNodeMap.values())
+    edges.push(...edgeMap.values())
     edges.sort((a, b) => a.source_asset_id.localeCompare(b.source_asset_id) || a.target_asset_id.localeCompare(b.target_asset_id))
-    return { authority_pin: authorityPin, direction: 'BOTH', depth: 1, truncated: false, completeness_metadata, nodes, edges }
+    return {
+      authority_pin: authorityPin,
+      direction: 'BOTH',
+      depth: 1,
+      truncated: false,
+      completeness_metadata,
+      nodes,
+      column_nodes: [...columnNodeMap.values()],
+      edges,
+    }
   }
 
   async function collectGlossaryInventorySeam(authorityPin, inventory) {
@@ -9570,15 +10132,77 @@ export async function startPocServer({ stateStore } = {}) {
     const table_nodes = []
     const column_nodes = []
     const table_column_edges = []
+    const tags = new Map()
+    const domains = new Map()
+    const containers = new Map()
+    const platform_instances = new Map()
+    const table_tag_assignments = []
+    const column_tag_assignments = []
+    const table_domain_assignments = []
+    const table_container_assignments = []
+    const table_platform_instance_assignments = []
+    const metadataAssignmentSet = new Set()
+
+    const registerMetadataAssignment = (collection, sourceId, targetId) => {
+      const key = `${sourceId}->${targetId}`
+      if (metadataAssignmentSet.has(key)) return
+      metadataAssignmentSet.add(key)
+      collection.push({ source_id: sourceId, target_id: targetId })
+    }
+
+    const registerTag = (reference) => {
+      if (!reference?.urn || !reference?.name) return null
+      const existing = tags.get(reference.urn)
+      const value = {
+        urn: reference.urn,
+        name: reference.name,
+        description: reference.description || '',
+      }
+      if (existing && canonicalJson(existing) !== canonicalJson(value)) {
+        throw new Error('Conflicting DataHub Tag identity: ' + reference.urn)
+      }
+      tags.set(reference.urn, value)
+      return reference.urn
+    }
+
     for (const item of inventory) {
       const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
       if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
       const tableId = `TABLE:${k9AssetUrn(item)}`
       table_nodes.push({ id: tableId, classification, properties: k9MetadataProperties(item) })
+      for (const reference of item.tag_references || []) {
+        const tagId = registerTag(reference)
+        if (tagId) registerMetadataAssignment(table_tag_assignments, tableId, tagId)
+      }
+      if (item.domain_reference?.urn) {
+        domains.set(item.domain_reference.urn, item.domain_reference)
+        registerMetadataAssignment(table_domain_assignments, tableId, item.domain_reference.urn)
+      }
+      if (item.container_reference?.urn) {
+        containers.set(item.container_reference.urn, item.container_reference)
+        registerMetadataAssignment(table_container_assignments, tableId, item.container_reference.urn)
+      }
+      if (item.platform_instance_reference?.urn) {
+        platform_instances.set(item.platform_instance_reference.urn, item.platform_instance_reference)
+        registerMetadataAssignment(
+          table_platform_instance_assignments,
+          tableId,
+          item.platform_instance_reference.urn,
+        )
+      }
       for (const field of datahubSchemaFields(item)) {
         const columnId = `COLUMN:${k9AssetUrn(item)}:${field.fieldPath}`
         column_nodes.push({ id: columnId, classification, properties: k9MetadataProperties(item, field) })
         table_column_edges.push({ table_id: tableId, column_id: columnId })
+        for (const candidate of field.globalTags?.tags || []) {
+          const tag = candidate?.tag
+          const tagId = registerTag({
+            urn: tag?.urn,
+            name: tag?.properties?.name || tag?.name,
+            description: tag?.properties?.description || '',
+          })
+          if (tagId) registerMetadataAssignment(column_tag_assignments, columnId, tagId)
+        }
       }
     }
     let nextScrollId = null
@@ -9589,6 +10213,7 @@ export async function startPocServer({ stateStore } = {}) {
     const parent_nodes = []
     const term_parent_edges = []
     const node_parent_edges = []
+    const glossary_relationships = []
     const table_assignments = []
     const column_assignments = []
     const termSet = new Set()
@@ -9596,9 +10221,36 @@ export async function startPocServer({ stateStore } = {}) {
     const assignmentSet = new Set()
     const termParentEdgeSet = new Set()
     const nodeParentEdgeSet = new Set()
+    const glossaryRelationshipSet = new Set()
     const assignmentTotals = new Map()
     const completeness_metadata = { fetched: 0, total: 0, per_assignment: {} }
     let lastTotal = -1
+
+    const explicitOutgoingRelationships = async (entity) => {
+      const first = entity.outgoingRelationships
+      const total = Number(first?.total || 0)
+      if (!Number.isSafeInteger(total) || total < 0) throw new Error('Malformed glossary relationship total')
+      const relationships = [...(first?.relationships || [])]
+      let start = relationships.length
+      while (start < total) {
+        const data = await datahubGraphql(datahubEntityRelationshipsQuery, {
+          urn: entity.urn,
+          input: {
+            types: [], direction: 'OUTGOING', start, count: 100, includeSoftDelete: false,
+          },
+        }, 60_000, serverBackgroundAbortController?.signal)
+        const page = data.entity?.relationships
+        if (!page || Number(page.total) !== total || Number(page.start) !== start) {
+          throw new Error('Glossary relationship pagination changed during collection')
+        }
+        const items = page.relationships || []
+        if (!items.length) throw new Error('Glossary relationship pagination ended before total')
+        relationships.push(...items)
+        start += items.length
+      }
+      if (relationships.length !== total) throw new Error('Glossary relationship completeness reconciliation failed')
+      return relationships
+    }
 
     while (true) {
       if (pages >= 10002) throw new Error('Exceeded glossary inventory page limit')
@@ -9621,7 +10273,22 @@ export async function startPocServer({ stateStore } = {}) {
         if (entity.type === 'GLOSSARY_TERM') {
           if (termSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
           termSet.add(entity.urn)
-          terms.push({ urn: entity.urn, name: entity.properties?.name || '', description: entity.properties?.description || '' })
+          const termInfo = entity.glossaryTermInfo || entity.properties || {}
+          terms.push({
+            urn: entity.urn,
+            name: termInfo.name || entity.properties?.name || '',
+            description: termInfo.description || entity.properties?.description || '',
+            term_source: termInfo.termSource || entity.properties?.termSource || null,
+            source_ref: termInfo.sourceRef || entity.properties?.sourceRef || null,
+            source_url: termInfo.sourceUrl || entity.properties?.sourceUrl || null,
+            custom_properties: customPropertyReferences(termInfo),
+            structured_properties: structuredPropertyReferences(entity.structuredProperties),
+            domain_reference: entity.domain?.domain?.urn ? {
+              urn: entity.domain.domain.urn,
+              name: entity.domain.domain.properties?.name || urnTail(entity.domain.domain.urn),
+              description: entity.domain.domain.properties?.description || '',
+            } : null,
+          })
           const tableTotal = Number(entity.tableAssignments?.total)
           const columnTotal = Number(entity.columnAssignments?.total)
           if (!Number.isSafeInteger(tableTotal) || tableTotal < 0
@@ -9635,15 +10302,49 @@ export async function startPocServer({ stateStore } = {}) {
             termParentEdgeSet.add(edgeKey)
             term_parent_edges.push({ term_urn: entity.urn, parent_urn: pn.urn })
           }
+          for (const relationship of await explicitOutgoingRelationships(entity)) {
+            if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
+              || typeof relationship.entity?.urn !== 'string') continue
+            const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
+            if (glossaryRelationshipSet.has(relationKey)) continue
+            glossaryRelationshipSet.add(relationKey)
+            glossary_relationships.push({
+              source_urn: entity.urn,
+              target_urn: relationship.entity.urn,
+              source_type: entity.type,
+              target_type: relationship.entity.type,
+              relationship_type: relationship.type,
+            })
+          }
         } else if (entity.type === 'GLOSSARY_NODE') {
           if (nodeSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
           nodeSet.add(entity.urn)
-          parent_nodes.push({ urn: entity.urn, name: entity.properties?.name || '', description: entity.properties?.description || '' })
+          parent_nodes.push({
+            urn: entity.urn,
+            name: entity.properties?.name || '',
+            description: entity.properties?.description || '',
+            custom_properties: customPropertyReferences(entity.properties),
+            structured_properties: structuredPropertyReferences(entity.structuredProperties),
+          })
           for (const pn of entity.parentNodes?.nodes || []) {
             const edgeKey = entity.urn + '->' + pn.urn
             if (nodeParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical node-parent edge: ' + edgeKey)
             nodeParentEdgeSet.add(edgeKey)
             node_parent_edges.push({ child_urn: entity.urn, parent_urn: pn.urn })
+          }
+          for (const relationship of await explicitOutgoingRelationships(entity)) {
+            if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
+              || typeof relationship.entity?.urn !== 'string') continue
+            const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
+            if (glossaryRelationshipSet.has(relationKey)) continue
+            glossaryRelationshipSet.add(relationKey)
+            glossary_relationships.push({
+              source_urn: entity.urn,
+              target_urn: relationship.entity.urn,
+              source_type: entity.type,
+              target_type: relationship.entity.type,
+              relationship_type: relationship.type,
+            })
           }
         }
       }
@@ -9720,6 +10421,16 @@ export async function startPocServer({ stateStore } = {}) {
       column_assignments,
       term_parent_edges,
       node_parent_edges,
+      glossary_relationships,
+      tags: [...tags.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
+      domains: [...domains.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
+      containers: [...containers.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
+      platform_instances: [...platform_instances.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
+      table_tag_assignments,
+      column_tag_assignments,
+      table_domain_assignments,
+      table_container_assignments,
+      table_platform_instance_assignments,
     }
   }
 
@@ -9759,8 +10470,8 @@ export async function startPocServer({ stateStore } = {}) {
         subject_id: k9SubjectId,
         workspace_id: k9WorkspaceId,
         classification_ceiling: k9SchedulerConfig.classificationCeiling,
-        projection_version: 1,
-        policy_version: 'POC_LIVE_PROVIDER_V1',
+        projection_version: 2,
+        policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
         classification_policy_version: 1,
         authorization_generation: 1
       }
@@ -9779,11 +10490,32 @@ export async function startPocServer({ stateStore } = {}) {
         // provider scrolls and so a second scan cannot time out after Lineage
         // has already completed.
         const inventory = await currentDatahubInventory()
-        lr = await k9.triggerLineagePublish(liveAuth, async () => collectLineageInventorySeam(liveAuth.authorityPin, inventory))
+        const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+          collectLineageInventorySeam(liveAuth.authorityPin, inventory),
+          collectGlossaryInventorySeam(liveAuth.authorityPin, inventory),
+          datahubRuntimeIdentity(),
+        ])
+        const semanticIndex = await ensureCatalogEmbeddingIndex(serverBackgroundAbortController?.signal)
+        const sourceSnapshot = buildDatahubKnowledgeSourceSnapshot({
+          inventoryProjection: inventorySnapshot?.projection,
+          datahubIdentity,
+          lineageSource,
+          metadataSource,
+          semanticIndex,
+        })
+        lineageSource.source_snapshot = sourceSnapshot
+        metadataSource.source_snapshot = sourceSnapshot
+        lr = await k9.triggerLineagePublish(liveAuth, async () => lineageSource)
         if (lr.status === 'FAILURE') return { status: 'FAILURE', reason: lr.reason, lineage: lr }
-        gr = await k9.triggerGlossaryPublish(liveAuth, async () => collectGlossaryInventorySeam(liveAuth.authorityPin, inventory))
+        gr = await k9.triggerGlossaryPublish(liveAuth, async () => metadataSource)
         if (gr.status === 'FAILURE') return { status: 'FAILURE', reason: gr.reason, lineage: lr, glossary: gr }
-        return { status: 'SUCCESS', lineage: lr, glossary: gr }
+        return {
+          status: 'SUCCESS',
+          source_snapshot: sourceSnapshot,
+          semantic_index: semanticIndex,
+          lineage: lr,
+          glossary: gr,
+        }
       } catch (error) {
         return { status: 'FAILURE', reason: error instanceof Error ? error.message : String(error), lineage: lr, glossary: gr }
       }
@@ -9841,6 +10573,7 @@ export async function startPocServer({ stateStore } = {}) {
     return stopping
   }
   server.triggerChangeHistoryScheduler = (scheduledFor) => scheduler.triggerManual(scheduledFor)
+  server.triggerK9Scheduler = (scheduledFor) => k9Scheduler.triggerManual(scheduledFor)
   server.on('close', () => { void server.stopPoc() })
   return server
 }

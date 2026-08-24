@@ -1181,3 +1181,25 @@ partition time, with foreign keys and late events designed explicitly, at least 
 prepared and the default partition alerted. Automatic deletion and partition detach/drop remain
 `DISABLED_NOT_READY` until approved policy, Legal Hold, maker-checker erasure, verified immutable
 archive and restore evidence are all present.
+
+## DataHub-managed Knowledge projection V2 (DEV/Product)
+
+ADR-0130 refines the isolated POC managed graph model without changing the canonical Knowledge
+Studio aggregates. DataHub Dataset, Schema Field, Glossary Term/Group, Tag, Domain, Container and
+Platform Instance URNs are the provider identities. The managed Metadata Master uses typed hub
+relations (`CONTAINS_COLUMN`, assigned Term/Tag, Domain, Container and Platform Instance) and never
+materializes Table-to-Table cliques for shared metadata. Description and documentation are node
+properties and semantic documents, not token nodes.
+
+Every managed relation stores the DataHub source/aspect, explicit-or-inferred classification,
+confidence, source entity, provider audit time when present, projection model version and shared
+source snapshot ID. Explicit aliases and units can come from canonical custom/structured metadata;
+deterministic normalized aliases and bounded unit candidates retain derivation evidence and are not
+written back to DataHub. No business-domain vocabulary is part of the projection contract.
+
+Default Lineage projects the supported DataHub Dataset and fine-grained Schema Field lineage APIs.
+The relation retains provider type, audit actors/times, manual flag, degree, lineage paths and
+transformation evidence when provided. PostgreSQL remains the policy/run/active-pointer authority;
+each new Neo4j namespace is read-back/hash validated before atomic pointer promotion, and failure
+preserves the prior active release. The Catalog embedding active generation is fenced to the same
+DataHub Catalog generation before either managed projection can publish.

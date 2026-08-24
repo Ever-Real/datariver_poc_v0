@@ -51,6 +51,12 @@ function versionKindLabel(kind: KnowledgeAssetVersionHistoryItem['kind']): strin
   return labels[kind]
 }
 
+function countRecordLabel(value: Record<string, number> | undefined): string {
+  if (!value) return '—'
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+  return entries.length ? entries.map(([name, count]) => `${name}: ${count}`).join(' · ') : '—'
+}
+
 export function KnowledgeRegistry({
   client,
   onCreate,
@@ -682,6 +688,89 @@ export function KnowledgeRegistry({
                       <dt className="text-[10px] font-black text-slate-500">Semantic / Vector Index</dt>
                       <dd className="m-0">{selected.semantic_index_status ?? 'PENDING'}</dd>
                     </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Graph Model</dt>
+                      <dd className="m-0">v{selected.graph_model_version ?? 1}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Source Snapshot</dt>
+                      <dd className="m-0 break-all">{selected.source_snapshot_id ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Snapshot Observed</dt>
+                      <dd className="m-0">{localTime(selected.source_snapshot_observed_at ?? undefined)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Active Projection</dt>
+                      <dd className="m-0 break-all">{selected.active_projection ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">DataHub Source</dt>
+                      <dd className="m-0 break-all">
+                        {selected.source_datahub_version ?? '—'}{selected.source_datahub_commit ? ` / ${selected.source_datahub_commit}` : ''}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-black text-slate-500">Semantic Generation</dt>
+                      <dd className="m-0 break-all">{selected.semantic_index_generation ?? '—'}</dd>
+                    </div>
+                    {selected.lineage_source && (
+                      <div className="col-span-2 md:col-span-3">
+                        <dt className="text-[10px] font-black text-slate-500">Lineage Source</dt>
+                        <dd className="m-0">{selected.lineage_source}</dd>
+                      </div>
+                    )}
+                    {selected.quality_metrics && (
+                      <>
+                        <div className="col-span-2 md:col-span-3">
+                          <dt className="text-[10px] font-black text-slate-500">Nodes by Type</dt>
+                          <dd className="m-0 break-words">{countRecordLabel(selected.quality_metrics.entity_count_by_type)}</dd>
+                        </div>
+                        <div className="col-span-2 md:col-span-3">
+                          <dt className="text-[10px] font-black text-slate-500">Edges by Type</dt>
+                          <dd className="m-0 break-words">{countRecordLabel(selected.quality_metrics.relation_count_by_type)}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Explicit / Inferred</dt>
+                          <dd className="m-0">{selected.quality_metrics.explicit_edge_count} / {selected.quality_metrics.inferred_edge_count}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Units Explicit / Candidate</dt>
+                          <dd className="m-0">{selected.quality_metrics.unit_explicit_count} / {selected.quality_metrics.unit_inferred_count}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Duplicate Nodes / Edges</dt>
+                          <dd className="m-0">{selected.quality_metrics.duplicate_node_count} / {selected.quality_metrics.duplicate_edge_count}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Orphans / Pairwise Cliques</dt>
+                          <dd className="m-0">{selected.quality_metrics.orphan_node_count} / {selected.quality_metrics.pairwise_clique_count}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Average / Maximum Degree</dt>
+                          <dd className="m-0">{selected.quality_metrics.average_degree} / {selected.quality_metrics.maximum_degree}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-black text-slate-500">Lineage Table / Column Edges</dt>
+                          <dd className="m-0">{selected.quality_metrics.lineage_table_edge_count} / {selected.quality_metrics.lineage_column_edge_count}</dd>
+                        </div>
+                        {selected.quality_metrics.reconciliation && (
+                          <div className="col-span-2 md:col-span-3">
+                            <dt className="text-[10px] font-black text-slate-500">Snapshot Diff · Added / Removed / Changed</dt>
+                            <dd className="m-0">
+                              Nodes {selected.quality_metrics.reconciliation.nodes.added} / {selected.quality_metrics.reconciliation.nodes.removed} / {selected.quality_metrics.reconciliation.nodes.changed}
+                              {' · '}Edges {selected.quality_metrics.reconciliation.edges.added} / {selected.quality_metrics.reconciliation.edges.removed} / {selected.quality_metrics.reconciliation.edges.changed}
+                            </dd>
+                          </div>
+                        )}
+                        <div className="col-span-2 md:col-span-3">
+                          <dt className="text-[10px] font-black text-slate-500">Inference Evidence</dt>
+                          <dd className="m-0">
+                            Inferred relations retain extraction method, confidence and source text in graph relation detail.
+                          </dd>
+                        </div>
+                      </>
+                    )}
                     <div className="col-span-2 md:col-span-3">
                       <dt className="text-[10px] font-black text-slate-500">Semantic Capabilities</dt>
                       <dd className="m-0">{selected.semantic_capabilities?.join(', ') || '—'}</dd>

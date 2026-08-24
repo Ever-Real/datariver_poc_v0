@@ -1756,6 +1756,27 @@ governed source-analysis jobs, a K9 management UI, or actual PREP/OPS deployment
 and Managed Glossary runtime acceptance comes from the isolated target simulation and the immutable
 K9 runtime evidence, not an invented HTTP route.
 
+### KG2 DataHub semantic-model V2 gate
+
+KG2 first records the exact DataHub version and supported GraphQL/OpenAPI aspects, current active
+manifests, Neo4j namespaces, Catalog embedding generations and before-model quality metrics. Mapper
+tests then prove deterministic Dataset/View/Column identity, direct Glossary hierarchy, typed
+Term/Tag/Domain hubs, no pairwise clique, complete relation provenance, explicit versus inferred
+unit evidence, fine-grained lineage, duplicate/dangling rejection and source-snapshot determinism.
+
+One bounded runtime refresh must bind Default Lineage, Metadata Master and the semantic index to the
+same Catalog generation. It must verify staging read-back, hashes/counts, active pointer promotion,
+failed-stage cleanup and prior-release preservation before UI acceptance. Quality evidence includes
+counts by entity/relation type, explicit/inferred, duplicate/orphan, degree/top hubs, unit and
+Table/Column lineage coverage. An authorization negative uses one shared semantic hub and proves the
+denied Table identity, edge and existence are absent from native, browser and MCP payloads.
+
+Because KG2 changes retrieval evidence, the final exact Product runs GENERAL 20, VECTOR 20, GRAPH
+20 and Boundary 8 once after focused correction. Route, resolution, retrieval, grounding, actual
+traversal, provenance and authorization are separate assertions. `scripts/verify_static.py` scans
+the production Knowledge projection/router sources and must report no business-domain vocabulary,
+synonym dictionary, graph-keyword table or question-route map.
+
 ## Release gate
 
 CI success alone is insufficient. The acceptance report records commit/image digest, environment, dataset, commands, machine-readable reports, reviewer, exceptions and expiry. Image scanners run only in an isolated CI/release runner; never grant a third-party scanner a developer Docker socket merely to produce local evidence. Release is blocked by failed functional/ABAC/migration/recovery gates or unresolved Critical/High security findings. Performance variance is a documented block unless the acceptance owner approves a time-bounded exception with mitigation.

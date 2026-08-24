@@ -8168,6 +8168,38 @@ def verify_document_links() -> None:
                 raise AssertionError(f"broken local link in {path.relative_to(ROOT)}: {target}")
 
 
+def verify_domain_independent_knowledge_projection() -> None:
+    production_files = (
+        ROOT / "frontend" / "poc-server.mjs",
+        ROOT / "frontend" / "poc-k9-managed-graphs.mjs",
+        ROOT / "frontend" / "poc-knowledge-k9-contracts.mjs",
+    )
+    domain_vocabulary = re.compile(
+        r"(?iu)(?:\bsemiconductor\b|\bwafer\b|\byield\b|\bfab\b|\blot\b|"
+        r"\bcmp\b|\betching\b|\bphotolithography\b|반도체|웨이퍼|수율)"
+    )
+    forbidden_router_contracts = (
+        re.compile(r"(?i)\bSYNONYMS?\s*="),
+        re.compile(r"(?i)\bGRAPH_KEYWORDS?\b"),
+        re.compile(r"(?i)\bQUESTION_(?:ID_)?ROUTE_MAP\b"),
+    )
+    for path in production_files:
+        source = path.read_text(encoding="utf-8")
+        match = domain_vocabulary.search(source)
+        if match:
+            raise AssertionError(
+                "domain-specific production knowledge logic found in "
+                f"{path.relative_to(ROOT)}: {match.group(0)}"
+            )
+        for pattern in forbidden_router_contracts:
+            match = pattern.search(source)
+            if match:
+                raise AssertionError(
+                    "hardcoded semantic/router dictionary found in "
+                    f"{path.relative_to(ROOT)}: {match.group(0)}"
+                )
+
+
 def main() -> None:
     verify_compose()
     verify_datahub_mac_capacity_contract()
@@ -8194,6 +8226,7 @@ def main() -> None:
     verify_gateway_auth_parity_fixture_contract()
     verify_governed_persistent_data_bind_probe_contract()
     verify_mac_level2_core_publication_contract()
+    verify_domain_independent_knowledge_projection()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
@@ -8201,7 +8234,7 @@ def main() -> None:
         "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
         "database roles, architecture, source integrity, tenant foreign keys, seed, "
-        "amd64 source readiness, documentation"
+        "amd64 source readiness, domain-independent knowledge projection, documentation"
     )
 
 

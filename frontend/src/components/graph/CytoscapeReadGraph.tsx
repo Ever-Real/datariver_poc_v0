@@ -208,6 +208,12 @@ function selectedDescription(node?: ReadGraphNode, edge?: ReadGraphEdge): string
   return '선택된 그래프 요소가 없습니다.'
 }
 
+function graphDetailValue(value: unknown): string {
+  const rendered = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!rendered) return '—'
+  return rendered.length <= 500 ? rendered : `${rendered.slice(0, 497)}…`
+}
+
 function directionForRole(role: ReadGraphRole | undefined): CytoscapeExpansionDirection | undefined {
   return role === 'UPSTREAM' || role === 'DOWNSTREAM' ? role : undefined
 }
@@ -652,6 +658,10 @@ export function CytoscapeReadGraph({
 
   const selectedNode = graph.nodes.find((node) => node.id === internalSelectedId)
   const selectedEdge = graph.edges.find((edge) => edge.id === internalSelectedId)
+  const selectedProperties = Object.entries(selectedNode?.properties ?? selectedEdge?.properties ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 24)
+  const selectedProvenance = (selectedNode?.provenance ?? selectedEdge?.provenance ?? []).slice(0, 12)
   const visibleError = errorMessage || adapted.error || layoutError
   const entityTypes = [...new Set(graph.nodes.map((node) => node.entityType))].sort().slice(0, 8)
   const selectedDirection = directionForRole(selectedNode?.role) ?? directionContext
@@ -736,6 +746,18 @@ export function CytoscapeReadGraph({
           {selectedEdge && <div><dt>Path</dt><dd>{selectedEdge.source} → {selectedEdge.target}</dd></div>}
           <div><dt>Provenance</dt><dd>{selectedNode?.provenance.length ?? selectedEdge?.provenance.length ?? 0} records</dd></div>
         </dl>}
+        {selectedProperties.length > 0 && <details>
+          <summary>Properties · {selectedProperties.length}</summary>
+          <dl>{selectedProperties.map(([name, value]) => (
+            <div key={name}><dt>{name}</dt><dd>{graphDetailValue(value)}</dd></div>
+          ))}</dl>
+        </details>}
+        {selectedProvenance.length > 0 && <details>
+          <summary>Provenance evidence · {selectedProvenance.length}</summary>
+          <ol>{selectedProvenance.map((record, index) => (
+            <li key={index}>{graphDetailValue(record)}</li>
+          ))}</ol>
+        </details>}
         {selectedNode && onActivateNode && <button type="button" onClick={() => onActivateNode(selectedNode.id)}>선택 entity 상세 열기</button>}
       </article>
     </section>

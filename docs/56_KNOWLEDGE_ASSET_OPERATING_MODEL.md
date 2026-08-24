@@ -102,3 +102,18 @@ Chat의 의미 라우터는 GRAPH 여부만 판단한다. 이후 Delivery Policy
 
 이 항목은 UI success 상태로 가장하지 않으며, capability가 없으면 명시적으로 unavailable
 또는 NOT_RUN으로 표시한다.
+
+## 7. DataHub-managed read projection V2
+
+Default Lineage와 Metadata Master는 Studio authoring Asset을 대체하지 않는 system-managed
+read projection이다. 동일한 canonical graph UUID를 유지하면서 DataHub snapshot에서 typed
+metadata/lineage를 staging namespace에 재구축하고, 검증 후 PostgreSQL active pointer만
+원자적으로 전환한다. Studio Draft, T-Box/A-Box editor, validation과 release authoring은 이
+refresh가 수정하지 않는다.
+
+관리 Asset detail은 관리자가 graph model version, DataHub source snapshot/version, active
+projection, semantic generation, node/edge type별 수, explicit/inferred, duplicate/orphan,
+degree, unit 및 Table/Column lineage coverage를 확인할 수 있게 한다. Cytoscape의 selected
+relation DOM detail은 confidence, extraction method, source aspect/text와 provenance를 제공한다.
+일반 사용자의 bounded graph payload는 request-time Table authorization 이후 생성되므로 공유
+Term/Tag/Domain을 통해 denied Dataset의 이름, edge, count 또는 존재 여부가 전달되지 않는다.

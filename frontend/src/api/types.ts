@@ -1085,6 +1085,33 @@ export interface KnowledgeDeliveryPolicy {
   updated_at: string
 }
 
+export interface KnowledgeGraphQualityMetrics {
+  entity_count_by_type: Record<string, number>
+  relation_count_by_type: Record<string, number>
+  explicit_edge_count: number
+  inferred_edge_count: number
+  orphan_node_count: number
+  duplicate_node_count: number
+  duplicate_edge_count: number
+  average_degree: number
+  maximum_degree: number
+  top_hubs: Array<{ id: string; degree: number; type: string | null }>
+  pairwise_clique_count: number
+  semantic_candidate_count: number
+  unit_explicit_count: number
+  unit_inferred_count: number
+  lineage_table_edge_count: number
+  lineage_column_edge_count: number
+  source_coverage?: Record<string, number>
+  reconciliation?: {
+    baseline_available: boolean
+    nodes: { added: number; removed: number; changed: number }
+    edges: { added: number; removed: number; changed: number }
+    stale_entity_count: number
+    previous_source_snapshot_id: string | null
+  }
+}
+
 export interface KnowledgeAssetSummary {
   id: string
   draft_id?: string
@@ -1128,6 +1155,18 @@ export interface KnowledgeAssetSummary {
   last_result?: string
   last_error_code?: string | null
   semantic_index_status?: 'READY' | 'PENDING' | 'UNAVAILABLE'
+  semantic_index_contract?: string | null
+  semantic_index_generation?: string | null
+  semantic_index_binding_hash?: string | null
+  graph_model_version?: number
+  source_snapshot_id?: string | null
+  source_snapshot_observed_at?: string | null
+  source_catalog_generation?: string | null
+  source_datahub_version?: string | null
+  source_datahub_commit?: string | null
+  active_projection?: string | null
+  lineage_source?: string | null
+  quality_metrics?: KnowledgeGraphQualityMetrics | null
   supported_intents?: string[]
   semantic_capabilities?: string[]
   supported_entity_types?: string[]

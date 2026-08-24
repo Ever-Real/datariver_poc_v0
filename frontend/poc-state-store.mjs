@@ -1512,6 +1512,61 @@ export function createPocStateStore({ databasePool } = {}) {
     })
   }
 
+  async function pruneInactiveCatalogEmbeddingBindings(activeBindingHash) {
+    const bindingHash = requireSha256(activeBindingHash, 'activeBindingHash')
+    await startDatabase()
+    const activeScope = catalogEmbeddingActiveScope(bindingHash)
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const active = await client.query(
+          'SELECT value FROM poc_state WHERE scope = $1 FOR UPDATE',
+          [activeScope],
+        )
+        const value = active.rows[0]?.value
+        if (value?.projection_version !== 1 || value.binding_hash !== bindingHash
+          || typeof value.source_generation !== 'string') {
+          throw new Error('Inactive Catalog Embedding bindings cannot be pruned before the requested binding is active.')
+        }
+        const rows = await client.query(
+          'DELETE FROM poc_catalog_embedding WHERE binding_hash <> $1',
+          [bindingHash],
+        )
+        const pointers = await client.query(`
+          DELETE FROM poc_state
+          WHERE scope LIKE 'catalog-embedding-active-v1:%'
+            AND scope <> $1
+        `, [activeScope])
+        await client.query('COMMIT')
+        return { embedding_rows: rows.rowCount || 0, active_pointers: pointers.rowCount || 0 }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const active = memory.get(activeScope)?.value
+    if (active?.projection_version !== 1 || active.binding_hash !== bindingHash
+      || typeof active.source_generation !== 'string') {
+      throw new Error('Inactive Catalog Embedding bindings cannot be pruned before the requested binding is active.')
+    }
+    let embeddingRows = 0
+    for (const [key, record] of memoryCatalogEmbeddings) {
+      if (record.bindingHash === bindingHash) continue
+      memoryCatalogEmbeddings.delete(key)
+      embeddingRows += 1
+    }
+    let activePointers = 0
+    for (const scope of memory.keys()) {
+      if (!scope.startsWith('catalog-embedding-active-v1:') || scope === activeScope) continue
+      memory.delete(scope)
+      activePointers += 1
+    }
+    return { embedding_rows: embeddingRows, active_pointers: activePointers }
+  }
+
   async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit, allowedUrnsScope) {
     if (allowedUrnsScope !== 'ADMIN_UNRESTRICTED' && (!allowedUrnsScope || allowedUrnsScope.size === 0)) return []
     await startDatabase()
@@ -2595,6 +2650,7 @@ export function createPocStateStore({ databasePool } = {}) {
     catalogEmbeddingProfileCoverage,
     catalogEmbeddingActiveGeneration,
     replaceCatalogEmbeddingGeneration,
+    pruneInactiveCatalogEmbeddingBindings,
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
     readChangeHistoryProjection,

@@ -143,6 +143,28 @@ describe('CytoscapeReadGraph', () => {
     expect(screen.getByTestId('cytoscape-metrics')).toHaveTextContent('layout')
   })
 
+  it('exposes selected relation inference and provenance evidence through DOM detail', () => {
+    const evidenceGraph: ReadGraphModel = {
+      ...graph,
+      edges: [{
+        ...graph.edges[0]!,
+        properties: {
+          explicit_or_inferred: 'INFERRED',
+          confidence: 0.75,
+          extraction_method: 'GENERIC_UNIT_MARKER',
+        },
+        provenance: [{ source: 'DataHub', source_aspect: 'structuredProperties' }],
+      }],
+    }
+    render(<CytoscapeReadGraph ariaLabel="Evidence" graph={evidenceGraph} selectedElementId="edge-a-b" />)
+    const detail = screen.getByLabelText('선택한 그래프 요소 상세')
+    expect(detail).toHaveTextContent('Properties · 3')
+    expect(detail).toHaveTextContent('Provenance evidence · 1')
+    expect(detail).toHaveTextContent('confidence')
+    expect(detail).toHaveTextContent('GENERIC_UNIT_MARKER')
+    expect(detail).toHaveTextContent('structuredProperties')
+  })
+
   it('keeps empty and query-failure states distinct from a rendered graph', () => {
     const { rerender } = render(<CytoscapeReadGraph ariaLabel="Empty" graph={{ kind: 'SEMANTIC', nodes: [], edges: [] }} emptyTitle="인가된 graph가 없습니다." />)
     expect(screen.getByText('인가된 graph가 없습니다.')).toBeInTheDocument()

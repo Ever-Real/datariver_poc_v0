@@ -1,4 +1,4 @@
-/* global console, process */
+/* global console, process, structuredClone */
 import { randomUUID } from 'crypto'
 import {
   computeSha256,
@@ -13,6 +13,241 @@ import {
 
 const INTERNAL_CLASSIFICATION = 'INTERNAL'
 const NEO4J_WRITE_BATCH_SIZE = 500
+export const KG2_MODEL_VERSION = 2
+const KG2_PROJECTION_VERSION = 2
+
+function hasForbiddenControlCharacters(value) {
+  return [...String(value)].some((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint <= 0x1f || codePoint === 0x7f
+  })
+}
+
+function canonicalDatahubUrn(value, entityType) {
+  return typeof value === 'string'
+    && value.startsWith(`urn:li:${entityType}:`)
+    && value.length <= 4096
+    && !hasForbiddenControlCharacters(value)
+    && !/\s/u.test(value)
+}
+
+function sourceTimestamp(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    const date = new Date(value < 10_000_000_000 ? value * 1_000 : value)
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const date = new Date(value.trim())
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null
+  }
+  return null
+}
+
+function relationEvidence(sourceData, sourceAspect, sourceEntityUrn, overrides = {}) {
+  const snapshot = sourceData?.source_snapshot
+  return {
+    source: 'DataHub',
+    source_aspect: sourceAspect,
+    explicit_or_inferred: 'EXPLICIT',
+    confidence: 1,
+    observed_at: null,
+    source_entity_urn: sourceEntityUrn,
+    projection_version: KG2_PROJECTION_VERSION,
+    source_snapshot_id: snapshot?.source_snapshot_id || null,
+    ...overrides,
+  }
+}
+
+function normalizedAlias(value) {
+  return typeof value === 'string'
+    ? value.normalize('NFKC').trim().toLocaleLowerCase().replace(/[._-]+/gu, ' ').replace(/\s+/gu, ' ')
+    : ''
+}
+
+function aliasMetadataKey(value) {
+  const key = normalizedAlias(value).replaceAll(' ', '_')
+  return ['alias', 'aliases', 'synonym', 'synonyms', 'alternative_label', 'alternative_labels'].includes(key)
+    || key.endsWith('_alias')
+    || key.endsWith('_aliases')
+}
+
+function explicitAliasValues(value) {
+  if (typeof value !== 'string') return []
+  return value.split(/[,;|\n]/u)
+    .map((item) => item.normalize('NFKC').trim())
+    .filter((item) => item && item.length <= 255 && !hasForbiddenControlCharacters(item))
+}
+
+function semanticNodeProperties(properties, sourceData, sourceAspects) {
+  const value = properties && typeof properties === 'object' && !Array.isArray(properties)
+    ? structuredClone(properties)
+    : {}
+  const aliasEvidence = new Map()
+  const addAlias = (alias, evidence) => {
+    const normalized = normalizedAlias(alias)
+    if (!normalized) return
+    const current = aliasEvidence.get(normalized)
+    if (!current || evidence.explicit || evidence.confidence > current.confidence) {
+      aliasEvidence.set(normalized, { value: alias, normalized_value: normalized, ...evidence })
+    }
+  }
+  for (const alias of [value.name, value.business_name, value.qualified_name]) {
+    addAlias(alias, { explicit: false, confidence: 1, source_aspect: 'NORMALIZED_NAME' })
+  }
+  for (const item of value.custom_properties || []) {
+    if (!aliasMetadataKey(item?.key)) continue
+    for (const alias of explicitAliasValues(item.value)) {
+      addAlias(alias, { explicit: true, confidence: 1, source_aspect: 'customProperties' })
+    }
+  }
+  for (const item of value.structured_properties || []) {
+    if (!aliasMetadataKey(item?.qualified_name) && !aliasMetadataKey(item?.display_name)) continue
+    for (const candidate of item.values || []) {
+      for (const alias of explicitAliasValues(String(candidate))) {
+        addAlias(alias, { explicit: true, confidence: 1, source_aspect: 'structuredProperties' })
+      }
+    }
+  }
+  const aliases = [...aliasEvidence.keys()].sort()
+  if (aliases.length) value.aliases = aliases
+  if (aliasEvidence.size) {
+    value.alias_evidence = [...aliasEvidence.values()]
+      .sort((left, right) => left.normalized_value.localeCompare(right.normalized_value))
+  }
+  value.source = 'DataHub'
+  value.source_aspects = [...new Set(sourceAspects)].sort()
+  value.projection_version = KG2_PROJECTION_VERSION
+  value.source_snapshot_id = sourceData?.source_snapshot?.source_snapshot_id || null
+  return value
+}
+
+function datasetEntityType(properties) {
+  const kind = String(properties?.dataset_kind || '').toUpperCase()
+  if (kind === 'VIEW' || kind === 'MATERIALIZED_VIEW') return 'class.view'
+  if (kind === 'TABLE') return 'class.table'
+  return 'class.dataset'
+}
+
+function unitMetadataKey(value) {
+  const key = normalizedAlias(value).replaceAll(' ', '_')
+  const qualifiedTail = String(value || '').split(/[.:/]/u).at(-1)
+  const tail = normalizedAlias(qualifiedTail).replaceAll(' ', '_')
+  return ['unit', 'uom', 'unit_of_measure', 'measurement_unit'].includes(key)
+    || ['unit', 'uom', 'unit_of_measure', 'measurement_unit'].includes(tail)
+    || key.endsWith('_unit_of_measure')
+    || key.endsWith('_measurement_unit')
+}
+
+function normalizedUnitValue(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return ''
+  const normalized = String(value).normalize('NFKC').trim()
+  return normalized && normalized.length <= 64 && !hasForbiddenControlCharacters(normalized)
+    ? normalized
+    : ''
+}
+
+function unitCandidates(properties) {
+  const candidates = new Map()
+  const add = (value, evidence) => {
+    const display = normalizedUnitValue(value)
+    if (!display) return
+    const key = display.toLocaleLowerCase()
+    const existing = candidates.get(key)
+    if (!existing || evidence.explicit || evidence.confidence > existing.confidence) {
+      candidates.set(key, { value: display, normalized_value: key, ...evidence })
+    }
+  }
+  for (const item of properties?.custom_properties || []) {
+    if (unitMetadataKey(item?.key)) {
+      add(item.value, { explicit: true, confidence: 1, method: 'DATAHUB_CUSTOM_PROPERTY', source_text: `${item.key}=${item.value}` })
+    }
+  }
+  for (const item of properties?.structured_properties || []) {
+    if (!unitMetadataKey(item?.qualified_name) && !unitMetadataKey(item?.display_name)) continue
+    for (const value of item.values || []) {
+      add(value, { explicit: true, confidence: 1, method: 'DATAHUB_STRUCTURED_PROPERTY', source_text: `${item.qualified_name}=${value}` })
+    }
+  }
+  for (const value of [...(properties?.tags || []), ...(properties?.terms || [])]) {
+    const match = String(value).match(/^(?:unit|uom|unit[ _-]of[ _-]measure)\s*[:=]\s*(\S.{0,63})$/iu)
+    if (match) add(match[1], { explicit: true, confidence: 1, method: 'DATAHUB_ASSIGNED_METADATA', source_text: value })
+  }
+  for (const value of [properties?.name, properties?.business_name, properties?.description]) {
+    if (typeof value !== 'string') continue
+    const match = value.match(/(?:^|[\s;,(])(?:unit|uom|unit[ _-]of[ _-]measure)\s*[:=]\s*([\p{L}\p{N}%/._-]{1,64})/iu)
+    if (match) add(match[1], { explicit: false, confidence: 0.75, method: 'GENERIC_UNIT_MARKER', source_text: match[0].trim() })
+  }
+  return [...candidates.values()].sort((left, right) => left.normalized_value.localeCompare(right.normalized_value))
+}
+
+function unitNodeId(value) {
+  return `urn:datariver:unit:${computeSha256({ contract: 'GENERIC_UNIT_ID_V1', value })}`
+}
+
+function graphQualityMetrics(nodes, edges) {
+  const entity_count_by_type = {}
+  const relation_count_by_type = {}
+  const degree = new Map(nodes.map((node) => [node.id, 0]))
+  let explicit_edge_count = 0
+  let inferred_edge_count = 0
+  let pairwise_clique_count = 0
+  for (const node of nodes) entity_count_by_type[node.type] = (entity_count_by_type[node.type] || 0) + 1
+  for (const edge of edges) {
+    relation_count_by_type[edge.type] = (relation_count_by_type[edge.type] || 0) + 1
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
+    if (edge.properties?.explicit_or_inferred === 'INFERRED') inferred_edge_count += 1
+    else explicit_edge_count += 1
+    if (/pairwise|same_(?:tag|term)|similar_to/iu.test(edge.type)) pairwise_clique_count += 1
+  }
+  const degreeValues = [...degree.values()]
+  const top_hubs = [...degree.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([id, value]) => ({ id, degree: value, type: nodes.find((node) => node.id === id)?.type || null }))
+  return {
+    entity_count_by_type,
+    relation_count_by_type,
+    explicit_edge_count,
+    inferred_edge_count,
+    orphan_node_count: degreeValues.filter((value) => value === 0).length,
+    duplicate_node_count: 0,
+    duplicate_edge_count: 0,
+    average_degree: degreeValues.length
+      ? Number((degreeValues.reduce((sum, value) => sum + value, 0) / degreeValues.length).toFixed(4))
+      : 0,
+    maximum_degree: degreeValues.length ? Math.max(...degreeValues) : 0,
+    top_hubs,
+    pairwise_clique_count,
+    semantic_candidate_count: nodes.filter((node) => node.type === 'class.semantic_concept').length,
+    unit_explicit_count: edges.filter((edge) => edge.type === 'rel.has_explicit_unit').length,
+    unit_inferred_count: edges.filter((edge) => edge.type === 'rel.has_inferred_unit_candidate').length,
+    lineage_table_edge_count: edges.filter((edge) => edge.properties?.lineage_level === 'TABLE').length,
+    lineage_column_edge_count: edges.filter((edge) => edge.properties?.lineage_level === 'COLUMN').length,
+  }
+}
+
+export function projectionDiffMetrics(previousRelease, nodes, edges) {
+  const previousNodes = Array.isArray(previousRelease?.nodes) ? previousRelease.nodes : []
+  const previousEdges = Array.isArray(previousRelease?.edges) ? previousRelease.edges : []
+  const previousNodeMap = new Map(previousNodes.map((node) => [node.id, canonicalStringify(node)]))
+  const nextNodeMap = new Map(nodes.map((node) => [node.id, canonicalStringify(node)]))
+  const edgeKey = (edge) => `${edge.source}\u0000${edge.target}\u0000${edge.type}`
+  const previousEdgeMap = new Map(previousEdges.map((edge) => [edgeKey(edge), canonicalStringify(edge)]))
+  const nextEdgeMap = new Map(edges.map((edge) => [edgeKey(edge), canonicalStringify(edge)]))
+  const countChanges = (previous, next) => ({
+    added: [...next.keys()].filter((key) => !previous.has(key)).length,
+    removed: [...previous.keys()].filter((key) => !next.has(key)).length,
+    changed: [...next.entries()].filter(([key, value]) => previous.has(key) && previous.get(key) !== value).length,
+  })
+  return {
+    baseline_available: Boolean(previousRelease),
+    nodes: countChanges(previousNodeMap, nextNodeMap),
+    edges: countChanges(previousEdgeMap, nextEdgeMap),
+    stale_entity_count: [...previousNodeMap.keys()].filter((key) => !nextNodeMap.has(key)).length,
+    previous_source_snapshot_id: previousRelease?.source_snapshot?.source_snapshot_id || null,
+  }
+}
 
 export function buildK9GlossaryScrollVariables(scrollId) {
   return {
@@ -107,7 +342,9 @@ export const K9_GRAPH_ASSET_DEFINITIONS = Object.freeze({
       'VECTOR_RETRIEVAL_ENRICHMENT',
     ],
     supported_entity_types: [
-      'DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'KNOWLEDGE_ASSET',
+      'DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM',
+      'GLOSSARY_TERM_GROUP', 'DOMAIN', 'CONTAINER', 'DATA_PLATFORM_INSTANCE',
+      'UNIT_OF_MEASURE', 'KNOWLEDGE_ASSET',
     ],
   }),
 })
@@ -149,6 +386,26 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
   const configuredSchedule = typeof schedule === 'string' && schedule.trim() ? schedule.trim() : null
   if (classificationCeiling !== undefined) validateClassification(classificationCeiling, classificationCeiling)
   const configuredClassification = classificationCeiling || null
+  let neo4jSchemaReady
+
+  async function ensureK9Neo4jSchema() {
+    if (!neo4jSchemaReady) {
+      neo4jSchemaReady = (async () => {
+        await neo4j.run(
+          'CREATE CONSTRAINT k9_node_namespace_id IF NOT EXISTS FOR (n:K9Node) REQUIRE (n.namespace, n.id) IS UNIQUE',
+          {},
+        )
+        await neo4j.run(
+          'CREATE INDEX k9_node_namespace_type IF NOT EXISTS FOR (n:K9Node) ON (n.namespace, n.type)',
+          {},
+        )
+      })().catch((error) => {
+        neo4jSchemaReady = undefined
+        throw error
+      })
+    }
+    return neo4jSchemaReady
+  }
 
   function configuredPolicy(base) {
     return Object.assign(
@@ -284,10 +541,10 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
 
       mappedData.nodes.sort(function(a, b) { return a.id.localeCompare(b.id) })
       mappedData.edges.sort(function(a, b) {
-        var cmp = a.source.localeCompare(b.source)
-        if (cmp !== 0) return cmp
-        cmp = a.target.localeCompare(b.target)
-        if (cmp !== 0) return cmp
+        var comparison = a.source.localeCompare(b.source)
+        if (comparison !== 0) return comparison
+        comparison = a.target.localeCompare(b.target)
+        if (comparison !== 0) return comparison
         return a.type.localeCompare(b.type)
       })
 
@@ -310,20 +567,54 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       for (const e of mappedData.edges) {
         if (!nodeMap.has(e.source)) throw new Error('Dangling edge source: ' + e.source)
         if (!nodeMap.has(e.target)) throw new Error('Dangling edge target: ' + e.target)
+        const evidence = e.properties || {}
+        if (evidence.source !== 'DataHub'
+          || typeof evidence.source_aspect !== 'string' || !evidence.source_aspect
+          || !['EXPLICIT', 'INFERRED'].includes(evidence.explicit_or_inferred)
+          || typeof evidence.confidence !== 'number' || evidence.confidence < 0 || evidence.confidence > 1
+          || evidence.projection_version !== KG2_PROJECTION_VERSION) {
+          throw new Error('Managed relation provenance is incomplete: ' + e.type)
+        }
       }
 
-      inputSnapshotHash = computeSha256({ nodes: mappedData.nodes, edges: mappedData.edges })
+      const qualityMetrics = {
+        ...graphQualityMetrics(mappedData.nodes, mappedData.edges),
+        ...(mappedData.quality_metrics || {}),
+      }
+      const semanticContentHash = computeSha256({ nodes: mappedData.nodes, edges: mappedData.edges })
+      const sourceSnapshot = sourceData.source_snapshot && typeof sourceData.source_snapshot === 'object'
+        ? sourceData.source_snapshot
+        : {
+            source_snapshot_id: semanticContentHash,
+            observed_at: null,
+            contract_version: 'LEGACY_TEST_SOURCE',
+          }
+      if (!/^[0-9a-f]{64}$/.test(sourceSnapshot.source_snapshot_id || '')) {
+        throw new Error('Managed source snapshot identity is invalid')
+      }
+      inputSnapshotHash = computeSha256({
+        model_version: KG2_MODEL_VERSION,
+        source_snapshot_id: sourceSnapshot.source_snapshot_id,
+        semantic_content_hash: semanticContentHash,
+      })
 
       const lastRun = await stateStore.getLastK9Run(expectedPolicy.graph_id)
       if (lastRun && lastRun.input_snapshot_hash === inputSnapshotHash && lastRun.policy_hash === expectedPolicy.policy_hash) {
         await stateStore.finalizeK9RunNoOp(runId, lastRun.active_release_pointer)
         return { runId: runId, status: 'NO_OP', inputSnapshotHash: inputSnapshotHash, policy: expectedPolicy.name }
       }
+      qualityMetrics.reconciliation = projectionDiffMetrics(
+        lastRun?.canonical_release,
+        mappedData.nodes,
+        mappedData.edges,
+      )
 
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       )
+
+      await ensureK9Neo4jSchema()
 
       for (let offset = 0; offset < mappedData.nodes.length; offset += NEO4J_WRITE_BATCH_SIZE) {
         const nodes = mappedData.nodes.slice(offset, offset + NEO4J_WRITE_BATCH_SIZE).map((node) => ({
@@ -373,8 +664,16 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       }
 
       await neo4j.run(
-        'CREATE (n:K9Node:K9Release { namespace: $ns, input_snapshot_hash: $hash, policy_hash: $policy, node_count: $ncount, edge_count: $ecount })',
-        { ns: stagingNamespace, hash: inputSnapshotHash, policy: expectedPolicy.policy_hash, ncount: mappedData.nodes.length, ecount: mappedData.edges.length }
+        'CREATE (n:K9Node:K9Release { namespace: $ns, input_snapshot_hash: $hash, policy_hash: $policy, node_count: $ncount, edge_count: $ecount, model_version: $model, source_snapshot_id: $sourceSnapshot })',
+        {
+          ns: stagingNamespace,
+          hash: inputSnapshotHash,
+          policy: expectedPolicy.policy_hash,
+          ncount: mappedData.nodes.length,
+          ecount: mappedData.edges.length,
+          model: KG2_MODEL_VERSION,
+          sourceSnapshot: sourceSnapshot.source_snapshot_id,
+        }
       )
 
       const verifyRelease = await neo4j.run(
@@ -389,12 +688,18 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         graph_id: expectedPolicy.graph_id,
         policy_hash: expectedPolicy.policy_hash,
         input_snapshot_hash: inputSnapshotHash,
+        model_version: KG2_MODEL_VERSION,
+        source_snapshot: sourceSnapshot,
+        quality_metrics: qualityMetrics,
         node_count: mappedData.nodes.length,
         edge_count: mappedData.edges.length
       }
       manifestHash = computeSha256(manifestPayload)
       canonicalRelease = {
         manifest: manifestPayload,
+        model_version: KG2_MODEL_VERSION,
+        source_snapshot: sourceSnapshot,
+        quality_metrics: qualityMetrics,
         nodes: mappedData.nodes,
         edges: mappedData.edges
       }
@@ -428,7 +733,15 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       if (log && log.warn) log.warn('Failed to cleanup orphan staging data', e)
     })
 
-    return { runId: runId, status: 'RUN', manifestHash: manifestHash, inputSnapshotHash: inputSnapshotHash, stagingNamespace: stagingNamespace, policy: expectedPolicy.name }
+    return {
+      runId: runId,
+      status: 'RUN',
+      manifestHash: manifestHash,
+      inputSnapshotHash: inputSnapshotHash,
+      sourceSnapshotId: canonicalRelease?.source_snapshot?.source_snapshot_id || null,
+      stagingNamespace: stagingNamespace,
+      policy: expectedPolicy.name,
+    }
   }
 
   function mapLineage(sourceData) {
@@ -459,27 +772,78 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     }
 
     for (const node of (sourceData.nodes || [])) {
-      if (!isValidTableAssignmentId(node.id)) throw new Error('Invalid node id: ' + node.id)
+      const tableNode = isValidTableAssignmentId(node.id)
+      const columnNode = isValidColumnAssignmentId(node.id)
+      if (!tableNode && !columnNode) throw new Error('Invalid node id: ' + node.id)
       if (!node.classification) throw new Error('Missing classification for lineage node')
-      const props = {}
-      for (const key of [
-        'external_urn', 'name', 'qualified_name', 'platform', 'database_name',
-        'schema_name', 'description', 'domain',
-      ]) {
-        if (node[key] !== undefined && node[key] !== null && node[key] !== '') props[key] = node[key]
+      const props = node.properties && typeof node.properties === 'object'
+        ? structuredClone(node.properties)
+        : {}
+      if (!node.properties) {
+        for (const key of [
+          'external_urn', 'name', 'qualified_name', 'platform', 'database_name',
+          'schema_name', 'description', 'domain',
+        ]) {
+          if (node[key] !== undefined && node[key] !== null && node[key] !== '') props[key] = node[key]
+        }
+        if (Array.isArray(node.tags) && node.tags.length) props.tags = [...new Set(node.tags)].sort()
+        if (Array.isArray(node.terms) && node.terms.length) props.terms = [...new Set(node.terms)].sort()
       }
-      if (Array.isArray(node.tags) && node.tags.length) props.tags = [...new Set(node.tags)].sort()
-      if (Array.isArray(node.terms) && node.terms.length) props.terms = [...new Set(node.terms)].sort()
-      addNode({ id: node.id, type: 'class.dataset', classification: node.classification, properties: props })
+      addNode({
+        id: node.id,
+        type: tableNode ? datasetEntityType(props) : 'class.column',
+        classification: node.classification,
+        properties: semanticNodeProperties(
+          props,
+          sourceData,
+          tableNode ? ['datasetProperties', 'upstreamLineage'] : ['schemaMetadata', 'fineGrainedLineages'],
+        ),
+      })
     }
     for (const edge of (sourceData.edges || [])) {
-      if (!isValidTableAssignmentId(edge.source_asset_id) || !isValidTableAssignmentId(edge.target_asset_id)) throw new Error('Invalid edge asset id')
-      addEdge({ source: edge.target_asset_id, target: edge.source_asset_id, type: 'rel.dataset_depends_on', properties: {} })
+      const tableEdge = isValidTableAssignmentId(edge.source_asset_id)
+        && isValidTableAssignmentId(edge.target_asset_id)
+      const columnEdge = isValidColumnAssignmentId(edge.source_asset_id)
+        && isValidColumnAssignmentId(edge.target_asset_id)
+      if (!tableEdge && !columnEdge) throw new Error('Invalid edge asset id')
+      const collected = edge.properties && typeof edge.properties === 'object' ? edge.properties : {}
+      addEdge({
+        // K9 keeps the accepted dependency orientation: downstream depends on upstream.
+        source: edge.target_asset_id,
+        target: edge.source_asset_id,
+        type: tableEdge ? 'rel.dataset_depends_on' : 'rel.column_depends_on',
+        properties: relationEvidence(
+          sourceData,
+          collected.source_aspect || (tableEdge ? 'upstreamLineage' : 'fineGrainedLineages'),
+          collected.source_entity_urn || null,
+          {
+            ...collected,
+            source: 'DataHub',
+            source_aspect: collected.source_aspect || (tableEdge ? 'upstreamLineage' : 'fineGrainedLineages'),
+            explicit_or_inferred: 'EXPLICIT',
+            confidence: 1,
+            observed_at: sourceTimestamp(collected.observed_at),
+            lineage_level: tableEdge ? 'TABLE' : 'COLUMN',
+            projection_version: KG2_PROJECTION_VERSION,
+            source_snapshot_id: sourceData.source_snapshot?.source_snapshot_id || null,
+          },
+        ),
+      })
     }
 
     const nodes = Array.from(nodeMap.values()).sort((a,b) => a.id.localeCompare(b.id))
     const edges = Array.from(edgeMap.values()).sort((a,b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target) || a.type.localeCompare(b.type))
-    return { nodes, edges }
+    return {
+      nodes,
+      edges,
+      quality_metrics: {
+        source_coverage: {
+          catalog_assets: (sourceData.nodes || []).filter((node) => isValidTableAssignmentId(node.id)).length,
+          table_lineage_edges: edges.filter((edge) => edge.type === 'rel.dataset_depends_on').length,
+          column_lineage_edges: edges.filter((edge) => edge.type === 'rel.column_depends_on').length,
+        },
+      },
+    }
   }
 
   function hasGlossaryCycle(edgesMap, startNode) {
@@ -529,64 +893,255 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       }
     }
 
+    const addTypedRelation = (source, target, type, sourceAspect, sourceEntityUrn, overrides = {}) => {
+      addEdge({
+        source,
+        target,
+        type,
+        properties: relationEvidence(sourceData, sourceAspect, sourceEntityUrn, overrides),
+      })
+    }
+
+    const sourceEntityUrnForGraphId = (id) => {
+      const node = nodeMap.get(id)
+      const candidate = node?.properties?.dataset_urn || node?.properties?.external_urn
+      return typeof candidate === 'string' && candidate.startsWith('urn:li:') ? candidate : id
+    }
+
     for (const table of (sourceData.table_nodes || [])) {
       if (!isValidTableAssignmentId(table.id)) throw new Error('Invalid table id: ' + table.id)
       if (!table.classification) throw new Error('Missing classification for table')
-      addNode({ id: table.id, type: 'class.table', classification: table.classification, properties: table.properties || {} })
+      addNode({
+        id: table.id,
+        type: datasetEntityType(table.properties),
+        classification: table.classification,
+        properties: semanticNodeProperties(table.properties, sourceData, table.properties?.source_aspects || ['datasetProperties']),
+      })
     }
     for (const column of (sourceData.column_nodes || [])) {
       if (!isValidColumnAssignmentId(column.id)) throw new Error('Invalid column id: ' + column.id)
       if (!column.classification) throw new Error('Missing classification for column')
-      addNode({ id: column.id, type: 'class.column', classification: column.classification, properties: column.properties || {} })
+      addNode({
+        id: column.id,
+        type: 'class.column',
+        classification: column.classification,
+        properties: semanticNodeProperties(column.properties, sourceData, column.properties?.source_aspects || ['schemaMetadata']),
+      })
     }
     for (const containment of (sourceData.table_column_edges || [])) {
       if (!isValidTableAssignmentId(containment.table_id) || !isValidColumnAssignmentId(containment.column_id)) {
         throw new Error('Invalid table-column containment identity')
       }
-      addEdge({ source: containment.table_id, target: containment.column_id, type: 'rel.table_contains_column', properties: {} })
+      addTypedRelation(
+        containment.table_id,
+        containment.column_id,
+        'rel.table_contains_column',
+        'schemaMetadata',
+        containment.table_id.slice('TABLE:'.length),
+      )
     }
 
     for (const term of (sourceData.terms || [])) {
       if (!isTermUrn(term.urn)) throw new Error('Invalid term urn: ' + term.urn)
-      const props = {}
-      if (term.name !== undefined) props.name = term.name
-      if (term.description !== undefined) props.description = term.description
-      addNode({ id: term.urn, type: 'class.business_term', classification: INTERNAL_CLASSIFICATION, properties: props })
+      const props = Object.fromEntries(Object.entries({
+        name: term.name,
+        description: term.description,
+        term_source: term.term_source,
+        source_ref: term.source_ref,
+        source_url: term.source_url,
+        custom_properties: term.custom_properties,
+        structured_properties: term.structured_properties,
+      }).filter(([, value]) => value !== undefined && value !== null && value !== ''
+        && (!Array.isArray(value) || value.length)))
+      addNode({
+        id: term.urn,
+        type: 'class.business_term',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(props, sourceData, ['glossaryTermInfo', 'structuredProperties']),
+      })
+      if (term.domain_reference?.urn) {
+        const domain = term.domain_reference
+        if (!canonicalDatahubUrn(domain.urn, 'domain')) throw new Error('Invalid glossary Domain urn: ' + domain.urn)
+        addNode({
+          id: domain.urn,
+          type: 'class.domain',
+          classification: INTERNAL_CLASSIFICATION,
+          properties: semanticNodeProperties(domain, sourceData, ['domains']),
+        })
+        addTypedRelation(term.urn, domain.urn, 'rel.glossary_term_belongs_to_domain', 'domains', term.urn)
+      }
     }
     for (const parent of (sourceData.parent_nodes || [])) {
       if (!isNodeUrn(parent.urn)) throw new Error('Invalid node urn: ' + parent.urn)
-      const props = {}
-      if (parent.name !== undefined) props.name = parent.name
-      if (parent.description !== undefined) props.description = parent.description
-      addNode({ id: parent.urn, type: 'class.glossary_node', classification: INTERNAL_CLASSIFICATION, properties: props })
+      addNode({
+        id: parent.urn,
+        type: 'class.glossary_term_group',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(parent, sourceData, ['glossaryNodeInfo', 'structuredProperties']),
+      })
+    }
+    for (const tag of (sourceData.tags || [])) {
+      if (!canonicalDatahubUrn(tag.urn, 'tag')) throw new Error('Invalid Tag urn: ' + tag.urn)
+      addNode({
+        id: tag.urn,
+        type: 'class.tag',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(tag, sourceData, ['globalTags']),
+      })
+    }
+    for (const domain of (sourceData.domains || [])) {
+      if (!canonicalDatahubUrn(domain.urn, 'domain')) throw new Error('Invalid Domain urn: ' + domain.urn)
+      addNode({
+        id: domain.urn,
+        type: 'class.domain',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(domain, sourceData, ['domains']),
+      })
+    }
+    for (const container of (sourceData.containers || [])) {
+      if (!canonicalDatahubUrn(container.urn, 'container')) throw new Error('Invalid Container urn: ' + container.urn)
+      addNode({
+        id: container.urn,
+        type: 'class.container',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(container, sourceData, ['containerProperties']),
+      })
+    }
+    for (const instance of (sourceData.platform_instances || [])) {
+      if (!canonicalDatahubUrn(instance.urn, 'dataPlatformInstance')) {
+        throw new Error('Invalid Data Platform Instance urn: ' + instance.urn)
+      }
+      addNode({
+        id: instance.urn,
+        type: 'class.data_platform_instance',
+        classification: INTERNAL_CLASSIFICATION,
+        properties: semanticNodeProperties(instance, sourceData, ['dataPlatformInstanceProperties']),
+      })
     }
     for (const ta of (sourceData.table_assignments || [])) {
       if (!isValidTableAssignmentId(ta.id)) throw new Error('Invalid table id: ' + ta.id)
       if (!isTermUrn(ta.term_urn)) throw new Error('Invalid term id: ' + ta.term_urn)
       if (!ta.classification) throw new Error('Missing classification for table assignment')
-      addNode({ id: ta.id, type: 'class.table', classification: ta.classification, properties: ta.properties || {} })
-      addEdge({ source: ta.id, target: ta.term_urn, type: 'rel.table_mapped_to_term', properties: {} })
+      addNode({
+        id: ta.id,
+        type: datasetEntityType(ta.properties),
+        classification: ta.classification,
+        properties: semanticNodeProperties(ta.properties, sourceData, ta.properties?.source_aspects || ['datasetProperties']),
+      })
+      addTypedRelation(ta.id, ta.term_urn, 'rel.table_has_glossary_term', 'glossaryTerms', ta.id.slice('TABLE:'.length))
     }
     for (const ca of (sourceData.column_assignments || [])) {
       if (!isValidColumnAssignmentId(ca.id)) throw new Error('Invalid column id: ' + ca.id)
       if (!isTermUrn(ca.term_urn)) throw new Error('Invalid term id: ' + ca.term_urn)
       if (!ca.classification) throw new Error('Missing classification for column assignment')
-      addNode({ id: ca.id, type: 'class.column', classification: ca.classification, properties: ca.properties || {} })
-      addEdge({ source: ca.id, target: ca.term_urn, type: 'rel.column_mapped_to_term', properties: {} })
+      addNode({
+        id: ca.id,
+        type: 'class.column',
+        classification: ca.classification,
+        properties: semanticNodeProperties(ca.properties, sourceData, ca.properties?.source_aspects || ['schemaMetadata']),
+      })
+      addTypedRelation(
+        ca.id,
+        ca.term_urn,
+        'rel.column_has_glossary_term',
+        'schemaMetadata.glossaryTerms',
+        sourceEntityUrnForGraphId(ca.id),
+      )
     }
-    for (const te of (sourceData.term_parent_edges || [])) {
-      if (!isTermUrn(te.term_urn)) throw new Error('Invalid term id: ' + te.term_urn)
-      if (!isNodeUrn(te.parent_urn)) throw new Error('Invalid node id: ' + te.parent_urn)
-      addEdge({ source: te.term_urn, target: te.parent_urn, type: 'rel.term_has_parent', properties: {} })
-      if (!hierarchyAdj.has(te.term_urn)) hierarchyAdj.set(te.term_urn, [])
-      hierarchyAdj.get(te.term_urn).push(te.parent_urn)
+
+    const addAssignmentRelations = (items, type, aspect) => {
+      for (const item of items || []) {
+        addTypedRelation(
+          item.source_id,
+          item.target_id,
+          type,
+          aspect,
+          sourceEntityUrnForGraphId(item.source_id),
+        )
+      }
     }
-    for (const ne of (sourceData.node_parent_edges || [])) {
-      if (!isNodeUrn(ne.child_urn)) throw new Error('Invalid child node id: ' + ne.child_urn)
-      if (!isNodeUrn(ne.parent_urn)) throw new Error('Invalid parent node id: ' + ne.parent_urn)
-      addEdge({ source: ne.child_urn, target: ne.parent_urn, type: 'rel.node_has_parent', properties: {} })
-      if (!hierarchyAdj.has(ne.child_urn)) hierarchyAdj.set(ne.child_urn, [])
-      hierarchyAdj.get(ne.child_urn).push(ne.parent_urn)
+    addAssignmentRelations(sourceData.table_tag_assignments, 'rel.table_has_tag', 'globalTags')
+    addAssignmentRelations(sourceData.column_tag_assignments, 'rel.column_has_tag', 'schemaMetadata.globalTags')
+    addAssignmentRelations(sourceData.table_domain_assignments, 'rel.table_belongs_to_domain', 'domains')
+    addAssignmentRelations(sourceData.table_container_assignments, 'rel.table_in_container', 'container')
+    addAssignmentRelations(
+      sourceData.table_platform_instance_assignments,
+      'rel.table_on_platform_instance',
+      'dataPlatformInstance',
+    )
+
+    const directRelationships = sourceData.glossary_relationships || []
+    if (directRelationships.length) {
+      for (const relation of directRelationships) {
+        const sourceValid = isTermUrn(relation.source_urn) || isNodeUrn(relation.source_urn)
+        const targetValid = isTermUrn(relation.target_urn) || isNodeUrn(relation.target_urn)
+        if (!sourceValid || !targetValid) throw new Error('Invalid explicit glossary relationship identity')
+        const relationshipKey = normalizedAlias(relation.relationship_type).replaceAll(' ', '_')
+        let type = 'rel.glossary_related_to'
+        if (relationshipKey === 'ispartof' || relationshipKey === 'is_part_of') {
+          type = 'rel.glossary_in_term_group'
+        } else if (['contains', 'hasa', 'has_a'].includes(relationshipKey)) {
+          type = 'rel.glossary_contains_term'
+        } else if (['isa', 'is_a', 'inheritsfrom', 'inherits_from'].includes(relationshipKey)) {
+          type = 'rel.glossary_inherits_from'
+        }
+        addTypedRelation(
+          relation.source_urn,
+          relation.target_urn,
+          type,
+          'relationships',
+          relation.source_urn,
+          { source_relationship_type: relation.relationship_type },
+        )
+        if (type !== 'rel.glossary_related_to') {
+          if (!hierarchyAdj.has(relation.source_urn)) hierarchyAdj.set(relation.source_urn, [])
+          hierarchyAdj.get(relation.source_urn).push(relation.target_urn)
+        }
+      }
+    } else {
+      // Legacy unit-test/source compatibility only. Runtime V2 collectors always
+      // provide the explicit DataHub outgoing relationship list.
+      for (const te of (sourceData.term_parent_edges || [])) {
+        if (!isTermUrn(te.term_urn) || !isNodeUrn(te.parent_urn)) throw new Error('Invalid legacy glossary parent identity')
+        addTypedRelation(te.term_urn, te.parent_urn, 'rel.glossary_in_term_group', 'parentNodes', te.term_urn)
+        if (!hierarchyAdj.has(te.term_urn)) hierarchyAdj.set(te.term_urn, [])
+        hierarchyAdj.get(te.term_urn).push(te.parent_urn)
+      }
+      for (const ne of (sourceData.node_parent_edges || [])) {
+        if (!isNodeUrn(ne.child_urn) || !isNodeUrn(ne.parent_urn)) throw new Error('Invalid legacy glossary-node parent identity')
+        addTypedRelation(ne.child_urn, ne.parent_urn, 'rel.glossary_in_term_group', 'parentNodes', ne.child_urn)
+        if (!hierarchyAdj.has(ne.child_urn)) hierarchyAdj.set(ne.child_urn, [])
+        hierarchyAdj.get(ne.child_urn).push(ne.parent_urn)
+      }
+    }
+
+    for (const node of [...nodeMap.values()]) {
+      if (!['class.dataset', 'class.table', 'class.view', 'class.column'].includes(node.type)) continue
+      for (const unit of unitCandidates(node.properties)) {
+        const unitId = unitNodeId(unit.normalized_value)
+        addNode({
+          id: unitId,
+          type: 'class.unit_of_measure',
+          classification: INTERNAL_CLASSIFICATION,
+          properties: semanticNodeProperties({
+            name: unit.value,
+            normalized_value: unit.normalized_value,
+          }, sourceData, [unit.method]),
+        })
+        addTypedRelation(
+          node.id,
+          unitId,
+          unit.explicit ? 'rel.has_explicit_unit' : 'rel.has_inferred_unit_candidate',
+          unit.method,
+          node.properties.dataset_urn || node.properties.external_urn || node.id,
+          {
+            explicit_or_inferred: unit.explicit ? 'EXPLICIT' : 'INFERRED',
+            confidence: unit.confidence,
+            extraction_method: unit.method,
+            source_text: unit.source_text,
+          },
+        )
+      }
     }
 
     const nodes = Array.from(nodeMap.values()).sort((a,b) => a.id.localeCompare(b.id))
@@ -598,7 +1153,26 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       }
     }
 
-    return { nodes, edges }
+    return {
+      nodes,
+      edges,
+      quality_metrics: {
+        source_coverage: {
+          table_count: (sourceData.table_nodes || []).length,
+          column_count: (sourceData.column_nodes || []).length,
+          glossary_term_count: (sourceData.terms || []).length,
+          glossary_group_count: (sourceData.parent_nodes || []).length,
+          tag_count: (sourceData.tags || []).length,
+          domain_count: (sourceData.domains || []).length,
+          container_count: (sourceData.containers || []).length,
+          platform_instance_count: (sourceData.platform_instances || []).length,
+          structured_property_assignment_count: [
+            ...(sourceData.table_nodes || []),
+            ...(sourceData.column_nodes || []),
+          ].reduce((sum, node) => sum + (node.properties?.structured_properties?.length || 0), 0),
+        },
+      },
+    }
   }
 
   async function triggerLineagePublish(authCtx, collectLineageInventorySeam) {
