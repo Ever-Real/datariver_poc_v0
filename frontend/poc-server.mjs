@@ -4767,12 +4767,15 @@ async function embedCatalogTexts(texts, signal) {
   return embeddingVectors(payload, texts.length)
 }
 
-async function ensureCatalogEmbeddingIndex(signal = serverBackgroundAbortController?.signal) {
+async function ensureCatalogEmbeddingIndex(
+  signal = serverBackgroundAbortController?.signal,
+  capturedSource,
+) {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
   signal?.throwIfAborted()
-  const inventory = await datahubEmbeddingInventory({ signal })
-  const inventoryProjection = inventorySnapshot?.projection
+  const inventory = capturedSource?.inventory || await datahubEmbeddingInventory({ signal })
+  const inventoryProjection = capturedSource?.inventoryProjection || inventorySnapshot?.projection
   if (!validDatahubInventory(inventoryProjection)) {
     throw new Error('The current Catalog projection is unavailable for Embedding reconciliation.')
   }
@@ -10505,14 +10508,18 @@ export async function startPocServer({ stateStore } = {}) {
         // provider scrolls and so a second scan cannot time out after Lineage
         // has already completed.
         const inventory = await currentDatahubInventory()
-        const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+        const inventoryProjection = structuredClone(inventorySnapshot?.projection)
+        const [lineageSource, metadataSource, datahubIdentity, semanticIndex] = await Promise.all([
           collectLineageInventorySeam(liveAuth.authorityPin, inventory),
           collectGlossaryInventorySeam(liveAuth.authorityPin, inventory),
           datahubRuntimeIdentity(),
+          ensureCatalogEmbeddingIndex(serverBackgroundAbortController?.signal, {
+            inventory,
+            inventoryProjection,
+          }),
         ])
-        const semanticIndex = await ensureCatalogEmbeddingIndex(serverBackgroundAbortController?.signal)
         const sourceSnapshot = buildDatahubKnowledgeSourceSnapshot({
-          inventoryProjection: inventorySnapshot?.projection,
+          inventoryProjection,
           datahubIdentity,
           lineageSource,
           metadataSource,

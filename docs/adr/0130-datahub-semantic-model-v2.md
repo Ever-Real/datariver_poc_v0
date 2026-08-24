@@ -33,6 +33,11 @@ time, exhaustive Dataset and Glossary evidence, Table lineage evidence, and opti
 fine-grained, DataFlow and DataJob evidence. The two graph projections and semantic index bind the
 same deterministic `source_snapshot_id`.
 
+The refresh captures the inventory projection and starts semantic reconciliation concurrently with
+the slower lineage/glossary completeness reads. It does not reread a mutable process-global Catalog
+generation after those reads complete. The durable Catalog-generation fence still rejects a commit
+if another inventory projection is promoted before semantic materialization finishes.
+
 The snapshot is a rebuild input and receipt, not a new authority. DataHub remains canonical and
 PostgreSQL remains the active-pointer, policy, receipt and last-known-good authority. The Product
 uses supported GraphQL and OpenAPI contracts; it does not scrape the UI or read DataHub backing
