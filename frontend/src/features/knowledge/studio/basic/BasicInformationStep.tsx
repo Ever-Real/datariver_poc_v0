@@ -167,7 +167,7 @@ export function BasicInformationStep({
             maxLength={255}
             value={value.name}
             onChange={(event) => onChange({ ...value, name: event.target.value })}
-            placeholder="예: 반도체 소재 지식 그래프"
+            placeholder="예: 공급망 운영 지식 그래프"
           />
           <small className="font-normal text-slate-500">레지스트리와 검색에 표시되는 이름입니다.</small>
         </label>
@@ -210,7 +210,7 @@ export function BasicInformationStep({
                 endpoint_aliases: nextAliases,
               })
             }}
-            placeholder="semiconductor_materials, materials_kg"
+            placeholder="supply_chain_operations, operations_kg"
           />
           <small className={aliasError ? 'font-normal text-red-700' : 'font-normal text-slate-500'}>
             {aliasError ?? (
