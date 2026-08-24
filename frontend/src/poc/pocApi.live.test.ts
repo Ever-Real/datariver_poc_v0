@@ -535,6 +535,9 @@ function installGatewayMock() {
         headers: { 'Content-Type': 'text/event-stream' },
       }))
     }
+    if (url.pathname === '/poc-api/knowledge/managed-assets') {
+      return Promise.resolve(json({ items: [], next_cursor: null, limit: 25 }))
+    }
     throw new Error(`Unexpected POC gateway request: ${url.pathname}`)
   }))
 }

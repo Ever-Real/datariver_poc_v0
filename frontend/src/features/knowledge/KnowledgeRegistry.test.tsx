@@ -231,7 +231,8 @@ describe('KnowledgeRegistry', () => {
 
     await screen.findByText('Finance Terms')
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'No', '지식그래프명', 'Version', '설명', '최근 수정일', '생성자', '최근 수정자', '편집',
+      'No', '지식그래프명', 'Type', 'Source', 'Default', 'Version', 'Nodes / Edges', 'Refresh',
+      '설명', '최근 수정일', '생성자', '최근 수정자', '편집',
     ])
     expect(screen.getByText('재무 용어 지식 그래프')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()

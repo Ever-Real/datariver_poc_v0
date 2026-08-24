@@ -3109,6 +3109,7 @@ function mergedMetadataReferences(values, collection, reference) {
 }
 
 function datahubSchemaFields(entity) {
+  if (Array.isArray(entity?.schema_fields)) return entity.schema_fields
   const baseFields = entity.schemaMetadata?.fields || []
   const editableFields = entity.editableSchemaMetadata?.editableSchemaFieldInfo || []
   const orderedPaths = []
@@ -9120,7 +9121,6 @@ export async function startPocServer({ stateStore } = {}) {
 
   async function collectGlossaryInventorySeam(authorityPin) {
     const inventory = await currentDatahubInventory()
-    const inventoryMap = new Map(inventory.map((item) => [k9AssetUrn(item), item]))
     const table_nodes = []
     const column_nodes = []
     const table_column_edges = []
@@ -9150,6 +9150,7 @@ export async function startPocServer({ stateStore } = {}) {
     const assignmentSet = new Set()
     const termParentEdgeSet = new Set()
     const nodeParentEdgeSet = new Set()
+    const assignmentTotals = new Map()
     const completeness_metadata = { fetched: 0, total: 0, per_assignment: {} }
     let lastTotal = -1
 
@@ -9170,87 +9171,18 @@ export async function startPocServer({ stateStore } = {}) {
           if (termSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
           termSet.add(entity.urn)
           terms.push({ urn: entity.urn, name: entity.properties?.name || '', description: entity.properties?.description || '' })
+          const tableTotal = Number(entity.tableAssignments?.total)
+          const columnTotal = Number(entity.columnAssignments?.total)
+          if (!Number.isSafeInteger(tableTotal) || tableTotal < 0
+            || !Number.isSafeInteger(columnTotal) || columnTotal < 0) {
+            throw new Error('Malformed glossary assignment totals')
+          }
+          assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
           for (const pn of entity.parentNodes?.nodes || []) {
             const edgeKey = entity.urn + '->' + pn.urn
             if (termParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical term-parent edge: ' + edgeKey)
             termParentEdgeSet.add(edgeKey)
             term_parent_edges.push({ term_urn: entity.urn, parent_urn: pn.urn })
-          }
-
-          completeness_metadata.per_assignment[entity.urn] = {}
-          const assignRules = [
-            { type: 'TABLE', relType: 'TermedWith', direction: 'INCOMING' },
-            { type: 'COLUMN', relType: 'SchemaFieldWithGlossaryTerm', direction: 'INCOMING' }
-          ]
-          for (const rule of assignRules) {
-            let aStart = 0
-            let aLastTotal = -1
-            let aPages = 0
-            let aFetched = 0
-            while (true) {
-              if (aPages >= 2001) throw new Error('Exceeded assignment page limit')
-              if (aStart > 100000) throw new Error('Exceeded assignment offset limit')
-              const aData = await datahubGraphql(datahubGlossaryAssignmentsQuery, {
-                urn: entity.urn,
-                input: { start: aStart, count: 50, direction: rule.direction, types: [rule.relType], includeSoftDelete: false }
-              })
-              aPages++
-              const rel = aData.entity?.relationships
-              if (!rel || typeof rel.total !== 'number') throw new Error('Malformed assignments response')
-              if (aLastTotal !== -1 && rel.total !== aLastTotal) throw new Error('Mutation during assignments pagination')
-              aLastTotal = rel.total
-              const arels = rel.relationships || []
-              if (arels.length === 0 && aStart < rel.total) throw new Error('Truncation or repeated cursor in assignments')
-              if (arels.length === 0) break
-
-              for (const arel of arels) {
-                if (rule.type === 'TABLE' && arel.entity?.type === 'DATASET') {
-                  const mapped = inventoryMap.get(arel.entity.urn)
-                  if (!mapped) throw new Error('Unauthorized or unknown dataset assignment: ' + arel.entity.urn)
-                  const classification = k9SourceClassification(mapped, authorityPin.classification_ceiling)
-                  if (!classification) continue
-
-                  const assignId = 'TABLE:' + k9AssetUrn(mapped)
-                  const assignKey = assignId + '->' + entity.urn
-                  if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
-                  assignmentSet.add(assignKey)
-                  table_assignments.push({
-                    id: assignId,
-                    term_urn: entity.urn,
-                    classification,
-                    properties: k9MetadataProperties(mapped),
-                  })
-
-                } else if (rule.type === 'COLUMN' && arel.entity?.type === 'DATASET') {
-                  const mapped = inventoryMap.get(arel.entity.urn)
-                  if (!mapped) throw new Error('Unauthorized or unknown dataset assignment for field: ' + arel.entity.urn)
-                  const classification = k9SourceClassification(mapped, authorityPin.classification_ceiling)
-                  if (!classification) continue
-
-                  const fields = datahubSchemaFields(mapped)
-                  for (const f of fields) {
-                    const hasTerm = f.glossaryTerms?.terms?.some(t => t.term?.urn === entity.urn)
-                    if (hasTerm) {
-                      const assignId = 'COLUMN:' + k9AssetUrn(mapped) + ':' + f.fieldPath
-                      const assignKey = assignId + '->' + entity.urn
-                      if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
-                      assignmentSet.add(assignKey)
-                      column_assignments.push({
-                        id: assignId,
-                        term_urn: entity.urn,
-                        classification,
-                        properties: k9MetadataProperties(mapped, f),
-                      })
-                    }
-                  }
-                }
-              }
-              aFetched += arels.length
-              aStart += 50
-              if (aStart >= rel.total) break
-            }
-            completeness_metadata.per_assignment[entity.urn][rule.type] = { fetched: aFetched, total: aLastTotal === -1 ? 0 : aLastTotal }
-            if (aFetched !== (aLastTotal === -1 ? 0 : aLastTotal)) throw new Error('Assignment completeness reconciliation failed')
           }
         } else if (entity.type === 'GLOSSARY_NODE') {
           if (nodeSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
@@ -9279,6 +9211,51 @@ export async function startPocServer({ stateStore } = {}) {
     completeness_metadata.fetched = fetchedTerms
     completeness_metadata.total = lastTotal === -1 ? 0 : lastTotal
     if (fetchedTerms !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Glossary completeness reconciliation failed')
+
+    const observedAssignmentTotals = new Map([...termSet].map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
+    const registerAssignment = (type, termUrn, item, field, classification) => {
+      if (!termSet.has(termUrn)) throw new Error('Inventory references an unknown glossary term: ' + termUrn)
+      observedAssignmentTotals.get(termUrn)[type] += 1
+      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) return
+      const assignId = type === 'TABLE'
+        ? 'TABLE:' + k9AssetUrn(item)
+        : 'COLUMN:' + k9AssetUrn(item) + ':' + field.fieldPath
+      const assignKey = assignId + '->' + termUrn
+      if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
+      assignmentSet.add(assignKey)
+      const assignment = {
+        id: assignId,
+        term_urn: termUrn,
+        classification,
+        properties: k9MetadataProperties(item, field),
+      }
+      if (type === 'TABLE') table_assignments.push(assignment)
+      else column_assignments.push(assignment)
+    }
+
+    for (const item of inventory) {
+      const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
+      for (const term of item.glossary_terms || []) {
+        if (term?.urn) registerAssignment('TABLE', term.urn, item, null, classification)
+      }
+      for (const field of datahubSchemaFields(item)) {
+        for (const reference of field.glossaryTerms?.terms || []) {
+          if (reference.term?.urn) registerAssignment('COLUMN', reference.term.urn, item, field, classification)
+        }
+      }
+    }
+
+    for (const termUrn of termSet) {
+      const expected = assignmentTotals.get(termUrn)
+      const observed = observedAssignmentTotals.get(termUrn)
+      completeness_metadata.per_assignment[termUrn] = {
+        TABLE: { fetched: observed.TABLE, total: expected.TABLE },
+        COLUMN: { fetched: observed.COLUMN, total: expected.COLUMN },
+      }
+      if (observed.TABLE !== expected.TABLE || observed.COLUMN !== expected.COLUMN) {
+        throw new Error('Assignment completeness reconciliation failed for ' + termUrn)
+      }
+    }
 
     return {
       authority_pin: authorityPin,
