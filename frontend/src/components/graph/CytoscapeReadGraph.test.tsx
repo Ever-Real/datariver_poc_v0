@@ -33,7 +33,13 @@ const cy = {
   resize: vi.fn(),
   zoom,
 }
-const cytoscape = vi.fn(() => cy)
+const cytoscape = vi.fn((options: { container?: HTMLElement }) => ({
+  ...cy,
+  destroy: () => {
+    destroy()
+    options.container?.replaceChildren()
+  },
+}))
 
 vi.mock('cytoscape', () => ({ default: cytoscape }))
 
@@ -73,14 +79,30 @@ describe('CytoscapeReadGraph', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('GRAPH_QUERY_FAILED')
   })
 
+  it('keeps React state overlays outside the renderer-owned canvas host', async () => {
+    const view = render(<CytoscapeReadGraph ariaLabel="Transition" graph={graph} />)
+    await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(1))
+
+    view.rerender(<CytoscapeReadGraph ariaLabel="Transition" graph={graph} loading />)
+    expect(screen.getByRole('status')).toHaveTextContent('불러오는 중')
+    expect(screen.getByTestId('cytoscape-read-graph-canvas').querySelector('.cy-read-graph-canvas-host')).toBeInTheDocument()
+
+    view.rerender(<CytoscapeReadGraph ariaLabel="Transition" graph={graph} />)
+    await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
   it('destroys each Cytoscape instance and its listeners across repeated open/close', async () => {
+    const initialInstances = cytoscape.mock.calls.length
+    const initialListenerCleanups = cy.removeAllListeners.mock.calls.length
+    const initialDestroys = destroy.mock.calls.length
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       const view = render(<CytoscapeReadGraph ariaLabel={`Lifecycle ${attempt}`} graph={graph} />)
-      await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(attempt))
+      await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(initialInstances + attempt))
       act(() => view.unmount())
     }
-    expect(cy.removeAllListeners).toHaveBeenCalledTimes(4)
-    expect(destroy).toHaveBeenCalledTimes(4)
+    expect(cy.removeAllListeners).toHaveBeenCalledTimes(initialListenerCleanups + 4)
+    expect(destroy).toHaveBeenCalledTimes(initialDestroys + 4)
   })
 
   it('resolves a missing local entity through the bounded server resolver', async () => {

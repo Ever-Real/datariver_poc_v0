@@ -202,7 +202,7 @@ export function CytoscapeReadGraph({
           container,
           elements,
           style: graphStyles(container),
-          layout: { name: 'preset' },
+          layout: { name: 'grid', animate: false, fit: false, padding: 0 },
           minZoom: 0.08,
           maxZoom: 3,
           boxSelectionEnabled: false,
@@ -389,11 +389,11 @@ export function CytoscapeReadGraph({
         className="cy-read-graph-canvas"
         data-testid="cytoscape-read-graph-canvas"
         onKeyDown={keyboardControl}
-        ref={containerRef}
         role="img"
         style={{ height }}
         tabIndex={0}
       >
+        <div aria-hidden="true" className="cy-read-graph-canvas-host" ref={containerRef} />
         {loading && <div className="cy-read-graph-state" role="status">권한 필터링된 graph를 불러오는 중입니다.</div>}
         {!loading && visibleError && <div className="cy-read-graph-state cy-read-graph-error" role="alert">Graph query 또는 layout 실패: {visibleError}</div>}
         {!loading && !visibleError && graph.nodes.length === 0 && <div className="cy-read-graph-state" role="status"><strong>{emptyTitle}</strong><span>{emptyDescription}</span></div>}

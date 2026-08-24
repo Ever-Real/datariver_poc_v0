@@ -8,6 +8,7 @@
 .cy-read-graph-tool-buttons { display: flex; flex: 0 0 auto; gap: 3px; }
 .cy-read-graph-relation-tools { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line-200); padding: 5px 6px; background: #f8fafb; }
 .cy-read-graph-canvas { position: relative; min-height: 280px; overflow: hidden; contain: layout paint; background-color: #f8fafb; background-image: linear-gradient(#dfe7ec 1px, transparent 1px), linear-gradient(90deg, #dfe7ec 1px, transparent 1px); background-size: 18px 18px; }
+.cy-read-graph-canvas-host { position: absolute; inset: 0; }
 .cy-read-graph-canvas:focus-visible { outline: 3px solid var(--blue-700); outline-offset: -3px; }
 .cy-read-graph-state { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; align-content: center; gap: 6px; padding: 20px; color: var(--text-500); text-align: center; background: #f8fafb; font-size: 11px; }
 .cy-read-graph-state strong { color: var(--navy-900); font-size: 12px; }
