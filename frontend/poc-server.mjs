@@ -5236,12 +5236,13 @@ async function bulkCandidatePreview(entry, candidate) {
   }
 }
 
-async function neo4jQuery(statement, parameters = {}) {
+async function neo4jQuery(statement, parameters = {}, timeoutMs = providerTimeoutMs) {
   if (!neo4j) throw Object.assign(new Error('Neo4j is not configured.'), { statusCode: 503 })
   const response = await providerFetch(joinProviderUrl(neo4j.url, '/db/neo4j/tx/commit'), {
     method: 'POST',
     headers: { Authorization: basicAuthorization(neo4j), 'Content-Type': 'application/json' },
     body: JSON.stringify({ statements: [{ statement, parameters, resultDataContents: ['row'] }] }),
+    timeoutMs,
   })
   await requireOk(response, 'Neo4j')
   const payload = await response.json()
@@ -9010,7 +9011,11 @@ export async function startPocServer({ stateStore } = {}) {
   const k9SchedulerConfig = loadPocK9SchedulerConfig()
   const k9Neo4jAdapter = {
     run: async (stmt, params) => {
-      const result = await neo4jQuery(stmt, params)
+      // Managed refresh performs bounded batches plus an exact large read-back
+      // validation. Keep interactive Neo4j calls at the normal provider bound,
+      // while allowing only this versioned staging adapter enough time to
+      // validate and atomically promote a complete projection.
+      const result = await neo4jQuery(stmt, params, 60_000)
       return result.map(r => r.row)
     }
   }
