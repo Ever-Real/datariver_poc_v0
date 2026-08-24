@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-24T22:40:04+09:00",
+  "base": {
+    "starting_product": "ab6fd454cdbf109c6b82d393a7100e3e38c71f84",
+    "starting_evidence": "3f09dfd8f78c79ad0588cc6cb93a307f39eed5f5",
+    "product_sha": "e8040e6fedb3b675c5b26854292d08e2010e2ba8"
+  },
+  "datahub": {
+    "version": "v1.6.0",
+    "commit": "059a36c0b035a6057de00114ccac0ea9003d6bc2",
+    "source_snapshot_id": "197f7d7e4edd00f75e1704738703bd98ef02aaafdbf661398c6779824dd0da2b",
+    "source_snapshot_observed_at": "2026-08-24T11:53:20.000Z",
+    "canonical_sources": [
+      "datasetProperties",
+      "schemaMetadata",
+      "globalTags",
+      "glossaryTerms",
+      "domains",
+      "structuredProperties",
+      "customProperties",
+      "upstreamLineage",
+      "fineGrainedLineages"
+    ]
+  },
+  "metadata_master": {
+    "status": "READY",
+    "last_result": "NO_OP",
+    "model_version": 2,
+    "nodes": 12336,
+    "edges": 45775,
+    "node_types": {
+      "class.table": 501,
+      "class.view": 500,
+      "class.column": 11237,
+      "class.tag": 54,
+      "class.business_term": 34,
+      "class.glossary_term_group": 9,
+      "class.domain": 1
+    },
+    "edge_types": {
+      "rel.table_contains_column": 11237,
+      "rel.table_has_tag": 9012,
+      "rel.column_has_tag": 11240,
+      "rel.table_has_glossary_term": 2005,
+      "rel.column_has_glossary_term": 11240,
+      "rel.glossary_in_term_group": 41,
+      "rel.table_belongs_to_domain": 1000
+    },
+    "explicit_edges": 45775,
+    "inferred_edges": 0,
+    "duplicate_nodes": 0,
+    "duplicate_edges": 0,
+    "pairwise_cliques": 0,
+    "orphan_nodes": 1,
+    "unit_explicit": 0,
+    "unit_inferred_candidates": 0,
+    "active_projection": "k9_stage_9ebb9353c29d4f678e8879240eab0531"
+  },
+  "default_lineage": {
+    "status": "READY",
+    "last_result": "NO_OP",
+    "model_version": 2,
+    "nodes": 1001,
+    "edges": 1950,
+    "table_edges": 1950,
+    "column_edges": 0,
+    "duplicate_nodes": 0,
+    "duplicate_edges": 0,
+    "pairwise_cliques": 0,
+    "lineage_source": "DataHub upstreamLineage / fineGrainedLineages",
+    "active_projection": "k9_stage_e94e3819d99d4d7cbec7a3f6717943d2"
+  },
+  "refresh": {
+    "frequency": "DAILY",
+    "first_exact_product_elapsed_ms": 1102569,
+    "first_result": {
+      "lineage": "RUN",
+      "metadata_master": "RUN",
+      "semantic_index_refreshed": 0,
+      "semantic_indexed": 2002
+    },
+    "second_exact_product_elapsed_ms": 208248,
+    "second_result": {
+      "lineage": "NO_OP",
+      "metadata_master": "NO_OP",
+      "semantic_index_refreshed": 0
+    },
+    "single_shared_snapshot": true,
+    "read_back_hash_verified": true,
+    "atomic_active_pointer_promotion": true,
+    "last_known_good_preserved": true,
+    "preparing_runs": 0,
+    "neo4j_namespaces": 2,
+    "orphan_staging_namespaces": 0
+  },
+  "semantic_index": {
+    "status": "READY",
+    "binding_hash": "efd6b86426b8bec35c4cfbf6c8f228e38f39877ace3d65110244f2fdacd65f89",
+    "generation": "7faa17ccde7ad2f6f90b84d745b4f449a532be6566d709e5369f4e31412c8f17",
+    "active_rows": 2002,
+    "hardcoded_synonym_dictionary": false,
+    "domain_specific_production_hardcoding": false
+  },
+  "router": {
+    "general": "20/20",
+    "vector": "20/20",
+    "graph": "20/20",
+    "boundary": "8/8",
+    "precision_recall": 1.0,
+    "p50_ms": 24316,
+    "p95_ms": 63242,
+    "evidence": ["router-60.json", "router-boundary.json"]
+  },
+  "mcp": {
+    "native_p50_ms": 806,
+    "native_p95_ms": 838,
+    "mcp_p50_ms": 808,
+    "mcp_p95_ms": 826,
+    "error_rate": 0,
+    "structured_result_consistency": true,
+    "auth_propagation": "PASS",
+    "semantic_node_leakage": "PASS",
+    "architecture": "INTERNAL_NATIVE_EXTERNAL_MCP_SHARED_CORE"
+  },
+  "source_verification": {
+    "server": "122/122 PASS",
+    "ui": "90 files / 651 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "static": "PASS",
+    "diff_check": "PASS",
+    "domain_specific_production_hardcoding": "NONE"
+  },
+  "browser": {
+    "metadata_master_bounded_graph": "PASS",
+    "metadata_master_search_filter_expand": "PASS",
+    "default_lineage_bounded_graph": "15 nodes / 23 edges PASS",
+    "hard_reload": "PASS",
+    "chat_general_no_retrieval": "PASS",
+    "chat_vector_managed_asset_grounding": "PASS",
+    "chat_graph_actual_traversal": "PASS",
+    "search": "PASS",
+    "change_management": "PASS",
+    "monitoring": "PASS",
+    "profile": "PASS",
+    "knowledge_studio_non_regression": "PASS"
+  },
+  "authorization": {
+    "authorized_positive": "PASS",
+    "unauthorized_negative": "PASS",
+    "mcp_exact_table_grants": 2,
+    "mcp_returned_nodes": 2,
+    "mcp_returned_edges": 1,
+    "shared_semantic_node_leakage": false,
+    "invalid_mcp_token_http_status": 401
+  },
+  "cleanup": {
+    "eval_credential_enabled": false,
+    "credential_version": 11,
+    "revoked_sessions": 3,
+    "browser_tabs": 0,
+    "temporary_secret_directory": "TRASHED_RECOVERABLE",
+    "temporary_candidate_container": 0,
+    "preparing_refreshes": 0,
+    "orphan_staging_namespaces": 0,
+    "inactive_embedding_rows_pruned": 6002,
+    "active_embedding_rows": 2002
+  },
+  "runtime": {
+    "port_39083_http": 200,
+    "port_39083_health": 200,
+    "oci_tag": "datariver-poc:e8040e6fedb3b675c5b26854292d08e2010e2ba8",
+    "oci_health": "healthy",
+    "oci_restart_count": 0,
+    "port_39090_http": 200,
+    "prep_executed": false,
+    "ops_executed": false
+  },
+  "result": "COMPLETE_RUNTIME_VERIFIED"
+}

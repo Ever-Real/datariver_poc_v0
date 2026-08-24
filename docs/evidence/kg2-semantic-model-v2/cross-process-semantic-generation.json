@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-08-24T22:40:04+09:00",
+  "product_sha": "e8040e6fedb3b675c5b26854292d08e2010e2ba8",
+  "binding_hash": "efd6b86426b8bec35c4cfbf6c8f228e38f39877ace3d65110244f2fdacd65f89",
+  "source_generation": "7faa17ccde7ad2f6f90b84d745b4f449a532be6566d709e5369f4e31412c8f17",
+  "cross_process_semantic_generation_ownership": "EXACT_BINDING_AND_GENERATION_SINGLE_OWNER",
+  "duplicate_materialization_prevention": "POSTGRESQL_SESSION_ADVISORY_LOCK_AND_ACTIVE_GENERATION_RECHECK",
+  "same_binding_concurrent_request_behavior": "WAIT_THEN_REUSE_ACTIVE_GENERATION",
+  "protection_mechanism": {
+    "lock_key": "datariver:poc:catalog-embedding-generation:v1:<binding_hash>:<source_generation>",
+    "lock": "pg_advisory_lock(hashtextextended(lock_key, 0))",
+    "durable_reuse_check": "active source_generation is re-read after lock acquisition",
+    "ownership_heartbeat_ms": 15000,
+    "ownership_loss_behavior": "AbortSignal cancels pending provider batches and prevents publish",
+    "publish_boundary": "embedding rows and active generation pointer commit in one PostgreSQL transaction",
+    "process_local_optimization": "in-process promise reuse remains an optimization, not the safety boundary"
+  },
+  "runtime_focused_verification": {
+    "producer_a": {
+      "requested_at_epoch_ms": 1787573774249,
+      "acquired_at_epoch_ms": 1787573774281,
+      "released_at_epoch_ms": 1787573794297,
+      "held_ms": 20016,
+      "behavior": "REUSE_ACTIVE_GENERATION"
+    },
+    "producer_b": {
+      "requested_at_epoch_ms": 1787573783498,
+      "acquired_at_epoch_ms": 1787573794300,
+      "released_at_epoch_ms": 1787573794322,
+      "waited_ms": 10802,
+      "acquired_after_owner_release_ms": 3,
+      "behavior": "REUSE_ACTIVE_GENERATION"
+    },
+    "heartbeat_exercised": true,
+    "duplicate_provider_materializations": 0,
+    "ownership_loss_abort_test": "PASS",
+    "active_embedding_rows_after_cleanup": 2002,
+    "inactive_embedding_rows_pruned": 6002,
+    "inactive_active_pointers_pruned": 1
+  },
+  "result": "PASS"
+}
