@@ -206,12 +206,42 @@ export function mergeReadGraphs(base: ReadGraphModel, additions: ReadGraphModel[
   return { ...base, nodes: [...nodes.values()], edges: [...edges.values()] }
 }
 
-function nodeShape(entityType: string): string {
-  const normalized = entityType.toLocaleUpperCase()
-  if (normalized.includes('COLUMN') || normalized.includes('PROPERTY')) return 'round-rectangle'
-  if (normalized.includes('TERM') || normalized.includes('TAG') || normalized.includes('CONCEPT')) return 'diamond'
-  if (normalized.includes('DOMAIN') || normalized.includes('CONTAINER')) return 'hexagon'
-  return 'rectangle'
+export const CYTOSCAPE_GROUP_PALETTE = Object.freeze({
+  DATASET: '#4e79a7',
+  VIEW: '#59a14f',
+  COLUMN: '#f28e2b',
+  GLOSSARY_TERM: '#b07aa1',
+  TAG: '#e15759',
+  DOMAIN: '#76b7b2',
+  UNIT: '#edc948',
+  CONTAINER: '#9c755f',
+  PLATFORM: '#79706e',
+  ENTITY: '#6b7280',
+})
+
+export type CytoscapeNodeGroup = keyof typeof CYTOSCAPE_GROUP_PALETTE
+
+/**
+ * Maps platform-generic canonical metadata types to a stable visual group.
+ * Domain vocabulary and individual DataHub identities deliberately have no
+ * place in this mapping.
+ */
+export function canonicalNodeGroup(entityType: string): CytoscapeNodeGroup {
+  const normalized = entityType.toLocaleUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (normalized.includes('VIEW')) return 'VIEW'
+  if (normalized.includes('COLUMN') || normalized.includes('SCHEMA_FIELD') || normalized.includes('PROPERTY')) return 'COLUMN'
+  if (normalized.includes('GLOSSARY') || normalized.includes('BUSINESS_TERM') || normalized === 'TERM' || normalized.includes('CONCEPT')) return 'GLOSSARY_TERM'
+  if (normalized.includes('TAG')) return 'TAG'
+  if (normalized.includes('DOMAIN')) return 'DOMAIN'
+  if (normalized.includes('UNIT')) return 'UNIT'
+  if (normalized.includes('CONTAINER') || normalized.includes('DATABASE') || normalized.includes('SCHEMA')) return 'CONTAINER'
+  if (normalized.includes('PLATFORM')) return 'PLATFORM'
+  if (normalized.includes('DATASET') || normalized.includes('TABLE')) return 'DATASET'
+  return 'ENTITY'
+}
+
+export function nodeGroupColor(entityType: string): string {
+  return CYTOSCAPE_GROUP_PALETTE[canonicalNodeGroup(entityType)]
 }
 
 function compactCanvasLabel(value: string, maximum = 28): string {
@@ -232,11 +262,13 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
       data: {
         id: node.id,
         label: node.label,
-        canvasLabel: `${compactCanvasLabel(node.label)}\n${compactCanvasLabel(node.entityType, 22)}`,
+        canvasLabel: compactCanvasLabel(node.label),
         subtitle: node.subtitle ?? '',
         entityType: node.entityType,
+        nodeGroup: canonicalNodeGroup(node.entityType),
+        groupColor: nodeGroupColor(node.entityType),
         role: node.role ?? 'NEUTRAL',
-        shape: nodeShape(node.entityType),
+        shape: 'ellipse',
       },
     })
   }

@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { CatalogLineage, KnowledgeSnapshot } from '../../api/types'
 import {
   catalogLineageToReadGraph,
+  canonicalNodeGroup,
   cytoscapeLayout,
   lineageRoleGaps,
   knowledgeSnapshotToReadGraph,
   mergeReadGraphs,
+  nodeGroupColor,
   toCytoscapeElements,
 } from './CytoscapeGraphAdapter'
 
@@ -70,6 +72,21 @@ describe('Cytoscape graph adapter', () => {
     expect(graph.nodes[1]).toMatchObject({ id: 'node-b', label: 'Business B', role: 'ROOT' })
     expect(graph.edges[0]).toMatchObject({ id: 'edge-a-b', source: 'node-a', target: 'node-b' })
     expect(elements.find((element) => element.data.id === 'edge-a-b')?.data).toMatchObject({ source: 'node-a', target: 'node-b' })
+    expect(elements.find((element) => element.data.id === 'node-b')?.data).toMatchObject({
+      shape: 'ellipse',
+      nodeGroup: 'GLOSSARY_TERM',
+      groupColor: nodeGroupColor('GLOSSARY_TERM'),
+      canvasLabel: 'Business B',
+    })
+  })
+
+  it('derives stable visual groups only from platform-generic entity types', () => {
+    expect(canonicalNodeGroup('DATASET')).toBe('DATASET')
+    expect(canonicalNodeGroup('TABLE')).toBe('DATASET')
+    expect(canonicalNodeGroup('SCHEMA_FIELD')).toBe('COLUMN')
+    expect(canonicalNodeGroup('GLOSSARY_TERM')).toBe('GLOSSARY_TERM')
+    expect(canonicalNodeGroup('UNIT_OF_MEASURE')).toBe('UNIT')
+    expect(canonicalNodeGroup('organization_specific_entity')).toBe('ENTITY')
   })
 
   it('projects managed lineage visually from upstream left to downstream right without changing edge identity', () => {

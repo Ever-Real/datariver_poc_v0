@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
@@ -21,6 +22,7 @@ import type {
 import {
   cytoscapeLayout,
   lineageRoleGaps,
+  nodeGroupColor,
   toCytoscapeElements,
   type ReadGraphEdge,
   type ReadGraphModel,
@@ -68,11 +70,11 @@ interface CytoscapeReadGraphProps {
 }
 
 export const CYTOSCAPE_NODE_GEOMETRY = Object.freeze({
-  width: 142,
-  height: 42,
-  padding: '6px',
+  width: 36,
+  height: 36,
+  padding: '0px',
   fontSize: 9,
-  textMaxWidth: '122px',
+  textMaxWidth: '96px',
   borderWidth: 2,
 })
 
@@ -100,14 +102,13 @@ function colorValue(element: HTMLElement, token: string, fallback: string): stri
 export function graphStyles(element: HTMLElement): StylesheetJson {
   const navy = colorValue(element, '--navy-900', '#0a192f')
   const blue = colorValue(element, '--blue-700', '#004b87')
-  const line = colorValue(element, '--line-300', '#cbd5e1')
   const selection = colorValue(element, '--orange-700', '#c2410c')
   return [
     {
       selector: 'node',
       style: {
-        'background-color': '#ffffff',
-        'border-color': line,
+        'background-color': 'data(groupColor)',
+        'border-color': '#ffffff',
         'border-width': CYTOSCAPE_NODE_GEOMETRY.borderWidth,
         color: navy,
         content: 'data(canvasLabel)',
@@ -118,40 +119,41 @@ export function graphStyles(element: HTMLElement): StylesheetJson {
         label: 'data(canvasLabel)',
         'line-height': 1.18,
         padding: CYTOSCAPE_NODE_GEOMETRY.padding,
-        shape: 'rectangle',
+        shape: 'ellipse',
         'text-halign': 'center',
+        'text-margin-y': 7,
         'text-max-width': CYTOSCAPE_NODE_GEOMETRY.textMaxWidth,
         'text-overflow-wrap': 'anywhere',
+        'text-opacity': 0,
         'text-wrap': 'wrap',
-        'text-valign': 'center',
+        'text-valign': 'bottom',
         width: CYTOSCAPE_NODE_GEOMETRY.width,
       },
     },
-    { selector: 'node[shape = "round-rectangle"]', style: { shape: 'round-rectangle' } },
-    { selector: 'node[shape = "diamond"]', style: { shape: 'diamond' } },
-    { selector: 'node[shape = "hexagon"]', style: { shape: 'hexagon' } },
-    { selector: 'node[role = "ROOT"]', style: { 'background-color': '#eaf4fa', 'border-color': blue } },
-    { selector: 'node[role = "UPSTREAM"]', style: { 'background-color': '#fff8ea', 'border-color': '#9b6a29' } },
-    { selector: 'node[role = "DOWNSTREAM"]', style: { 'background-color': '#ecfdf5', 'border-color': '#367a57' } },
+    { selector: 'node[role = "ROOT"]', style: { 'border-color': blue } },
+    { selector: 'node[role = "UPSTREAM"]', style: { 'border-color': '#9b6a29' } },
+    { selector: 'node[role = "DOWNSTREAM"]', style: { 'border-color': '#367a57' } },
     {
       selector: 'edge',
       style: {
-        'arrow-scale': 1.25,
+        'arrow-scale': 1.15,
         'curve-style': 'bezier',
         'font-size': 8,
         label: 'data(label)',
-        'line-color': '#526a80',
-        'target-arrow-color': '#526a80',
+        'line-color': '#a5b1bd',
+        opacity: 0.82,
+        'target-arrow-color': '#8795a3',
         'target-arrow-shape': 'triangle',
         'text-background-color': '#ffffff',
         'text-background-opacity': 0.88,
         'text-background-padding': '2px',
+        'text-opacity': 0,
         'text-rotation': 'autorotate',
-        width: 2.2,
+        width: 2.1,
       },
     },
-    { selector: 'edge[branch = "UPSTREAM"]', style: { 'line-color': '#8a5b1f', 'target-arrow-color': '#8a5b1f' } },
-    { selector: 'edge[branch = "DOWNSTREAM"]', style: { 'line-color': '#276749', 'target-arrow-color': '#276749' } },
+    { selector: 'edge[branch = "UPSTREAM"]', style: { 'line-color': '#b29a79', 'target-arrow-color': '#8a5b1f' } },
+    { selector: 'edge[branch = "DOWNSTREAM"]', style: { 'line-color': '#80a995', 'target-arrow-color': '#276749' } },
     {
       selector: 'node:selected',
       style: {
@@ -161,6 +163,7 @@ export function graphStyles(element: HTMLElement): StylesheetJson {
         'underlay-color': selection,
         'underlay-opacity': CYTOSCAPE_SELECTED_NODE_HIGHLIGHT.underlayOpacity,
         'underlay-padding': CYTOSCAPE_SELECTED_NODE_HIGHLIGHT.underlayPadding,
+        'text-opacity': 1,
       },
     },
     { selector: 'edge:selected', style: { 'line-color': selection, 'target-arrow-color': selection, width: 3 } },
@@ -175,7 +178,24 @@ export function graphStyles(element: HTMLElement): StylesheetJson {
       },
     },
     { selector: 'edge.graph-highlight', style: { 'line-color': blue, 'target-arrow-color': blue, opacity: 1, width: 3 } },
-    { selector: '.graph-dim', style: { opacity: 0.18, 'text-opacity': 0.35 } },
+    { selector: '.graph-dim', style: { opacity: 0.18, 'text-opacity': 0 } },
+    { selector: '.graph-hover-dim', style: { opacity: 0.14, 'text-opacity': 0 } },
+    { selector: 'node.graph-hover-neighbor', style: { opacity: 1, 'text-opacity': 0 } },
+    {
+      selector: 'node.graph-hover',
+      style: {
+        'border-color': selection,
+        opacity: 1,
+        'text-background-color': '#ffffff',
+        'text-background-opacity': 0.92,
+        'text-background-padding': '3px',
+        'text-opacity': 1,
+        'underlay-color': selection,
+        'underlay-opacity': 0.08,
+        'underlay-padding': 5,
+      },
+    },
+    { selector: 'edge.graph-hover-edge', style: { opacity: 1, 'text-opacity': 0, width: 2.8 } },
   ]
 }
 
@@ -494,8 +514,24 @@ export function CytoscapeReadGraph({
           instance.zoom(viewport.zoom)
           instance.pan(viewport.pan)
         }
+        const clearHover = () => {
+          instance?.elements().removeClass('graph-hover graph-hover-neighbor graph-hover-edge graph-hover-dim')
+        }
+        const highlightNeighborhood = (event: EventObjectNode) => {
+          if (!instance) return
+          clearHover()
+          const node = event.target
+          const neighbors = node.neighborhood('node')
+          const connectedEdges = node.connectedEdges()
+          instance.elements().addClass('graph-hover-dim')
+          node.removeClass('graph-hover-dim').addClass('graph-hover')
+          neighbors.removeClass('graph-hover-dim').addClass('graph-hover-neighbor')
+          connectedEdges.removeClass('graph-hover-dim').addClass('graph-hover-edge')
+        }
         instance.on('tap', 'node', handleNodeTap)
         instance.on('tap', 'edge', handleEdgeTap)
+        instance.on('mouseover', 'node', highlightNeighborhood)
+        instance.on('mouseout', 'node', clearHover)
         instance.on('grab', 'node', preserveDuringDrag)
         instance.on('free', 'node', settleAfterDrag)
         const nextMetrics = {
@@ -725,7 +761,11 @@ export function CytoscapeReadGraph({
       <div className="cy-read-graph-legend" aria-label="그래프 범례">
         <strong>범례</strong>
         {graph.kind === 'LINEAGE' && <><span data-shape="root">현재</span><span data-shape="upstream">Upstream</span><span data-shape="downstream">Downstream</span></>}
-        {entityTypes.map((entityType) => <span key={entityType} data-shape="entity">{entityType}</span>)}
+        {entityTypes.map((entityType) => <span
+          key={entityType}
+          data-shape="entity"
+          style={{ '--graph-group-color': nodeGroupColor(entityType) } as CSSProperties}
+        >{entityType}</span>)}
       </div>
       {graph.nodes.length > 0 && <details className="cy-read-graph-entity-list">
         <summary>접근 가능한 bounded entity 목록 · {graph.nodes.length}</summary>

@@ -74,7 +74,7 @@ afterEach(() => {
 })
 
 describe('CytoscapeReadGraph', () => {
-  it('keeps compact node geometry identical when selected and strengthens directional edges', () => {
+  it('keeps compact circular geometry identical when selected and preserves directional edges', () => {
     const styles = graphStyles(document.createElement('div'))
     const style = (selector: string) => (styles.find((entry) => entry.selector === selector) as unknown as {
       style: Record<string, unknown>
@@ -83,14 +83,16 @@ describe('CytoscapeReadGraph', () => {
     const selected = style('node:selected')
     const edge = style('edge')
 
-    expect(CYTOSCAPE_NODE_GEOMETRY).toMatchObject({ width: 142, height: 42, fontSize: 9 })
+    expect(CYTOSCAPE_NODE_GEOMETRY).toMatchObject({ width: 36, height: 36, fontSize: 9 })
+    expect(base).toMatchObject({ shape: 'ellipse', 'text-opacity': 0, 'background-color': 'data(groupColor)' })
     expect(selected['border-width']).toBe(base['border-width'])
     expect(selected['border-width']).toBe(CYTOSCAPE_SELECTED_NODE_HIGHLIGHT.borderWidth)
     expect(selected).not.toHaveProperty('width')
     expect(selected).not.toHaveProperty('height')
     expect(selected).not.toHaveProperty('padding')
     expect(selected).not.toHaveProperty('font-size')
-    expect(edge).toMatchObject({ width: 2.2, 'arrow-scale': 1.25, 'target-arrow-shape': 'triangle' })
+    expect(edge).toMatchObject({ width: 2.1, 'arrow-scale': 1.15, 'target-arrow-shape': 'triangle' })
+    expect(edge['line-color']).toBe('#a5b1bd')
   })
 
   it('distinguishes a rendered label hit from the node body without changing click cadence', () => {
@@ -243,6 +245,44 @@ describe('CytoscapeReadGraph', () => {
       name: 'cola', fit: false, centerGraph: false, randomize: false, maxSimulationTime: 700,
     })
     expect(cy.pan).toHaveBeenCalledWith({ x: 24, y: 36 })
+  })
+
+  it('uses transient hover classes without clearing persistent selection or path state', async () => {
+    render(<CytoscapeReadGraph ariaLabel="Hover graph" graph={graph} />)
+    await waitFor(() => expect(cytoscape).toHaveBeenCalled())
+    const neighbors = {
+      removeClass: vi.fn(() => neighbors),
+      addClass: vi.fn(() => neighbors),
+    }
+    const connectedEdges = {
+      removeClass: vi.fn(() => connectedEdges),
+      addClass: vi.fn(() => connectedEdges),
+    }
+    const mouseover = cy.on.mock.calls.find(([event]) => event === 'mouseover')?.[2] as ((event: {
+      target: {
+        neighborhood: (selector: string) => typeof neighbors
+        connectedEdges: () => typeof connectedEdges
+        removeClass: ReturnType<typeof vi.fn>
+        addClass: ReturnType<typeof vi.fn>
+      }
+    }) => void) | undefined
+    const mouseout = cy.on.mock.calls.find(([event]) => event === 'mouseout')?.[2] as (() => void) | undefined
+    const target = {
+      neighborhood: vi.fn(() => neighbors),
+      connectedEdges: vi.fn(() => connectedEdges),
+      removeClass: vi.fn(() => target),
+      addClass: vi.fn(() => target),
+    }
+
+    act(() => mouseover?.({ target }))
+    expect(elements.addClass).toHaveBeenCalledWith('graph-hover-dim')
+    expect(target.addClass).toHaveBeenCalledWith('graph-hover')
+    expect(neighbors.addClass).toHaveBeenCalledWith('graph-hover-neighbor')
+    expect(connectedEdges.addClass).toHaveBeenCalledWith('graph-hover-edge')
+
+    act(() => mouseout?.())
+    expect(elements.removeClass).toHaveBeenCalledWith('graph-hover graph-hover-neighbor graph-hover-edge graph-hover-dim')
+    expect(elements.removeClass).not.toHaveBeenCalledWith(expect.stringContaining('graph-highlight'))
   })
 
   it('invokes bounded expand for the selected canonical node', async () => {
