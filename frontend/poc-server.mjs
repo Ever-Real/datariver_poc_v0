@@ -4791,7 +4791,10 @@ async function ensureCatalogEmbeddingIndex(
   const promise = pocStateStore.withCatalogEmbeddingGenerationLock(
     bindingHash,
     sourceGeneration,
-    async () => {
+    async (ownershipSignal) => {
+      const materializationSignal = signal && ownershipSignal
+        ? AbortSignal.any([signal, ownershipSignal])
+        : signal || ownershipSignal
       const activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
       if (activeGeneration === sourceGeneration) {
         return {
@@ -4805,9 +4808,9 @@ async function ensureCatalogEmbeddingIndex(
       const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
       const replacements = []
       for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
-        signal?.throwIfAborted()
+        materializationSignal?.throwIfAborted()
         const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
-        const vectors = await embedCatalogTexts(batch.map((item) => item.contentText), signal)
+        const vectors = await embedCatalogTexts(batch.map((item) => item.contentText), materializationSignal)
         replacements.push(...batch.map((item, index) => ({
           bindingHash,
           assetUrn: item.asset.id,
@@ -4818,7 +4821,7 @@ async function ensureCatalogEmbeddingIndex(
           embedding: vectors[index],
         })))
       }
-      signal?.throwIfAborted()
+      materializationSignal?.throwIfAborted()
       await pocStateStore.replaceCatalogEmbeddingGeneration(
         bindingHash,
         datahubInventoryStateScope,

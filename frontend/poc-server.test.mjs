@@ -1,6 +1,7 @@
 /* global Buffer, fetch, setTimeout, structuredClone */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import process from 'node:process'
 import { after, before, test } from 'node:test'
 import { URL, URLSearchParams } from 'node:url'
@@ -876,6 +877,29 @@ test('serializes same-generation Catalog Embedding producers before materializat
   assert.deepEqual(await Promise.all([producer('first', 15), producer('second', 0)]), ['first', 'second'])
   assert.equal(maximumActive, 1)
   assert.deepEqual(order, ['first:start', 'first:end', 'second:start', 'second:end'])
+})
+
+test('aborts a Catalog Embedding producer when its PostgreSQL ownership session is lost', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs?postgres-generation-owner-loss')
+  const client = new EventEmitter()
+  client.query = async () => ({ rows: [] })
+  client.release = () => undefined
+  const databasePool = {
+    async query() { return { rows: [] } },
+    async connect() { return client },
+    async end() {},
+  }
+  const store = createPocStateStore({ databasePool })
+  const task = store.withCatalogEmbeddingGenerationLock(
+    '7'.repeat(64),
+    '8'.repeat(64),
+    async (ownershipSignal) => {
+      client.emit('error', new Error('connection lost'))
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 0))
+      ownershipSignal.throwIfAborted()
+    },
+  )
+  await assert.rejects(task, /Catalog Embedding generation ownership was lost/)
 })
 
 test('commits the PostgreSQL Embedding generation and active pointer in one fenced transaction', async () => {

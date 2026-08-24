@@ -134,7 +134,12 @@ the lock only after the current owner exits or finishes, then rechecks the durab
 pointer before performing provider work. It therefore reuses a generation that another process
 already promoted instead of embedding the same documents again. The existing process-local promise
 remains an optimization only; it is not the cross-process authority. A process crash closes its
-dedicated database session and releases the lock.
+dedicated database session and releases the lock. The ownership session sends a bounded heartbeat
+while provider materialization is active. A database-session error aborts the current provider
+request and all remaining batches before another owner may safely materialize; it is handled as an
+ownership failure rather than an unhandled process error. Successful commit remains the single
+transactional generation/active-pointer fence, so a waiter always rechecks and reuses that durable
+generation.
 
 Fixed DataHub refresh reads use a 60-second request bound and at most one retry for timeout/abort
 conditions not caused by the refresh cancellation signal. Other provider errors fail closed. This

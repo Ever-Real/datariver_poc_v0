@@ -1,4 +1,4 @@
-/* global structuredClone */
+/* global AbortController, clearInterval, setInterval, structuredClone */
 import { createHash } from 'node:crypto'
 import process from 'node:process'
 import { TextEncoder } from 'node:util'
@@ -1577,15 +1577,42 @@ export function createPocStateStore({ databasePool } = {}) {
     if (pool) {
       const client = await pool.connect()
       let locked = false
+      let heartbeat
+      let heartbeatPromise = Promise.resolve()
+      let ownershipError
+      const ownershipAbortController = new AbortController()
+      const loseOwnership = (error) => {
+        if (ownershipError) return
+        ownershipError = new Error('Catalog Embedding generation ownership was lost.', { cause: error })
+        ownershipAbortController.abort(ownershipError)
+      }
+      const onClientError = (error) => loseOwnership(error)
+      client.on?.('error', onClientError)
       try {
         await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockName])
         locked = true
-        return await task()
+        heartbeat = setInterval(() => {
+          if (ownershipError) return
+          heartbeatPromise = heartbeatPromise
+            .then(() => client.query('SELECT 1'))
+            .catch(loseOwnership)
+        }, 15_000)
+        heartbeat.unref?.()
+        const result = await task(ownershipAbortController.signal)
+        ownershipAbortController.signal.throwIfAborted()
+        return result
       } finally {
-        if (locked) {
-          await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockName])
+        if (heartbeat) clearInterval(heartbeat)
+        await heartbeatPromise.catch(() => undefined)
+        if (locked && !ownershipError) {
+          try {
+            await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockName])
+          } catch (error) {
+            loseOwnership(error)
+          }
         }
-        client.release()
+        client.removeListener?.('error', onClientError)
+        client.release(ownershipError)
       }
     }
     let releaseLock
@@ -1595,7 +1622,7 @@ export function createPocStateStore({ databasePool } = {}) {
     memoryCatalogEmbeddingGenerationLocks.set(lockName, tail)
     await priorLock
     try {
-      return await task()
+      return await task(new AbortController().signal)
     } finally {
       releaseLock()
       if (memoryCatalogEmbeddingGenerationLocks.get(lockName) === tail) {
