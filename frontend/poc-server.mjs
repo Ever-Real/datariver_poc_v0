@@ -9177,7 +9177,12 @@ export async function startPocServer({ stateStore } = {}) {
 
     while (true) {
       if (pages >= 10002) throw new Error('Exceeded glossary inventory page limit')
-      const data = await datahubGraphql(datahubGlossaryQuery, buildK9GlossaryScrollVariables(nextScrollId))
+      const data = await datahubGraphql(
+        datahubGlossaryQuery,
+        buildK9GlossaryScrollVariables(nextScrollId),
+        60_000,
+        serverBackgroundAbortController?.signal,
+      )
       pages++
       const scroll = data.scrollAcrossEntities
       if (!scroll || typeof scroll.total !== 'number') throw new Error('Malformed glossary response')

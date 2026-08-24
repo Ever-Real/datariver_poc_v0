@@ -105,9 +105,10 @@ test('source contracts declare exact Product routes and future private server-ow
   assert.equal(glossaryBoundary.hierarchy_cycle_policy, 'REJECT_TERM_OR_NODE_PARENT_CYCLE');
   assert.match(glossaryBoundary.required_product_seam, /collectGlossaryInventorySeam/);
   assert.match(glossaryBoundary.required_product_seam, /module-private in poc-server\.mjs/);
-  assert.match(glossaryBoundary.required_product_seam, /server-owned exhaustive trace/);
-  assert.match(glossaryBoundary.required_product_seam, /rehydrate assignment classification/);
-  assert.match(glossaryBoundary.required_product_seam, /absent\/unknown\/above-INTERNAL/);
+  assert.match(glossaryBoundary.required_product_seam, /server-owned exhaustive current-inventory trace/);
+  assert.match(glossaryBoundary.required_product_seam, /reconcile provider assignment totals/);
+  assert.match(glossaryBoundary.required_product_seam, /same canonical inventory/);
+  assert.match(glossaryBoundary.required_product_seam, /absent\/unknown\/above-ceiling/);
 });
 
 test('declared route and provider boundaries match the pinned Product source', () => {
@@ -119,6 +120,7 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /function datasetAsset[\s\S]*?id: entity\.urn,[\s\S]*?external_urn: entity\.urn,[\s\S]*?classification/);
   assert.match(product, /async function datahubGlossary[\s\S]*?return \{\s*items: terms\.sort/);
   assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?Math\.min\(50,[\s\S]*?Math\.min\(100_000,[\s\S]*?page: \{ next_cursor:/);
+  assert.match(product, /collectGlossaryInventorySeam[\s\S]*?datahubGlossaryQuery,[\s\S]*?60_000/);
 });
 
 test('mapping contracts bind exact source and T-Box pins and preserve deterministic fail-closed semantics', () => {

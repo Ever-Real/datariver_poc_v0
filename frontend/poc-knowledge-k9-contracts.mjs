@@ -209,7 +209,7 @@ export const docSourceGlossary = deepFreeze({
       "GET /poc-api/datahub/glossary/assignments?urn={urn}&target_type={TABLE|COLUMN}&limit=50&cursor={cursor} -> {items, total, page:{next_cursor,limit}}",
       "GET /poc-api/datahub/asset?urn={urn} -> {id, external_urn, ..., classification}"
     ],
-    required_product_seam: "async function collectGlossaryInventorySeam(authCtx) { ... } // module-private in poc-server.mjs. Invoked only after context.principal auth. Uses internal datahubGraphql queries and Product classification checks. Must return server-owned exhaustive trace, reject repeated/nonterminal-at-bound cursors, bind authority pin, and rehydrate assignment classification (failing closed on absent/unknown/above-INTERNAL).",
+    required_product_seam: "async function collectGlossaryInventorySeam(authCtx) { ... } // module-private in poc-server.mjs. Invoked only after context.principal auth. Uses internal datahubGraphql queries and Product classification checks. Must return a server-owned exhaustive current-inventory trace, reject repeated/nonterminal-at-bound cursors, bind authority pin, reconcile provider assignment totals, and derive authorized assignment classification from the same canonical inventory (excluding absent/unknown/above-ceiling sources).",
     inventory_selection: "FULL_SERVER_INVENTORY_NO_QUERY",
     inventory_limit: 250,
     maximum_inventory_pages: 10002,
