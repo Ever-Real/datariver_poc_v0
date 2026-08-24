@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-24T04:28:28Z",
+  "starting_product_sha": "b5f4064a90adb327c32653f84b67e8f482589173",
+  "starting_evidence_sha": "318d30ff28453e94717ce99efec63e6957a65a61",
+  "final_product_sha": "698669d8e1ded3c9a8927415fbdee377d163ed56",
+  "runtime": {
+    "oci_tag": "datariver-poc:698669d8e1ded3c9a8927415fbdee377d163ed56",
+    "health": "healthy",
+    "port_39083_http": 200,
+    "port_39090_http": 200,
+    "prep_executed": false,
+    "ops_executed": false
+  },
+  "managed_assets": [
+    {
+      "id": "01a02d2a-f8a0-7658-b5da-890eccdccf44",
+      "name": "Default Lineage Graph",
+      "type": "LINEAGE",
+      "studio_release_id": "01a02d2a-f8ad-789f-acb0-7df3ea3d0ef0",
+      "active_projection": "k9_stage_84100ceffbdf427090639aca8e778a68",
+      "source": "DataHub",
+      "status": "READY",
+      "version": 6,
+      "node_count": 1001,
+      "edge_count": 1950,
+      "refresh_mode": "DAILY",
+      "schedule": "02:00 Asia/Seoul",
+      "next_refresh": "2026-08-24T17:00:00.000Z",
+      "last_refresh": "2026-08-24T01:21:00.070Z",
+      "last_result": "NO_OP",
+      "semantic_index_status": "READY"
+    },
+    {
+      "id": "01a02d2a-f90d-74fe-bd96-aa596276cb87",
+      "name": "Metadata Master Graph",
+      "type": "METADATA_MASTER",
+      "studio_release_id": "01a02d2a-f910-73b7-a2f0-a8f5e4698e88",
+      "active_projection": "k9_stage_e943653f837d4ce68e033063d5827942",
+      "source": "DataHub",
+      "status": "READY",
+      "version": 6,
+      "node_count": 12281,
+      "edge_count": 24556,
+      "refresh_mode": "DAILY",
+      "schedule": "02:00 Asia/Seoul",
+      "next_refresh": "2026-08-24T17:00:00.000Z",
+      "last_refresh": "2026-08-24T01:29:21.722Z",
+      "last_result": "SUCCESS",
+      "semantic_index_status": "READY"
+    }
+  ],
+  "refresh_cleanup": {
+    "active_namespaces": 2,
+    "unfinished_runs": 0,
+    "orphan_staging_namespaces": 0,
+    "last_known_good_preserved": true,
+    "atomic_promotion_verified": true
+  },
+  "router": {
+    "general_pass": 20,
+    "vector_pass": 20,
+    "graph_pass": 20,
+    "total_pass": 60,
+    "total": 60,
+    "precision_recall_all_routes": 1.0,
+    "total_latency_p50_ms": 23665,
+    "total_latency_p95_ms": 41871,
+    "routing_latency_p50_ms": 8084,
+    "routing_latency_p95_ms": 8785,
+    "retrieval_latency_p50_ms": 412,
+    "retrieval_latency_p95_ms": 32876,
+    "llm_calls_per_case": 2,
+    "boundary_pass": 8,
+    "boundary_total": 8
+  },
+  "mcp": {
+    "runtime": "WORKING",
+    "native_p50_ms": 234,
+    "native_p95_ms": 270,
+    "mcp_p50_ms": 231,
+    "mcp_p95_ms": 265,
+    "native_error_rate": 0,
+    "mcp_error_rate": 0,
+    "auth_propagation": "PASS",
+    "structured_result_consistency": true,
+    "architecture": "INTERNAL_NATIVE_EXTERNAL_MCP_SHARED_CORE"
+  },
+  "source_gates": {
+    "server": "115/115 PASS",
+    "ui": "87 files / 631 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "static": "PASS",
+    "build": "PASS",
+    "diff_check": "PASS"
+  },
+  "authorization": {
+    "positive": "PASS",
+    "negative": "PASS",
+    "mcp_propagation": "PASS",
+    "semantic_node_leakage": "PASS",
+    "managed_asset_authorization": "PASS"
+  },
+  "cleanup": {
+    "eval_credential_enabled": false,
+    "eval_active_sessions": 0,
+    "temporary_fixtures": 0,
+    "temporary_staging_orphans": 0
+  },
+  "status": "COMPLETE_RUNTIME_VERIFIED"
+}

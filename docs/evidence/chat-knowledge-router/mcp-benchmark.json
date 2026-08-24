@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-24T04:04:23.961Z",
+  "comparison": "Native managed Asset read model vs MCP adapter over the same Core Knowledge Service",
+  "native": {
+    "samples": 20,
+    "p50_ms": 234,
+    "p95_ms": 270,
+    "error_rate": 0
+  },
+  "mcp": {
+    "samples": 20,
+    "p50_ms": 231,
+    "p95_ms": 265,
+    "error_rate": 0
+  },
+  "structured_result_consistency": true,
+  "authorized_asset_count": 2,
+  "invalid_token_http_status": 401,
+  "auth_propagation_pass": true,
+  "final_architecture_decision": "INTERNAL_NATIVE_EXTERNAL_MCP_SHARED_CORE",
+  "decision_reason": "Internal Chat keeps the direct in-process adapter; external agents use the authenticated MCP protocol adapter. Both resolve the same Core Knowledge Service and authorization-filtered registry."
+}
