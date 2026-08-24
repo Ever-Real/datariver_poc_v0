@@ -3887,7 +3887,9 @@ export function parseChatRouteDecision(value, graphAssets = []) {
     const exactIntent = ['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(normalized.intent)
     const semanticIntent = ['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(normalized.intent)
     normalized.intent = exactIntent || semanticIntent ? normalized.intent : 'SEMANTIC_DISCOVERY'
-    if (targetsKnowledgeAsset) normalized.entity_type_hints = ['KNOWLEDGE_ASSET']
+    normalized.entity_type_hints = targetsKnowledgeAsset
+      ? ['KNOWLEDGE_ASSET']
+      : normalized.entity_type_hints.filter((hint) => hint !== 'KNOWLEDGE_ASSET')
     normalized.graph_traversal_required = false
     normalized.semantic_retrieval_required = !exactIntent
     normalized.fallback_mode = null
@@ -4716,7 +4718,8 @@ async function revalidateKnowledgeMainChatSelection(context, selection) {
 
 async function resolveManagedGraphStart(question, route, scope, principal) {
   if (!scope.managed) return { startNodeId: null, entities: [] }
-  const candidates = await datahubChatEvidence(question, {
+  const resolutionQuestion = route.primary_concepts[0] || question
+  const candidates = await datahubChatEvidence(resolutionQuestion, {
     ...route,
     entity_resolution_required: true,
     semantic_retrieval_required: true,

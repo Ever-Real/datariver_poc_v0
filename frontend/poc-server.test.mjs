@@ -182,9 +182,19 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
   assert.deepEqual(parseChatRouteDecision(JSON.stringify({
     ...base,
     mode: 'VECTOR',
+    intent: 'SEMANTIC_DISCOVERY',
+    semantic_retrieval_required: true,
+    primary_concepts: ['business concept'],
+    entity_type_hints: ['KNOWLEDGE_ASSET', 'GLOSSARY_TERM'],
+    retrieval_method: 'SEMANTIC',
+  }), [asset]).entity_type_hints, ['GLOSSARY_TERM'])
+  assert.deepEqual(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'VECTOR',
     intent: 'GENERAL_CONVERSATION',
     semantic_retrieval_required: true,
     fallback_mode: 'VECTOR',
+    primary_concepts: ['Knowledge Graph Asset'],
     entity_type_hints: ['KNOWLEDGE_ASSET'],
     selected_graph_asset: asset.name,
     retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
@@ -193,6 +203,7 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
     mode: 'VECTOR',
     intent: 'SEMANTIC_DISCOVERY',
     semantic_retrieval_required: true,
+    primary_concepts: ['Knowledge Graph Asset'],
     entity_type_hints: ['KNOWLEDGE_ASSET'],
     retrieval_method: 'SEMANTIC',
   })
