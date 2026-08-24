@@ -3716,6 +3716,7 @@ async function chatRoute(question, requestedMode, principal) {
                 },
                 entity_type_hints: {
                   type: 'array', maxItems: 8,
+                  description: 'Use KNOWLEDGE_ASSET, without DATASET/TABLE/VIEW, when the requested result is a Knowledge Graph Asset registry record or its metadata.',
                   items: { type: 'string', enum: ['DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'KNOWLEDGE_ASSET'] },
                 },
                 selected_graph_asset: { type: ['string', 'null'], maxLength: 100 },
@@ -3875,9 +3876,18 @@ export function parseChatRouteDecision(value, graphAssets = []) {
       retrieval_method: 'NONE',
     })
   } else if (normalized.mode === 'VECTOR') {
+    const firstPrimaryConcept = normalized.primary_concepts[0]?.normalize('NFKC').trim().toLocaleLowerCase() || ''
+    const canonicalAssetType = firstPrimaryConcept.replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    const targetsKnowledgeAsset = canonicalAssetType === 'knowledge graph asset'
+      || canonicalAssetType === 'knowledge asset'
+      || graphAssets.some((asset) => {
+        const name = String(asset.name || '').normalize('NFKC').trim().toLocaleLowerCase()
+        return name && (firstPrimaryConcept === name || firstPrimaryConcept.includes(name))
+      })
     const exactIntent = ['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(normalized.intent)
     const semanticIntent = ['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(normalized.intent)
     normalized.intent = exactIntent || semanticIntent ? normalized.intent : 'SEMANTIC_DISCOVERY'
+    if (targetsKnowledgeAsset) normalized.entity_type_hints = ['KNOWLEDGE_ASSET']
     normalized.graph_traversal_required = false
     normalized.semantic_retrieval_required = !exactIntent
     normalized.fallback_mode = null
