@@ -843,7 +843,13 @@ export function KnowledgeRegistry({
                 onToggle={() => toggleSection('graph-preview')}
               >
                 {focusedReleaseId
-                  ? <KnowledgeManagedGraphExplorer client={client} graphId={selected.id} graphType={selected.graph_type} releaseId={focusedReleaseId} />
+                  ? <KnowledgeManagedGraphExplorer
+                    key={`${selected.id}:${focusedReleaseId}`}
+                    client={client}
+                    graphId={selected.id}
+                    graphType={selected.graph_type}
+                    releaseId={focusedReleaseId}
+                  />
                   : <p className="m-0 text-xs text-slate-500">발행된 graph release가 없어 read-only visualization을 열 수 없습니다.</p>}
               </AccordionItem>
               <AccordionItem
