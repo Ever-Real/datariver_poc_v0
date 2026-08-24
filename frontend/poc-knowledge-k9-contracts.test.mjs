@@ -121,6 +121,7 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /async function datahubGlossary[\s\S]*?return \{\s*items: terms\.sort/);
   assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?Math\.min\(50,[\s\S]*?Math\.min\(100_000,[\s\S]*?page: \{ next_cursor:/);
   assert.match(product, /collectGlossaryInventorySeam[\s\S]*?datahubGlossaryQuery,[\s\S]*?60_000/);
+  assert.match(product, /const inventory = await currentDatahubInventory\(\)[\s\S]*?triggerLineagePublish[\s\S]*?collectLineageInventorySeam\(liveAuth\.authorityPin, inventory\)[\s\S]*?triggerGlossaryPublish[\s\S]*?collectGlossaryInventorySeam\(liveAuth\.authorityPin, inventory\)/);
 });
 
 test('mapping contracts bind exact source and T-Box pins and preserve deterministic fail-closed semantics', () => {

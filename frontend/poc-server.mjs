@@ -9078,8 +9078,7 @@ export async function startPocServer({ stateStore } = {}) {
     )))
   }
 
-  async function collectLineageInventorySeam(authorityPin) {
-    const inventory = await currentDatahubInventory()
+  async function collectLineageInventorySeam(authorityPin, inventory) {
     if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
     const authorizedInventory = inventory.flatMap((item) => {
       const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
@@ -9156,8 +9155,8 @@ export async function startPocServer({ stateStore } = {}) {
     return { authority_pin: authorityPin, direction: 'BOTH', depth: 1, truncated: false, completeness_metadata, nodes, edges }
   }
 
-  async function collectGlossaryInventorySeam(authorityPin) {
-    const inventory = await currentDatahubInventory()
+  async function collectGlossaryInventorySeam(authorityPin, inventory) {
+    if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
     const table_nodes = []
     const column_nodes = []
     const table_column_edges = []
@@ -9365,9 +9364,14 @@ export async function startPocServer({ stateStore } = {}) {
       let lr, gr
       try {
         const liveAuth = await resolveLiveK9AuthCtx()
-        lr = await k9.triggerLineagePublish(liveAuth, async () => collectLineageInventorySeam(liveAuth.authorityPin))
+        // Both managed projections are one logical refresh. Acquire one exact,
+        // exhaustive DataHub snapshot so they cannot diverge across two slow
+        // provider scrolls and so a second scan cannot time out after Lineage
+        // has already completed.
+        const inventory = await currentDatahubInventory()
+        lr = await k9.triggerLineagePublish(liveAuth, async () => collectLineageInventorySeam(liveAuth.authorityPin, inventory))
         if (lr.status === 'FAILURE') return { status: 'FAILURE', reason: lr.reason, lineage: lr }
-        gr = await k9.triggerGlossaryPublish(liveAuth, async () => collectGlossaryInventorySeam(liveAuth.authorityPin))
+        gr = await k9.triggerGlossaryPublish(liveAuth, async () => collectGlossaryInventorySeam(liveAuth.authorityPin, inventory))
         if (gr.status === 'FAILURE') return { status: 'FAILURE', reason: gr.reason, lineage: lr, glossary: gr }
         return { status: 'SUCCESS', lineage: lr, glossary: gr }
       } catch (error) {
