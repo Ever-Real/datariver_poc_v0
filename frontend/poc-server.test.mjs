@@ -122,6 +122,7 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
   const { parseChatRouteDecision } = await import('./poc-server.mjs?semantic-route-contract')
   const asset = {
     asset_id: 'lineage-graph-id',
+    name: 'Default Lineage Graph',
     supported_intents: ['UPSTREAM', 'DOWNSTREAM'],
     semantic_capabilities: ['BOUNDED_MULTI_HOP_TRAVERSAL'],
   }
@@ -169,6 +170,23 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
     entity_type_hints: ['KNOWLEDGE_ASSET'],
     retrieval_method: 'SEMANTIC',
   }), [asset]).mode, 'VECTOR')
+  assert.deepEqual(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'VECTOR',
+    intent: 'GENERAL_CONVERSATION',
+    semantic_retrieval_required: true,
+    fallback_mode: 'VECTOR',
+    entity_type_hints: ['KNOWLEDGE_ASSET'],
+    selected_graph_asset: asset.name,
+    retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
+  }), [asset]), {
+    ...base,
+    mode: 'VECTOR',
+    intent: 'SEMANTIC_DISCOVERY',
+    semantic_retrieval_required: true,
+    entity_type_hints: ['KNOWLEDGE_ASSET'],
+    retrieval_method: 'SEMANTIC',
+  })
   assert.equal(parseChatRouteDecision(JSON.stringify({
     ...base,
     mode: 'GRAPH',
@@ -181,6 +199,15 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
     entity_type_hints: ['TABLE'],
     selected_graph_asset: asset.asset_id,
     retrieval_method: 'SEMANTIC_ENTITY_RESOLUTION_GRAPH',
+  }), [asset]).selected_graph_asset, asset.asset_id)
+  assert.equal(parseChatRouteDecision(JSON.stringify({
+    ...base,
+    mode: 'GRAPH',
+    intent: 'LINEAGE',
+    graph_traversal_required: true,
+    relation_intent: 'UPSTREAM',
+    selected_graph_asset: asset.name,
+    retrieval_method: 'GRAPH_TRAVERSAL',
   }), [asset]).selected_graph_asset, asset.asset_id)
   assert.throws(() => parseChatRouteDecision(JSON.stringify({
     ...base,

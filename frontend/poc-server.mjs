@@ -3748,6 +3748,7 @@ async function chatRoute(question, requestedMode, principal) {
       retrievalMethod = decision.retrieval_method
       clarificationRequired = decision.intent === 'AMBIGUOUS' || decision.confidence < 0.55
     } catch (error) {
+      process.stderr.write(`Chat route planner rejected structured output: ${error instanceof Error ? error.message : 'unknown error'}\n`)
       throw Object.assign(new Error('AUTO Chat routing is unavailable because the bounded classifier failed.'), {
         statusCode: 503,
         cause: error,
@@ -3818,6 +3819,16 @@ export function parseChatRouteDecision(value, graphAssets = []) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('The Chat route classifier returned a malformed route.')
   }
+  const selectedGraphValue = typeof parsed.selected_graph_asset === 'string'
+    ? parsed.selected_graph_asset.normalize('NFKC').trim()
+    : parsed.selected_graph_asset
+  const selectedGraph = typeof selectedGraphValue === 'string'
+    ? graphAssets.find((asset) => (
+      asset.asset_id === selectedGraphValue
+      || (typeof asset.name === 'string'
+        && asset.name.normalize('NFKC').trim().toLocaleLowerCase() === selectedGraphValue.toLocaleLowerCase())
+    ))
+    : null
   if (!['GENERAL', 'VECTOR', 'GRAPH'].includes(parsed.mode)
     || !chatRouteIntents.has(parsed.intent)
     || typeof parsed.confidence !== 'number'
@@ -3834,11 +3845,15 @@ export function parseChatRouteDecision(value, graphAssets = []) {
     || !Array.isArray(parsed.entity_type_hints)
     || parsed.entity_type_hints.length > 8
     || parsed.entity_type_hints.some((item) => !['DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'KNOWLEDGE_ASSET'].includes(item))
-    || ![null, ...graphAssets.map((asset) => asset.asset_id)].includes(parsed.selected_graph_asset)
+    || !(parsed.selected_graph_asset === null
+      || (typeof parsed.selected_graph_asset === 'string' && parsed.selected_graph_asset.length <= 100))
     || !['NONE', 'LEXICAL', 'SEMANTIC', 'GRAPH_TRAVERSAL', 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'].includes(parsed.retrieval_method)) {
     throw new Error('The Chat route classifier returned a malformed route.')
   }
-  const normalized = { ...parsed }
+  const normalized = {
+    ...parsed,
+    selected_graph_asset: selectedGraph?.asset_id ?? parsed.selected_graph_asset,
+  }
   if (normalized.mode === 'GENERAL') {
     Object.assign(normalized, {
       intent: 'GENERAL_CONVERSATION',
@@ -3873,7 +3888,7 @@ export function parseChatRouteDecision(value, graphAssets = []) {
       : 'GRAPH_TRAVERSAL'
   }
   if ((normalized.graph_traversal_required && normalized.mode !== 'GRAPH')
-    || (normalized.mode === 'GRAPH' && (!normalized.selected_graph_asset || !normalized.relation_intent
+    || (normalized.mode === 'GRAPH' && (!selectedGraph || !normalized.selected_graph_asset || !normalized.relation_intent
       || !['GRAPH_TRAVERSAL', 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'].includes(normalized.retrieval_method)))) {
     throw new Error('The Chat route classifier returned an inconsistent route.')
   }
