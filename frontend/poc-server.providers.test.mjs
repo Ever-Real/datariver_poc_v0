@@ -933,6 +933,24 @@ test('retrieves Knowledge Graph Asset metadata from the authorized managed regis
     assert.equal(payload.evidence[0].retrieval_method, 'K9_REGISTRY_EXACT')
     assert.match(payload.evidence[0].description, /Source: DataHub/)
     assert.match(payload.evidence[0].description, /Semantic \/ Vector Index:/)
+
+    forcedClassifierResponse = JSON.stringify({
+      mode: 'VECTOR', confidence: 0.99, intent: 'SEMANTIC_DISCOVERY',
+      entity_resolution_required: false, graph_traversal_required: false,
+      semantic_retrieval_required: true, fallback_mode: null,
+      primary_concepts: ['Knowledge Graph Asset', 'data lineage'], secondary_concepts: [], relation_intent: null,
+      entity_type_hints: ['KNOWLEDGE_ASSET'], selected_graph_asset: null, retrieval_method: 'SEMANTIC',
+    })
+    const discoveryResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'Find the registered graph Asset for data lineage', mode: 'AUTO' }),
+    })
+    assert.equal(discoveryResponse.status, 200)
+    const discovery = await discoveryResponse.json()
+    assert.equal(discovery.evidence.length, 1)
+    assert.equal(discovery.evidence[0].id, managedLineageGraphId)
+    assert.equal(discovery.evidence[0].retrieval_method, 'K9_REGISTRY_SEMANTIC_METADATA')
   } finally {
     forcedClassifierResponse = undefined
   }

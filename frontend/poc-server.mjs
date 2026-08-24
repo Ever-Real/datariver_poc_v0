@@ -4284,7 +4284,13 @@ async function managedK9AssetMetadataEvidence(route, context, evidenceLimit) {
   const concepts = [...route.primary_concepts, ...route.secondary_concepts]
     .map((concept) => String(concept || '').normalize('NFKC').trim())
     .filter(Boolean)
-  const conceptTokens = knowledgeAssetSearchTokens(concepts.join(' '))
+  const searchableConcepts = concepts.filter((concept, index) => {
+    if (index !== 0) return true
+    const canonical = concept.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    return canonical !== 'knowledge graph asset' && canonical !== 'knowledge asset'
+  })
+  const conceptTokens = knowledgeAssetSearchTokens(searchableConcepts.join(' '))
+  const unfilteredInventory = searchableConcepts.length === 0
   const scored = assets.map((asset) => {
     const normalizedName = asset.name.normalize('NFKC').toLocaleLowerCase()
     const exact = concepts.some((concept) => {
@@ -4298,7 +4304,7 @@ async function managedK9AssetMetadataEvidence(route, context, evidenceLimit) {
     ].filter(Boolean).join(' ')
     const documentTokens = knowledgeAssetSearchTokens(document)
     const overlap = [...conceptTokens].filter((token) => documentTokens.has(token)).length
-    return { asset, exact, score: exact ? 1_000 + overlap : overlap }
+    return { asset, exact, score: exact ? 1_000 + overlap : unfilteredInventory ? 1 : overlap }
   }).filter((item) => item.score > 0)
   const maximumScore = Math.max(0, ...scored.map((item) => item.score))
   return scored
