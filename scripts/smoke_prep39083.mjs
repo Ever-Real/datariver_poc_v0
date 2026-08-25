@@ -54,11 +54,15 @@ const origin = argument('--origin', 'http://127.0.0.1:39083')
 const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
+const k9Mode = String(argument('--k9-mode', 'required')).trim().toUpperCase()
 const readinessTimeoutMs = boundedMilliseconds(
   argument('--readiness-timeout-ms'), 1_200_000, 1_000, 3_600_000, '--readiness-timeout-ms',
 )
 if (!username || !passwordFile || !output) {
   throw new Error('Required: --username, --password-file, and --output')
+}
+if (!['REQUIRED', 'DEFERRED'].includes(k9Mode)) {
+  throw new Error('--k9-mode must be required or deferred.')
 }
 const parsedOrigin = new URL(origin)
 if (!['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.pathname !== '/') {
@@ -82,11 +86,12 @@ const report = {
   origin,
   health: 'PASS',
   login: 'PASS',
+  k9_mode: k9Mode,
   datahub: 'FAIL',
-  managed_assets: 'FAIL',
-  default_lineage: 'FAIL',
-  metadata_master: 'FAIL',
-  semantic_index: 'FAIL',
+  managed_assets: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
+  default_lineage: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
+  metadata_master: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
+  semantic_index: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
   llm_general: 'FAIL',
 }
 try {
@@ -97,26 +102,28 @@ try {
     if (!catalog.body || typeof catalog.body !== 'object') throw new Error('DataHub Catalog response is invalid.')
     report.datahub = 'PASS'
 
-    const managed = await responseJson(`${origin}/poc-api/knowledge/managed-assets`, {
-      headers: { Cookie: cookie },
-    })
-    const items = Array.isArray(managed.body?.items) ? managed.body.items : []
-    const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
-    const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
-    if (!lineage || !metadata) throw new Error('Both canonical managed graph Assets are required.')
-    if (!String(lineage.status).startsWith('READY') || !String(metadata.status).startsWith('READY')) {
-      throw new Error('Managed graph Assets are not READY.')
+    if (k9Mode === 'REQUIRED') {
+      const managed = await responseJson(`${origin}/poc-api/knowledge/managed-assets`, {
+        headers: { Cookie: cookie },
+      })
+      const items = Array.isArray(managed.body?.items) ? managed.body.items : []
+      const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
+      const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
+      if (!lineage || !metadata) throw new Error('Both canonical managed graph Assets are required.')
+      if (!String(lineage.status).startsWith('READY') || !String(metadata.status).startsWith('READY')) {
+        throw new Error('Managed graph Assets are not READY.')
+      }
+      if (lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
+        throw new Error('Managed graph refresh mode is not DAILY.')
+      }
+      if (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY') {
+        throw new Error('The shared semantic index is not READY.')
+      }
+      report.managed_assets = 'PASS'
+      report.default_lineage = 'PASS'
+      report.metadata_master = 'PASS'
+      report.semantic_index = 'PASS'
     }
-    if (lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
-      throw new Error('Managed graph refresh mode is not DAILY.')
-    }
-    if (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY') {
-      throw new Error('The shared semantic index is not READY.')
-    }
-    report.managed_assets = 'PASS'
-    report.default_lineage = 'PASS'
-    report.metadata_master = 'PASS'
-    report.semantic_index = 'PASS'
   }, readinessTimeoutMs)
 
   const chat = await responseJson(`${origin}/poc-api/llm/chat`, {

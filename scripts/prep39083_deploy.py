@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import json
 import os
@@ -15,10 +16,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -39,6 +43,7 @@ ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CHANGE_ME_PREFIX = "CHANGE_ME"
+INSPECTION_PLACEHOLDER = "prep-inspection-only-not-persisted"
 
 
 class PrepError(RuntimeError):
@@ -82,6 +87,7 @@ class Runner:
         *,
         check: bool = True,
         cwd: Path = ROOT,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [os.fspath(value) for value in arguments]
         completed = subprocess.run(  # noqa: S603 - argv only, no shell interpolation.
@@ -91,6 +97,7 @@ class Runner:
             check=False,
             capture_output=True,
             text=True,
+            input=input_text,
         )
         if check and completed.returncode != 0:
             raise CommandFailure(command, completed)
@@ -109,6 +116,47 @@ class ReleaseIdentity:
     project: str
 
 
+class TargetState(str, Enum):
+    FRESH_CLEAN = "FRESH_CLEAN"
+    EXISTING_ACCEPTED_RUNNING = "EXISTING_ACCEPTED_RUNNING"
+    EXISTING_ACCEPTED_STOPPED = "EXISTING_ACCEPTED_STOPPED"
+    FAILED_FIRST_INSTALL_REQUIRES_INSPECTION = "FAILED_FIRST_INSTALL_REQUIRES_INSPECTION"
+    FAILED_FIRST_INSTALL_RECOVERABLE = "FAILED_FIRST_INSTALL_RECOVERABLE"
+    EXISTING_STATE_AMBIGUOUS = "EXISTING_STATE_AMBIGUOUS"
+
+
+@dataclass(frozen=True)
+class TargetContainer:
+    identifier: str
+    service: str
+    running: bool
+
+
+@dataclass(frozen=True)
+class TargetVolume:
+    name: str
+    logical_name: str
+
+
+@dataclass(frozen=True)
+class TargetInventory:
+    accepted_marker_present: bool
+    accepted_marker_valid: bool
+    runtime_env_present: bool
+    runtime_env_valid: bool
+    containers: tuple[TargetContainer, ...]
+    volumes: tuple[TargetVolume, ...]
+    networks: tuple[str, ...]
+
+    @property
+    def running(self) -> bool:
+        return any(container.running for container in self.containers)
+
+    @property
+    def volume_names(self) -> set[str]:
+        return {volume.logical_name for volume in self.volumes}
+
+
 @dataclass(frozen=True)
 class EnvironmentBundle:
     operator: Mapping[str, str]
@@ -116,6 +164,16 @@ class EnvironmentBundle:
     runtime: Mapping[str, str]
     effective: Mapping[str, str]
     warnings: tuple[str, ...]
+    target_state: TargetState
+    k9_mode: str
+
+
+@dataclass(frozen=True)
+class DeploymentPreparation:
+    runner: Runner
+    source: Mapping[str, str]
+    inventory: TargetInventory
+    before_39080: tuple[str, ...]
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -289,6 +347,158 @@ def _optional_keys() -> set[str]:
     ))
 
 
+def _accepted_marker_valid(path: Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(
+        isinstance(value, dict)
+        and value.get("contract") == "DATARIVER_PREP39083_ACCEPTED_V1"
+        and all(
+            isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
+            for key in ("product_sha", "evidence_sha", "handoff_commit")
+        )
+    )
+
+
+def _runtime_env_valid(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        values = read_env_file(path, private=True, label=".env.prep.runtime")
+    except PrepError:
+        return False
+    return all(values.get(key, "").strip() for key in (
+        "POC_POSTGRES_PASSWORD",
+        "NEO4J_PASSWORD",
+        "POC_MCP_SERVICE_TOKEN",
+    ))
+
+
+def inspect_target_inventory(
+    runner: Runner,
+    release: ReleaseIdentity,
+    *,
+    runtime_path: Path = RUNTIME_ENV,
+    accepted_marker_path: Path = ACCEPTED_MARKER,
+) -> TargetInventory:
+    containers: list[TargetContainer] = []
+    for line in runner.output([
+        "docker", "ps", "--all",
+        "--filter", f"label=com.docker.compose.project={release.project}",
+        "--format", '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.service"}}',
+    ]).splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] and parts[2]:
+            containers.append(TargetContainer(parts[0], parts[2], parts[1] == "running"))
+    volumes: list[TargetVolume] = []
+    for line in runner.output([
+        "docker", "volume", "ls",
+        "--filter", f"label=com.docker.compose.project={release.project}",
+        "--format", '{{.Name}}\t{{.Label "com.docker.compose.volume"}}',
+    ]).splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0] and parts[1]:
+            volumes.append(TargetVolume(parts[0], parts[1]))
+    networks = tuple(sorted(filter(None, runner.output([
+        "docker", "network", "ls",
+        "--filter", f"label=com.docker.compose.project={release.project}",
+        "--format", "{{.Name}}",
+    ]).splitlines())))
+    return TargetInventory(
+        accepted_marker_path.exists(),
+        _accepted_marker_valid(accepted_marker_path),
+        runtime_path.exists(),
+        _runtime_env_valid(runtime_path),
+        tuple(sorted(containers, key=lambda item: (item.service, item.identifier))),
+        tuple(sorted(volumes, key=lambda item: (item.logical_name, item.name))),
+        networks,
+    )
+
+
+def classify_target_state(inventory: TargetInventory) -> TargetState:
+    required_accepted_volumes = {"pgvector-data", "neo4j-data"}
+    allowed_services = {"web", "pgvector", "neo4j", "redis"}
+    allowed_volumes = {"pgvector-data", "neo4j-data", "neo4j-logs"}
+    logical_volumes = [volume.logical_name for volume in inventory.volumes]
+    if (
+        {container.service for container in inventory.containers} - allowed_services
+        or set(logical_volumes) - allowed_volumes
+        or len(logical_volumes) != len(set(logical_volumes))
+        or len(inventory.networks) > 1
+    ):
+        return TargetState.EXISTING_STATE_AMBIGUOUS
+    if inventory.accepted_marker_present:
+        if (
+            inventory.accepted_marker_valid
+            and inventory.runtime_env_valid
+            and required_accepted_volumes <= inventory.volume_names
+        ):
+            return (
+                TargetState.EXISTING_ACCEPTED_RUNNING
+                if inventory.running
+                else TargetState.EXISTING_ACCEPTED_STOPPED
+            )
+        return TargetState.EXISTING_STATE_AMBIGUOUS
+    if not any((
+        inventory.runtime_env_present,
+        inventory.containers,
+        inventory.volumes,
+        inventory.networks,
+    )):
+        return TargetState.FRESH_CLEAN
+    return TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION
+
+
+def _environment_ownership(contract: Mapping[str, Any]) -> tuple[
+    tuple[str, ...], dict[str, Any], tuple[str, ...], dict[str, Any], dict[str, Any]
+]:
+    ownership = contract.get("ownership")
+    if not isinstance(ownership, dict):
+        raise PrepError(
+            "ENVIRONMENT",
+            "PREP_ENV_CONTRACT_INVALID",
+            "The tracked environment ownership contract is invalid.",
+            "Restore deploy/prep39083/env-contract.json from origin/dev.",
+        )
+    core = ownership.get("CORE_REQUIRED")
+    features = ownership.get("FEATURE_REQUIRED")
+    optional = ownership.get("OPTIONAL")
+    generated = ownership.get("GENERATED")
+    fixed = ownership.get("FIXED")
+    if (
+        not isinstance(core, list)
+        or not isinstance(features, dict)
+        or not isinstance(optional, list)
+        or not isinstance(generated, dict)
+        or not isinstance(fixed, dict)
+    ):
+        raise PrepError(
+            "ENVIRONMENT",
+            "PREP_ENV_CONTRACT_INVALID",
+            "The tracked environment ownership categories are invalid.",
+            "Restore deploy/prep39083/env-contract.json from origin/dev.",
+        )
+    return tuple(map(str, core)), features, tuple(map(str, optional)), generated, fixed
+
+
+def _feature_keys(features: Mapping[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for value in features.values():
+        if not isinstance(value, dict) or not isinstance(value.get("keys"), list):
+            raise PrepError(
+                "ENVIRONMENT",
+                "PREP_ENV_CONTRACT_INVALID",
+                "One feature-dependent environment contract is invalid.",
+                "Restore deploy/prep39083/env-contract.json from origin/dev.",
+            )
+        keys.update(map(str, value["keys"]))
+    return keys
+
+
 def reconcile_environment(
     release: ReleaseIdentity,
     *,
@@ -296,14 +506,23 @@ def reconcile_environment(
     optional_path: Path = OPTIONAL_ENV,
     runtime_path: Path = RUNTIME_ENV,
     random_token: Callable[[int], str] = _token,
+    target_state: TargetState = TargetState.FRESH_CLEAN,
 ) -> EnvironmentBundle:
     contract = _read_json(ENV_CONTRACT, "environment contract")
-    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V2":
+    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V3":
         raise PrepError(
             "ENVIRONMENT",
             "PREP_ENV_CONTRACT_INVALID",
             "The tracked environment contract version is invalid.",
             "Restore deploy/prep39083/env-contract.json from origin/dev.",
+        )
+    if target_state is TargetState.EXISTING_STATE_AMBIGUOUS:
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
+            "Existing PREP state cannot be proven fresh, accepted, or disposable.",
+            "Preserve all volumes and runtime files; inspect doctor output before "
+            "approved recovery.",
         )
     operator = read_env_file(operator_path, private=True, label=".env.prep")
     optional = (
@@ -311,7 +530,9 @@ def reconcile_environment(
         if optional_path.exists()
         else {}
     )
-    required = tuple(contract.get("operator_required", ()))
+    required, features, operator_optional, generated_specification, fixed = (
+        _environment_ownership(contract)
+    )
     missing = sorted(
         key for key in required
         if not operator.get(key, "").strip()
@@ -324,16 +545,8 @@ def reconcile_environment(
             f"Required operator keys are missing: {', '.join(missing)}.",
             "Set only those keys in deploy/prep39083/.env.prep and rerun deploy.",
         )
-    allowed_operator = set(required) | set(contract.get("operator_optional", ()))
-    generated_specification = contract.get("generated_secrets", {})
-    fixed = contract.get("fixed", {})
-    if not isinstance(generated_specification, dict) or not isinstance(fixed, dict):
-        raise PrepError(
-            "ENVIRONMENT",
-            "PREP_ENV_CONTRACT_INVALID",
-            "Generated and fixed environment ownership must be objects.",
-            "Restore deploy/prep39083/env-contract.json from origin/dev.",
-        )
+    feature_keys = _feature_keys(features)
+    allowed_operator = set(required) | set(operator_optional) | feature_keys
     optional_keys = _optional_keys()
     unexpected_optional = sorted(set(optional) - optional_keys)
     if unexpected_optional:
@@ -358,15 +571,28 @@ def reconcile_environment(
         else {}
     )
     warnings: list[str] = []
+    allow_generation = target_state in {
+        TargetState.FRESH_CLEAN,
+        TargetState.FAILED_FIRST_INSTALL_RECOVERABLE,
+    }
     for key, raw_byte_count in generated_specification.items():
         byte_count = int(raw_byte_count)
         legacy = operator.get(key, "")
         if not runtime.get(key):
-            runtime[key] = (
-                legacy
-                if legacy and not legacy.startswith(CHANGE_ME_PREFIX)
-                else random_token(byte_count)
-            )
+            if legacy and not legacy.startswith(CHANGE_ME_PREFIX):
+                runtime[key] = legacy
+            elif allow_generation:
+                runtime[key] = random_token(byte_count)
+            elif target_state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+                runtime[key] = INSPECTION_PLACEHOLDER
+            else:
+                raise PrepError(
+                    "TARGET_STATE",
+                    "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
+                    f"Accepted PREP state has no recoverable target-local value for {key}.",
+                    "Restore the ignored runtime environment or its matching legacy value; "
+                    "do not reset persistent volumes.",
+                )
         elif legacy and not legacy.startswith(CHANGE_ME_PREFIX) and legacy != runtime[key]:
             raise PrepError(
                 "ENVIRONMENT",
@@ -377,15 +603,22 @@ def reconcile_environment(
         if legacy:
             warnings.append(f"legacy generated key remains in .env.prep: {key}")
 
+    studio_database_url = operator.get("POC_K9_STUDIO_DATABASE_URL", "").strip()
+    k9_configured = bool(
+        studio_database_url and not studio_database_url.startswith(CHANGE_ME_PREFIX)
+    )
     for key, value in fixed.items():
         runtime[str(key)] = str(value)
+    runtime["POC_K9_SCHEDULER_ENABLED"] = "true" if k9_configured else "false"
     runtime["POC_IMAGE_TAG"] = release.product_sha
     runtime["POC_SOURCE_COMMIT"] = release.product_sha
     runtime["PREP_RELEASE_PRODUCT_SHA"] = release.product_sha
     runtime["PREP_RELEASE_EVIDENCE_SHA"] = release.evidence_sha
-    _atomic_private_env(runtime_path, runtime)
+    if target_state is not TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+        _atomic_private_env(runtime_path, runtime)
 
-    known_legacy = set(generated_specification) | set(fixed) | optional_keys | {
+    known_legacy = set(generated_specification) | set(fixed) | optional_keys | feature_keys | {
+        "POC_K9_SCHEDULER_ENABLED",
         "POC_IMAGE_TAG",
         "POC_SOURCE_COMMIT",
         "PREP_RELEASE_PRODUCT_SHA",
@@ -412,7 +645,15 @@ def reconcile_environment(
     effective["no_proxy"] = no_proxy
     effective["http_proxy"] = effective.get("HTTP_PROXY", "")
     effective["https_proxy"] = effective.get("HTTPS_PROXY", "")
-    return EnvironmentBundle(operator, optional, runtime, effective, tuple(warnings))
+    return EnvironmentBundle(
+        operator,
+        optional,
+        runtime,
+        effective,
+        tuple(warnings),
+        target_state,
+        "REQUIRED" if k9_configured else "DEFERRED",
+    )
 
 
 @contextmanager
@@ -543,6 +784,34 @@ def require_prep_platform(runner: Runner) -> None:
     runner.run(["docker", "compose", "version"])
 
 
+def prepare_deployment(
+    release: ReleaseIdentity,
+) -> tuple[EnvironmentBundle, DeploymentPreparation]:
+    operator = read_env_file(OPERATOR_ENV, private=True, label=".env.prep")
+    runner = Runner(environment=child_environment(operator))
+    runner.note("Verify native PREP platform and exact Product/Evidence source")
+    require_prep_platform(runner)
+    source = verify_source_identity(release)
+    before_39080 = snapshot_39080(runner)
+    inventory = inspect_target_inventory(runner, release)
+    state = classify_target_state(inventory)
+    runner.note(f"Classify PREP target state: {state.value}")
+    if state is TargetState.EXISTING_STATE_AMBIGUOUS:
+        _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
+    if state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+        inspection_bundle = reconcile_environment(release, target_state=state)
+        state = prove_failed_install_recoverable(
+            runner,
+            release,
+            inspection_bundle,
+            inventory,
+        )
+        runner.note(f"Prove residual target state: {state.value}")
+    bundle = reconcile_environment(release, target_state=state)
+    runner.environment = child_environment(bundle.effective)
+    return bundle, DeploymentPreparation(runner, source, inventory, before_39080)
+
+
 def verify_source_identity(release: ReleaseIdentity) -> dict[str, str]:
     try:
         return source_contract(release.product_sha, release.evidence_sha, clean=True)
@@ -617,6 +886,184 @@ def snapshot_39080(runner: Runner) -> tuple[str, ...]:
         "docker", "ps", "--filter", "publish=39080", "--format", "{{.ID}} {{.Names}}",
     ])
     return tuple(sorted(line for line in output.splitlines() if line))
+
+
+def _ambiguous_state(reason: str) -> NoReturn:
+    raise PrepError(
+        "TARGET_STATE",
+        "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
+        reason,
+        "Preserve all containers, volumes and target-owned environment files; "
+        "review ./scripts/prep39083 doctor before approved recovery.",
+    )
+
+
+def _postgres_local_command(prefix: Sequence[str], database: str, username: str) -> list[str]:
+    return [
+        *prefix,
+        "exec",
+        "-T",
+        "--user",
+        "postgres",
+        "pgvector",
+        "psql",
+        "--no-psqlrc",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--username",
+        username,
+        "--dbname",
+        database,
+        "--tuples-only",
+        "--no-align",
+    ]
+
+
+def inspect_postgres_durable_rows(
+    runner: Runner,
+    prefix: Sequence[str],
+    *,
+    database: str,
+    username: str,
+) -> dict[str, int]:
+    command = _postgres_local_command(prefix, database, username)
+    try:
+        tables_output = runner.output([
+            *command,
+            "--command",
+            "SELECT tablename FROM pg_catalog.pg_tables "
+            "WHERE schemaname = 'public' ORDER BY tablename;",
+        ])
+        counts: dict[str, int] = {}
+        for table in filter(None, tables_output.splitlines()):
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", table):
+                _ambiguous_state("The residual PostgreSQL schema contains an unclassifiable table.")
+            raw_count = runner.output([
+                *command,
+                "--command",
+                f'SELECT CASE WHEN EXISTS (SELECT 1 FROM public."{table}" LIMIT 1) '  # noqa: S608 -- identifier is strictly allowlisted above.
+                "THEN 1 ELSE 0 END;",
+            ])
+            if not raw_count.isdigit():
+                _ambiguous_state("The residual PostgreSQL row-count proof was incomplete.")
+            counts[table] = int(raw_count)
+        return counts
+    except CommandFailure as error:
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
+            "The residual PostgreSQL volume could not be inspected through its local socket.",
+            "Preserve the volume and use an approved database recovery procedure.",
+        ) from error
+
+
+def inspect_neo4j_durable_nodes(password: str, port: str) -> int:
+    if not password or password == INSPECTION_PLACEHOLDER:
+        _ambiguous_state(
+            "A residual Neo4j volume exists but its preserved target-local credential is absent.",
+        )
+    authorization = base64.b64encode(f"neo4j:{password}".encode()).decode("ascii")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/db/neo4j/tx/commit",
+        data=json.dumps({
+            "statements": [{"statement": "MATCH (n) RETURN count(n) AS count"}],
+        }).encode(),
+        headers={"Authorization": f"Basic {authorization}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=30) as response:
+            payload = json.loads(response.read())
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        results = payload.get("results") if isinstance(payload, dict) else None
+        rows = results[0].get("data") if isinstance(results, list) and results else None
+        count = rows[0].get("row", [None])[0] if isinstance(rows, list) and rows else None
+        if errors or not isinstance(count, int) or count < 0:
+            raise ValueError("invalid Neo4j proof")
+        return count
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as error:
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
+            "The residual Neo4j volume could not be proven empty with its preserved credential.",
+            "Preserve the volume and restore its matching target-local runtime environment.",
+        ) from error
+
+
+def prove_failed_install_recoverable(
+    runner: Runner,
+    release: ReleaseIdentity,
+    bundle: EnvironmentBundle,
+    inventory: TargetInventory,
+) -> TargetState:
+    allowed_services = {"web", "pgvector", "neo4j", "redis"}
+    allowed_volumes = {"pgvector-data", "neo4j-data", "neo4j-logs"}
+    if inventory.accepted_marker_present:
+        _ambiguous_state("An accepted receipt exists; failed-install recovery is not permitted.")
+    if {item.service for item in inventory.containers} - allowed_services:
+        _ambiguous_state("The PREP Compose project contains an unknown residual service.")
+    if inventory.volume_names - allowed_volumes:
+        _ambiguous_state("The PREP Compose project contains an unknown persistent volume.")
+    with private_effective_environment(bundle.effective) as env_file:
+        prefix = compose_prefix(release, env_file)
+        if any(item.service == "web" and item.running for item in inventory.containers):
+            runner.run([*prefix, "stop", "web"])
+        if "pgvector-data" in inventory.volume_names:
+            runner.run([*prefix, "up", "-d", "--wait", "pgvector"])
+            counts = inspect_postgres_durable_rows(
+                runner,
+                prefix,
+                database=bundle.effective["POC_POSTGRES_DB"],
+                username=bundle.effective["POC_POSTGRES_USER"],
+            )
+            if any(count > 0 for count in counts.values()):
+                _ambiguous_state(
+                    "The unaccepted PostgreSQL volume contains durable Product state.",
+                )
+        if "neo4j-data" in inventory.volume_names:
+            runner.run([*prefix, "up", "-d", "--wait", "neo4j"])
+            count = inspect_neo4j_durable_nodes(
+                bundle.effective["NEO4J_PASSWORD"],
+                bundle.effective["POC_NEO4J_HTTP_PORT"],
+            )
+            if count > 0:
+                _ambiguous_state("The unaccepted Neo4j volume contains durable graph state.")
+    return TargetState.FAILED_FIRST_INSTALL_RECOVERABLE
+
+
+def reconcile_recoverable_postgres_credential(
+    runner: Runner,
+    prefix: Sequence[str],
+    bundle: EnvironmentBundle,
+) -> None:
+    username = bundle.effective["POC_POSTGRES_USER"]
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", username):
+        _ambiguous_state("The configured PostgreSQL role cannot be safely reconciled.")
+    password = bundle.effective["POC_POSTGRES_PASSWORD"]
+    if "\n" in password or "\r" in password or "\x00" in password:
+        _ambiguous_state("The generated PostgreSQL credential is outside its safe contract.")
+    statement = f'ALTER ROLE "{username}" WITH PASSWORD \'{password.replace("\'", "\'\'")}\';\n'
+    try:
+        runner.run(
+            [
+                *_postgres_local_command(
+                    prefix,
+                    bundle.effective["POC_POSTGRES_DB"],
+                    username,
+                ),
+                "--file",
+                "-",
+            ],
+            input_text=statement,
+        )
+    except CommandFailure as error:
+        raise PrepError(
+            "LOCAL_DATABASE_AUTH",
+            "PREP_LOCAL_DB_CREDENTIAL_MISMATCH",
+            "Disposable first-install PostgreSQL state could not be reconciled.",
+            "Preserve the volume and inspect the approved local database recovery path.",
+        ) from error
 
 
 def _parse_json_line(output: str) -> dict[str, Any]:
@@ -770,7 +1217,7 @@ def reconcile_bootstrap(
             raise PrepError(
                 "TARGET_BOOTSTRAP",
                 "PREP_BOOTSTRAP_INCOMPLETE",
-                "K9/MCP target-local identity reconciliation is incomplete.",
+                "Requested target-local service identity reconciliation is incomplete.",
                 "Do not start web; correct the reported identity drift first.",
             )
         # Keep only the in-memory password and one private temporary file until smoke completes.
@@ -795,6 +1242,8 @@ def run_smoke(
     release: ReleaseIdentity,
     username: str,
     password: str,
+    *,
+    k9_mode: str,
 ) -> None:
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     output = RUNTIME_ROOT / "smoke.json"
@@ -811,6 +1260,8 @@ def run_smoke(
                 username,
                 "--password-file",
                 password_path,
+                "--k9-mode",
+                k9_mode.lower(),
                 "--readiness-timeout-ms",
                 "1200000",
                 "--output",
@@ -836,13 +1287,21 @@ def run_smoke(
             ) from error
 
 
-def write_accepted_marker(release: ReleaseIdentity, handoff: str) -> None:
+def write_accepted_marker(
+    release: ReleaseIdentity,
+    handoff: str,
+    *,
+    target_state: TargetState,
+    k9_mode: str,
+) -> None:
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     payload = {
         "contract": "DATARIVER_PREP39083_ACCEPTED_V1",
         "product_sha": release.product_sha,
         "evidence_sha": release.evidence_sha,
         "handoff_commit": handoff,
+        "initial_target_state": target_state.value,
+        "k9_mode": k9_mode,
         "accepted_at": datetime.now(UTC).isoformat(),
     }
     temporary = ACCEPTED_MARKER.with_suffix(".tmp")
@@ -850,12 +1309,14 @@ def write_accepted_marker(release: ReleaseIdentity, handoff: str) -> None:
     os.replace(temporary, ACCEPTED_MARKER)
 
 
-def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
-    runner = Runner(environment=child_environment(bundle.effective))
-    runner.note("Verify native PREP platform and exact Product/Evidence source")
-    require_prep_platform(runner)
-    source = verify_source_identity(release)
-    before_39080 = snapshot_39080(runner)
+def deploy(
+    release: ReleaseIdentity,
+    bundle: EnvironmentBundle,
+    preparation: DeploymentPreparation,
+) -> None:
+    runner = preparation.runner
+    source = preparation.source
+    before_39080 = preparation.before_39080
     for warning in bundle.warnings:
         print(f"WARNING: {warning}", flush=True)
     with private_effective_environment(bundle.effective) as env_file:
@@ -866,6 +1327,14 @@ def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         runner.note("Build exact linux/amd64 Product image with bounded proxy configuration")
         runner.run([*prefix, "build", "--pull=false", "web"])
         inspect_web_image(runner, image, release.product_sha)
+        if (
+            bundle.target_state is TargetState.FAILED_FIRST_INSTALL_RECOVERABLE
+            and "pgvector-data" in preparation.inventory.volume_names
+        ):
+            runner.note(
+                "Reconcile proven-disposable PostgreSQL role credential without volume reset",
+            )
+            reconcile_recoverable_postgres_credential(runner, prefix, bundle)
         runner.note("Start isolated PostgreSQL, Neo4j and Redis and wait for health")
         runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
         runner.note("Apply idempotent state initialization and inspect target-local identities")
@@ -901,7 +1370,7 @@ def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
                 "Check WSL port binding and host firewall; the application container is healthy.",
             ) from error
         runner.note("Run authenticated provider, managed-graph and GENERAL smoke")
-        run_smoke(runner, release, username, password)
+        run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
         after_39080 = snapshot_39080(runner)
         if after_39080 != before_39080:
             raise PrepError(
@@ -910,7 +1379,12 @@ def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
                 "The existing 39080 container set changed during deployment.",
                 "Stop and investigate; do not promote this PREP result.",
             )
-        write_accepted_marker(release, source["handoff_commit"])
+        write_accepted_marker(
+            release,
+            source["handoff_commit"],
+            target_state=bundle.target_state,
+            k9_mode=bundle.k9_mode,
+        )
     print("\nPREP39083 DEPLOYMENT READY")
     print("\nRelease")
     print(f"- Product: {release.product_sha}")
@@ -918,6 +1392,7 @@ def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     print(f"- Handoff: {source['handoff_commit']}")
     print("- Platform: linux/amd64")
     print("\nRuntime")
+    print(f"- Initial state: {bundle.target_state.value}")
     print("- Web: healthy")
     print(f"- Port: {release.port}")
     print("- PostgreSQL: healthy")
@@ -927,7 +1402,12 @@ def deploy(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     print("\nProviders")
     print("- DataHub: ready")
     print("- Chat: ready")
-    print("- Embedding/Reranker: configured; managed semantic index READY")
+    if bundle.k9_mode == "REQUIRED":
+        print("- Embedding/Reranker: configured; managed semantic index READY")
+        print("- K9 Managed Refresh: DAILY / READY")
+    else:
+        print("- Embedding/Reranker: configured")
+        print("- K9 Managed Refresh: DEFERRED — Studio DB not configured")
     optional_provider_ready = bool(
         bundle.effective.get("AIRFLOW_URL", "").strip()
         and bundle.effective.get("MINIO_URL", "").strip()
@@ -985,7 +1465,7 @@ def smoke(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         inspected = inspect_bootstrap(runner, compose_prefix(release, env_file))
     username = _choose_existing_administrator(inspected)
     password = getpass.getpass(f"Password for {username} (smoke only): ")
-    run_smoke(runner, release, username, password)
+    run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
     print("PREP39083 SMOKE PASS")
 
 
@@ -1025,6 +1505,29 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def prepare_operational_bundle(
+    release: ReleaseIdentity,
+    action: str,
+) -> EnvironmentBundle:
+    operator = read_env_file(OPERATOR_ENV, private=True, label=".env.prep")
+    runner = Runner(environment=child_environment(operator))
+    inventory = inspect_target_inventory(runner, release)
+    state = classify_target_state(inventory)
+    if state is TargetState.EXISTING_STATE_AMBIGUOUS:
+        _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
+    if action in {"smoke", "export"} and state not in {
+        TargetState.EXISTING_ACCEPTED_RUNNING,
+        TargetState.EXISTING_ACCEPTED_STOPPED,
+    }:
+        _ambiguous_state(f"The {action} action requires one accepted PREP deployment.")
+    read_only_state = (
+        TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION
+        if state is TargetState.FRESH_CLEAN
+        else state
+    )
+    return reconcile_environment(release, target_state=read_only_state)
+
+
 def fail(error: PrepError) -> NoReturn:
     print("FAILED", file=sys.stderr)
     print(f"Step: {error.step}", file=sys.stderr)
@@ -1038,9 +1541,12 @@ def main() -> None:
     arguments = parse_arguments()
     try:
         release = load_release_identity()
-        bundle = reconcile_environment(release)
+        if arguments.action == "deploy":
+            bundle, preparation = prepare_deployment(release)
+            deploy(release, bundle, preparation)
+            return
+        bundle = prepare_operational_bundle(release, arguments.action)
         actions = {
-            "deploy": deploy,
             "doctor": doctor,
             "status": status,
             "logs": logs,

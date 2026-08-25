@@ -22,35 +22,39 @@ function required(value, name) {
 }
 
 function serviceSpecification(environment) {
-  const workspaceId = required(environment.POC_K9_WORKSPACE_ID, 'POC_K9_WORKSPACE_ID')
   const mcpWorkspaceId = required(environment.POC_MCP_WORKSPACE_ID, 'POC_MCP_WORKSPACE_ID')
-  const k9SubjectId = required(environment.POC_K9_SYSTEM_SUBJECT_ID, 'POC_K9_SYSTEM_SUBJECT_ID')
   const mcpSubjectId = required(environment.POC_MCP_SUBJECT_ID, 'POC_MCP_SUBJECT_ID')
-  if (workspaceId !== mcpWorkspaceId) {
-    throw prepError('PREP_WORKSPACE_DRIFT', 'K9 and MCP must use the same canonical PREP Workspace.')
-  }
-  if (k9SubjectId === mcpSubjectId) {
-    throw prepError('PREP_SERVICE_SUBJECT_COLLISION', 'K9 and MCP Subjects must remain distinct.')
-  }
   if (!required(environment.POC_MCP_SERVICE_TOKEN, 'POC_MCP_SERVICE_TOKEN')) {
     throw prepError('PREP_MCP_TOKEN_MISSING', 'MCP service authentication is not configured.')
   }
+  const k9Enabled = environment.POC_K9_SCHEDULER_ENABLED?.trim().toLowerCase() === 'true'
+  const services = [{
+    name: 'MCP',
+    subjectId: mcpSubjectId,
+    username: 'prep39083-mcp-service',
+    role: 'developer',
+  }]
+  if (k9Enabled) {
+    const workspaceId = required(environment.POC_K9_WORKSPACE_ID, 'POC_K9_WORKSPACE_ID')
+    const k9SubjectId = required(environment.POC_K9_SYSTEM_SUBJECT_ID, 'POC_K9_SYSTEM_SUBJECT_ID')
+    required(environment.POC_K9_STUDIO_DATABASE_URL, 'POC_K9_STUDIO_DATABASE_URL')
+    if (workspaceId !== mcpWorkspaceId) {
+      throw prepError('PREP_WORKSPACE_DRIFT', 'K9 and MCP must use the same canonical PREP Workspace.')
+    }
+    if (k9SubjectId === mcpSubjectId) {
+      throw prepError('PREP_SERVICE_SUBJECT_COLLISION', 'K9 and MCP Subjects must remain distinct.')
+    }
+    services.unshift({
+      name: 'K9',
+      subjectId: k9SubjectId,
+      username: 'prep39083-k9-system',
+      role: 'manager',
+    })
+  }
   return Object.freeze({
-    workspaceId,
-    services: Object.freeze([
-      Object.freeze({
-        name: 'K9',
-        subjectId: k9SubjectId,
-        username: 'prep39083-k9-system',
-        role: 'manager',
-      }),
-      Object.freeze({
-        name: 'MCP',
-        subjectId: mcpSubjectId,
-        username: 'prep39083-mcp-service',
-        role: 'developer',
-      }),
-    ]),
+    workspaceId: mcpWorkspaceId,
+    k9Mode: k9Enabled ? 'REQUIRED' : 'DEFERRED',
+    services: Object.freeze(services.map((service) => Object.freeze(service))),
   })
 }
 function usersFromSnapshot(snapshot) {
@@ -125,6 +129,7 @@ export async function inspectPrepBootstrap({ stateStore, environment = process.e
   return Object.freeze({
     status: 'READY',
     workspace_id: specification.workspaceId,
+    k9_mode: specification.k9Mode,
     administrators,
     administrator_record_count: administratorRecords.length,
     services: specification.services.map((service) => verifyService(users, credentials, service)),

@@ -5,6 +5,8 @@ import { createPocStateStore } from './poc-state-store.mjs'
 import { inspectPrepBootstrap, reconcilePrepBootstrap } from './poc-prep-bootstrap.mjs'
 
 const environment = Object.freeze({
+  POC_K9_SCHEDULER_ENABLED: 'true',
+  POC_K9_STUDIO_DATABASE_URL: 'postgres://readonly@studio.example.test/studio',
   POC_K9_SYSTEM_SUBJECT_ID: 'prep39083-k9-system',
   POC_K9_WORKSPACE_ID: '00000000-0000-4000-8000-000000000061',
   POC_MCP_SUBJECT_ID: 'prep39083-mcp-service',
@@ -57,5 +59,35 @@ test('PREP bootstrap rejects shared K9/MCP Subject identity', async () => {
     }),
     (error) => error.code === 'PREP_SERVICE_SUBJECT_COLLISION',
   )
+  await stateStore.close()
+})
+
+test('PREP bootstrap defers K9 identity when Studio authority is not configured', async () => {
+  const stateStore = createPocStateStore()
+  const deferredEnvironment = {
+    ...environment,
+    POC_K9_SCHEDULER_ENABLED: 'false',
+    POC_K9_STUDIO_DATABASE_URL: '',
+    POC_K9_SYSTEM_SUBJECT_ID: '',
+    POC_K9_WORKSPACE_ID: '',
+  }
+  const first = await reconcilePrepBootstrap({
+    stateStore,
+    environment: deferredEnvironment,
+    administrator: { username: 'admin', password: 'correct horse battery staple' },
+    randomPassword: () => 'service password that is never logged',
+  })
+  assert.equal(first.k9_mode, 'DEFERRED')
+  assert.deepEqual(first.created, ['ADMIN', 'MCP'])
+  assert.deepEqual(first.services.map((item) => item.name), ['MCP'])
+  assert.deepEqual(first.services.map((item) => item.status), ['PRESENT'])
+
+  const second = await reconcilePrepBootstrap({
+    stateStore,
+    environment: deferredEnvironment,
+    randomPassword: () => assert.fail('deferred rerun must not create another service identity'),
+  })
+  assert.deepEqual(second.created, [])
+  assert.equal(second.administrators.length, 1)
   await stateStore.close()
 })

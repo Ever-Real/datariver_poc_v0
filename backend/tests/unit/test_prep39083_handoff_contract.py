@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import tarfile
 from pathlib import Path
@@ -63,6 +64,14 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert "LLM_CHAT_URL=" in prep
     assert "LLM_EMBEDDING_URL=" in prep
     assert "LLM_RERANKER_URL=" in prep
+    assert "POC_K9_STUDIO_DATABASE_URL=\n" in prep
+    assert "Blank = core boot succeeds" in prep
+    assert '"CORE_REQUIRED"' in contract
+    assert '"FEATURE_REQUIRED"' in contract
+    assert '"GENERATED"' in contract
+    assert '"FIXED"' in contract
+    contract_value = json.loads(contract)
+    assert "POC_K9_SCHEDULER_ENABLED" not in contract_value["ownership"]["FIXED"]
 
 
 def test_ops_override_removes_build_and_forbids_pull() -> None:
@@ -88,6 +97,7 @@ def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
     assert "docker compose down" not in source
     assert "docker volume rm" not in source
     assert "deploy/poc/.env" not in source
+    assert '"config_schema_version": "PREP39083_ENV_V3"' in source
 
 
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:
@@ -166,6 +176,9 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     assert "writeFile(output" in smoke
     assert "password }" in smoke
     assert "console.log(password" not in smoke
+    assert "--k9-mode" in smoke
+    assert "k9Mode === 'REQUIRED'" in smoke
+    assert "'DEFERRED'" in smoke
 
 
 def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:

@@ -40,18 +40,20 @@ For every initial deployment and later release update, run exactly one command:
 ./scripts/prep39083 deploy
 ```
 
-The ignored `.env.prep` is never changed by Git or the deployer. Missing required external values
-fail with key names only. Fixed/default values are derived from the tracked contract. On first use,
-the deployer creates ignored mode-0600 `.env.prep.runtime` containing only generated local secrets
-and derived runtime identity; subsequent deployments reuse those secrets. Legacy generated secrets
-still present in an older `.env.prep` are migrated without modifying that file and must match on
-later runs.
+The ignored `.env.prep` is never changed by Git or the deployer. Missing core external values fail
+with key names only. Fixed/default values are derived from the tracked contract. The deployer first
+classifies containers, network, named volumes, the runtime-secret file and accepted receipt. It
+creates a mode-0600 `.env.prep.runtime` only after proving the target is fresh or a failed first
+install is disposable. Accepted deployments always reuse their existing secrets. Legacy generated
+secrets still present in an older `.env.prep` are migrated without modifying that file and must
+match on later runs.
 
 The deploy command performs source validation, environment/proxy merge, native amd64 preflight,
 39080 observation, Compose validation, exact image build/inspection, local service health,
-idempotent schema initialization, DB credential verification, admin/K9/MCP bootstrap, web health,
-authenticated smoke and final 39080 re-observation. It never runs `down -v`, resets a password,
-deletes a volume or widens authorization.
+idempotent schema initialization, DB credential verification, admin/requested-service bootstrap,
+web health, feature-aware authenticated smoke and final 39080 re-observation. The same command
+handles a clean host, an accepted running or stopped stack, an exact-release rerun and a safely
+provable failed first install. It never runs `down -v`, deletes a volume or widens authorization.
 
 If no administrator exists, the same command prompts for username, hidden password and confirmation.
 If an administrator exists, it prompts only for that administrator's hidden smoke password. The
@@ -62,17 +64,23 @@ Git, log or Evidence.
 
 | File | Owner | Contents | Update behavior |
 |---|---|---|---|
-| `.env.prep` | PREP operator | public origin, proxy, DataHub, Chat, embedding, reranker, Studio read-only URL | preserved |
+| `.env.prep` | PREP operator | public origin, proxy, DataHub, Chat, embedding, reranker, optional Studio read-only URL | preserved |
 | `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
 | `.env.prep.optional` | PREP operator | optional Airflow/MinIO, MCL and Grafana settings | absent is valid |
 | `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
 | `release.json` | release handoff | accepted Product/Evidence/platform/port/project | updated by Git |
 
 `POC_K9_STUDIO_DATABASE_URL` remains operator-owned because it must name an approved external
-read-only Knowledge Studio connection. The local Workspace is the Product's canonical target-local
-Workspace. K9 and MCP receive deterministic, distinct service Subjects; the MCP token and local
-database secrets are generated. K9 and MCP Subjects are created-if-absent, verified-if-present and
-fail on drift.
+read-only Knowledge Studio connection. It is feature-dependent, not core-required. A configured
+URL derives `POC_K9_SCHEDULER_ENABLED=true`, requires the K9 Subject and DAILY managed-graph READY
+smoke, and preserves the existing managed-refresh contract. A blank URL derives `false`; core web,
+login, DataHub and Chat smoke continue and the summary reports `K9 Managed Refresh: DEFERRED —
+Studio DB not configured`. No URL or Studio state is fabricated.
+
+The local Workspace is the Product's canonical target-local Workspace. MCP remains a built-in
+adapter with a generated target-local token and deterministic Subject, so it adds no operator
+secret. When K9 is configured, K9 and MCP use distinct deterministic Subjects; each requested
+Subject is created-if-absent, verified-if-present and fails on drift.
 
 Optional integrations are enabled only when needed:
 
@@ -118,8 +126,8 @@ not part of the operator contract.
 
 `PREP_LOCAL_DB_CREDENTIAL_MISMATCH` means the Compose web credential does not authenticate to the
 existing PostgreSQL volume. It is not the human administrator password. PostgreSQL initialization
-passwords apply only when a volume is first created, so changing an env value does not rotate an
-existing role.
+passwords apply only when a volume is first created, so changing an env value alone does not rotate
+an existing role.
 
 - When `runtime/prep39083/accepted.json` exists, never reset the volume or password. Restore the
   accepted target-local runtime secret from its approved target backup and rerun deploy.
@@ -129,9 +137,28 @@ existing role.
   install -m 0600 /approved/backup/.env.prep.runtime deploy/prep39083/.env.prep.runtime && ./scripts/prep39083 deploy
   ```
 
-- Without the accepted secret, stop. Even when the marker is absent, the deployer cannot prove an
-  existing volume contains no durable state and therefore will not destroy or reset it. Any
-  failed-first-install destructive recovery requires separate explicit approval.
+- With no accepted receipt, the deployer uses the PostgreSQL container's local-socket administrator
+  path to inspect every public table and accepts automatic credential reconciliation only when all
+  are empty. A residual Neo4j volume must also be empty and accessible with a preserved runtime or
+  legacy credential. This repair changes only the empty local PostgreSQL role credential, never a
+  volume.
+- Any durable row/node, malformed receipt, missing accepted secret, unknown project service/volume,
+  or state that cannot be proved empty fails closed as
+  `PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY`. The deployer never chooses `down -v`, volume
+  removal or database reset.
+
+## Unified target states
+
+The internal state machine is deterministic and does not infer database state from whether a
+container happens to be running:
+
+| State | Evidence | Deploy behavior |
+|---|---|---|
+| `FRESH_CLEAN` | no receipt, runtime secret, project container, network or volume | generate once, create state services, bootstrap |
+| `EXISTING_ACCEPTED_RUNNING` | valid receipt/runtime plus required volumes; project running | reuse, migrate, reconcile |
+| `EXISTING_ACCEPTED_STOPPED` | valid receipt/runtime plus required volumes; project stopped | reuse, start, migrate, reconcile |
+| `FAILED_FIRST_INSTALL_RECOVERABLE` | no receipt and all residual durable stores proven empty | non-destructive credential reconcile, then normal deploy |
+| `EXISTING_STATE_AMBIGUOUS` | receipts/secrets/state disagree or durable state exists | fail closed; no automatic mutation |
 
 ### Manual Compose inspection
 

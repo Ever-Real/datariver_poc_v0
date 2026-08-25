@@ -287,7 +287,7 @@ def export_release(arguments: argparse.Namespace) -> None:
             "build_timestamp": images[0]["created"],
             "export_timestamp": datetime.now(UTC).isoformat(),
             "compose_revision": sha256_paths((BASE_COMPOSE, OPS_COMPOSE)),
-            "config_schema_version": "PREP39083_ENV_V2",
+            "config_schema_version": "PREP39083_ENV_V3",
             "config_schema_sha256": sha256_paths(
                 (
                     PREP_ENV_EXAMPLE,
@@ -369,6 +369,8 @@ def verify_release(arguments: argparse.Namespace) -> None:
         manifest = json.loads((target / "release-manifest.json").read_text(encoding="utf-8"))
         if manifest.get("contract") != CONTRACT or manifest.get("architecture") != "linux/amd64":
             raise ReleaseError("release manifest contract/platform is invalid")
+        if manifest.get("config_schema_version") != "PREP39083_ENV_V3":
+            raise ReleaseError("release manifest environment contract version is invalid")
         if manifest.get("image_archive_sha256") != sha256_file(target / "images.tar"):
             raise ReleaseError("images.tar checksum does not match the release manifest")
         if manifest.get("postgres_init_sha256") != sha256_tree(target / POSTGRES_INIT.name):

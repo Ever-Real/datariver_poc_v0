@@ -33,7 +33,9 @@ git pull --ff-only origin dev
 The tracked release identity eliminates shell `PRODUCT_SHA`/`IMAGE_REF` state. The ignored operator
 and generated runtime environments survive Git updates. New required external keys fail by name;
 new generated keys are created once; default/fixed keys update automatically; existing operator
-values are never overwritten.
+values are never overwritten. The same deploy command classifies and reconciles a clean host,
+accepted running/stopped stacks, exact-release reruns and safely empty failed-install residue.
+Ambiguous or durable unaccepted state stops without deleting a volume.
 
 ## Authority and state
 
@@ -47,7 +49,7 @@ values are never overwritten.
 | local secrets/derived topology | generated mode-0600 `.env.prep.runtime` |
 | optional integrations | optional mode-0600 `.env.prep.optional` |
 | PostgreSQL/pgvector and Neo4j | target-local persistent Compose volumes |
-| managed graph refresh | DAILY shared snapshot with validated atomic promotion |
+| managed graph refresh | DAILY shared snapshot when Studio DB is configured; otherwise DEFERRED |
 | semantic generation | DB-fenced exact binding/generation owner, heartbeat, wait/reuse |
 
 Multiple processes must share the same durable PostgreSQL store. Only one materializer owns an
@@ -58,8 +60,9 @@ completed generation. No PREP setting disables this contract.
 
 1. DEV: source gates, new Product/Evidence, exact DEV OCI/browser and clean secret scan.
 2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`.
-3. PREP deploy: native amd64, env/proxy/DB identity, isolated Compose, exact Product image,
-   idempotent bootstrap, HTTP/providers/managed Assets and bounded smoke.
+3. PREP deploy: native amd64, target-state classification, env/proxy/DB identity, isolated Compose,
+   exact Product image, idempotent bootstrap and bounded smoke. Managed Assets are strict only when
+   the feature-dependent Studio DB authority is configured; otherwise core boot reports K9 DEFERRED.
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.

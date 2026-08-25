@@ -37,15 +37,18 @@ def _load_module() -> ModuleType:
 deploy = _load_module()
 
 
-def _operator_values() -> dict[str, str]:
+def _operator_values(*, k9_configured: bool = True) -> dict[str, str]:
     contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
-    return {
+    values = {
         key: {
             "POC_PUBLIC_ORIGIN": "https://prep39083.example.test",
-            "POC_K9_STUDIO_DATABASE_URL": "postgres://readonly@studio.example.test/studio",
         }.get(key, f"configured-{key.lower()}")
-        for key in contract["operator_required"]
+        for key in contract["ownership"]["CORE_REQUIRED"]
     } | {"HTTP_PROXY": "", "HTTPS_PROXY": "", "NO_PROXY": "corp.internal"}
+    values["POC_K9_STUDIO_DATABASE_URL"] = (
+        "postgres://readonly@studio.example.test/studio" if k9_configured else ""
+    )
+    return values
 
 
 def _write_private_env(path: Path, values: dict[str, str]) -> bytes:
@@ -144,6 +147,31 @@ def test_optional_mcl_profile_is_not_required(tmp_path: Path) -> None:
     assert "POC_MCL_KAFKA_BROKERS" not in bundle.effective
 
 
+def test_k9_studio_authority_is_feature_dependent_not_core_required(tmp_path: Path) -> None:
+    operator = tmp_path / ".env.prep"
+    _write_private_env(operator, _operator_values(k9_configured=False))
+    deferred = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=tmp_path / ".env.prep.runtime",
+        random_token=lambda count: "x" * count,
+    )
+    assert deferred.k9_mode == "DEFERRED"
+    assert deferred.effective["POC_K9_SCHEDULER_ENABLED"] == "false"
+
+    _write_private_env(operator, _operator_values(k9_configured=True))
+    configured = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=tmp_path / ".env.prep.runtime",
+        random_token=lambda count: pytest.fail("existing generated secrets must be reused"),
+    )
+    assert configured.k9_mode == "REQUIRED"
+    assert configured.effective["POC_K9_SCHEDULER_ENABLED"] == "true"
+
+
 def test_proxy_is_injected_once_with_lowercase_and_required_no_proxy(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     values = _operator_values() | {
@@ -212,6 +240,114 @@ def test_postgres_contract_matches_or_returns_classified_credential_failure() ->
     assert "28P01" not in classified.reason
 
 
+def _inventory(
+    *,
+    marker: bool = False,
+    marker_valid: bool = False,
+    runtime: bool = False,
+    runtime_valid: bool = False,
+    running: bool = False,
+    volumes: tuple[str, ...] = (),
+    network: bool = False,
+) -> object:
+    containers = (
+        (deploy.TargetContainer("container", "web", running),)
+        if running or marker
+        else ()
+    )
+    return deploy.TargetInventory(
+        marker,
+        marker_valid,
+        runtime,
+        runtime_valid,
+        containers,
+        tuple(deploy.TargetVolume(f"project_{name}", name) for name in volumes),
+        ("project-services",) if network else (),
+    )
+
+
+@pytest.mark.parametrize(
+    ("inventory", "expected"),
+    (
+        (_inventory(), deploy.TargetState.FRESH_CLEAN),
+        (
+            _inventory(
+                marker=True,
+                marker_valid=True,
+                runtime=True,
+                runtime_valid=True,
+                running=True,
+                volumes=("pgvector-data", "neo4j-data", "neo4j-logs"),
+            ),
+            deploy.TargetState.EXISTING_ACCEPTED_RUNNING,
+        ),
+        (
+            deploy.TargetInventory(
+                True,
+                True,
+                True,
+                True,
+                (),
+                (
+                    deploy.TargetVolume("project_pg", "pgvector-data"),
+                    deploy.TargetVolume("project_neo", "neo4j-data"),
+                ),
+                (),
+            ),
+            deploy.TargetState.EXISTING_ACCEPTED_STOPPED,
+        ),
+        (
+            _inventory(runtime=True, runtime_valid=True, volumes=("pgvector-data",)),
+            deploy.TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION,
+        ),
+        (
+            _inventory(marker=True, marker_valid=False, runtime=True, runtime_valid=True),
+            deploy.TargetState.EXISTING_STATE_AMBIGUOUS,
+        ),
+        (
+            _inventory(marker=True, marker_valid=True, runtime=False, runtime_valid=False),
+            deploy.TargetState.EXISTING_STATE_AMBIGUOUS,
+        ),
+    ),
+)
+def test_target_state_classifier(inventory: object, expected: object) -> None:
+    assert deploy.classify_target_state(inventory) is expected
+
+
+def test_accepted_state_never_generates_missing_runtime_secrets(tmp_path: Path) -> None:
+    operator = tmp_path / ".env.prep"
+    _write_private_env(operator, _operator_values())
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.reconcile_environment(
+            _release(),
+            operator_path=operator,
+            optional_path=tmp_path / ".env.prep.optional",
+            runtime_path=tmp_path / ".env.prep.runtime",
+            target_state=deploy.TargetState.EXISTING_ACCEPTED_STOPPED,
+            random_token=lambda _count: pytest.fail(
+                "accepted state must never create a new secret",
+            ),
+        )
+    assert captured.value.code == "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY"
+
+
+def test_residual_inspection_uses_nonpersistent_placeholders(tmp_path: Path) -> None:
+    operator = tmp_path / ".env.prep"
+    runtime = tmp_path / ".env.prep.runtime"
+    _write_private_env(operator, _operator_values(k9_configured=False))
+    bundle = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=runtime,
+        target_state=deploy.TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION,
+        random_token=lambda _count: pytest.fail("inspection must not generate a secret"),
+    )
+    assert not runtime.exists()
+    assert bundle.effective["POC_POSTGRES_PASSWORD"] == deploy.INSPECTION_PLACEHOLDER
+    assert bundle.effective["NEO4J_PASSWORD"] == deploy.INSPECTION_PLACEHOLDER
+
+
 def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     forbidden = (
@@ -219,7 +355,6 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
         "docker volume rm",
         '"down", "-v"',
         '"volume", "rm"',
-        "ALTER ROLE",
     )
     assert not any(value in source for value in forbidden)
     assert "PREP_LOCAL_DB_CREDENTIAL_MISMATCH" in source
@@ -231,6 +366,9 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
         '"--no-build", "--wait", "web"',
     )
     assert "snapshot_39080" in source
+    assert "ALTER ROLE" in source
+    assert "inspect_postgres_durable_rows" in source
+    assert "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY" in source
 
 
 def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
