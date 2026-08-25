@@ -31,31 +31,38 @@ release = _load_module()
 
 def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> None:
     prep = (DEPLOYMENT / ".env.prep.example").read_text(encoding="utf-8")
+    optional = (DEPLOYMENT / ".env.prep.optional.example").read_text(encoding="utf-8")
     ops = (DEPLOYMENT / ".env.ops.example").read_text(encoding="utf-8")
+    contract = (DEPLOYMENT / "env-contract.json").read_text(encoding="utf-8")
 
-    assert "COMPOSE_PROJECT_NAME=datariver-prep39083" in prep
-    assert "POC_PORT=39083" in prep
-    assert "POC_PLATFORM=linux/amd64" in prep
-    assert "POC_SHARED_NETWORK=datariver-prep39083-services" in prep
-    assert "POC_POSTGRES_HOST_PORT=25432" in prep
-    assert "POC_REDIS_PORT=26379" in prep
-    assert "POC_NEO4J_HTTP_PORT=27475" in prep
+    assert "POC_PUBLIC_ORIGIN=" in prep
+    assert "HTTP_PROXY=" in prep
+    assert "HTTPS_PROXY=" in prep
+    assert "NO_PROXY=" in prep
+    assert "POC_POSTGRES_PASSWORD=" not in prep
+    assert "NEO4J_PASSWORD=" not in prep
+    assert "POC_MCP_SERVICE_TOKEN=" not in prep
+    assert "POC_MCL_KAFKA_BROKERS=" not in prep
+    assert "AIRFLOW_URL=" not in prep
+    assert "MINIO_URL=" not in prep
+    assert "AIRFLOW_URL=" in optional
+    assert "MINIO_URL=" in optional
+    assert "POC_CHANGE_HISTORY_SCHEDULER_ENABLED=false" in optional
+    assert '"COMPOSE_PROJECT_NAME": "datariver-prep39083"' in contract
+    assert '"POC_PORT": "39083"' in contract
+    assert '"POC_PLATFORM": "linux/amd64"' in contract
+    assert '"POC_SHARED_NETWORK": "datariver-prep39083-services"' in contract
     assert "COMPOSE_PROJECT_NAME=datariver-ops39083" in ops
     assert "POC_SHARED_NETWORK=datariver-ops39083-services" in ops
-    for document in (prep, ops):
+    for document in (prep, optional, ops, contract):
         assert "POC_PORT=39080" not in document
         assert "host.docker.internal" not in document
         assert "/Users/" not in document
         assert "LOCAL_LLAMA_CPP" not in document
-        assert "POC_DATAHUB_ALLOW_NO_TOKEN=false" in document
-        assert "POC_K9_SCHEDULER_ENABLED=true" in document
-        assert "POC_K9_REFRESH_MODE=DAILY" in document
-        assert "DATAHUB_GMS_URL=" in document
-        assert "AIRFLOW_URL=" in document
-        assert "MINIO_URL=" in document
-        assert "LLM_CHAT_URL=" in document
-        assert "LLM_EMBEDDING_URL=" in document
-        assert "LLM_RERANKER_URL=" in document
+    assert "DATAHUB_GMS_URL=" in prep
+    assert "LLM_CHAT_URL=" in prep
+    assert "LLM_EMBEDDING_URL=" in prep
+    assert "LLM_RERANKER_URL=" in prep
 
 
 def test_ops_override_removes_build_and_forbids_pull() -> None:
@@ -129,16 +136,20 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     ops = (ROOT / "docs" / "65_PREP_TO_OPS_PROMOTION.md").read_text(encoding="utf-8")
     cycle = (ROOT / "docs" / "66_RELEASE_CYCLE.md").read_text(encoding="utf-8")
 
-    assert "cmp /tmp/datariver-39080-before.txt /tmp/datariver-39080-after.txt" in prep
-    assert "--project-name datariver-prep39083" in prep
-    assert "up -d --no-build --wait" in prep
+    assert "./scripts/prep39083 deploy" in prep
+    assert "git pull --ff-only origin dev" in prep
+    assert "PRODUCT_SHA" in prep and "Operators do not" in prep
+    assert "docker compose run --no-deps" in prep
+    assert "raw `docker run`" in prep
     assert "docker compose down -v" in prep
+    assert "./scripts/prep39083 export" in ops
     assert "Never use `docker compose down -v`" in ops
     assert "docker load --input images.tar" in ops
     assert "up -d --no-build --wait" in ops
     assert "pull_policy: never" in ops
     assert "DEV never claims PREP or OPS runtime acceptance" in cycle
-    assert "only one materializer" in cycle
+    assert "Only one materializer" in cycle
+    assert "./scripts/prep39083 deploy" in cycle
 
 
 def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
@@ -158,13 +169,23 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
 
 
 def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:
-    assert release.RUNTIME_INPUTS == (
-        "frontend",
-        "deploy/poc/Dockerfile.example",
-        "deploy/poc/docker-compose.poc.yaml",
-        "deploy/poc/postgres-init",
-    )
-    for path in (release.BASE_COMPOSE, release.OPS_COMPOSE, release.PREP_ENV_EXAMPLE):
+    assert "frontend" in release.RUNTIME_INPUTS
+    assert "deploy/poc/Dockerfile.example" in release.RUNTIME_INPUTS
+    assert "deploy/poc/docker-compose.poc.yaml" in release.RUNTIME_INPUTS
+    assert "deploy/poc/postgres-init" in release.RUNTIME_INPUTS
+    assert "scripts/prep39083" in release.RUNTIME_INPUTS
+    assert "scripts/prep39083_deploy.py" in release.RUNTIME_INPUTS
+    assert "deploy/prep39083/env-contract.json" in release.RUNTIME_INPUTS
+    assert "deploy/prep39083/release.json" not in release.RUNTIME_INPUTS
+    for path in (
+        release.BASE_COMPOSE,
+        release.OPS_COMPOSE,
+        release.PREP_ENV_EXAMPLE,
+        release.PREP_OPTIONAL_ENV_EXAMPLE,
+        release.ENV_CONTRACT,
+        release.PREP_ENTRYPOINT,
+        release.DEPLOY_TOOL,
+    ):
         assert Path(path).is_file()
     assert release.POSTGRES_INIT.is_dir()
     assert any(release.POSTGRES_INIT.glob("*.sql"))
@@ -173,5 +194,6 @@ def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:
 def test_tracked_examples_are_explicit_gitignore_exceptions() -> None:
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "!deploy/prep39083/.env.prep.example" in ignore
+    assert "!deploy/prep39083/.env.prep.optional.example" in ignore
     assert "!deploy/prep39083/.env.ops.example" in ignore
     assert os.fspath(DEPLOYMENT / ".env.prep") not in ignore

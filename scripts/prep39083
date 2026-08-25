@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+OPERATOR_ENV="$ROOT/deploy/prep39083/.env.prep"
+
+# uv must receive the corporate proxy before it evaluates uv.lock. Parse only
+# the three proxy keys without sourcing or evaluating operator-controlled text.
+if [ -f "$OPERATOR_ENV" ]; then
+  while IFS='=' read -r key value; do
+    value=$(printf '%s' "$value" | tr -d '\r')
+    case "$key" in
+      HTTP_PROXY)
+        export HTTP_PROXY="$value" http_proxy="$value"
+        ;;
+      HTTPS_PROXY)
+        export HTTPS_PROXY="$value" https_proxy="$value"
+        ;;
+      NO_PROXY)
+        export NO_PROXY="$value" no_proxy="$value"
+        ;;
+    esac
+  done < "$OPERATOR_ENV"
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf '%s\n' 'FAILED' 'Step: UV_PREFLIGHT' 'Code: PREP_UV_REQUIRED' \
+    'Action: Install the approved uv binary and rerun ./scripts/prep39083.' >&2
+  exit 2
+fi
+
+cd "$ROOT"
+exec uv run --frozen python scripts/prep39083_deploy.py "$@"

@@ -1,9 +1,9 @@
-# PREP39083 source build and acceptance
+# PREP39083 one-command source deployment
 
 ## Fixed release identity and boundary
 
-This runbook prepares, but does not claim, the WSL/Linux amd64 runtime acceptance for the
-UX2 Product refinement. The accepted runtime source is:
+The machine-readable accepted release is
+`deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
 Product  ced6ffeedc9ee9786abc6d12c41c30540201f600
@@ -13,208 +13,143 @@ Port     39083
 Project  datariver-prep39083
 ```
 
-Commits after Evidence may contain only handoff scripts, documentation, examples and tests. The
-release tool fails if any `frontend` or canonical POC Docker/Compose/runtime-init input differs from
-the Product tree. PREP builds the Product on Linux amd64; Mac images are never transferred.
+The CLI resolves the current committed handoff HEAD itself and reuses
+`prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
+set `PRODUCT_SHA`, `IMAGE_REF`, image tags, ports, project names, Workspace IDs or service Subject
+IDs in a shell.
 
-The POC owns its pgvector, Neo4j and Redis services. DataHub, Airflow, MinIO and the three
-OpenAI-compatible inference stages are external endpoints and are not added to Compose. The
-accepted POC authentication plane is local human credentials plus opaque server sessions. It does
-not consume OIDC settings; an environment that mandates OIDC must use the full platform deployment
-profile instead of inventing POC variables.
+## Normal operator path
 
-## 1. Fetch, platform and source gate
-
-Run from a WSL Linux-filesystem checkout, not `/mnt/c`:
+Update the source checkout on the WSL Linux filesystem:
 
 ```bash
-set -eu
-git fetch origin dev
-git checkout dev
+git switch dev
 git pull --ff-only origin dev
-
-PRODUCT_SHA=ced6ffeedc9ee9786abc6d12c41c30540201f600
-EVIDENCE_SHA=6098200d86f5c3058eb1ac3343f585d78f1a635a
-test "$(uname -m)" = x86_64
-test "$(docker info --format '{{.Architecture}}')" = x86_64 \
-  || test "$(docker info --format '{{.Architecture}}')" = amd64
-docker compose version
-python3 scripts/prep39083_release.py source-check \
-  --product-sha "$PRODUCT_SHA" --evidence-sha "$EVIDENCE_SHA"
 ```
 
-The current remote is the canonical repository configured on this checkout. Do not rewrite its URL
-or credentials in a runbook. A failed ancestry/runtime-input check is a stop condition.
-
-## 2. Local configuration and secret hygiene
+On the first installation only, create the target-owned operator configuration:
 
 ```bash
-set -eu
 install -m 0600 deploy/prep39083/.env.prep.example deploy/prep39083/.env.prep
 editor deploy/prep39083/.env.prep
 ```
 
-Replace every `CHANGE_ME` value. Set both `POC_SOURCE_COMMIT` and `POC_IMAGE_TAG` to the full Product
-SHA. Keep `POC_DATAHUB_ALLOW_NO_TOKEN=false`, Linux/amd64, port 39083 and the project/network names.
-Use target-routable DNS or HTTPS endpoints; `host.docker.internal`, Mac paths and local Ollama model
-IDs are invalid here. Do not put credentials in shell arguments, Git, Docker build arguments or an
-Evidence file.
-
-The ignored `.env.prep` is the live target-owned secret/configuration boundary. Before continuing:
+For every initial deployment and later release update, run exactly one command:
 
 ```bash
-set -eu
-test "$(stat -c '%a' deploy/prep39083/.env.prep)" = 600
-test -z "$(grep -n 'CHANGE_ME' deploy/prep39083/.env.prep || true)"
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml config --quiet
+./scripts/prep39083 deploy
 ```
 
-Provider certificates, DNS routes and authorization are environment-owned. Probe them without
-printing bearer tokens or passwords. The authenticated application smoke below is the final
-DataHub/LLM connectivity proof; Airflow/MinIO commands should use their own approved service probes.
+The ignored `.env.prep` is never changed by Git or the deployer. Missing required external values
+fail with key names only. Fixed/default values are derived from the tracked contract. On first use,
+the deployer creates ignored mode-0600 `.env.prep.runtime` containing only generated local secrets
+and derived runtime identity; subsequent deployments reuse those secrets. Legacy generated secrets
+still present in an older `.env.prep` are migrated without modifying that file and must match on
+later runs.
 
-## 3. Side-by-side build and start
+The deploy command performs source validation, environment/proxy merge, native amd64 preflight,
+39080 observation, Compose validation, exact image build/inspection, local service health,
+idempotent schema initialization, DB credential verification, admin/K9/MCP bootstrap, web health,
+authenticated smoke and final 39080 re-observation. It never runs `down -v`, resets a password,
+deletes a volume or widens authorization.
 
-Record the current 39080 containers first. Never stop or recreate them:
+If no administrator exists, the same command prompts for username, hidden password and confirmation.
+If an administrator exists, it prompts only for that administrator's hidden smoke password. The
+password exists only in memory and one short-lived mode-0600 file and is never written to an env,
+Git, log or Evidence.
+
+## Environment ownership
+
+| File | Owner | Contents | Update behavior |
+|---|---|---|---|
+| `.env.prep` | PREP operator | public origin, proxy, DataHub, Chat, embedding, reranker, Studio read-only URL | preserved |
+| `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
+| `.env.prep.optional` | PREP operator | optional Airflow/MinIO, MCL and Grafana settings | absent is valid |
+| `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
+| `release.json` | release handoff | accepted Product/Evidence/platform/port/project | updated by Git |
+
+`POC_K9_STUDIO_DATABASE_URL` remains operator-owned because it must name an approved external
+read-only Knowledge Studio connection. The local Workspace is the Product's canonical target-local
+Workspace. K9 and MCP receive deterministic, distinct service Subjects; the MCP token and local
+database secrets are generated. K9 and MCP Subjects are created-if-absent, verified-if-present and
+fail on drift.
+
+Optional integrations are enabled only when needed:
 
 ```bash
-set -eu
-docker ps --filter publish=39080 --format '{{.ID}} {{.Names}}' > /tmp/datariver-39080-before.txt
-
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml \
-  build --pull=false web
-
-IMAGE_REF="datariver-poc:$PRODUCT_SHA"
-test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE_REF")" = linux/amd64
-test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE_REF")" = "$PRODUCT_SHA"
-
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml \
-  up -d --no-build --wait
-
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml ps
-curl --fail --silent --show-error http://127.0.0.1:39083/healthz
-docker ps --filter publish=39080 --format '{{.ID}} {{.Names}}' > /tmp/datariver-39080-after.txt
-cmp /tmp/datariver-39080-before.txt /tmp/datariver-39080-after.txt
+install -m 0600 deploy/prep39083/.env.prep.optional.example \
+  deploy/prep39083/.env.prep.optional
+editor deploy/prep39083/.env.prep.optional
+./scripts/prep39083 deploy
 ```
 
-The project name, network name, diagnostic host ports and Compose-named volumes differ from the
-39080 project. Do not use `docker compose down -v`; volumes contain PostgreSQL/pgvector state,
-managed graph pointers, scheduler ownership/generation state and Neo4j projections.
+MCL remains disabled by default. Airflow and MinIO are not needed by core boot or the managed-graph
+smoke; configure them only for Registration acceptance. DataHub and all three inference stages stay
+external and are never added to this Compose project.
 
-## 4. Bootstrap one PREP operator safely
+## Corporate proxy contract
 
-The bootstrap command is an explicit local-auth action, not an OIDC substitute. Use a unique real
-PREP subject and do not reuse a DEV credential. Create a mode-0600 password file outside Git and
-delete it after acceptance:
+Enter `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` once in `.env.prep`. The wrapper injects uppercase
+and lowercase variants into `uv` and its child processes. The deployer preserves operator
+`NO_PROXY`, adds `127.0.0.1`, `localhost`, `pgvector`, `redis`, `neo4j` and `web`, and performs the
+host health probe with an explicit proxy bypass.
+
+Compose passes Docker's predefined proxy build arguments. The Dockerfile derives npm proxy use
+inside the dependency-installation layer, uses one temporary npmrc, bounds `strict-ssl=false` to
+that step, restores it to true and deletes the npmrc in the same layer. Proxy values are not image
+ENV, labels, Evidence or command output.
+
+## Operations and diagnostics
+
+The following are optional troubleshooting/operations commands, not normal deployment steps:
 
 ```bash
-set -eu
-umask 077
-read -r -s -p 'PREP acceptance password: ' PREP_PASSWORD; echo
-printf '%s\n' "$PREP_PASSWORD" > /tmp/datariver-prep39083.password
-unset PREP_PASSWORD
-
-docker run --rm --user "$(id -u):$(id -g)" \
-  --network datariver-prep39083-services \
-  --env-file deploy/prep39083/.env.prep \
-  -e POC_POSTGRES_HOST=pgvector -e POC_POSTGRES_PORT=5432 \
-  -e POC_REDIS_URL=redis://redis:6379/0 \
-  --mount type=bind,src=/tmp/datariver-prep39083.password,dst=/run/prep.password,readonly \
-  "datariver-poc:$PRODUCT_SHA" \
-  node poc-bootstrap-local-user.mjs --env-file /dev/null \
-  --password-file /run/prep.password \
-  --subject-id prep39083-acceptance-admin --username prep39083-acceptance-admin \
-  --role admin --set-active-subject
+./scripts/prep39083 doctor
+./scripts/prep39083 status
+./scripts/prep39083 logs
+./scripts/prep39083 smoke
+./scripts/prep39083 export
 ```
 
-If a durable approved PREP administrator already exists, do not create a duplicate. Use that
-identity and record only its non-secret subject identifier.
+All Python execution goes through the wrapper's `uv run --frozen`; system Python package state is
+not part of the operator contract.
 
-## 5. Smoke and authenticated browser acceptance
+### Database credential mismatch
 
-```bash
-set -eu
-mkdir -p runtime/prep39083
-node scripts/smoke_prep39083.mjs \
-  --origin http://127.0.0.1:39083 \
-  --username prep39083-acceptance-admin \
-  --password-file /tmp/datariver-prep39083.password \
-  --output runtime/prep39083/smoke.json
-```
+`PREP_LOCAL_DB_CREDENTIAL_MISMATCH` means the Compose web credential does not authenticate to the
+existing PostgreSQL volume. It is not the human administrator password. PostgreSQL initialization
+passwords apply only when a volume is first created, so changing an env value does not rotate an
+existing role.
 
-The smoke requires HTTP 200, login, current DataHub access, both READY managed graphs, DAILY
-refresh, READY semantic index and one GENERAL response with zero internal retrieval. Also inspect
-the running container rather than trusting the tag:
+- When `runtime/prep39083/accepted.json` exists, never reset the volume or password. Restore the
+  accepted target-local runtime secret from its approved target backup and rerun deploy.
+- A safe non-destructive one-line recovery with such a backup is:
 
-```bash
-set -eu
-WEB_ID="$(docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep --file deploy/poc/docker-compose.poc.yaml ps -q web)"
-test "$(docker inspect --format '{{.State.Health.Status}}' "$WEB_ID")" = healthy
-test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$WEB_ID")" = "$PRODUCT_SHA"
-```
+  ```bash
+  install -m 0600 /approved/backup/.env.prep.runtime deploy/prep39083/.env.prep.runtime && ./scripts/prep39083 deploy
+  ```
 
-In an authenticated browser at 39083 verify login, Catalog/DataHub, Managed Assets, Default
-Lineage READY, Metadata Master READY, semantic-index state and Cytoscape load/hover/drag/expand with
-viewport preservation. Hard reload the Knowledge view. Capture no credential in screenshots.
+- Without the accepted secret, stop. Even when the marker is absent, the deployer cannot prove an
+  existing volume contains no durable state and therefore will not destroy or reset it. Any
+  failed-first-install destructive recovery requires separate explicit approval.
 
-## 6. Separate acceptance suites
+### Manual Compose inspection
 
-Startup never runs the full router suite. After smoke/browser acceptance, run focused routes first:
+The effective environment is intentionally private and ephemeral. Use the CLI for status and logs.
+If deeper diagnosis is required, first run `doctor`; do not recreate a raw `docker run` bootstrap
+with separately typed PostgreSQL variables. Bootstrap always uses `docker compose run --no-deps`
+from the exact web service so its DB user/password/network match the running Product contract.
 
-```bash
-node scripts/verify_chat_knowledge_router.mjs \
-  --origin http://127.0.0.1:39083 \
-  --username prep39083-acceptance-admin \
-  --password-file /tmp/datariver-prep39083.password \
-  --ids G08,V18,R01 \
-  --output runtime/prep39083/router-representative.json
-```
+### Separate acceptance suites
 
-Run the curated 60 and Boundary 8 once only when PREP acceptance is scheduled:
+Startup runs only the bounded smoke. Router 60, Boundary 8 and MCP/auth remain explicit PREP
+acceptance gates after browser acceptance; they are not added to every daily deployment. Use the
+tracked verifier scripts with a PREP-owned short-lived credential and remove that credential after
+acceptance.
 
-```bash
-node scripts/verify_chat_knowledge_router.mjs \
-  --origin http://127.0.0.1:39083 \
-  --username prep39083-acceptance-admin \
-  --password-file /tmp/datariver-prep39083.password \
-  --output runtime/prep39083/router-60.json
-node scripts/verify_chat_knowledge_router.mjs \
-  --origin http://127.0.0.1:39083 \
-  --username prep39083-acceptance-admin \
-  --password-file /tmp/datariver-prep39083.password \
-  --suite boundary --output runtime/prep39083/router-boundary.json
-```
+### Stop and rollback
 
-For MCP/native parity, create a separate mode-0600 file containing the already-provisioned MCP
-service token and run `scripts/benchmark_knowledge_adapters.mjs`. Its invalid-token negative is
-mandatory. Do not print or commit either credential file.
-
-## 7. Stop and rollback
-
-`stop` preserves every named volume. A rollback means selecting a previously approved exact image
-and configuration backup, not resetting data or rebuilding an old tag:
-
-```bash
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml stop
-
-# After restoring the approved prior env file with its prior exact POC_IMAGE_TAG:
-docker compose --project-name datariver-prep39083 \
-  --env-file deploy/prep39083/.env.prep \
-  --file deploy/poc/docker-compose.poc.yaml up -d --no-build --wait
-```
-
-Before schema-affecting updates, back up PostgreSQL and Neo4j. The current POC init SQL is additive
-and idempotent but is not a versioned downgrade mechanism. A rollback is compatible only when the
-previous image can read the current schema; otherwise restore the pre-update backups as an
-explicitly approved recovery action.
+Use `docker compose stop` through an approved diagnostic procedure; never use
+`docker compose down -v`. Rollback selects the previous approved exact image/configuration backup
+and uses `up -d --no-build`. Before schema-affecting changes, back up PostgreSQL and Neo4j. The POC
+state initializer is additive and idempotent but is not a downgrade mechanism.

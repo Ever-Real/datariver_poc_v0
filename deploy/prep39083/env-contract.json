@@ -1,0 +1,83 @@
+{
+  "contract": "DATARIVER_PREP39083_ENV_V2",
+  "operator_required": [
+    "POC_PUBLIC_ORIGIN",
+    "DATAHUB_GMS_URL",
+    "DATAHUB_GMS_TOKEN",
+    "DATAHUB_UI_URL",
+    "LLM_CHAT_URL",
+    "LLM_CHAT_MODEL",
+    "LLM_CHAT_TOKEN",
+    "LLM_EMBEDDING_URL",
+    "LLM_EMBEDDING_MODEL",
+    "LLM_EMBEDDING_TOKEN",
+    "LLM_RERANKER_URL",
+    "LLM_RERANKER_MODEL",
+    "LLM_RERANKER_TOKEN",
+    "POC_K9_STUDIO_DATABASE_URL"
+  ],
+  "operator_optional": [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY"
+  ],
+  "generated_secrets": {
+    "POC_POSTGRES_PASSWORD": 32,
+    "NEO4J_PASSWORD": 32,
+    "POC_MCP_SERVICE_TOKEN": 48
+  },
+  "legacy_generated_keys": [
+    "POC_POSTGRES_PASSWORD",
+    "NEO4J_PASSWORD",
+    "POC_MCP_SERVICE_TOKEN"
+  ],
+  "required_no_proxy": [
+    "127.0.0.1",
+    "localhost",
+    "pgvector",
+    "redis",
+    "neo4j",
+    "web"
+  ],
+  "fixed": {
+    "COMPOSE_PROJECT_NAME": "datariver-prep39083",
+    "POC_BIND_HOST": "127.0.0.1",
+    "POC_PORT": "39083",
+    "POC_SERVER_HOST": "0.0.0.0",
+    "POC_PLATFORM": "linux/amd64",
+    "POC_NODE_IMAGE": "node:22.19.0-bookworm-slim",
+    "POC_DOCKERFILE": "deploy/poc/Dockerfile.example",
+    "POC_SHARED_NETWORK": "datariver-prep39083-services",
+    "POC_STATE_BIND_HOST": "127.0.0.1",
+    "POC_POSTGRES_HOST_PORT": "25432",
+    "POC_REDIS_PORT": "26379",
+    "POC_NEO4J_HTTP_PORT": "27475",
+    "POC_PGVECTOR_IMAGE": "pgvector/pgvector:0.8.2-pg17-bookworm",
+    "POC_REDIS_IMAGE": "redis:8.2.6-bookworm",
+    "NEO4J_IMAGE": "neo4j:2026.06.0",
+    "POC_POSTGRES_DB": "datariver_poc",
+    "POC_POSTGRES_USER": "datariver_poc",
+    "NEO4J_USERNAME": "neo4j",
+    "POC_AUTH_SESSION_TTL_SECONDS": "28800",
+    "POC_AUTH_FAILED_ATTEMPT_LIMIT": "5",
+    "POC_AUTH_LOCK_SECONDS": "900",
+    "POC_DATAHUB_ALLOW_NO_TOKEN": "false",
+    "POC_LLM_TIMEOUT_MS": "15000",
+    "POC_K9_SCHEDULER_ENABLED": "true",
+    "POC_K9_REFRESH_MODE": "DAILY",
+    "POC_K9_SCHEDULER_TIME_ZONE": "Asia/Seoul",
+    "POC_K9_SCHEDULE_HOUR": "2",
+    "POC_K9_SCHEDULE_MINUTE": "0",
+    "POC_K9_CLASSIFICATION_CEILING": "INTERNAL",
+    "POC_K9_SYSTEM_SUBJECT_ID": "prep39083-k9-system",
+    "POC_K9_WORKSPACE_ID": "00000000-0000-4000-8000-000000000061",
+    "POC_MCP_SUBJECT_ID": "prep39083-mcp-service",
+    "POC_MCP_WORKSPACE_ID": "00000000-0000-4000-8000-000000000061",
+    "POC_KNOWLEDGE_SOURCE_MANIFEST": "",
+    "POC_CHANGE_HISTORY_SCHEDULER_ENABLED": "false",
+    "POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE": "Asia/Seoul",
+    "POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME": "datariver:prep39083:change-history-scheduler:v1"
+  },
+  "optional_profile": ".env.prep.optional",
+  "runtime_file": ".env.prep.runtime"
+}

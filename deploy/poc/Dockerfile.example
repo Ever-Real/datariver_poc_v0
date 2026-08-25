@@ -3,7 +3,26 @@ FROM ${NODE_IMAGE} AS build
 
 WORKDIR /source/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --ignore-scripts
+# HTTP_PROXY/HTTPS_PROXY/NO_PROXY are Docker's predefined proxy build arguments.
+# Deliberately do not redeclare them with ARG: Docker then excludes their values
+# from image history and cache metadata. A private, step-local npmrc is removed in
+# the same layer so proxy credentials and the bounded TLS relaxation cannot persist.
+RUN set -eu; \
+    export NPM_CONFIG_USERCONFIG=/tmp/datariver-npmrc; \
+    npm_proxy="${HTTPS_PROXY:-${HTTP_PROXY:-}}"; \
+    if [ -n "${npm_proxy}" ]; then \
+      npm config set proxy "${npm_proxy}"; \
+      npm config set https-proxy "${npm_proxy}"; \
+      npm config set strict-ssl false; \
+    fi; \
+    npm ci --ignore-scripts; \
+    if [ -n "${npm_proxy}" ]; then \
+      npm config delete proxy; \
+      npm config delete https-proxy; \
+      npm config set strict-ssl true; \
+      test "$(npm config get strict-ssl)" = true; \
+    fi; \
+    rm -f "${NPM_CONFIG_USERCONFIG}"
 COPY frontend/ ./
 RUN npm run build:poc
 RUN npm prune --omit=dev
@@ -33,6 +52,7 @@ COPY frontend/poc-table-system-mappings.mjs ./poc-table-system-mappings.mjs
 COPY frontend/poc-datahub-current-table.mjs ./poc-datahub-current-table.mjs
 COPY frontend/poc-feature-security-policy.mjs ./poc-feature-security-policy.mjs
 COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
+COPY frontend/poc-prep-bootstrap.mjs ./poc-prep-bootstrap.mjs
 COPY frontend/poc-disable-local-credential.mjs ./poc-disable-local-credential.mjs
 COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs

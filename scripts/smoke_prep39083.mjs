@@ -25,10 +25,38 @@ async function responseJson(url, init = {}) {
   return { response, body }
 }
 
+function boundedMilliseconds(value, fallback, minimum, maximum, name) {
+  const raw = value === null ? String(fallback) : String(value)
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer.`)
+  const parsed = Number(raw)
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}.`)
+  }
+  return parsed
+}
+
+async function retryReadiness(operation, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  do {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (Date.now() >= deadline) break
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 15_000))
+    }
+  } while (Date.now() < deadline)
+  throw lastError
+}
+
 const origin = argument('--origin', 'http://127.0.0.1:39083')
 const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
+const readinessTimeoutMs = boundedMilliseconds(
+  argument('--readiness-timeout-ms'), 1_200_000, 1_000, 3_600_000, '--readiness-timeout-ms',
+)
 if (!username || !passwordFile || !output) {
   throw new Error('Required: --username, --password-file, and --output')
 }
@@ -62,32 +90,34 @@ const report = {
   llm_general: 'FAIL',
 }
 try {
-  const catalog = await responseJson(`${origin}/poc-api/datahub/catalog?limit=1`, {
-    headers: { Cookie: cookie },
-  })
-  if (!catalog.body || typeof catalog.body !== 'object') throw new Error('DataHub Catalog response is invalid.')
-  report.datahub = 'PASS'
+  await retryReadiness(async () => {
+    const catalog = await responseJson(`${origin}/poc-api/datahub/catalog?limit=1`, {
+      headers: { Cookie: cookie },
+    })
+    if (!catalog.body || typeof catalog.body !== 'object') throw new Error('DataHub Catalog response is invalid.')
+    report.datahub = 'PASS'
 
-  const managed = await responseJson(`${origin}/poc-api/knowledge/managed-assets`, {
-    headers: { Cookie: cookie },
-  })
-  const items = Array.isArray(managed.body?.items) ? managed.body.items : []
-  const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
-  const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
-  if (!lineage || !metadata) throw new Error('Both canonical managed graph Assets are required.')
-  if (!String(lineage.status).startsWith('READY') || !String(metadata.status).startsWith('READY')) {
-    throw new Error('Managed graph Assets are not READY.')
-  }
-  if (lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
-    throw new Error('Managed graph refresh mode is not DAILY.')
-  }
-  report.managed_assets = 'PASS'
-  report.default_lineage = 'PASS'
-  report.metadata_master = 'PASS'
-  if (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY') {
-    throw new Error('The shared semantic index is not READY.')
-  }
-  report.semantic_index = 'PASS'
+    const managed = await responseJson(`${origin}/poc-api/knowledge/managed-assets`, {
+      headers: { Cookie: cookie },
+    })
+    const items = Array.isArray(managed.body?.items) ? managed.body.items : []
+    const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
+    const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
+    if (!lineage || !metadata) throw new Error('Both canonical managed graph Assets are required.')
+    if (!String(lineage.status).startsWith('READY') || !String(metadata.status).startsWith('READY')) {
+      throw new Error('Managed graph Assets are not READY.')
+    }
+    if (lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
+      throw new Error('Managed graph refresh mode is not DAILY.')
+    }
+    if (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY') {
+      throw new Error('The shared semantic index is not READY.')
+    }
+    report.managed_assets = 'PASS'
+    report.default_lineage = 'PASS'
+    report.metadata_master = 'PASS'
+    report.semantic_index = 'PASS'
+  }, readinessTimeoutMs)
 
   const chat = await responseJson(`${origin}/poc-api/llm/chat`, {
     method: 'POST',

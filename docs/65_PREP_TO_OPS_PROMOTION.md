@@ -3,23 +3,16 @@
 ## Promotion invariant
 
 OPS receives the exact Linux/amd64 images already running during PREP acceptance. It never rebuilds
-or pulls them. Environment files, credentials, PostgreSQL/Neo4j data and scheduler state are not in
+or pulls them. Operator/runtime environment files, credentials, PostgreSQL/Neo4j data and scheduler state are not in
 the release archive. DataHub, Airflow, MinIO and OpenAI-compatible providers remain external.
 
 ## 1. Export only after PREP acceptance
 
-On PREP, keep the accepted `datariver-prep39083` containers running and the checkout clean:
+On PREP, keep the accepted `datariver-prep39083` containers running and the checkout clean. The
+normal export path reads its exact identity from the tracked release contract:
 
 ```bash
-set -eu
-PRODUCT_SHA=ced6ffeedc9ee9786abc6d12c41c30540201f600
-EVIDENCE_SHA=6098200d86f5c3058eb1ac3343f585d78f1a635a
-python3 scripts/prep39083_release.py export \
-  --product-sha "$PRODUCT_SHA" \
-  --evidence-sha "$EVIDENCE_SHA" \
-  --env-file deploy/prep39083/.env.prep \
-  --project-name datariver-prep39083 \
-  --output-dir "runtime/prep39083/release-$PRODUCT_SHA"
+./scripts/prep39083 export
 ```
 
 `export` does not build or restart anything. It requires native Linux amd64, one running healthy

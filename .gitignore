@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 !deploy/prep39083/.env.prep.example
+!deploy/prep39083/.env.prep.optional.example
 !deploy/prep39083/.env.ops.example
 *.pem
 *.key

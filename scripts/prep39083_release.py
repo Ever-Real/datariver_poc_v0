@@ -29,21 +29,36 @@ BASE_COMPOSE = ROOT / "deploy" / "poc" / "docker-compose.poc.yaml"
 OPS_COMPOSE = ROOT / "deploy" / "prep39083" / "docker-compose.ops.yaml"
 OPS_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.ops.example"
 PREP_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.prep.example"
+PREP_OPTIONAL_ENV_EXAMPLE = (
+    ROOT / "deploy" / "prep39083" / ".env.prep.optional.example"
+)
+ENV_CONTRACT = ROOT / "deploy" / "prep39083" / "env-contract.json"
 POSTGRES_INIT = ROOT / "deploy" / "poc" / "postgres-init"
 PREP_GUIDE = ROOT / "docs" / "64_PREP39083_HANDOFF.md"
 OPS_GUIDE = ROOT / "docs" / "65_PREP_TO_OPS_PROMOTION.md"
 RELEASE_GUIDE = ROOT / "docs" / "66_RELEASE_CYCLE.md"
 RELEASE_TOOL = Path(__file__).resolve()
+DEPLOY_TOOL = ROOT / "scripts" / "prep39083_deploy.py"
+PREP_ENTRYPOINT = ROOT / "scripts" / "prep39083"
 SMOKE_TOOL = ROOT / "scripts" / "smoke_prep39083.mjs"
 RUNTIME_INPUTS = (
     "frontend",
     "deploy/poc/Dockerfile.example",
     "deploy/poc/docker-compose.poc.yaml",
     "deploy/poc/postgres-init",
+    "deploy/prep39083/.env.prep.example",
+    "deploy/prep39083/.env.prep.optional.example",
+    "deploy/prep39083/.env.ops.example",
+    "deploy/prep39083/docker-compose.ops.yaml",
+    "deploy/prep39083/env-contract.json",
+    "scripts/prep39083",
+    "scripts/prep39083_deploy.py",
+    "scripts/prep39083_release.py",
+    "scripts/smoke_prep39083.mjs",
 )
 SERVICES = ("web", "neo4j", "pgvector", "redis")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-CONTRACT = "DATARIVER_PREP39083_OPS_RELEASE_V1"
+CONTRACT = "DATARIVER_PREP39083_OPS_RELEASE_V2"
 
 
 class ReleaseError(RuntimeError):
@@ -236,9 +251,13 @@ def export_release(arguments: argparse.Namespace) -> None:
             BASE_COMPOSE,
             OPS_COMPOSE,
             OPS_ENV_EXAMPLE,
+            ENV_CONTRACT,
+            PREP_OPTIONAL_ENV_EXAMPLE,
             PREP_GUIDE,
             OPS_GUIDE,
             RELEASE_GUIDE,
+            PREP_ENTRYPOINT,
+            DEPLOY_TOOL,
             RELEASE_TOOL,
             SMOKE_TOOL,
         )
@@ -268,8 +287,15 @@ def export_release(arguments: argparse.Namespace) -> None:
             "build_timestamp": images[0]["created"],
             "export_timestamp": datetime.now(UTC).isoformat(),
             "compose_revision": sha256_paths((BASE_COMPOSE, OPS_COMPOSE)),
-            "config_schema_version": "PREP39083_ENV_V1",
-            "config_schema_sha256": sha256_paths((PREP_ENV_EXAMPLE, OPS_ENV_EXAMPLE)),
+            "config_schema_version": "PREP39083_ENV_V2",
+            "config_schema_sha256": sha256_paths(
+                (
+                    PREP_ENV_EXAMPLE,
+                    PREP_OPTIONAL_ENV_EXAMPLE,
+                    OPS_ENV_EXAMPLE,
+                    ENV_CONTRACT,
+                )
+            ),
             "postgres_init_sha256": sha256_tree(POSTGRES_INIT),
             "image_archive": "images.tar",
             "image_archive_sha256": sha256_file(image_archive),
@@ -326,9 +352,13 @@ def verify_release(arguments: argparse.Namespace) -> None:
             BASE_COMPOSE.name,
             OPS_COMPOSE.name,
             OPS_ENV_EXAMPLE.name,
+            ENV_CONTRACT.name,
+            PREP_OPTIONAL_ENV_EXAMPLE.name,
             PREP_GUIDE.name,
             OPS_GUIDE.name,
             RELEASE_GUIDE.name,
+            PREP_ENTRYPOINT.name,
+            DEPLOY_TOOL.name,
             RELEASE_TOOL.name,
             SMOKE_TOOL.name,
             POSTGRES_INIT.name,
