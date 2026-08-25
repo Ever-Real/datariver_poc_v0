@@ -524,6 +524,8 @@ describe('ChatPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '질문 복사' }))
     expect(await screen.findByRole('status')).toHaveTextContent('질문 복사 완료')
+    expect(screen.getByRole('button', { name: '질문 복사' }).closest('footer'))
+      .toHaveClass('chat-message-actions-user')
     clipboard.writeText.mockRejectedValueOnce(new Error('denied'))
     fireEvent.click(screen.getByRole('button', { name: '답변 복사' }))
     expect(await screen.findByRole('status')).toHaveTextContent('답변 복사 실패')

@@ -3,6 +3,7 @@ export type ChangeHistoryCategory =
   | 'DOCUMENTATION'
   | 'TAG'
   | 'GLOSSARY_TERM'
+  | 'DOMAIN'
   | 'OWNERSHIP'
   | 'LIFECYCLE'
 

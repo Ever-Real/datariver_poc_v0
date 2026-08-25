@@ -25,7 +25,7 @@ import type {
 type ChangeHistoryClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
 type JsonRecord = Record<string, unknown>
 
-const categories = new Set<ChangeHistoryCategory>(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP', 'LIFECYCLE'])
+const categories = new Set<ChangeHistoryCategory>(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'OWNERSHIP', 'LIFECYCLE'])
 const operations = new Set<ChangeHistoryOperation>(['CREATE', 'UPDATE', 'UPSERT', 'DELETE', 'ADD', 'REMOVE'])
 const precisions = new Set<ChangeHistoryPrecision>(['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE'])
 const stages = new Set<ChangeHistoryStage>(['UNLINKED', 'RECEIVED', 'RECHECK', 'TESTING', 'FINAL_REVIEW', 'COMPLETED'])

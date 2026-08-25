@@ -117,6 +117,19 @@ Current projection과 append-only history는 분리한다. 삭제 자산은 curr
 제외하지만 ledger와 CR link history는 유지한다. provider timeout, 인증 실패 또는 partial page는
 삭제 증거가 아니며 last-good generation을 유지한다.
 
+Change History read authorization은 여전히 active exact Table-to-System mapping과 현재 principal의
+Table/System 권한을 모두 요구한다. Mapping을 만들 때 current DataHub Table의 bounded authority
+snapshot(identity, hierarchy locator, security grade)을 같은 versioned mapping document에 보존한다.
+따라서 이후 DataHub에서 Table이 삭제되어 current Catalog projection에서 사라져도 active exact
+mapping이 남아 있는 동안 과거 ledger row를 동일 fail-closed authority로 조회할 수 있다. Snapshot은
+새 권한이나 fallback scope가 아니며, mapping이 없거나 System이 inactive이거나 principal이 Table을
+읽을 수 없으면 과거 row도 노출하지 않는다.
+
+MCL normalization은 DataHub v1.6의 explicit `domains` aspect를 `DOMAIN` category의 ADD/REMOVE
+event로 저장한다. 이는 `datasetProperties`, `globalTags`, `glossaryTerms`,
+`editableSchemaMetadata`, `schemaMetadata`, `ownership`, `status`와 같은 fixed platform-generic
+allowlist의 일부이며 domain vocabulary를 추론하거나 DataHub backing database를 읽지 않는다.
+
 ## 5. 설정 참조
 
 실제 sample과 주석은 [`deploy/poc/.env.example`](../deploy/poc/.env.example), MCL 계산·검증 절차는

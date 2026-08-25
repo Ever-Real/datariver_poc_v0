@@ -17,6 +17,7 @@ const SUPPORTED_ASPECTS = new Set([
   'datasetProperties',
   'globalTags',
   'glossaryTerms',
+  'domains',
   'ownership',
   'status',
 ])
@@ -44,6 +45,7 @@ const STORAGE_CATEGORY_BY_ASPECT = {
   datasetProperties: 'DOCUMENTATION',
   globalTags: 'TAG',
   glossaryTerms: 'GLOSSARY_TERM',
+  domains: 'DOMAIN',
   ownership: 'OWNERSHIP',
   status: 'LIFECYCLE',
 }
@@ -553,15 +555,18 @@ function schemaSummary(document) {
 function collectionMap(aspectName, document, maximum) {
   if (document === null) return new Map()
   const collectionName = aspectName === 'globalTags' ? 'tags'
-    : aspectName === 'glossaryTerms' ? 'terms' : 'owners'
+    : aspectName === 'glossaryTerms' ? 'terms'
+      : aspectName === 'domains' ? 'domains' : 'owners'
   const items = boundedArray(document[collectionName], `${aspectName}.${collectionName}`, maximum)
   const result = new Map()
   for (const item of items) {
-    if (!isPlainObject(item)) throw new Error(`An ${aspectName} item is invalid.`)
+    if (aspectName !== 'domains' && !isPlainObject(item)) throw new Error(`An ${aspectName} item is invalid.`)
     const normalized = aspectName === 'globalTags'
       ? { tag_urn: boundedString(item.tag, 'globalTags.tag', 1000) }
       : aspectName === 'glossaryTerms'
         ? { term_urn: boundedString(item.urn, 'glossaryTerms.urn', 1000) }
+        : aspectName === 'domains'
+          ? { domain_urn: boundedString(item, 'domains.domains', 1000) }
         : {
             owner_urn: boundedString(item.owner, 'ownership.owner', 1000),
             ownership_type: boundedString(item.type, 'ownership.type', 500),

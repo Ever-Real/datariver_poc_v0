@@ -2,7 +2,7 @@
 import { securityGradeRank, tagPrecedenceSecurityGrade, SECURITY_GRADES as POC_SECURITY_GRADES } from './poc-access-document.mjs'
 
 export const POC_TABLE_SYSTEM_MAPPING_SCOPE = 'table-system-mappings-v1'
-export const POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION = 1
+export const POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION = 2
 
 export { POC_SECURITY_GRADES }
 const securityGrades = new Set(POC_SECURITY_GRADES)
@@ -25,6 +25,14 @@ function exactKeys(value, expected, label) {
 
 function boundedText(value, maximum, label) {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum) {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', `${label} is invalid.`)
+  }
+  return value.trim()
+}
+
+function boundedOptionalText(value, maximum, label) {
+  if (typeof value !== 'string' || value.length > maximum
+    || [...value].some((character) => character.codePointAt(0) <= 0x1f || character.codePointAt(0) === 0x7f)) {
     throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', `${label} is invalid.`)
   }
   return value.trim()
@@ -77,15 +85,55 @@ function normalizeBinding(value, index) {
   }
 }
 
+function normalizeAssetSnapshot(value, index) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', `asset_snapshots[${index}] must be an object.`)
+  }
+  exactKeys(value, [
+    'table_identity', 'dataset_kind', 'platform', 'database_name', 'schema_name',
+    'asset_name', 'security_grade', 'observed_at',
+  ], `asset_snapshots[${index}]`)
+  if (value.dataset_kind !== 'TABLE' || !securityGrades.has(value.security_grade)) {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', `asset_snapshots[${index}] is not a canonical Table snapshot.`)
+  }
+  return {
+    table_identity: boundedText(value.table_identity, 4_096, `asset_snapshots[${index}].table_identity`),
+    dataset_kind: 'TABLE',
+    platform: boundedText(value.platform, 255, `asset_snapshots[${index}].platform`).toLowerCase(),
+    database_name: boundedOptionalText(value.database_name, 500, `asset_snapshots[${index}].database_name`),
+    schema_name: boundedText(value.schema_name, 500, `asset_snapshots[${index}].schema_name`),
+    asset_name: boundedText(value.asset_name, 1_000, `asset_snapshots[${index}].asset_name`),
+    security_grade: value.security_grade,
+    observed_at: timestamp(value.observed_at, `asset_snapshots[${index}].observed_at`),
+  }
+}
+
+export function tableAuthoritySnapshot(asset, observedAt = new Date().toISOString()) {
+  if (!asset || asset.dataset_kind !== 'TABLE') {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'Only a current DataHub Table can be snapshotted.')
+  }
+  return normalizeAssetSnapshot({
+    table_identity: asset.id,
+    dataset_kind: asset.dataset_kind,
+    platform: asset.platform,
+    database_name: asset.database_name,
+    schema_name: asset.schema_name,
+    asset_name: asset.name || asset.id,
+    security_grade: typeof asset.security_grade === 'string' ? asset.security_grade : tableSecurityGrade(asset),
+    observed_at: observedAt,
+  }, 0)
+}
+
 export function normalizeTableSystemMappingDocument(value) {
   if (value === null || value === undefined) {
-    return { schema_version: POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION, bindings: [] }
+    return { schema_version: POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION, bindings: [], asset_snapshots: [] }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'The Table-System mapping document must be an object.')
   }
-  exactKeys(value, ['schema_version', 'bindings'], 'Table-System mapping document')
-  if (value.schema_version !== POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION) {
+  const isLegacy = value.schema_version === 1
+  exactKeys(value, isLegacy ? ['schema_version', 'bindings'] : ['schema_version', 'bindings', 'asset_snapshots'], 'Table-System mapping document')
+  if (!isLegacy && value.schema_version !== POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION) {
     throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'The Table-System mapping schema version is unsupported.')
   }
   if (!Array.isArray(value.bindings) || value.bindings.length > maximumBindings) {
@@ -96,7 +144,12 @@ export function normalizeTableSystemMappingDocument(value) {
   if (new Set(keys).size !== keys.length) {
     throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'A Table-System pair must be unique.')
   }
-  return { schema_version: POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION, bindings }
+  const assetSnapshots = isLegacy ? [] : value.asset_snapshots.map(normalizeAssetSnapshot)
+  if (assetSnapshots.length > maximumBindings
+    || new Set(assetSnapshots.map((item) => item.table_identity)).size !== assetSnapshots.length) {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'asset_snapshots must contain unique bounded Table identities.')
+  }
+  return { schema_version: POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION, bindings, asset_snapshots: assetSnapshots }
 }
 
 export function tableSecurityGrade(asset) {
@@ -146,7 +199,13 @@ export function resolveTableSystemAuthority({
   return { system_ids: [], provenance: 'NONE', conflict: false }
 }
 
-export function applyTableSystemMappingCommand(document, command, actor, now = new Date().toISOString()) {
+export function applyTableSystemMappingCommand(
+  document,
+  command,
+  actor,
+  now = new Date().toISOString(),
+  tableSnapshots = [],
+) {
   if (!command || typeof command !== 'object' || Array.isArray(command)) {
     throw mappingError('TABLE_SYSTEM_COMMAND_INVALID', 'A mapping command object is required.')
   }
@@ -167,6 +226,15 @@ export function applyTableSystemMappingCommand(document, command, actor, now = n
   const actorId = boundedText(actor, 200, 'actor')
   const changedAt = timestamp(now, 'now')
   const next = structuredClone(normalizeTableSystemMappingDocument(document))
+  const snapshotByTable = new Map(tableSnapshots.map((item, index) => {
+    const snapshot = normalizeAssetSnapshot(item, index)
+    return [snapshot.table_identity, snapshot]
+  }))
+  if (snapshotByTable.size !== tableSnapshots.length
+    || [...snapshotByTable.keys()].some((tableIdentity) => !tableIds.includes(tableIdentity))) {
+    throw mappingError('TABLE_SYSTEM_MAPPING_INVALID', 'Table snapshots must be unique and match the requested Tables.')
+  }
+  const storedSnapshotByTable = new Map(next.asset_snapshots.map((item) => [item.table_identity, item]))
   const byKey = new Map(next.bindings.map((item) => [`${item.table_identity}\u0000${item.system_id}`, item]))
   let changed = 0
   for (const tableIdentity of tableIds) {
@@ -197,6 +265,8 @@ export function applyTableSystemMappingCommand(document, command, actor, now = n
           byKey.set(key, binding)
         }
         changed += 1
+        const snapshot = snapshotByTable.get(tableIdentity)
+        if (snapshot) storedSnapshotByTable.set(tableIdentity, snapshot)
       } else if (existing?.active) {
         existing.active = false
         existing.version += 1
@@ -213,6 +283,8 @@ export function applyTableSystemMappingCommand(document, command, actor, now = n
   next.bindings.sort((left, right) => (
     left.table_identity.localeCompare(right.table_identity) || left.system_id.localeCompare(right.system_id)
   ))
+  next.asset_snapshots = [...storedSnapshotByTable.values()]
+    .sort((left, right) => left.table_identity.localeCompare(right.table_identity))
   return { document: next, changed }
 }
 

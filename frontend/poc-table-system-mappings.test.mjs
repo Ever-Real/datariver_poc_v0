@@ -7,6 +7,7 @@ import {
   normalizeTableSystemMappingDocument,
   resolveTableSystemAuthority,
   securityGradeRank,
+  tableAuthoritySnapshot,
   tableSecurityGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
@@ -28,7 +29,7 @@ const assets = [
 ]
 
 test('normalizes a bounded exact Table-System document and rejects duplicate pairs', () => {
-  assert.deepEqual(normalizeTableSystemMappingDocument(null), { schema_version: 1, bindings: [] })
+  assert.deepEqual(normalizeTableSystemMappingDocument(null), { schema_version: 2, bindings: [], asset_snapshots: [] })
   const created = applyTableSystemMappingCommand(null, {
     action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'], reason: 'initial exact Table mapping',
   }, 'admin', '2026-08-16T01:00:00.000Z')
@@ -38,6 +39,28 @@ test('normalizes a bounded exact Table-System document and rejects duplicate pai
     schema_version: 1,
     bindings: [created.document.bindings[0], created.document.bindings[0]],
   }), { code: 'TABLE_SYSTEM_MAPPING_INVALID' })
+})
+
+test('upgrades legacy mappings and retains a bounded authority snapshot for deleted-Table history', () => {
+  const legacy = normalizeTableSystemMappingDocument({ schema_version: 1, bindings: [] })
+  assert.deepEqual(legacy, { schema_version: 2, bindings: [], asset_snapshots: [] })
+  const observedAt = '2026-08-26T01:00:00.000Z'
+  const snapshot = tableAuthoritySnapshot(assets[0], observedAt)
+  const assigned = applyTableSystemMappingCommand(legacy, {
+    action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'],
+    reason: 'retain exact authority evidence',
+  }, 'admin', observedAt, [snapshot])
+  assert.deepEqual(assigned.document.asset_snapshots, [{
+    table_identity: 'urn:table:a', dataset_kind: 'TABLE', platform: 'postgres',
+    database_name: 'db', schema_name: 'schema_a', asset_name: 'table_a',
+    security_grade: 'normal', observed_at: observedAt,
+  }])
+  assert.throws(() => applyTableSystemMappingCommand(legacy, {
+    action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'],
+    reason: 'reject mismatched snapshot input',
+  }, 'admin', observedAt, [{ ...snapshot, table_identity: 'urn:table:b' }]), {
+    code: 'TABLE_SYSTEM_MAPPING_INVALID',
+  })
 })
 
 test('assigns and removes N:M pairs idempotently while preserving inactive history', () => {

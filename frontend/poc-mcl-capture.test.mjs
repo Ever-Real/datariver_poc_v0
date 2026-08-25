@@ -488,6 +488,30 @@ test('normalizes empty descriptions to null only at MCL description call sites',
   assert.equal(normalizedDataset.events[0].afterData.description, '   ')
 })
 
+test('normalizes DataHub domains as explicit bounded metadata changes', () => {
+  const aspect = (value) => ({
+    contentType: 'application/json',
+    value: Buffer.from(JSON.stringify(value)),
+  })
+  const normalized = normalizeMclRecord({
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,DEV)',
+    aspectName: 'domains',
+    previousAspectValue: aspect({ domains: ['urn:li:domain:legacy'] }),
+    aspect: aspect({ domains: ['urn:li:domain:current'] }),
+    created: { actor: 'urn:li:corpuser:data-steward', time: 1_787_680_000_000 },
+  }, { detectedAt: '2026-08-26T00:00:00.000Z' })
+
+  assert.equal(normalized.normalizedCategory, 'METADATA_CHANGE')
+  assert.deepEqual(normalized.events.map((event) => [event.storageCategory, event.sourceAspect, event.operation]), [
+    ['DOMAIN', 'domains', 'ADD'],
+    ['DOMAIN', 'domains', 'REMOVE'],
+  ])
+  assert.deepEqual(normalized.events.map((event) => event.afterData ?? event.beforeData), [
+    { domain_urn: 'urn:li:domain:current' },
+    { domain_urn: 'urn:li:domain:legacy' },
+  ])
+})
+
 test('emits description changes around empty values and treats null and empty as equivalent', () => {
   const detectedAt = '2026-08-14T01:00:00.000Z'
   const base = {

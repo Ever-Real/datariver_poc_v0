@@ -1,0 +1,31 @@
+# Explicit DEV-only source-native Change History verification. This recipe owns
+# only the datariver_change_e2e schema selected below. Credentials remain in the
+# invoking environment and no PREP/OPS startup path invokes this recipe.
+source:
+  type: postgres
+  config:
+    host_port: "${CHANGE_E2E_POSTGRES_HOST}:${CHANGE_E2E_POSTGRES_PORT}"
+    database: "${CHANGE_E2E_POSTGRES_DATABASE}"
+    username: "${CHANGE_E2E_POSTGRES_USER}"
+    password: "${CHANGE_E2E_POSTGRES_PASSWORD}"
+    env: DEV
+    platform_instance: datariver-change-e2e-dev
+    schema_pattern:
+      allow:
+        - "datariver_change_e2e"
+    table_pattern:
+      allow:
+        - "datariver_change_e2e.*"
+    include_views: false
+    profiling:
+      enabled: false
+    stateful_ingestion:
+      enabled: true
+      remove_stale_metadata: true
+      fail_safe_threshold: 100
+pipeline_name: datariver-change-history-e2e-dev
+sink:
+  type: datahub-rest
+  config:
+    server: "${DATAHUB_GMS_URL}"
+    token: "${DATAHUB_GMS_TOKEN}"

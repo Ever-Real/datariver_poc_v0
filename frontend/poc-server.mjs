@@ -60,6 +60,7 @@ import {
   applyTableSystemMappingCommand,
   normalizeTableSystemMappingDocument,
   securityGradeRank,
+  tableAuthoritySnapshot,
   tableSecurityGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
@@ -551,7 +552,7 @@ const changeHistoryActions = new Map([
   ['SET_PRIMARY', 'PRIMARY'], ['CLEAR_PRIMARY', 'PRIMARY'],
   ['ADD_CANDIDATE', 'CANDIDATE'], ['REMOVE_CANDIDATE', 'CANDIDATE'],
 ])
-const changeHistoryCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP', 'LIFECYCLE'])
+const changeHistoryCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'DOMAIN', 'OWNERSHIP', 'LIFECYCLE'])
 const changeHistoryOperations = new Set(['CREATE', 'UPDATE', 'UPSERT', 'DELETE', 'ADD', 'REMOVE'])
 const changeHistoryPresentationStages = new Set(['UNLINKED', 'RECEIVED', 'RECHECK', 'TESTING', 'FINAL_REVIEW', 'COMPLETED'])
 const changeHistoryPrecisionValues = ['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE']
@@ -946,6 +947,38 @@ function changeHistoryCurrentTableAuthority(catalog, mappingDocument, document, 
       systemId,
     )
     targetsById.set(assetId, { asset_id: assetId, key, locator, system_id: systemId })
+  }
+  for (const snapshot of mappingDocument.asset_snapshots) {
+    if (targetsById.has(snapshot.table_identity)) continue
+    const historicalAsset = {
+      id: snapshot.table_identity,
+      dataset_kind: snapshot.dataset_kind,
+      security_grade: snapshot.security_grade,
+    }
+    if (!canReadAsset(principal, historicalAsset, 'change')) continue
+    const mappedSystemIds = activeSystemIdsForTable(mappingDocument, snapshot.table_identity, activeSystemIds)
+    if (mappedSystemIds.length !== 1) continue
+    const systemId = mappedSystemIds[0]
+    if (!systems.get(systemId)?.active) continue
+    const locator = {
+      platform: snapshot.platform,
+      database_name: snapshot.database_name,
+      schema_name: snapshot.schema_name,
+      asset_name: snapshot.asset_name,
+    }
+    const key = changeManagementSchemaKey(
+      locator.platform,
+      locator.database_name,
+      locator.schema_name,
+      systemId,
+    )
+    targetsById.set(snapshot.table_identity, {
+      asset_id: snapshot.table_identity,
+      key,
+      locator,
+      system_id: systemId,
+      historical: true,
+    })
   }
   return { targetsById }
 }
@@ -8549,6 +8582,7 @@ async function confirmedCurrentTables(context, requestedTables, unavailableCode,
   if (requestedTables.some((tableId) => !currentTables.has(tableId))) {
     throw accessError(400, invalidCode, 'Every selected identity must be a current DataHub TABLE.')
   }
+  return current.filter((asset) => currentTables.has(asset.id))
 }
 
 async function authRoute(request, response, url, baseContext, authenticator) {
@@ -8911,13 +8945,22 @@ async function tableSystemMappingApi(request, response, url, context) {
     throw accessError(400, 'TABLE_SYSTEM_SYSTEM_INVALID', 'Every selected System must exist and be active in the current access authority.')
   }
   const requestedTables = Array.isArray(body.table_ids) ? body.table_ids.map(String) : []
-  await confirmedCurrentTables(
+  const confirmedTables = await confirmedCurrentTables(
     context,
     requestedTables,
     'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE',
     'TABLE_SYSTEM_TABLE_INVALID',
   )
-  const applied = applyTableSystemMappingCommand(document, body, context.principal.subjectId)
+  const observedAt = new Date().toISOString()
+  const applied = applyTableSystemMappingCommand(
+    document,
+    body,
+    context.principal.subjectId,
+    observedAt,
+    body.action === 'ASSIGN'
+      ? confirmedTables.map((asset) => tableAuthoritySnapshot(asset, observedAt))
+      : [],
+  )
   if (applied.changed === 0) {
     return json(response, 200, { version: snapshot.version, changed: 0 }, { ETag: `"${snapshot.version}"` })
   }

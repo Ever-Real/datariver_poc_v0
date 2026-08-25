@@ -218,6 +218,25 @@ docker compose --env-file deploy/poc/.env \
 
 SQL은 `IF NOT EXISTS`, 이름 기반 constraint 교체, trigger 존재 검사를 사용한다. 적용 전 DB backup을
 만들고, 적용 뒤 sources/ledger/checkpoints/link 네 table과 append-only trigger를 read-back한다.
+
+## 5.1 DEV source-native 회귀 fixture
+
+실제 detector 경로를 검증할 때 ledger table에 row를 직접 넣지 않는다. 명시적 DEV 실행에서만
+[`infra/datahub/recipes/change_history_e2e_postgres.yml`](../../infra/datahub/recipes/change_history_e2e_postgres.yml)
+을 사용한다. 이 recipe는 source PostgreSQL의 `datariver_change_e2e` schema만 소유하고 profiling을
+끄며, stateful ingestion으로 create/update/removal을 DataHub canonical metadata에 반영한다.
+
+검증 순서는 source DDL, official DataHub ingestion, GMS aspect read-back, bounded MCL capture,
+DataRiver ledger read, exact Table-to-System mapping API, authenticated Change History API/UI이다.
+Description, Domain, Glossary Term, Tag와 column documentation은 DataHub supported aspect API를
+통해서만 변경한다. Mapping은 `/api/v1/admin/table-system-mappings`의 ETag/CAS authority를 사용하고
+`system_schema_scopes` 또는 admin fallback으로 대체하지 않는다. Fixture cleanup도 source schema와
+mapping API에 한정하며 기존 DataHub asset, ledger history 또는 persistent volume을 삭제하지 않는다.
+
+Supported capture taxonomy에는 `domains -> DOMAIN`이 포함된다. Dataset deletion 뒤 current Catalog에서
+Table이 제거되어도, 삭제 전에 저장된 active exact mapping의 bounded Table authority snapshot으로
+historical event authorization을 재검증한다. Snapshot만으로 mapping이나 principal grant를 만들지는
+않는다.
 checkpoint나 ledger를 초기화하는 rollback은 허용되지 않는다.
 
 ## 6. Phase A — 연결 확인

@@ -1326,10 +1326,14 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     rounds: [{ id: 'round-1', selected_system_id: 'business-system' }],
     items: [targetItem, { ...targetItem }], approvals: [], transitions: [],
   }
-  const mappingDocument = { schema_version: 1, bindings: [{
+  const mappingDocument = { schema_version: 2, bindings: [{
     table_identity: assetUrn, system_id: 'business-system', active: true, version: 1,
     created_at: '2026-08-10T00:00:00.000Z', created_by: 'admin-subject',
     updated_at: '2026-08-10T00:00:00.000Z', updated_by: 'admin-subject', reason: 'contract fixture',
+  }], asset_snapshots: [{
+    table_identity: assetUrn, dataset_kind: 'TABLE', platform: 'postgres',
+    database_name: 'business_db', schema_name: 'public', asset_name: 'orders',
+    security_grade: 'normal', observed_at: '2026-08-10T00:00:00.000Z',
   }] }
   const projection = {
     access: { version: 3, value: {
@@ -1431,6 +1435,12 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
       locator: { platform: 'postgres', database_name: 'business_db', schema_name: 'public', asset_name: 'orders' },
     })
     assert.equal(listed.items[0].system.system_id, 'business-system')
+    const currentCatalogItems = projection.catalog.value.items
+    projection.catalog.value.items = []
+    const historicalAfterDeletion = await (await fetch(`${base}/api/v1/change-history/events`)).json()
+    assert.equal(historicalAfterDeletion.total, 1, 'a mapped historical event survives current DataHub deletion')
+    assert.equal(historicalAfterDeletion.items[0].locator.asset_name, 'orders')
+    projection.catalog.value.items = currentCatalogItems
     const rangeSummaryResponse = await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)
     assert.equal(rangeSummaryResponse.status, 200)
     const rangeSummary = await rangeSummaryResponse.json()

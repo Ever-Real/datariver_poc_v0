@@ -254,6 +254,7 @@ function summary(weekStart: string, overrides: Record<string, unknown> = {}) {
       DOCUMENTATION: 0,
       TAG: 0,
       GLOSSARY_TERM: 0,
+      DOMAIN: 0,
       OWNERSHIP: 0,
       LIFECYCLE: 0,
     },

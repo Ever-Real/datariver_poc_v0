@@ -741,7 +741,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                     <SafeMarkdown value={message.text} />
                   </div>
                 ) : <div className="chat-user-bubble"><p className="chat-question-text">{message.text}</p></div>}
-                <footer>
+                <footer className={message.role === 'user' ? 'chat-message-actions chat-message-actions-user' : 'chat-message-actions'}>
                   {message.role === 'assistant' && (
                     <button
                       aria-label="답변 근거 다시 보기"
