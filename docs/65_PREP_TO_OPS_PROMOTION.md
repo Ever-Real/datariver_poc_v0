@@ -89,9 +89,11 @@ curl --fail --silent --show-error http://127.0.0.1:39083/healthz
 
 The OPS override removes the canonical `build:` stanza and sets `pull_policy: never` for all four
 services; `--no-build` remains mandatory defense in depth. Bootstrap an OPS-owned local user only if
-one does not already exist, following the password-file procedure in `64_PREP39083_HANDOFF.md`.
-Run `smoke_prep39083.mjs` with an OPS-owned mode-0600 password file, then perform authenticated
-browser login, managed-graph/Cytoscape hard reload and representative GENERAL/VECTOR/GRAPH checks.
+one does not already exist, using the bundled `poc-prep-bootstrap.mjs` through `docker compose run`
+with the OPS Compose environment and a short-lived mode-0600 password-file mount. Never recreate a
+raw `docker run` path with separately typed PostgreSQL variables. Run `smoke_prep39083.mjs` with an
+OPS-owned mode-0600 password file, then perform authenticated browser login, managed-graph/Cytoscape
+hard reload and representative GENERAL/VECTOR/GRAPH checks.
 
 ## 5. Persistence and rollback
 
