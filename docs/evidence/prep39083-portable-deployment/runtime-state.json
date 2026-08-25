@@ -1,0 +1,80 @@
+{
+  "contract": "DATARIVER_PREP39083_PORTABLE_DEPLOYMENT_EVIDENCE_V1",
+  "generated_at": "2026-08-25T22:56:28+09:00",
+  "starting_product": "99acf0d2a8be977323ead2f8647ef5b2ad77add7",
+  "starting_evidence": "8daedd1b6ee1a8cad3d086486ad81e16504752c2",
+  "starting_handoff": "43aa355221bfe6bf492a89486b14c76a2be6a48d",
+  "product_sha": "46500c130de9c8bebedd143eca946b5d9166e63b",
+  "deployment": {
+    "canonical_command": "./scripts/prep39083 deploy",
+    "fresh_clean": "PASS",
+    "accepted_running_update": "PASS",
+    "accepted_stopped_update": "PASS",
+    "same_release_rerun": "PASS",
+    "owned_incomplete_attempt": "PASS",
+    "legacy_self_bootstrapped_partial": "PASS",
+    "failed_first_install_recovery": "PASS",
+    "ambiguous_state_fail_closed": "PASS",
+    "persistent_volume_deletion": "NONE"
+  },
+  "retry": {
+    "first_failure": "PREP_SMOKE_GENERAL_PROVIDER_FAILED",
+    "receipt_phase_after_failure": "SMOKE_FAILED",
+    "retry_state": "EXISTING_OWNED_INCOMPLETE",
+    "same_command_retry": "PASS",
+    "final_phase": "ACCEPTED",
+    "administrator_count": 1,
+    "mcp_subject_count": 1,
+    "docker_integration_seconds": 190.04
+  },
+  "network_matrix": {
+    "no_proxy_runtime_direct": "PASS",
+    "build_proxy_runtime_direct": "PASS",
+    "runtime_proxy": "PASS",
+    "runtime_no_proxy": "PASS",
+    "private_ca": "PASS",
+    "shared_provider_transport": "undici@7.29.0",
+    "global_tls_disable": false
+  },
+  "provider_preflight": {
+    "before_product_persistent_mutation": true,
+    "datahub": "PASS",
+    "chat": "PASS",
+    "embedding": "PASS",
+    "reranker": "PASS",
+    "k9_studio_blank_behavior": "DEFERRED",
+    "configured_endpoint_contract": true
+  },
+  "source_gates": {
+    "deployment_handoff": "35/35 PASS",
+    "provider_bootstrap_smoke": "16/16 PASS",
+    "server": "129/129 PASS",
+    "ui": "90 files / 658 tests PASS",
+    "eslint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "static": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "PASS",
+    "compose": "PASS",
+    "secret_proxy_leak_scan": "PASS",
+    "diff_check": "PASS"
+  },
+  "dev_runtime": {
+    "image": "datariver-poc:46500c130de9c8bebedd143eca946b5d9166e63b",
+    "image_id": "sha256:7cf4c4f362a4edde54d2f52bd086ab3f0e24bb186cf524bcc2f3e9f10bf18f83",
+    "platform": "linux/amd64",
+    "oci_revision": "46500c130de9c8bebedd143eca946b5d9166e63b",
+    "port_39083_http": 200,
+    "health": "healthy",
+    "restart_count": 0,
+    "protected_api_http": 401,
+    "port_39090_http": 200
+  },
+  "target_claims": {
+    "actual_prep_deployment": "NOT_EXECUTED",
+    "actual_prep_runtime_verification": "NOT_EXECUTED",
+    "actual_ops_deployment": "NOT_EXECUTED",
+    "actual_ops_runtime_verification": "NOT_EXECUTED"
+  }
+}
