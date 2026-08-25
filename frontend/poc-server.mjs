@@ -8951,6 +8951,21 @@ async function tableSystemMappingApi(request, response, url, context) {
     'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE',
     'TABLE_SYSTEM_TABLE_INVALID',
   )
+  let authorityAssets = []
+  if (body.action === 'ASSIGN') {
+    let inventory
+    try {
+      inventory = await context.currentDatahubInventory()
+      if (!Array.isArray(inventory)) throw new Error('DataHub returned an invalid current inventory.')
+    } catch {
+      throw accessError(503, 'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE', 'Current DataHub Table identities could not be confirmed; no change was made.')
+    }
+    const confirmedIds = new Set(confirmedTables.map((asset) => asset.id))
+    authorityAssets = inventory.filter((asset) => confirmedIds.has(asset?.id) && asset?.dataset_kind === 'TABLE')
+    if (authorityAssets.length !== confirmedIds.size) {
+      throw accessError(503, 'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE', 'Current DataHub Table hierarchy could not be confirmed; no change was made.')
+    }
+  }
   const observedAt = new Date().toISOString()
   const applied = applyTableSystemMappingCommand(
     document,
@@ -8958,7 +8973,7 @@ async function tableSystemMappingApi(request, response, url, context) {
     context.principal.subjectId,
     observedAt,
     body.action === 'ASSIGN'
-      ? confirmedTables.map((asset) => tableAuthoritySnapshot(asset, observedAt))
+      ? authorityAssets.map((asset) => tableAuthoritySnapshot(asset, observedAt))
       : [],
   )
   if (applied.changed === 0) {

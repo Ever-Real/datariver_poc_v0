@@ -13,9 +13,10 @@ source:
     schema_pattern:
       allow:
         - "datariver_change_e2e"
-    table_pattern:
-      allow:
-        - "datariver_change_e2e.*"
+    # schema_pattern is the complete ownership fence. DataHub's Postgres source
+    # applies table_pattern to the fully-qualified database.schema.table name,
+    # so a second schema-prefixed table regex would incorrectly filter the
+    # already-authorized fixture Tables.
     include_views: false
     profiling:
       enabled: false
