@@ -40,6 +40,10 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert "HTTP_PROXY=" in prep
     assert "HTTPS_PROXY=" in prep
     assert "NO_PROXY=" in prep
+    assert "POC_RUNTIME_HTTP_PROXY=" in prep
+    assert "POC_RUNTIME_HTTPS_PROXY=" in prep
+    assert "POC_RUNTIME_NO_PROXY=" in prep
+    assert "RUNTIME_CA_CERT_FILE=" in prep
     assert "POC_POSTGRES_PASSWORD=" not in prep
     assert "NEO4J_PASSWORD=" not in prep
     assert "POC_MCP_SERVICE_TOKEN=" not in prep
@@ -97,7 +101,7 @@ def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
     assert "docker compose down" not in source
     assert "docker volume rm" not in source
     assert "deploy/poc/.env" not in source
-    assert '"config_schema_version": "PREP39083_ENV_V3"' in source
+    assert '"config_schema_version": "PREP39083_ENV_V4"' in source
 
 
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:
@@ -173,12 +177,14 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     assert "METADATA_MASTER" in smoke
     assert "semantic_index_status" in smoke
     assert "selected_mode !== 'GENERAL'" in smoke
-    assert "writeFile(output" in smoke
+    assert "atomicJson(output" in smoke
     assert "password }" in smoke
     assert "console.log(password" not in smoke
     assert "--k9-mode" in smoke
     assert "k9Mode === 'REQUIRED'" in smoke
     assert "'DEFERRED'" in smoke
+    assert "PREP_SMOKE_GENERAL_PROVIDER_FAILED" in smoke
+    assert "--failure-output" in smoke
 
 
 def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:

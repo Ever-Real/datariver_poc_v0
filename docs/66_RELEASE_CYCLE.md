@@ -60,9 +60,11 @@ completed generation. No PREP setting disables this contract.
 
 1. DEV: source gates, new Product/Evidence, exact DEV OCI/browser and clean secret scan.
 2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`.
-3. PREP deploy: native amd64, target-state classification, env/proxy/DB identity, isolated Compose,
-   exact Product image, idempotent bootstrap and bounded smoke. Managed Assets are strict only when
-   the feature-dependent Studio DB authority is configured; otherwise core boot reports K9 DEFERRED.
+3. PREP deploy: native amd64, target-state classification, separate build/runtime proxy policy,
+   exact Product image, read-only provider preflight, attempt receipt, isolated Compose, idempotent
+   bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
+   Assets are strict only when the feature-dependent Studio DB authority is configured; otherwise
+   core boot reports K9 DEFERRED.
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.

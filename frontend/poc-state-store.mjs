@@ -1084,6 +1084,49 @@ export function createPocStateStore({ databasePool } = {}) {
     })).sort((left, right) => left.usernameNormalized.localeCompare(right.usernameNormalized))
   }
 
+  async function inspectPrepDeploymentFootprint() {
+    await startDatabase()
+    if (!pool) throw new Error('PREP deployment footprint inspection requires PostgreSQL.')
+    const tables = [
+      'poc_state',
+      'poc_catalog_embedding',
+      'poc_change_history_sources',
+      'poc_change_history_ledger_events',
+      'poc_change_history_checkpoints',
+      'poc_change_history_cr_link_events',
+      'poc_local_credentials',
+      'poc_local_sessions',
+      'poc_user_table_grants',
+      'poc_knowledge_ingestion_jobs',
+      'poc_knowledge_source_rows',
+      'poc_k9_managed_graph_policies',
+      'poc_k9_refresh_runs',
+    ]
+    const countsQuery = tables.map((table) => (
+      `SELECT '${table}' AS table_name, count(*)::bigint AS row_count FROM ${table}`
+    )).join(' UNION ALL ')
+    const [counts, scopes, activeSessions, k9Runs] = await Promise.all([
+      pool.query(countsQuery),
+      pool.query('SELECT scope FROM poc_state ORDER BY scope'),
+      pool.query(`
+        SELECT count(*)::bigint AS row_count
+        FROM poc_local_sessions
+        WHERE revoked_at IS NULL AND expires_at > clock_timestamp()
+      `),
+      pool.query(`
+        SELECT run_id, graph_id, status, policy_hash, active_release_pointer
+        FROM poc_k9_refresh_runs
+        ORDER BY started_at, run_id
+      `),
+    ])
+    return {
+      table_counts: Object.fromEntries(counts.rows.map((row) => [row.table_name, Number(row.row_count)])),
+      state_scopes: scopes.rows.map((row) => row.scope),
+      active_session_count: Number(activeSessions.rows[0]?.row_count || 0),
+      k9_runs: k9Runs.rows,
+    }
+  }
+
   async function administerLocalCredential({
     subjectId,
     expectedVersion,
@@ -2733,6 +2776,7 @@ export function createPocStateStore({ databasePool } = {}) {
     revokeLocalSession,
     disableLocalCredential,
     listLocalCredentialAdministration,
+    inspectPrepDeploymentFootprint,
     administerLocalCredential,
     revokeLocalSessionsForSubject,
     listUserTableGrants,

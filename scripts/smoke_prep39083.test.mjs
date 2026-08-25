@@ -8,10 +8,11 @@ import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 
-async function fixture(k9Mode) {
+async function fixture(k9Mode, { chatStatus = 200 } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'prep39083-smoke-'))
   const passwordFile = join(directory, 'password')
   const output = join(directory, 'smoke.json')
+  const failureOutput = join(directory, 'smoke-failure.json')
   await writeFile(passwordFile, 'non-secret-test-password\n')
   await chmod(passwordFile, 0o600)
   let managedRequests = 0
@@ -36,7 +37,9 @@ async function fixture(k9Mode) {
         { graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
       ] })
     } else if (request.url === '/poc-api/llm/chat') {
-      json(200, { route: { selected_mode: 'GENERAL' }, evidence: [] })
+      json(chatStatus, chatStatus === 200
+        ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
+        : { error: 'provider failed with sensitive body' })
     } else {
       json(404, { error: 'not found' })
     }
@@ -53,6 +56,7 @@ async function fixture(k9Mode) {
       '--k9-mode', k9Mode,
       '--readiness-timeout-ms', '5000',
       '--output', output,
+      '--failure-output', failureOutput,
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
@@ -61,9 +65,10 @@ async function fixture(k9Mode) {
     child.on('close', (code) => resolvePromise({ code, stdout, stderr }))
   })
   server.close()
-  const report = JSON.parse(await readFile(output, 'utf8'))
+  const report = await readFile(output, 'utf8').then(JSON.parse).catch(() => null)
+  const failure = await readFile(failureOutput, 'utf8').then(JSON.parse).catch(() => null)
   await rm(directory, { recursive: true, force: true })
-  return { completed, report, managedRequests }
+  return { completed, report, failure, managedRequests }
 }
 
 test('PREP smoke accepts K9 deferred without requesting managed graph assets', async () => {
@@ -83,4 +88,15 @@ test('PREP smoke retains strict managed graph gates when K9 is configured', asyn
   assert.equal(result.report.k9_mode, 'REQUIRED')
   assert.equal(result.report.managed_assets, 'PASS')
   assert.equal(result.report.semantic_index, 'PASS')
+})
+
+test('PREP smoke persists sanitized stage classification and emits progress', async () => {
+  const result = await fixture('deferred', { chatStatus: 502 })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'GENERAL_PROVIDER')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_GENERAL_PROVIDER_FAILED')
+  assert.equal(result.failure.status_class, '5xx')
+  assert.equal(typeof result.failure.elapsed_ms, 'number')
+  assert.match(result.completed.stdout, /\[SMOKE 1\/5\].*PASS/u)
+  assert.equal(result.completed.stderr.includes('sensitive body'), false)
 })

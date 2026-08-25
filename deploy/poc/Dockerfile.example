@@ -53,6 +53,8 @@ COPY frontend/poc-datahub-current-table.mjs ./poc-datahub-current-table.mjs
 COPY frontend/poc-feature-security-policy.mjs ./poc-feature-security-policy.mjs
 COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
 COPY frontend/poc-prep-bootstrap.mjs ./poc-prep-bootstrap.mjs
+COPY frontend/poc-provider-preflight.mjs ./poc-provider-preflight.mjs
+COPY frontend/poc-provider-transport.mjs ./poc-provider-transport.mjs
 COPY frontend/poc-disable-local-credential.mjs ./poc-disable-local-credential.mjs
 COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs

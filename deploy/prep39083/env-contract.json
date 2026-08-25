@@ -1,5 +1,5 @@
 {
-  "contract": "DATARIVER_PREP39083_ENV_V3",
+  "contract": "DATARIVER_PREP39083_ENV_V4",
   "ownership": {
     "CORE_REQUIRED": [
       "POC_PUBLIC_ORIGIN",
@@ -24,7 +24,15 @@
         "absent_status": "DEFERRED"
       }
     },
-    "OPTIONAL": ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"],
+    "OPTIONAL": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "POC_RUNTIME_HTTP_PROXY",
+      "POC_RUNTIME_HTTPS_PROXY",
+      "POC_RUNTIME_NO_PROXY",
+      "RUNTIME_CA_CERT_FILE"
+    ],
     "GENERATED": {
       "POC_POSTGRES_PASSWORD": 32,
       "NEO4J_PASSWORD": 32,
@@ -75,6 +83,7 @@
     "POC_MCP_SERVICE_TOKEN"
   ],
   "required_no_proxy": ["127.0.0.1", "localhost", "pgvector", "redis", "neo4j", "web"],
+  "required_runtime_no_proxy": ["127.0.0.1", "localhost", "neo4j"],
   "optional_profile": ".env.prep.optional",
   "runtime_file": ".env.prep.runtime"
 }

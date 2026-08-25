@@ -1,4 +1,4 @@
-/* global AbortController, AbortSignal, Buffer, URLSearchParams, clearTimeout, fetch, setTimeout, structuredClone */
+/* global AbortController, AbortSignal, Buffer, URLSearchParams, clearTimeout, setTimeout, structuredClone */
 import { createHmac, createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -50,6 +50,11 @@ import {
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
 import {
+  createProviderTransport,
+  joinProviderUrl,
+  llmEndpoint,
+} from './poc-provider-transport.mjs'
+import {
   POC_TABLE_SYSTEM_MAPPING_SCOPE,
   activeSystemIdsForTable,
   applyTableSystemMappingCommand,
@@ -88,6 +93,7 @@ const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
 const environmentFile = resolve(process.env.POC_ENV_FILE || join(sourceDirectory, '../deploy/poc/.env'))
 if (existsSync(environmentFile)) process.loadEnvFile(environmentFile)
+const providerTransport = createProviderTransport(process.env)
 const maximumJsonBytes = 1024 * 1024
 const maximumObjectBytes = 50 * 1024 * 1024
 const providerTimeoutMs = 15_000
@@ -1564,27 +1570,10 @@ async function changeHistoryApi(request, response, url, context) {
   return problem(response, 405, 'METHOD_NOT_ALLOWED', 'The change-history route does not support this method.')
 }
 
-function joinProviderUrl(base, suffix) {
-  return `${base.replace(/\/$/, '')}/${suffix.replace(/^\//, '')}`
-}
-
-function llmEndpoint(provider, endpoint) {
-  const requested = `/${endpoint.replace(/^\//, '')}`
-  const value = new URL(provider.url)
-  const knownEndpoints = ['/chat/completions', '/embeddings', '/rerankings', '/rerank', '/models']
-  const configuredEndpoint = knownEndpoints.find((candidate) => value.pathname.endsWith(candidate))
-  if (configuredEndpoint) {
-    if (configuredEndpoint === requested
-      || (requested === '/rerank' && configuredEndpoint === '/rerankings')) return value.toString()
-    value.pathname = value.pathname.slice(0, -configuredEndpoint.length) || '/'
-  }
-  return joinProviderUrl(value.toString(), requested)
-}
-
 async function providerFetch(url, options = {}) {
   const { timeoutMs = providerTimeoutMs, ...fetchOptions } = options
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
-  return fetch(url, {
+  return providerTransport.fetch(url, {
     ...fetchOptions,
     redirect: 'error',
     signal: fetchOptions.signal

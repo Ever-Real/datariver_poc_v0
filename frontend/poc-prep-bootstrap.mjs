@@ -10,6 +10,7 @@ import {
 import { changeHistoryDocumentFromSnapshot } from './poc-access-document.mjs'
 import { normalizePocUsername } from './poc-local-auth.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
+import { computeK9PolicyHash, K9_POLICIES } from './poc-k9-managed-graphs.mjs'
 
 function prepError(code, message) {
   return Object.assign(new Error(message), { code })
@@ -132,7 +133,124 @@ export async function inspectPrepBootstrap({ stateStore, environment = process.e
     k9_mode: specification.k9Mode,
     administrators,
     administrator_record_count: administratorRecords.length,
+    user_record_count: users.length,
     services: specification.services.map((service) => verifyService(users, credentials, service)),
+  })
+}
+
+export async function inspectPrepOwnedPartial({ stateStore, environment = process.env }) {
+  const inspected = await inspectPrepBootstrap({ stateStore, environment })
+  const [footprint, accessSnapshot] = await Promise.all([
+    stateStore.inspectPrepDeploymentFootprint(),
+    stateStore.readChangeHistoryAccess(),
+  ])
+  const accessDocument = changeHistoryDocumentFromSnapshot(accessSnapshot)
+  const core = accessSnapshot.core.value
+  const allowedCoreKeys = new Set([
+    'adminMemberships', 'adminSystems', 'adminSystemSchemaScopes', 'adminSystemAssignees',
+  ])
+  if (accessDocument.systems.length !== 0 || accessDocument.system_schema_scopes.length !== 0
+    || accessDocument.system_assignments.length !== 0
+    || !core || typeof core !== 'object' || Array.isArray(core)
+    || Object.keys(core).some((key) => !allowedCoreKeys.has(key))) {
+    throw prepError(
+      'PREP_LEGACY_PARTIAL_BUSINESS_STATE_PRESENT',
+      'The legacy partial deployment access/core state exceeds its exact bootstrap projection.',
+    )
+  }
+  const expectedIdentityCount = 1 + inspected.services.length
+  if (inspected.administrator_record_count !== 1 || inspected.administrators.length !== 1
+    || inspected.user_record_count !== expectedIdentityCount
+    || inspected.services.some((service) => service.status !== 'PRESENT')
+    || footprint.table_counts.poc_local_credentials !== expectedIdentityCount
+    || footprint.active_session_count !== 0) {
+    throw prepError(
+      'PREP_LEGACY_PARTIAL_IDENTITY_DRIFT',
+      'The legacy partial deployment is not limited to its canonical administrator/service identities.',
+    )
+  }
+  const allowedRowTables = new Set([
+    'poc_state',
+    'poc_catalog_embedding',
+    'poc_local_credentials',
+    'poc_local_sessions',
+    'poc_k9_managed_graph_policies',
+    'poc_k9_refresh_runs',
+  ])
+  const unexpectedRows = Object.entries(footprint.table_counts).filter(
+    ([table, count]) => !allowedRowTables.has(table) && count !== 0,
+  )
+  const unexpectedScopes = footprint.state_scopes.filter((scope) => (
+    !['core', 'change-history-access-v1'].includes(scope)
+    && !scope.startsWith('catalog-embedding-')
+    && scope !== 'k9-scheduler-v1:datariver:poc:k9-scheduler:v1'
+  ))
+  if (unexpectedRows.length || unexpectedScopes.length) {
+    throw prepError(
+      'PREP_LEGACY_PARTIAL_BUSINESS_STATE_PRESENT',
+      'The legacy partial deployment contains state outside its exact bootstrap/runtime footprint.',
+    )
+  }
+  const policies = await stateStore.listK9ManagedGraphAssets()
+  const expectedPolicies = inspected.k9_mode === 'REQUIRED'
+    ? Object.values(K9_POLICIES).map((base) => {
+        const policy = {
+          ...base,
+          subject_id: required(environment.POC_K9_SYSTEM_SUBJECT_ID, 'POC_K9_SYSTEM_SUBJECT_ID'),
+          workspace_id: required(environment.POC_K9_WORKSPACE_ID, 'POC_K9_WORKSPACE_ID'),
+        }
+        return { ...policy, policy_hash: computeK9PolicyHash(policy) }
+      })
+    : []
+  const policyFields = [
+    'graph_id', 'name', 'status', 'classification', 'ontology_version_id', 'studio_release_id',
+    'publication_version', 'schedule', 'managed_intent', 'accepted_proposal_id', 'subject_id',
+    'workspace_id', 'policy_hash', 'tbox_hash', 'contract_hash', 'proposal_hash', 'source_hash',
+    'mapping_hash',
+  ]
+  if (policies.length !== expectedPolicies.length || policies.some((policy) => {
+    const expected = expectedPolicies.find((item) => item.graph_id === policy.graph_id)
+    return !expected || policyFields.some((field) => policy[field] !== expected[field])
+  })) {
+    throw prepError(
+      'PREP_LEGACY_PARTIAL_K9_DRIFT',
+      'The legacy partial deployment K9 state differs from its canonical bootstrap footprint.',
+    )
+  }
+  const expectedByGraph = new Map(expectedPolicies.map((policy) => [policy.graph_id, policy]))
+  const allowedNamespaces = new Set()
+  const unexpectedRun = footprint.k9_runs.find((run) => {
+    const policy = expectedByGraph.get(run.graph_id)
+    if (run.active_release_pointer) allowedNamespaces.add(run.active_release_pointer)
+    return !policy || run.policy_hash !== policy.policy_hash
+      || !['PREPARING', 'RUN', 'NO_OP', 'FAILED'].includes(run.status)
+      || (run.active_release_pointer !== null
+        && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/u.test(run.active_release_pointer))
+  })
+  for (const policy of policies) {
+    if (policy.active_release_pointer && !allowedNamespaces.has(policy.active_release_pointer)) {
+      throw prepError(
+        'PREP_LEGACY_PARTIAL_K9_RUN_DRIFT',
+        'The legacy partial deployment has a K9 active pointer without its canonical run.',
+      )
+    }
+  }
+  if (unexpectedRun || (inspected.k9_mode === 'DEFERRED' && footprint.k9_runs.length !== 0)) {
+    throw prepError(
+      'PREP_LEGACY_PARTIAL_K9_RUN_DRIFT',
+      'The legacy partial deployment contains a K9 run outside its canonical policy contract.',
+    )
+  }
+  return Object.freeze({
+    ...inspected,
+    status: 'OWNED_PARTIAL',
+    footprint: {
+      active_session_count: footprint.active_session_count,
+      derived_embedding_rows: footprint.table_counts.poc_catalog_embedding,
+      k9_policy_count: policies.length,
+      k9_run_count: footprint.k9_runs.length,
+      neo4j_namespaces: [...allowedNamespaces].sort(),
+    },
   })
 }
 
@@ -191,8 +309,8 @@ export async function reconcilePrepBootstrap({
 
 function parseArguments(argv) {
   const [action, ...rest] = argv
-  if (!['inspect', 'reconcile'].includes(action)) {
-    throw prepError('PREP_BOOTSTRAP_INPUT_INVALID', 'Action must be inspect or reconcile.')
+  if (!['inspect', 'inspect-owned-partial', 'reconcile'].includes(action)) {
+    throw prepError('PREP_BOOTSTRAP_INPUT_INVALID', 'Action must be inspect, inspect-owned-partial or reconcile.')
   }
   const values = {}
   const allowed = new Set(['--admin-username', '--admin-password-file'])
@@ -223,6 +341,10 @@ async function main() {
   try {
     if (arguments_.action === 'inspect') {
       process.stdout.write(`${JSON.stringify(await inspectPrepBootstrap({ stateStore }))}\n`)
+      return
+    }
+    if (arguments_.action === 'inspect-owned-partial') {
+      process.stdout.write(`${JSON.stringify(await inspectPrepOwnedPartial({ stateStore }))}\n`)
       return
     }
     const administrator = arguments_.username

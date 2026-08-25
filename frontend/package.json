@@ -18,7 +18,7 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
     "test:poc": "vitest run --config vitest.config.ts src/poc/PocApp.test.tsx",
-    "test:poc-server": "POC_ENV_FILE=poc-server.test.env.missing node --test poc-authorization.test.mjs poc-table-data-access.test.mjs poc-cr-lifecycle.test.mjs poc-datahub-current-table.test.mjs poc-feature-security-policy.test.mjs poc-table-system-mappings.test.mjs poc-disable-local-credential.test.mjs poc-server.auth.test.mjs poc-server.test.mjs poc-server.providers.test.mjs poc-state-store.test.mjs chat-router-benchmark.test.mjs"
+    "test:poc-server": "POC_ENV_FILE=poc-server.test.env.missing node --test poc-authorization.test.mjs poc-table-data-access.test.mjs poc-cr-lifecycle.test.mjs poc-datahub-current-table.test.mjs poc-feature-security-policy.test.mjs poc-table-system-mappings.test.mjs poc-disable-local-credential.test.mjs poc-provider-preflight.test.mjs poc-provider-transport.test.mjs poc-server.auth.test.mjs poc-server.test.mjs poc-server.providers.test.mjs poc-state-store.test.mjs chat-router-benchmark.test.mjs"
   },
   "dependencies": {
     "@kafkajs/confluent-schema-registry": "4.1.0",
@@ -44,6 +44,7 @@
     "react-dom": "19.2.7",
     "redis": "^6.2.1",
     "tailwindcss": "4.3.3",
+    "undici": "7.29.0",
     "zustand": "4.5.7"
   },
   "devDependencies": {

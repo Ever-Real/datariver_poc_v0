@@ -353,7 +353,7 @@ export function k9GraphAssetDefinition(graphId) {
   return K9_GRAPH_ASSET_DEFINITIONS[graphId] || null
 }
 
-function computePolicyHash(p) {
+export function computeK9PolicyHash(p) {
   return computeSha256({
     graph_id: p.graph_id,
     name: p.name,
@@ -445,8 +445,8 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       })
       k9Policies.push(p)
     }
-    k9Policies[0].policy_hash = computePolicyHash(k9Policies[0])
-    k9Policies[1].policy_hash = computePolicyHash(k9Policies[1])
+    k9Policies[0].policy_hash = computeK9PolicyHash(k9Policies[0])
+    k9Policies[1].policy_hash = computeK9PolicyHash(k9Policies[1])
 
     await stateStore.verifyK9StudioAuthority(authCtx, k9Policies[0])
     await stateStore.verifyK9StudioAuthority(authCtx, k9Policies[1])
@@ -503,7 +503,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       subject_id: resolved.subject_id,
       workspace_id: resolved.workspace_id
     })
-    expectedPolicy.policy_hash = computePolicyHash(expectedPolicy)
+    expectedPolicy.policy_hash = computeK9PolicyHash(expectedPolicy)
 
     await stateStore.verifyK9StudioAuthority(authCtx, expectedPolicy)
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import hashlib
+import hmac
 import json
 import os
 import platform
@@ -20,7 +22,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -40,6 +42,8 @@ SMOKE_TOOL = ROOT / "scripts" / "smoke_prep39083.mjs"
 RELEASE_TOOL = ROOT / "scripts" / "prep39083_release.py"
 RUNTIME_ROOT = ROOT / "runtime" / "prep39083"
 ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
+ATTEMPT_RECEIPT = RUNTIME_ROOT / "deploy-attempt.json"
+SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CHANGE_ME_PREFIX = "CHANGE_ME"
@@ -88,6 +92,7 @@ class Runner:
         check: bool = True,
         cwd: Path = ROOT,
         input_text: str | None = None,
+        visible: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         command = [os.fspath(value) for value in arguments]
         completed = subprocess.run(  # noqa: S603 - argv only, no shell interpolation.
@@ -95,7 +100,7 @@ class Runner:
             cwd=cwd,
             env=self.environment,
             check=False,
-            capture_output=True,
+            capture_output=not visible,
             text=True,
             input=input_text,
         )
@@ -120,6 +125,11 @@ class TargetState(str, Enum):
     FRESH_CLEAN = "FRESH_CLEAN"
     EXISTING_ACCEPTED_RUNNING = "EXISTING_ACCEPTED_RUNNING"
     EXISTING_ACCEPTED_STOPPED = "EXISTING_ACCEPTED_STOPPED"
+    EXISTING_OWNED_INCOMPLETE = "EXISTING_OWNED_INCOMPLETE"
+    LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION = (
+        "LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION"
+    )
+    LEGACY_SELF_BOOTSTRAPPED_PARTIAL = "LEGACY_SELF_BOOTSTRAPPED_PARTIAL"
     FAILED_FIRST_INSTALL_REQUIRES_INSPECTION = "FAILED_FIRST_INSTALL_REQUIRES_INSPECTION"
     FAILED_FIRST_INSTALL_RECOVERABLE = "FAILED_FIRST_INSTALL_RECOVERABLE"
     EXISTING_STATE_AMBIGUOUS = "EXISTING_STATE_AMBIGUOUS"
@@ -147,6 +157,9 @@ class TargetInventory:
     containers: tuple[TargetContainer, ...]
     volumes: tuple[TargetVolume, ...]
     networks: tuple[str, ...]
+    attempt_receipt_present: bool = False
+    attempt_receipt_valid: bool = False
+    attempt_receipt: Mapping[str, Any] | None = None
 
     @property
     def running(self) -> bool:
@@ -340,11 +353,13 @@ def merge_no_proxy(operator_value: str, required: Sequence[str], external: str =
 
 
 def _optional_keys() -> set[str]:
-    return set(read_env_file(
-        DEPLOYMENT / ".env.prep.optional.example",
-        private=False,
-        label="optional environment template",
-    ))
+    return set(
+        read_env_file(
+            DEPLOYMENT / ".env.prep.optional.example",
+            private=False,
+            label="optional environment template",
+        )
+    )
 
 
 def _accepted_marker_valid(path: Path) -> bool:
@@ -364,6 +379,50 @@ def _accepted_marker_valid(path: Path) -> bool:
     )
 
 
+ATTEMPT_PHASES = frozenset(
+    {
+        "PREPARED",
+        "STATE_SERVICES_READY",
+        "SCHEMA_READY",
+        "BOOTSTRAP_READY",
+        "WEB_READY",
+        "SMOKE_RUNNING",
+        "SMOKE_FAILED",
+        "ACCEPTED",
+    }
+)
+
+
+def _attempt_receipt(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    valid = (
+        value.get("contract") == "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1"
+        and all(
+            isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
+            for key in ("product_sha", "evidence_sha", "handoff_commit")
+        )
+        and isinstance(value.get("project"), str)
+        and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", value["project"]))
+        and value.get("platform") == "linux/amd64"
+        and isinstance(value.get("port"), int)
+        and 1 <= value["port"] <= 65535
+        and value.get("phase") in ATTEMPT_PHASES
+        and value.get("k9_mode") in {"REQUIRED", "DEFERRED"}
+        and isinstance(value.get("runtime_env_fingerprint"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", value["runtime_env_fingerprint"]))
+        and isinstance(value.get("volume_identities"), list)
+        and all(isinstance(item, str) and item for item in value["volume_identities"])
+    )
+    return value if valid else None
+
+
 def _runtime_env_valid(path: Path) -> bool:
     if not path.exists():
         return False
@@ -371,11 +430,14 @@ def _runtime_env_valid(path: Path) -> bool:
         values = read_env_file(path, private=True, label=".env.prep.runtime")
     except PrepError:
         return False
-    return all(values.get(key, "").strip() for key in (
-        "POC_POSTGRES_PASSWORD",
-        "NEO4J_PASSWORD",
-        "POC_MCP_SERVICE_TOKEN",
-    ))
+    return all(
+        values.get(key, "").strip()
+        for key in (
+            "POC_POSTGRES_PASSWORD",
+            "NEO4J_PASSWORD",
+            "POC_MCP_SERVICE_TOKEN",
+        )
+    )
 
 
 def inspect_target_inventory(
@@ -384,30 +446,57 @@ def inspect_target_inventory(
     *,
     runtime_path: Path = RUNTIME_ENV,
     accepted_marker_path: Path = ACCEPTED_MARKER,
+    attempt_receipt_path: Path = ATTEMPT_RECEIPT,
 ) -> TargetInventory:
     containers: list[TargetContainer] = []
-    for line in runner.output([
-        "docker", "ps", "--all",
-        "--filter", f"label=com.docker.compose.project={release.project}",
-        "--format", '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.service"}}',
-    ]).splitlines():
+    for line in runner.output(
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={release.project}",
+            "--format",
+            '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.service"}}',
+        ]
+    ).splitlines():
         parts = line.split("\t")
         if len(parts) == 3 and parts[0] and parts[2]:
             containers.append(TargetContainer(parts[0], parts[2], parts[1] == "running"))
     volumes: list[TargetVolume] = []
-    for line in runner.output([
-        "docker", "volume", "ls",
-        "--filter", f"label=com.docker.compose.project={release.project}",
-        "--format", '{{.Name}}\t{{.Label "com.docker.compose.volume"}}',
-    ]).splitlines():
+    for line in runner.output(
+        [
+            "docker",
+            "volume",
+            "ls",
+            "--filter",
+            f"label=com.docker.compose.project={release.project}",
+            "--format",
+            '{{.Name}}\t{{.Label "com.docker.compose.volume"}}',
+        ]
+    ).splitlines():
         parts = line.split("\t")
         if len(parts) == 2 and parts[0] and parts[1]:
             volumes.append(TargetVolume(parts[0], parts[1]))
-    networks = tuple(sorted(filter(None, runner.output([
-        "docker", "network", "ls",
-        "--filter", f"label=com.docker.compose.project={release.project}",
-        "--format", "{{.Name}}",
-    ]).splitlines())))
+    networks = tuple(
+        sorted(
+            filter(
+                None,
+                runner.output(
+                    [
+                        "docker",
+                        "network",
+                        "ls",
+                        "--filter",
+                        f"label=com.docker.compose.project={release.project}",
+                        "--format",
+                        "{{.Name}}",
+                    ]
+                ).splitlines(),
+            )
+        )
+    )
+    attempt = _attempt_receipt(attempt_receipt_path)
     return TargetInventory(
         accepted_marker_path.exists(),
         _accepted_marker_valid(accepted_marker_path),
@@ -416,6 +505,9 @@ def inspect_target_inventory(
         tuple(sorted(containers, key=lambda item: (item.service, item.identifier))),
         tuple(sorted(volumes, key=lambda item: (item.logical_name, item.name))),
         networks,
+        attempt_receipt_path.exists(),
+        attempt is not None,
+        attempt,
     )
 
 
@@ -443,19 +535,35 @@ def classify_target_state(inventory: TargetInventory) -> TargetState:
                 else TargetState.EXISTING_ACCEPTED_STOPPED
             )
         return TargetState.EXISTING_STATE_AMBIGUOUS
-    if not any((
-        inventory.runtime_env_present,
-        inventory.containers,
-        inventory.volumes,
-        inventory.networks,
-    )):
+    if inventory.attempt_receipt_present:
+        attempt = inventory.attempt_receipt
+        if (
+            inventory.attempt_receipt_valid
+            and inventory.runtime_env_valid
+            and isinstance(attempt, Mapping)
+            and attempt.get("phase") != "ACCEPTED"
+            and {volume.name for volume in inventory.volumes}
+            <= set(attempt.get("volume_identities", ()))
+        ):
+            return TargetState.EXISTING_OWNED_INCOMPLETE
+        return TargetState.EXISTING_STATE_AMBIGUOUS
+    if not any(
+        (
+            inventory.runtime_env_present,
+            inventory.containers,
+            inventory.volumes,
+            inventory.networks,
+        )
+    ):
         return TargetState.FRESH_CLEAN
+    if inventory.runtime_env_valid and required_accepted_volumes <= inventory.volume_names:
+        return TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION
     return TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION
 
 
-def _environment_ownership(contract: Mapping[str, Any]) -> tuple[
-    tuple[str, ...], dict[str, Any], tuple[str, ...], dict[str, Any], dict[str, Any]
-]:
+def _environment_ownership(
+    contract: Mapping[str, Any],
+) -> tuple[tuple[str, ...], dict[str, Any], tuple[str, ...], dict[str, Any], dict[str, Any]]:
     ownership = contract.get("ownership")
     if not isinstance(ownership, dict):
         raise PrepError(
@@ -509,7 +617,7 @@ def reconcile_environment(
     target_state: TargetState = TargetState.FRESH_CLEAN,
 ) -> EnvironmentBundle:
     contract = _read_json(ENV_CONTRACT, "environment contract")
-    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V3":
+    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V4":
         raise PrepError(
             "ENVIRONMENT",
             "PREP_ENV_CONTRACT_INVALID",
@@ -530,11 +638,12 @@ def reconcile_environment(
         if optional_path.exists()
         else {}
     )
-    required, features, operator_optional, generated_specification, fixed = (
-        _environment_ownership(contract)
+    required, features, operator_optional, generated_specification, fixed = _environment_ownership(
+        contract
     )
     missing = sorted(
-        key for key in required
+        key
+        for key in required
         if not operator.get(key, "").strip()
         or operator.get(key, "").strip().startswith(CHANGE_ME_PREFIX)
     )
@@ -617,25 +726,32 @@ def reconcile_environment(
     if target_state is not TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
         _atomic_private_env(runtime_path, runtime)
 
-    known_legacy = set(generated_specification) | set(fixed) | optional_keys | feature_keys | {
-        "POC_K9_SCHEDULER_ENABLED",
-        "POC_IMAGE_TAG",
-        "POC_SOURCE_COMMIT",
-        "PREP_RELEASE_PRODUCT_SHA",
-        "PREP_RELEASE_EVIDENCE_SHA",
-    }
+    known_legacy = (
+        set(generated_specification)
+        | set(fixed)
+        | optional_keys
+        | feature_keys
+        | {
+            "POC_K9_SCHEDULER_ENABLED",
+            "POC_IMAGE_TAG",
+            "POC_SOURCE_COMMIT",
+            "PREP_RELEASE_PRODUCT_SHA",
+            "PREP_RELEASE_EVIDENCE_SHA",
+        }
+    )
     unknown = sorted(set(operator) - allowed_operator - known_legacy)
     warnings.extend(f"deprecated or unknown operator key ignored: {key}" for key in unknown)
     migrated_optional = sorted(set(operator) & optional_keys)
     warnings.extend(
-        f"optional key should move to .env.prep.optional: {key}"
-        for key in migrated_optional
+        f"optional key should move to .env.prep.optional: {key}" for key in migrated_optional
     )
 
     effective = {key: operator[key] for key in allowed_operator if key in operator}
     effective.update({key: value for key, value in operator.items() if key in optional_keys})
     effective.update(optional)
     effective.update(runtime)
+    for key in operator_optional:
+        effective.setdefault(key, "")
     no_proxy = merge_no_proxy(
         effective.get("NO_PROXY", ""),
         tuple(str(value) for value in contract.get("required_no_proxy", ())),
@@ -645,6 +761,54 @@ def reconcile_environment(
     effective["no_proxy"] = no_proxy
     effective["http_proxy"] = effective.get("HTTP_PROXY", "")
     effective["https_proxy"] = effective.get("HTTPS_PROXY", "")
+    runtime_proxy_configured = bool(
+        effective.get("POC_RUNTIME_HTTP_PROXY", "").strip()
+        or effective.get("POC_RUNTIME_HTTPS_PROXY", "").strip()
+    )
+    effective["POC_RUNTIME_NO_PROXY"] = (
+        merge_no_proxy(
+            effective.get("POC_RUNTIME_NO_PROXY", ""),
+            tuple(str(value) for value in contract.get("required_runtime_no_proxy", ())),
+        )
+        if runtime_proxy_configured
+        else ""
+    )
+    ca_source = effective.get("RUNTIME_CA_CERT_FILE", "").strip()
+    if ca_source:
+        ca_path = Path(ca_source)
+        if not ca_path.is_absolute():
+            raise PrepError(
+                "ENVIRONMENT",
+                "PREP_RUNTIME_CA_PATH_INVALID",
+                "RUNTIME_CA_CERT_FILE must be one absolute target-local path.",
+                "Set one existing absolute CA bundle path or leave the key blank.",
+            )
+        try:
+            metadata = ca_path.lstat()
+        except OSError as error:
+            raise PrepError(
+                "ENVIRONMENT",
+                "PREP_RUNTIME_CA_FILE_MISSING",
+                "The configured runtime CA bundle cannot be read.",
+                "Correct RUNTIME_CA_CERT_FILE without committing the target CA.",
+            ) from error
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size < 1
+            or metadata.st_size > 1024 * 1024
+        ):
+            raise PrepError(
+                "ENVIRONMENT",
+                "PREP_RUNTIME_CA_FILE_UNSAFE",
+                "The runtime CA bundle must be one bounded regular non-symlink file.",
+                "Use an approved target-local CA bundle up to 1 MiB.",
+            )
+        effective["POC_RUNTIME_CA_BIND_SOURCE"] = os.fspath(ca_path)
+        effective["POC_RUNTIME_CA_CONTAINER_FILE"] = "/run/datariver/runtime-ca.pem"
+    else:
+        effective["POC_RUNTIME_CA_BIND_SOURCE"] = "/dev/null"
+        effective["POC_RUNTIME_CA_CONTAINER_FILE"] = ""
     return EnvironmentBundle(
         operator,
         optional,
@@ -798,15 +962,6 @@ def prepare_deployment(
     runner.note(f"Classify PREP target state: {state.value}")
     if state is TargetState.EXISTING_STATE_AMBIGUOUS:
         _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
-    if state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
-        inspection_bundle = reconcile_environment(release, target_state=state)
-        state = prove_failed_install_recoverable(
-            runner,
-            release,
-            inspection_bundle,
-            inventory,
-        )
-        runner.note(f"Prove residual target state: {state.value}")
     bundle = reconcile_environment(release, target_state=state)
     runner.environment = child_environment(bundle.effective)
     return bundle, DeploymentPreparation(runner, source, inventory, before_39080)
@@ -843,6 +998,153 @@ def compose_config(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
         )
     validate_postgres_contract(value)
     return value
+
+
+def compose_volume_identities(config: Mapping[str, Any]) -> tuple[str, ...]:
+    volumes = config.get("volumes")
+    if not isinstance(volumes, dict):
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_VOLUME_IDENTITY_INVALID",
+            "Compose omitted the canonical persistent volume identities.",
+            "Restore the tracked Compose contract and retry.",
+        )
+    names = tuple(
+        sorted(
+            str(value.get("name"))
+            for value in volumes.values()
+            if isinstance(value, dict) and value.get("name")
+        )
+    )
+    if len(names) != 3 or len(set(names)) != 3:
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_VOLUME_IDENTITY_INVALID",
+            "Compose persistent volume identities are incomplete or duplicated.",
+            "Restore the tracked pgvector/Neo4j volume contract and retry.",
+        )
+    return names
+
+
+def runtime_env_fingerprint(runtime: Mapping[str, str]) -> str:
+    key = runtime.get("POC_MCP_SERVICE_TOKEN", "")
+    if not key:
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_RUNTIME_FINGERPRINT_UNAVAILABLE",
+            "The target-local runtime ownership fingerprint cannot be derived.",
+            "Restore the preserved .env.prep.runtime file and retry.",
+        )
+    excluded = {
+        "POC_IMAGE_TAG",
+        "POC_SOURCE_COMMIT",
+        "PREP_RELEASE_PRODUCT_SHA",
+        "PREP_RELEASE_EVIDENCE_SHA",
+    }
+    payload = json.dumps(
+        {key_name: runtime[key_name] for key_name in sorted(runtime) if key_name not in excluded},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hmac.new(key.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def _atomic_json(path: Path, payload: Mapping[str, Any], *, private: bool = True) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600 if private else 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(f"{json.dumps(dict(payload), indent=2, sort_keys=True)}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600 if private else 0o644)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def write_attempt_receipt(
+    release: ReleaseIdentity,
+    handoff: str,
+    bundle: EnvironmentBundle,
+    volume_identities: Sequence[str],
+    *,
+    phase: str,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if phase not in ATTEMPT_PHASES:
+        raise ValueError("invalid deployment attempt phase")
+    now = datetime.now(UTC).isoformat()
+    payload: dict[str, Any] = {
+        "contract": "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1",
+        "product_sha": release.product_sha,
+        "evidence_sha": release.evidence_sha,
+        "handoff_commit": handoff,
+        "project": release.project,
+        "platform": release.platform,
+        "port": release.port,
+        "target_state_before": bundle.target_state.value,
+        "runtime_env_fingerprint": runtime_env_fingerprint(bundle.runtime),
+        "volume_identities": sorted(set(volume_identities)),
+        "k9_mode": bundle.k9_mode,
+        "phase": phase,
+        "started_at": previous.get("started_at", now) if previous else now,
+        "updated_at": now,
+    }
+    if previous and previous.get("product_sha") != release.product_sha:
+        payload["resumed_from_product_sha"] = previous.get("product_sha")
+    _atomic_json(ATTEMPT_RECEIPT, payload)
+    return payload
+
+
+def advance_attempt_phase(receipt: Mapping[str, Any], phase: str) -> dict[str, Any]:
+    if phase not in ATTEMPT_PHASES:
+        raise ValueError("invalid deployment attempt phase")
+    payload = dict(receipt)
+    payload["phase"] = phase
+    payload["updated_at"] = datetime.now(UTC).isoformat()
+    _atomic_json(ATTEMPT_RECEIPT, payload)
+    return payload
+
+
+def validate_owned_attempt(
+    runner: Runner,
+    release: ReleaseIdentity,
+    handoff: str,
+    bundle: EnvironmentBundle,
+    inventory: TargetInventory,
+    expected_volumes: Sequence[str],
+) -> Mapping[str, Any]:
+    receipt = inventory.attempt_receipt
+    if not inventory.attempt_receipt_valid or not isinstance(receipt, dict):
+        _ambiguous_state("The incomplete deployment receipt is absent or malformed.")
+    if (
+        receipt.get("project") != release.project
+        or receipt.get("platform") != release.platform
+        or receipt.get("port") != release.port
+        or receipt.get("k9_mode") != bundle.k9_mode
+        or receipt.get("runtime_env_fingerprint") != runtime_env_fingerprint(bundle.runtime)
+        or sorted(receipt.get("volume_identities", ())) != sorted(expected_volumes)
+        or {volume.name for volume in inventory.volumes} - set(expected_volumes)
+    ):
+        _ambiguous_state("The incomplete deployment receipt no longer matches target ownership.")
+    for ancestor, descendant in (
+        (str(receipt["product_sha"]), release.product_sha),
+        (str(receipt["handoff_commit"]), handoff),
+    ):
+        if (
+            runner.run(
+                ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
+            ).returncode
+            != 0
+        ):
+            _ambiguous_state(
+                "The incomplete deployment receipt is outside current source ancestry."
+            )
+    return receipt
 
 
 def inspect_web_image(runner: Runner, image: str, product_sha: str) -> None:
@@ -882,9 +1184,16 @@ def inspect_web_image(runner: Runner, image: str, product_sha: str) -> None:
 
 
 def snapshot_39080(runner: Runner) -> tuple[str, ...]:
-    output = runner.output([
-        "docker", "ps", "--filter", "publish=39080", "--format", "{{.ID}} {{.Names}}",
-    ])
+    output = runner.output(
+        [
+            "docker",
+            "ps",
+            "--filter",
+            "publish=39080",
+            "--format",
+            "{{.ID}} {{.Names}}",
+        ]
+    )
     return tuple(sorted(line for line in output.splitlines() if line))
 
 
@@ -928,22 +1237,26 @@ def inspect_postgres_durable_rows(
 ) -> dict[str, int]:
     command = _postgres_local_command(prefix, database, username)
     try:
-        tables_output = runner.output([
-            *command,
-            "--command",
-            "SELECT tablename FROM pg_catalog.pg_tables "
-            "WHERE schemaname = 'public' ORDER BY tablename;",
-        ])
+        tables_output = runner.output(
+            [
+                *command,
+                "--command",
+                "SELECT tablename FROM pg_catalog.pg_tables "
+                "WHERE schemaname = 'public' ORDER BY tablename;",
+            ]
+        )
         counts: dict[str, int] = {}
         for table in filter(None, tables_output.splitlines()):
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", table):
                 _ambiguous_state("The residual PostgreSQL schema contains an unclassifiable table.")
-            raw_count = runner.output([
-                *command,
-                "--command",
-                f'SELECT CASE WHEN EXISTS (SELECT 1 FROM public."{table}" LIMIT 1) '  # noqa: S608 -- identifier is strictly allowlisted above.
-                "THEN 1 ELSE 0 END;",
-            ])
+            raw_count = runner.output(
+                [
+                    *command,
+                    "--command",
+                    f'SELECT CASE WHEN EXISTS (SELECT 1 FROM public."{table}" LIMIT 1) '  # noqa: S608 -- identifier is strictly allowlisted above.
+                    "THEN 1 ELSE 0 END;",
+                ]
+            )
             if not raw_count.isdigit():
                 _ambiguous_state("The residual PostgreSQL row-count proof was incomplete.")
             counts[table] = int(raw_count)
@@ -957,7 +1270,11 @@ def inspect_postgres_durable_rows(
         ) from error
 
 
-def inspect_neo4j_durable_nodes(password: str, port: str) -> int:
+def _neo4j_local_query(
+    password: str,
+    port: str,
+    statements: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
     if not password or password == INSPECTION_PLACEHOLDER:
         _ambiguous_state(
             "A residual Neo4j volume exists but its preserved target-local credential is absent.",
@@ -965,9 +1282,7 @@ def inspect_neo4j_durable_nodes(password: str, port: str) -> int:
     authorization = base64.b64encode(f"neo4j:{password}".encode()).decode("ascii")
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/db/neo4j/tx/commit",
-        data=json.dumps({
-            "statements": [{"statement": "MATCH (n) RETURN count(n) AS count"}],
-        }).encode(),
+        data=json.dumps({"statements": list(statements)}).encode(),
         headers={"Authorization": f"Basic {authorization}", "Content-Type": "application/json"},
         method="POST",
     )
@@ -977,18 +1292,72 @@ def inspect_neo4j_durable_nodes(password: str, port: str) -> int:
             payload = json.loads(response.read())
         errors = payload.get("errors") if isinstance(payload, dict) else None
         results = payload.get("results") if isinstance(payload, dict) else None
-        rows = results[0].get("data") if isinstance(results, list) and results else None
-        count = rows[0].get("row", [None])[0] if isinstance(rows, list) and rows else None
-        if errors or not isinstance(count, int) or count < 0:
+        if errors or not isinstance(results, list) or len(results) != len(statements):
             raise ValueError("invalid Neo4j proof")
-        return count
+        return results
     except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as error:
         raise PrepError(
             "TARGET_STATE",
             "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY",
-            "The residual Neo4j volume could not be proven empty with its preserved credential.",
+            "The residual Neo4j volume could not be inspected with its preserved credential.",
             "Preserve the volume and restore its matching target-local runtime environment.",
         ) from error
+
+
+def inspect_neo4j_durable_nodes(password: str, port: str) -> int:
+    results = _neo4j_local_query(
+        password,
+        port,
+        ({"statement": "MATCH (n) RETURN count(n) AS count"},),
+    )
+    rows = results[0].get("data")
+    count = rows[0].get("row", [None])[0] if isinstance(rows, list) and rows else None
+    if not isinstance(count, int) or count < 0:
+        _ambiguous_state("The residual Neo4j node-count proof was incomplete.")
+    return count
+
+
+def verify_neo4j_owned_projection(
+    password: str,
+    port: str,
+    namespaces: Sequence[str],
+) -> None:
+    results = _neo4j_local_query(
+        password,
+        port,
+        (
+            {
+                "statement": (
+                    "MATCH (n) RETURN count(n) AS total, "
+                    "count(CASE WHEN n:K9Node AND n.namespace IN $namespaces THEN 1 END) AS owned"
+                ),
+                "parameters": {"namespaces": list(namespaces)},
+            },
+            {
+                "statement": (
+                    "MATCH (a)-[r]->(b) RETURN count(r) AS total, "
+                    "count(CASE WHEN a:K9Node AND b:K9Node AND a.namespace = b.namespace "
+                    "AND a.namespace IN $namespaces THEN 1 END) AS owned"
+                ),
+                "parameters": {"namespaces": list(namespaces)},
+            },
+        ),
+    )
+    counts: list[tuple[int, int]] = []
+    for result in results:
+        rows = result.get("data")
+        row = rows[0].get("row") if isinstance(rows, list) and rows else None
+        if (
+            not isinstance(row, list)
+            or len(row) != 2
+            or not all(isinstance(value, int) and value >= 0 for value in row)
+        ):
+            _ambiguous_state("The residual Neo4j ownership proof was incomplete.")
+        counts.append((row[0], row[1]))
+    if any(total != owned for total, owned in counts):
+        _ambiguous_state(
+            "The residual Neo4j volume contains data outside canonical managed K9 namespaces.",
+        )
 
 
 def prove_failed_install_recoverable(
@@ -1043,7 +1412,7 @@ def reconcile_recoverable_postgres_credential(
     password = bundle.effective["POC_POSTGRES_PASSWORD"]
     if "\n" in password or "\r" in password or "\x00" in password:
         _ambiguous_state("The generated PostgreSQL credential is outside its safe contract.")
-    statement = f'ALTER ROLE "{username}" WITH PASSWORD \'{password.replace("\'", "\'\'")}\';\n'
+    statement = f"ALTER ROLE \"{username}\" WITH PASSWORD '{password.replace("'", "''")}';\n"
     try:
         runner.run(
             [
@@ -1079,17 +1448,19 @@ def _parse_json_line(output: str) -> dict[str, Any]:
 
 def inspect_bootstrap(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
     try:
-        completed = runner.run([
-            *prefix,
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            "web",
-            "node",
-            "poc-prep-bootstrap.mjs",
-            "inspect",
-        ])
+        completed = runner.run(
+            [
+                *prefix,
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "web",
+                "node",
+                "poc-prep-bootstrap.mjs",
+                "inspect",
+            ]
+        )
         return _parse_json_line(completed.stdout)
     except CommandFailure as error:
         raise classify_bootstrap_failure(error) from error
@@ -1100,6 +1471,108 @@ def inspect_bootstrap(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
             "The bootstrap inspection did not return its structured result.",
             "Inspect ./scripts/prep39083 logs without changing database credentials.",
         ) from error
+
+
+def inspect_owned_partial_bootstrap(
+    runner: Runner,
+    prefix: Sequence[str],
+    bundle: EnvironmentBundle,
+) -> dict[str, Any]:
+    try:
+        completed = runner.run(
+            [
+                *prefix,
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "web",
+                "node",
+                "poc-prep-bootstrap.mjs",
+                "inspect-owned-partial",
+            ]
+        )
+        result = _parse_json_line(completed.stdout)
+    except CommandFailure as error:
+        try:
+            failure = _parse_json_line(f"{error.stdout}\n{error.stderr}")
+        except ValueError:
+            raise classify_bootstrap_failure(error) from error
+        code = str(failure.get("code", ""))
+        if code.startswith("PREP_LEGACY_PARTIAL_") or code.startswith("PREP_SERVICE_"):
+            _ambiguous_state(
+                "The legacy partial deployment differs from its canonical bootstrap footprint.",
+            )
+        raise classify_bootstrap_failure(error) from error
+    except ValueError as error:
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_LEGACY_PARTIAL_RESULT_INVALID",
+            "The legacy partial inspection returned no structured ownership result.",
+            "Preserve all PREP state and inspect the bounded doctor output.",
+        ) from error
+    if result.get("status") != "OWNED_PARTIAL":
+        _ambiguous_state("The legacy partial deployment did not prove canonical ownership.")
+    footprint = result.get("footprint")
+    namespaces = footprint.get("neo4j_namespaces") if isinstance(footprint, dict) else None
+    if not isinstance(namespaces, list) or not all(isinstance(item, str) for item in namespaces):
+        _ambiguous_state("The legacy partial deployment omitted its managed graph namespaces.")
+    verify_neo4j_owned_projection(
+        bundle.effective["NEO4J_PASSWORD"],
+        bundle.effective["POC_NEO4J_HTTP_PORT"],
+        namespaces,
+    )
+    return result
+
+
+def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
+    try:
+        completed = runner.run(
+            [
+                *prefix,
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "web",
+                "node",
+                "poc-provider-preflight.mjs",
+            ]
+        )
+        result = _parse_json_line(completed.stdout)
+    except CommandFailure as error:
+        try:
+            failure = _parse_json_line(f"{error.stdout}\n{error.stderr}")
+        except ValueError:
+            failure = {}
+        code = str(failure.get("classification", "PREP_PREFLIGHT_UNKNOWN_FAILED"))
+        if not re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", code):
+            code = "PREP_PREFLIGHT_UNKNOWN_FAILED"
+        stage = str(failure.get("stage", "PROVIDER"))
+        if not re.fullmatch(r"[A-Z0-9_]{1,32}", stage):
+            stage = "PROVIDER"
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            code,
+            f"Read-only {stage} provider preflight failed before persistent Product mutation.",
+            "Correct only the named provider URL, credential, proxy, NO_PROXY or CA setting, "
+            "then rerun the same deploy command.",
+        ) from error
+    except ValueError as error:
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_RESULT_INVALID",
+            "Provider preflight returned no structured result.",
+            "Restore the exact Product image and rerun deploy.",
+        ) from error
+    if result.get("status") != "PASS":
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_RESULT_INVALID",
+            "Provider preflight did not report PASS.",
+            "Correct the named provider configuration and rerun deploy.",
+        )
+    return result
 
 
 @contextmanager
@@ -1187,18 +1660,22 @@ def reconcile_bootstrap(
             "-T",
         ]
         if created:
-            command.extend([
-                "--volume",
-                f"{password_path}:/run/prep-admin.password:ro",
-            ])
+            command.extend(
+                [
+                    "--volume",
+                    f"{password_path}:/run/prep-admin.password:ro",
+                ]
+            )
         command.extend(["web", "node", "poc-prep-bootstrap.mjs", "reconcile"])
         if created:
-            command.extend([
-                "--admin-username",
-                username,
-                "--admin-password-file",
-                "/run/prep-admin.password",
-            ])
+            command.extend(
+                [
+                    "--admin-username",
+                    username,
+                    "--admin-password-file",
+                    "/run/prep-admin.password",
+                ]
+            )
         try:
             result = _parse_json_line(runner.run(command).stdout)
         except CommandFailure as error:
@@ -1249,40 +1726,49 @@ def run_smoke(
     output = RUNTIME_ROOT / "smoke.json"
     if output.exists():
         output.unlink()
+    if SMOKE_FAILURE.exists():
+        SMOKE_FAILURE.unlink()
     with private_password_file(password) as password_path:
         try:
-            runner.run([
-                "node",
-                SMOKE_TOOL,
-                "--origin",
-                f"http://127.0.0.1:{release.port}",
-                "--username",
-                username,
-                "--password-file",
-                password_path,
-                "--k9-mode",
-                k9_mode.lower(),
-                "--readiness-timeout-ms",
-                "1200000",
-                "--output",
-                output,
-            ])
-        except CommandFailure as error:
-            private_output = f"{error.stdout}\n{error.stderr}"
-            code = (
-                "PREP_ADMIN_SMOKE_AUTH_FAILED"
-                if "/auth/login returned HTTP 401" in private_output
-                else "PREP_RUNTIME_SMOKE_FAILED"
+            runner.run(
+                [
+                    "node",
+                    SMOKE_TOOL,
+                    "--origin",
+                    f"http://127.0.0.1:{release.port}",
+                    "--username",
+                    username,
+                    "--password-file",
+                    password_path,
+                    "--k9-mode",
+                    k9_mode.lower(),
+                    "--readiness-timeout-ms",
+                    "1200000",
+                    "--output",
+                    output,
+                    "--failure-output",
+                    SMOKE_FAILURE,
+                ],
+                visible=True,
             )
+        except CommandFailure as error:
+            try:
+                failure = _read_json(SMOKE_FAILURE, "sanitized smoke failure")
+            except PrepError:
+                failure = {}
+            code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
+            if not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code):
+                code = "PREP_SMOKE_UNKNOWN_FAILED"
             action = (
                 "Rerun deploy with the correct existing administrator password."
-                if code == "PREP_ADMIN_SMOKE_AUTH_FAILED"
-                else "Inspect ./scripts/prep39083 logs; do not widen authorization or reset state."
+                if code == "PREP_SMOKE_ADMIN_AUTH_FAILED"
+                else "Correct the classified provider/readiness gate and rerun the same deploy "
+                "command; do not reset persistent state."
             )
             raise PrepError(
                 "RUNTIME_SMOKE",
                 code,
-                "Authenticated PREP smoke did not complete.",
+                "Authenticated PREP smoke did not complete at its classified stage.",
                 action,
             ) from error
 
@@ -1319,14 +1805,75 @@ def deploy(
     before_39080 = preparation.before_39080
     for warning in bundle.warnings:
         print(f"WARNING: {warning}", flush=True)
+
+    runner.note("Validate private environment ownership and Compose contract")
     with private_effective_environment(bundle.effective) as env_file:
         prefix = compose_prefix(release, env_file)
-        runner.note("Validate private environment ownership and Compose contract")
         config = compose_config(runner, prefix)
         image = resolve_web_image(config)
+        volume_identities = compose_volume_identities(config)
         runner.note("Build exact linux/amd64 Product image with bounded proxy configuration")
         runner.run([*prefix, "build", "--pull=false", "web"])
         inspect_web_image(runner, image, release.product_sha)
+        runner.note("Run read-only external provider preflight before persistent mutation")
+        preflight = run_provider_preflight(runner, prefix)
+        print(
+            "Provider preflight: DataHub/Chat/Embedding/Reranker PASS; "
+            f"K9 Studio {preflight.get('k9_studio', 'UNKNOWN')}",
+            flush=True,
+        )
+
+        previous_attempt: Mapping[str, Any] | None = None
+        if bundle.target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
+            previous_attempt = validate_owned_attempt(
+                runner,
+                release,
+                source["handoff_commit"],
+                bundle,
+                preparation.inventory,
+                volume_identities,
+            )
+            runner.note("Validate exact owned incomplete deployment receipt for idempotent resume")
+        elif bundle.target_state is (
+            TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION
+        ):
+            runner.note("Inspect legacy self-bootstrap state through canonical identity contracts")
+            runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
+            inspect_owned_partial_bootstrap(runner, prefix, bundle)
+            bundle = replace(
+                bundle,
+                target_state=TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL,
+            )
+            runner.note("Classify legacy state: LEGACY_SELF_BOOTSTRAPPED_PARTIAL")
+        elif bundle.target_state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+            state = prove_failed_install_recoverable(
+                runner,
+                release,
+                bundle,
+                preparation.inventory,
+            )
+            runner.note(f"Prove residual target state: {state.value}")
+            bundle = reconcile_environment(release, target_state=state)
+            runner.environment = child_environment(bundle.effective)
+
+    # A proven residual recovery generates/persists its runtime secrets only after inspection,
+    # so render the final Compose environment again before the attempt becomes mutation owner.
+    with private_effective_environment(bundle.effective) as env_file:
+        prefix = compose_prefix(release, env_file)
+        config = compose_config(runner, prefix)
+        final_volumes = compose_volume_identities(config)
+        if final_volumes != volume_identities:
+            _ambiguous_state(
+                "The final Compose persistent volume identity changed after preflight."
+            )
+        attempt = write_attempt_receipt(
+            release,
+            source["handoff_commit"],
+            bundle,
+            final_volumes,
+            phase="PREPARED",
+            previous=previous_attempt,
+        )
         if (
             bundle.target_state is TargetState.FAILED_FIRST_INSTALL_RECOVERABLE
             and "pgvector-data" in preparation.inventory.volume_names
@@ -1337,15 +1884,28 @@ def deploy(
             reconcile_recoverable_postgres_credential(runner, prefix, bundle)
         runner.note("Start isolated PostgreSQL, Neo4j and Redis and wait for health")
         runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
+        attempt = advance_attempt_phase(attempt, "STATE_SERVICES_READY")
         runner.note("Apply idempotent state initialization and inspect target-local identities")
         inspected = inspect_bootstrap(runner, prefix)
+        attempt = advance_attempt_phase(attempt, "SCHEMA_READY")
         username, password = reconcile_bootstrap(runner, prefix, inspected)
+        attempt = advance_attempt_phase(attempt, "BOOTSTRAP_READY")
         runner.note("Start exact Product web service and verify internal and host health")
         runner.run([*prefix, "up", "-d", "--no-build", "--wait", "web"])
         web_id = runner.output([*prefix, "ps", "-q", "web"])
-        if not web_id or runner.output([
-            "docker", "inspect", "--format", "{{.State.Health.Status}}", web_id,
-        ]) != "healthy":
+        if (
+            not web_id
+            or runner.output(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                    web_id,
+                ]
+            )
+            != "healthy"
+        ):
             raise PrepError(
                 "WEB_HEALTH",
                 "PREP_INTERNAL_WEB_UNHEALTHY",
@@ -1353,15 +1913,17 @@ def deploy(
                 "Run ./scripts/prep39083 logs; do not reset persistent volumes.",
             )
         try:
-            runner.run([
-                "curl",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--noproxy",
-                "*",
-                f"http://127.0.0.1:{release.port}/healthz",
-            ])
+            runner.run(
+                [
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--noproxy",
+                    "*",
+                    f"http://127.0.0.1:{release.port}/healthz",
+                ]
+            )
         except CommandFailure as error:
             raise PrepError(
                 "WEB_HEALTH",
@@ -1369,8 +1931,14 @@ def deploy(
                 "Docker is healthy but host port 39083 is not reachable without the proxy.",
                 "Check WSL port binding and host firewall; the application container is healthy.",
             ) from error
+        attempt = advance_attempt_phase(attempt, "WEB_READY")
         runner.note("Run authenticated provider, managed-graph and GENERAL smoke")
-        run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
+        attempt = advance_attempt_phase(attempt, "SMOKE_RUNNING")
+        try:
+            run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
+        except PrepError:
+            advance_attempt_phase(attempt, "SMOKE_FAILED")
+            raise
         after_39080 = snapshot_39080(runner)
         if after_39080 != before_39080:
             raise PrepError(
@@ -1385,6 +1953,7 @@ def deploy(
             target_state=bundle.target_state,
             k9_mode=bundle.k9_mode,
         )
+        advance_attempt_phase(attempt, "ACCEPTED")
     print("\nPREP39083 DEPLOYMENT READY")
     print("\nRelease")
     print(f"- Product: {release.product_sha}")
@@ -1474,21 +2043,23 @@ def export(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     output_dir = RUNTIME_ROOT / f"release-{release.product_sha}"
     with private_effective_environment(bundle.effective) as env_file:
         try:
-            completed = runner.run([
-                sys.executable,
-                RELEASE_TOOL,
-                "export",
-                "--product-sha",
-                release.product_sha,
-                "--evidence-sha",
-                release.evidence_sha,
-                "--env-file",
-                env_file,
-                "--project-name",
-                release.project,
-                "--output-dir",
-                output_dir,
-            ])
+            completed = runner.run(
+                [
+                    sys.executable,
+                    RELEASE_TOOL,
+                    "export",
+                    "--product-sha",
+                    release.product_sha,
+                    "--evidence-sha",
+                    release.evidence_sha,
+                    "--env-file",
+                    env_file,
+                    "--project-name",
+                    release.project,
+                    "--output-dir",
+                    output_dir,
+                ]
+            )
         except CommandFailure as error:
             raise PrepError(
                 "EXPORT",
@@ -1557,27 +2128,33 @@ def main() -> None:
     except PrepError as error:
         fail(error)
     except CommandFailure:
-        fail(PrepError(
-            "COMMAND_EXECUTION",
-            "PREP_COMMAND_FAILED",
-            "A bounded deployment command failed without completing its gate.",
-            "Run ./scripts/prep39083 doctor, then logs; secrets and raw command "
-            "output were suppressed.",
-        ))
+        fail(
+            PrepError(
+                "COMMAND_EXECUTION",
+                "PREP_COMMAND_FAILED",
+                "A bounded deployment command failed without completing its gate.",
+                "Run ./scripts/prep39083 doctor, then logs; secrets and raw command "
+                "output were suppressed.",
+            )
+        )
     except (EOFError, KeyboardInterrupt):
-        fail(PrepError(
-            "OPERATOR_INPUT",
-            "PREP_OPERATOR_INPUT_CANCELLED",
-            "Interactive operator input was cancelled.",
-            "Rerun ./scripts/prep39083 deploy when the administrator input is available.",
-        ))
+        fail(
+            PrepError(
+                "OPERATOR_INPUT",
+                "PREP_OPERATOR_INPUT_CANCELLED",
+                "Interactive operator input was cancelled.",
+                "Rerun ./scripts/prep39083 deploy when the administrator input is available.",
+            )
+        )
     except (OSError, ValueError):
-        fail(PrepError(
-            "UNEXPECTED",
-            "PREP_DEPLOYMENT_FAILED",
-            "The one-command deployment could not complete its bounded contract.",
-            "Run ./scripts/prep39083 doctor; no persistent state was intentionally deleted.",
-        ))
+        fail(
+            PrepError(
+                "UNEXPECTED",
+                "PREP_DEPLOYMENT_FAILED",
+                "The one-command deployment could not complete its bounded contract.",
+                "Run ./scripts/prep39083 doctor; no persistent state was intentionally deleted.",
+            )
+        )
 
 
 if __name__ == "__main__":

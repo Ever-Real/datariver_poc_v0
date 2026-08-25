@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -195,6 +196,37 @@ def test_proxy_is_injected_once_with_lowercase_and_required_no_proxy(tmp_path: P
     child = deploy.child_environment(bundle.effective)
     assert child["HTTPS_PROXY"] == child["https_proxy"]
     assert child["NO_PROXY"] == child["no_proxy"]
+    assert bundle.effective["POC_RUNTIME_HTTP_PROXY"] == ""
+    assert bundle.effective["POC_RUNTIME_HTTPS_PROXY"] == ""
+    assert bundle.effective["POC_RUNTIME_NO_PROXY"] == ""
+
+
+def test_runtime_proxy_is_explicit_and_has_its_own_no_proxy_contract(tmp_path: Path) -> None:
+    operator = tmp_path / ".env.prep"
+    values = _operator_values() | {
+        "HTTP_PROXY": "http://build-proxy.example.test:8080",
+        "HTTPS_PROXY": "http://build-proxy.example.test:8080",
+        "NO_PROXY": "build.internal",
+        "POC_RUNTIME_HTTP_PROXY": "http://runtime-proxy.example.test:8080",
+        "POC_RUNTIME_HTTPS_PROXY": "http://runtime-proxy.example.test:8080",
+        "POC_RUNTIME_NO_PROXY": "datahub.internal",
+    }
+    _write_private_env(operator, values)
+    bundle = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=tmp_path / ".env.prep.runtime",
+        random_token=lambda count: "x" * count,
+    )
+    assert bundle.effective["POC_RUNTIME_HTTP_PROXY"] == values["POC_RUNTIME_HTTP_PROXY"]
+    assert set(bundle.effective["POC_RUNTIME_NO_PROXY"].split(",")) >= {
+        "datahub.internal",
+        "localhost",
+        "127.0.0.1",
+        "neo4j",
+    }
+    assert "pgvector" not in bundle.effective["POC_RUNTIME_NO_PROXY"].split(",")
 
 
 def test_image_reference_is_resolved_without_shell_state() -> None:
@@ -208,16 +240,20 @@ def test_image_reference_is_resolved_without_shell_state() -> None:
 def test_postgres_contract_matches_or_returns_classified_credential_failure() -> None:
     valid = {
         "services": {
-            "web": {"environment": {
-                "POC_POSTGRES_DB": "poc",
-                "POC_POSTGRES_USER": "poc",
-                "POC_POSTGRES_PASSWORD": "secret",
-            }},
-            "pgvector": {"environment": {
-                "POSTGRES_DB": "poc",
-                "POSTGRES_USER": "poc",
-                "POSTGRES_PASSWORD": "secret",
-            }},
+            "web": {
+                "environment": {
+                    "POC_POSTGRES_DB": "poc",
+                    "POC_POSTGRES_USER": "poc",
+                    "POC_POSTGRES_PASSWORD": "secret",
+                }
+            },
+            "pgvector": {
+                "environment": {
+                    "POSTGRES_DB": "poc",
+                    "POSTGRES_USER": "poc",
+                    "POSTGRES_PASSWORD": "secret",
+                }
+            },
         },
     }
     deploy.validate_postgres_contract(valid)
@@ -249,12 +285,10 @@ def _inventory(
     running: bool = False,
     volumes: tuple[str, ...] = (),
     network: bool = False,
+    attempt: dict[str, object] | None = None,
+    attempt_present: bool = False,
 ) -> object:
-    containers = (
-        (deploy.TargetContainer("container", "web", running),)
-        if running or marker
-        else ()
-    )
+    containers = (deploy.TargetContainer("container", "web", running),) if running or marker else ()
     return deploy.TargetInventory(
         marker,
         marker_valid,
@@ -263,6 +297,9 @@ def _inventory(
         containers,
         tuple(deploy.TargetVolume(f"project_{name}", name) for name in volumes),
         ("project-services",) if network else (),
+        attempt_present,
+        attempt is not None,
+        attempt,
     )
 
 
@@ -301,6 +338,14 @@ def _inventory(
             deploy.TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION,
         ),
         (
+            _inventory(
+                runtime=True,
+                runtime_valid=True,
+                volumes=("pgvector-data", "neo4j-data", "neo4j-logs"),
+            ),
+            deploy.TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION,
+        ),
+        (
             _inventory(marker=True, marker_valid=False, runtime=True, runtime_valid=True),
             deploy.TargetState.EXISTING_STATE_AMBIGUOUS,
         ),
@@ -312,6 +357,87 @@ def _inventory(
 )
 def test_target_state_classifier(inventory: object, expected: object) -> None:
     assert deploy.classify_target_state(inventory) is expected
+
+
+def test_owned_incomplete_receipt_is_resumable_but_malformed_receipt_is_ambiguous() -> None:
+    receipt = {
+        "contract": "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1",
+        "product_sha": "a" * 40,
+        "evidence_sha": "b" * 40,
+        "handoff_commit": "c" * 40,
+        "project": "datariver-prep39083",
+        "platform": "linux/amd64",
+        "port": 39083,
+        "target_state_before": "FRESH_CLEAN",
+        "runtime_env_fingerprint": "d" * 64,
+        "volume_identities": [
+            "datariver-prep39083_neo4j-data",
+            "datariver-prep39083_neo4j-logs",
+            "datariver-prep39083_pgvector-data",
+        ],
+        "k9_mode": "DEFERRED",
+        "phase": "SMOKE_FAILED",
+        "started_at": "2026-08-25T00:00:00+00:00",
+        "updated_at": "2026-08-25T00:00:01+00:00",
+    }
+    inventory = deploy.TargetInventory(
+        False,
+        False,
+        True,
+        True,
+        (),
+        (
+            deploy.TargetVolume("datariver-prep39083_pgvector-data", "pgvector-data"),
+            deploy.TargetVolume("datariver-prep39083_neo4j-data", "neo4j-data"),
+        ),
+        ("datariver-prep39083-services",),
+        True,
+        True,
+        receipt,
+    )
+    assert deploy.classify_target_state(inventory) is deploy.TargetState.EXISTING_OWNED_INCOMPLETE
+    assert (
+        deploy.classify_target_state(
+            replace(inventory, attempt_receipt_valid=False),
+        )
+        is deploy.TargetState.EXISTING_STATE_AMBIGUOUS
+    )
+
+
+def test_attempt_receipt_is_atomic_secret_free_and_phase_progresses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    bundle = deploy.EnvironmentBundle(
+        {},
+        {},
+        {
+            "POC_MCP_SERVICE_TOKEN": "mcp-secret-must-not-be-recorded",
+            "POC_POSTGRES_PASSWORD": "postgres-secret-must-not-be-recorded",
+            "NEO4J_PASSWORD": "neo4j-secret-must-not-be-recorded",
+            "POC_SOURCE_COMMIT": "a" * 40,
+        },
+        {},
+        (),
+        deploy.TargetState.FRESH_CLEAN,
+        "DEFERRED",
+    )
+    receipt = deploy.write_attempt_receipt(
+        _release(),
+        "c" * 40,
+        bundle,
+        ("project_pgvector-data", "project_neo4j-data", "project_neo4j-logs"),
+        phase="PREPARED",
+    )
+    assert stat.S_IMODE(attempt.stat().st_mode) == 0o600
+    payload = attempt.read_text(encoding="utf-8")
+    assert "secret-must-not-be-recorded" not in payload
+    assert receipt["runtime_env_fingerprint"] in payload
+    advanced = deploy.advance_attempt_phase(receipt, "SMOKE_FAILED")
+    assert advanced["phase"] == "SMOKE_FAILED"
+    assert json.loads(attempt.read_text())["phase"] == "SMOKE_FAILED"
 
 
 def test_accepted_state_never_generates_missing_runtime_secrets(tmp_path: Path) -> None:
@@ -369,6 +495,10 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert "ALTER ROLE" in source
     assert "inspect_postgres_durable_rows" in source
     assert "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY" in source
+    assert source.index("run_provider_preflight(runner, prefix)") < source.index(
+        'phase="PREPARED"',
+    )
+    assert 'advance_attempt_phase(attempt, "SMOKE_FAILED")' in source
 
 
 def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
@@ -404,10 +534,10 @@ def test_wrapper_injects_proxy_into_uv_without_operator_duplication(tmp_path: Pa
     fake_uv = fake_bin / "uv"
     fake_uv.write_text(
         "#!/bin/sh\n"
-        "test \"$HTTP_PROXY\" = \"$http_proxy\"\n"
-        "test \"$HTTPS_PROXY\" = \"$https_proxy\"\n"
-        "test \"$NO_PROXY\" = \"$no_proxy\"\n"
-        "test \"$1 $2 $3 $4\" = \"run --frozen python scripts/prep39083_deploy.py\"\n",
+        'test "$HTTP_PROXY" = "$http_proxy"\n'
+        'test "$HTTPS_PROXY" = "$https_proxy"\n'
+        'test "$NO_PROXY" = "$no_proxy"\n'
+        'test "$1 $2 $3 $4" = "run --frozen python scripts/prep39083_deploy.py"\n',
         encoding="utf-8",
     )
     fake_uv.chmod(0o755)
@@ -436,3 +566,7 @@ def test_docker_proxy_is_step_local_and_not_an_image_environment() -> None:
     assert "HTTP_PROXY: ${HTTP_PROXY:-}" in compose
     assert "HTTPS_PROXY: ${HTTPS_PROXY:-}" in compose
     assert "NO_PROXY: ${NO_PROXY:-}" in compose
+    web_environment = compose.split("    environment:", 1)[1].split("    depends_on:", 1)[0]
+    assert "HTTP_PROXY: ${HTTP_PROXY:-}" not in web_environment
+    assert "HTTPS_PROXY: ${HTTPS_PROXY:-}" not in web_environment
+    assert "POC_RUNTIME_HTTP_PROXY: ${POC_RUNTIME_HTTP_PROXY:-}" in web_environment

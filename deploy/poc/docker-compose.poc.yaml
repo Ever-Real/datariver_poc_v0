@@ -20,12 +20,12 @@ services:
       # the Node server to listen on every interface inside this container.
       POC_SERVER_HOST: 0.0.0.0
       POC_PUBLIC_ORIGIN: ${POC_PUBLIC_ORIGIN:?POC_PUBLIC_ORIGIN is required}
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
-      NO_PROXY: ${NO_PROXY:-}
-      http_proxy: ${http_proxy:-}
-      https_proxy: ${https_proxy:-}
-      no_proxy: ${no_proxy:-}
+      # Build/toolchain HTTP_PROXY values are intentionally not inherited by Product runtime.
+      # Provider routing is explicit and implemented by the shared pinned Node transport.
+      POC_RUNTIME_HTTP_PROXY: ${POC_RUNTIME_HTTP_PROXY:-}
+      POC_RUNTIME_HTTPS_PROXY: ${POC_RUNTIME_HTTPS_PROXY:-}
+      POC_RUNTIME_NO_PROXY: ${POC_RUNTIME_NO_PROXY:-}
+      POC_RUNTIME_CA_CERT_FILE: ${POC_RUNTIME_CA_CONTAINER_FILE:-}
       POC_AUTH_SESSION_TTL_SECONDS: ${POC_AUTH_SESSION_TTL_SECONDS:-28800}
       POC_AUTH_FAILED_ATTEMPT_LIMIT: ${POC_AUTH_FAILED_ATTEMPT_LIMIT:-5}
       POC_AUTH_LOCK_SECONDS: ${POC_AUTH_LOCK_SECONDS:-900}
@@ -116,6 +116,11 @@ services:
         condition: service_healthy
     networks:
       - poc-services
+    volumes:
+      - type: bind
+        source: ${POC_RUNTIME_CA_BIND_SOURCE:-/dev/null}
+        target: /run/datariver/runtime-ca.pem
+        read_only: true
     read_only: true
     user: "1000:1000"
     cap_drop:

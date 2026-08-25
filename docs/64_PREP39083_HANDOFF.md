@@ -49,11 +49,13 @@ secrets still present in an older `.env.prep` are migrated without modifying tha
 match on later runs.
 
 The deploy command performs source validation, environment/proxy merge, native amd64 preflight,
-39080 observation, Compose validation, exact image build/inspection, local service health,
-idempotent schema initialization, DB credential verification, admin/requested-service bootstrap,
-web health, feature-aware authenticated smoke and final 39080 re-observation. The same command
+39080 observation, Compose validation, exact image build/inspection, read-only external-provider
+preflight, deployment-attempt ownership, local service health, idempotent schema initialization,
+DB credential verification, admin/requested-service bootstrap, web health, staged feature-aware
+authenticated smoke and final 39080 re-observation. The same command
 handles a clean host, an accepted running or stopped stack, an exact-release rerun and a safely
-provable failed first install. It never runs `down -v`, deletes a volume or widens authorization.
+provable failed first install. A failed smoke is resumed by the same command without deleting or
+resetting its owned state. It never runs `down -v`, deletes a volume or widens authorization.
 
 If no administrator exists, the same command prompts for username, hidden password and confirmation.
 If an administrator exists, it prompts only for that administrator's hidden smoke password. The
@@ -64,7 +66,7 @@ Git, log or Evidence.
 
 | File | Owner | Contents | Update behavior |
 |---|---|---|---|
-| `.env.prep` | PREP operator | public origin, proxy, DataHub, Chat, embedding, reranker, optional Studio read-only URL | preserved |
+| `.env.prep` | PREP operator | public origin, build proxy, providers, optional runtime proxy/CA and Studio read-only URL | preserved |
 | `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
 | `.env.prep.optional` | PREP operator | optional Airflow/MinIO, MCL and Grafana settings | absent is valid |
 | `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
@@ -97,10 +99,19 @@ external and are never added to this Compose project.
 
 ## Corporate proxy contract
 
-Enter `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` once in `.env.prep`. The wrapper injects uppercase
-and lowercase variants into `uv` and its child processes. The deployer preserves operator
-`NO_PROXY`, adds `127.0.0.1`, `localhost`, `pgvector`, `redis`, `neo4j` and `web`, and performs the
-host health probe with an explicit proxy bypass.
+`HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are build/toolchain settings. The wrapper injects
+uppercase and lowercase variants into `uv`, Docker build and npm only. The deployer preserves the
+operator build `NO_PROXY`, adds `127.0.0.1`, `localhost`, `pgvector`, `redis`, `neo4j` and `web`, and
+performs the host health probe with an explicit proxy bypass. These generic build values are not
+injected into the running web service.
+
+Product provider routing is separate and explicit. Blank `POC_RUNTIME_HTTP_PROXY` and
+`POC_RUNTIME_HTTPS_PROXY` mean direct DataHub/Chat/Embedding/Reranker connections even when the
+build proxy is configured. When a runtime proxy is required, set those keys and use
+`POC_RUNTIME_NO_PROXY` for exact hosts/IPs, domain suffixes, or optional ports that must stay direct.
+`RUNTIME_CA_CERT_FILE` optionally names one target-local CA bundle; the deployer mounts it read-only
+and never commits it. The pinned Node runtime uses one shared explicit provider transport and never
+disables global TLS verification.
 
 Compose passes Docker's predefined proxy build arguments. The Dockerfile derives npm proxy use
 inside the dependency-installation layer, uses one temporary npmrc, bounds `strict-ssl=false` to
@@ -137,17 +148,30 @@ an existing role.
   install -m 0600 /approved/backup/.env.prep.runtime deploy/prep39083/.env.prep.runtime && ./scripts/prep39083 deploy
   ```
 
-- With no accepted receipt, the deployer uses the PostgreSQL container's local-socket administrator
-  path to inspect every public table and accepts automatic credential reconciliation only when all
-  are empty. A residual Neo4j volume must also be empty and accessible with a preserved runtime or
-  legacy credential. This repair changes only the empty local PostgreSQL role credential, never a
-  volume.
-- Any durable row/node, malformed receipt, missing accepted secret, unknown project service/volume,
-  or state that cannot be proved empty fails closed as
+- With no accepted or attempt receipt, the deployer first checks whether an older handoff produced
+  the exact canonical bootstrap/runtime footprint described below. Otherwise it uses the
+  PostgreSQL container's local-socket administrator path to inspect every public table and accepts
+  automatic credential reconciliation only when all are empty. A non-bootstrap residual Neo4j
+  volume must also be empty and accessible with a preserved runtime or legacy credential. This
+  repair changes only the empty local PostgreSQL role credential, never a volume.
+- Any unowned durable row/node, malformed receipt, missing accepted secret, unknown project
+  service/volume, or state that cannot be proved empty or canonically deployment-owned fails closed as
   `PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY`. The deployer never chooses `down -v`, volume
   removal or database reset.
 
-## Unified target states
+## Retry receipt and unified target states
+
+Immediately before the first deployment-owned persistent mutation, the deployer atomically writes
+ignored mode-0600 `runtime/prep39083/deploy-attempt.json`. It binds Product, Evidence, handoff,
+project, volume identities, K9 mode and an HMAC runtime-config fingerprint without storing any
+secret. Its phase advances through state services, schema, bootstrap, web and smoke. A matching
+unfinished receipt is `EXISTING_OWNED_INCOMPLETE`; the same command reruns idempotent gates and
+reuses the existing admin, service Subjects, credentials and volumes.
+
+Handoffs predating the receipt are recognized only when the existing bootstrap inspector proves
+the exact canonical administrator/MCP/K9 identity shape, no active session or unexpected business
+state, canonical K9 policies/runs, and Neo4j data confined to those managed run namespaces. This
+bounded state is `LEGACY_SELF_BOOTSTRAPPED_PARTIAL`. Any drift remains fail-closed.
 
 The internal state machine is deterministic and does not infer database state from whether a
 container happens to be running:
@@ -157,8 +181,23 @@ container happens to be running:
 | `FRESH_CLEAN` | no receipt, runtime secret, project container, network or volume | generate once, create state services, bootstrap |
 | `EXISTING_ACCEPTED_RUNNING` | valid receipt/runtime plus required volumes; project running | reuse, migrate, reconcile |
 | `EXISTING_ACCEPTED_STOPPED` | valid receipt/runtime plus required volumes; project stopped | reuse, start, migrate, reconcile |
+| `EXISTING_OWNED_INCOMPLETE` | no accepted marker; exact unfinished attempt receipt/runtime/volumes | resume idempotently; preserve all state |
+| `LEGACY_SELF_BOOTSTRAPPED_PARTIAL` | pre-receipt canonical bootstrap/runtime footprint only | bind an attempt receipt and resume |
 | `FAILED_FIRST_INSTALL_RECOVERABLE` | no receipt and all residual durable stores proven empty | non-destructive credential reconcile, then normal deploy |
 | `EXISTING_STATE_AMBIGUOUS` | receipts/secrets/state disagree or durable state exists | fail closed; no automatic mutation |
+
+## Provider preflight and smoke diagnostics
+
+The exact built image performs bounded DataHub, Chat, Embedding and Reranker requests before the
+attempt receipt and any Product-owned durable mutation. A configured Studio DB receives a read-only
+connection/`SELECT 1`; absent Studio configuration remains K9 DEFERRED. These checks use configured
+exact endpoints rather than assuming `/health` or `/models`.
+
+Authenticated smoke emits stage progress and bounded heartbeats instead of hiding a long captured
+subprocess. Failures are classified as DataHub connectivity/auth, K9/semantic readiness, GENERAL
+provider/route, or administrator authentication. Sanitized failure metadata is stored in ignored
+`runtime/prep39083/smoke-failure.json`; it contains no URL, credential, token or response body and
+is superseded by the next successful smoke.
 
 ### Manual Compose inspection
 
