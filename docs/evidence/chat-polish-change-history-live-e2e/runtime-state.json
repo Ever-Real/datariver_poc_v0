@@ -1,0 +1,78 @@
+{
+  "captured_at": "2026-08-25T23:37:13Z",
+  "baseline": {
+    "product": "ed5d5a6e37d509ede85c3c3bd58f331fd8117306",
+    "evidence": "3d0ba51b5d0d758739c83e6acd4bbea666c2f8db",
+    "handoff": "8a7125ad46367f617e1194a9505ada1798a239ad"
+  },
+  "product": "a09cd4cb47db7bb31f608dfd94c61f34844d33af",
+  "runtime": {
+    "oci_revision": "a09cd4cb47db7bb31f608dfd94c61f34844d33af",
+    "architecture": "amd64",
+    "health": "healthy",
+    "port_39083_http": 200,
+    "port_39090_http": 200,
+    "prep_executed": false,
+    "ops_executed": false
+  },
+  "historical_rca": {
+    "original_total": 73,
+    "original_schema": 17,
+    "original_metadata": 56,
+    "active_exact_mapping_before_e2e": 0,
+    "cause": "governed disposable mapping cleanup; append-only events retained",
+    "authorization_widened": false
+  },
+  "live_e2e": {
+    "source_identity_hash": "9f26d351b6009dce2510e4d0f190e0295c0c06ff0a7db6840c30a0da3dc4caaa",
+    "source_partition": 0,
+    "first_exact_offset": 71701,
+    "next_offset": 71826,
+    "acceptance_rows": 16,
+    "authorized_schema_rows": 7,
+    "authorized_metadata_rows": 9,
+    "cleanup_rows": 4,
+    "final_source_rows": 20,
+    "final_global_rows": 93,
+    "observed_aspects": {
+      "datasetProperties": 3,
+      "domains": 1,
+      "editableSchemaMetadata": 1,
+      "globalTags": 2,
+      "glossaryTerms": 2,
+      "schemaMetadata": 7,
+      "status": 4
+    },
+    "fake_ledger_insert": false,
+    "direct_mapping_insert": false,
+    "source_schema_remaining": 0,
+    "active_exact_mapping_remaining": 0
+  },
+  "cleanup": {
+    "credential_disabled": true,
+    "relogin_http": 401,
+    "revoked_sessions": 1,
+    "active_test_sessions": 0,
+    "temporary_runtime_files": 0,
+    "temporary_source_objects": 0,
+    "browser_instances": 0
+  },
+  "tests": {
+    "focused_node": "50/50 PASS",
+    "node_full": "130/130 PASS",
+    "focused_ui": "49/49 PASS",
+    "ui_full": "90 files / 661 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "build_poc": "PASS",
+    "ruff_lint": "PASS",
+    "strict_mypy": "588 files PASS",
+    "static": "PASS",
+    "prep_contract": "35/35 PASS",
+    "prep_smoke": "3/3 PASS",
+    "prep_state_machine_docker": "PASS",
+    "prep_smoke_retry_docker": "PASS"
+  },
+  "browser_acceptance": "FINAL_BROWSER_ACCEPTANCE_SURFACE_UNAVAILABLE"
+}
