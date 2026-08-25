@@ -155,6 +155,14 @@ export interface CatalogSearch {
   match_mode: 'ALL'
 }
 
+export interface CatalogLocate {
+  asset_id: string
+  item_index: number
+  page_index: number
+  cursors: Array<string | null>
+  meta: CatalogPolicyMeta
+}
+
 export interface CatalogFacets {
   asset_types: Array<{ value?: string | null; count: number }>
   platforms: Array<{ value?: string | null; count: number }>
@@ -1365,6 +1373,20 @@ export interface ChatEvidence {
   extraction_method: string
   rank: number
   retrieval_method: string
+  graph_nodes?: Array<{
+    id: string
+    label: string
+    entity_type: string
+    role: 'ROOT' | 'UPSTREAM' | 'DOWNSTREAM' | 'NEUTRAL'
+    source_locator: string
+  }>
+  graph_edges?: Array<{
+    id: string
+    source: string
+    target: string
+    relation_type: string
+    source_locator: string
+  }>
 }
 
 export interface ChatMessage {

@@ -10,6 +10,7 @@ import type {
   AdminOperation,
   CatalogAsset,
   CatalogAssetDetail,
+  CatalogLocate,
   CatalogPolicyMeta,
   CatalogSearch,
   ChangeRequestRecord,
@@ -1505,6 +1506,22 @@ async function liveCatalog(
   })
 }
 
+async function liveCatalogLocate(
+  assetId: string,
+  limit: number,
+  signal?: AbortSignal | null,
+): Promise<CatalogLocate> {
+  const parameters = new URLSearchParams({
+    asset_id: assetId,
+    q: '*',
+    limit: String(Math.min(100, Math.max(1, limit))),
+    search_fields: 'SCHEMA,TABLE,COLUMN,TAG,TERM,DESCRIPTION',
+  })
+  return gatewayRequest(`/poc-api/datahub/catalog/locate?${parameters.toString()}`, {
+    ...(signal ? { signal } : {}),
+  })
+}
+
 async function managerVisibleRegistrationUrns(
   urns: string[],
   signal?: AbortSignal,
@@ -2052,6 +2069,37 @@ class PocApiClient {
             item.retrieval_method,
             runtimeFlags().llmReranker ? 'RERANKED' : 'DATAHUB_SEARCH',
           ),
+          graph_nodes: Array.isArray(item.graph_nodes) ? item.graph_nodes.flatMap((node) => {
+            if (!node || typeof node !== 'object') return []
+            const value = node as Record<string, unknown>
+            const id = responseString(value.id, '')
+            if (!id) return []
+            const role = ['ROOT', 'UPSTREAM', 'DOWNSTREAM', 'NEUTRAL'].includes(String(value.role))
+              ? String(value.role) as 'ROOT' | 'UPSTREAM' | 'DOWNSTREAM' | 'NEUTRAL'
+              : 'NEUTRAL'
+            return [{
+              id,
+              label: responseString(value.label, id),
+              entity_type: responseString(value.entity_type, 'ENTITY'),
+              role,
+              source_locator: responseString(value.source_locator, id),
+            }]
+          }) : undefined,
+          graph_edges: Array.isArray(item.graph_edges) ? item.graph_edges.flatMap((edge) => {
+            if (!edge || typeof edge !== 'object') return []
+            const value = edge as Record<string, unknown>
+            const id = responseString(value.id, '')
+            const source = responseString(value.source, '')
+            const target = responseString(value.target, '')
+            if (!id || !source || !target) return []
+            return [{
+              id,
+              source,
+              target,
+              relation_type: responseString(value.relation_type, 'RELATED_TO'),
+              source_locator: responseString(value.source_locator, id),
+            }]
+          }) : undefined,
         }
       }))
       const messages = chatMessages.get(sessionId) ?? []
@@ -2263,6 +2311,14 @@ class PocApiClient {
         })
       }
       return catalogTree(url, [])
+    }
+    if (path === '/catalog/assets/locate') {
+      const assetId = url.searchParams.get('asset_id') ?? ''
+      const limit = Number(url.searchParams.get('limit') ?? 50)
+      if (runtimeFlags().datahub && assetId.startsWith('urn:li:')) {
+        return liveCatalogLocate(assetId, limit, options.signal)
+      }
+      throw new Error(`DataHub 검색 결과 위치를 확인할 수 없는 자산입니다: ${assetId}`)
     }
     if (path.endsWith('/lineage') && path.startsWith('/catalog/assets/')) {
       const assetId = decodeURIComponent(path.split('/')[3] ?? '')

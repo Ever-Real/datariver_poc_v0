@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PencilLine, UploadCloud } from 'lucide-react'
+import { History, PencilLine, UploadCloud } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type {
   CatalogAssetDetail,
@@ -13,7 +13,7 @@ import { RegistrationBulkWorkbench } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 import { RegistrationRecentPanel } from './RegistrationRecentPanel'
 
-type RegistrationMode = 'MANUAL' | 'BULK'
+type RegistrationMode = 'MANUAL' | 'BULK' | 'HISTORY'
 
 const MANUAL_FIELD_PAGE_SIZE = 100
 
@@ -80,7 +80,10 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
       { signal: controller.signal },
     )
       .then((value) => {
-        if (active) setCapability(value)
+        if (active) {
+          if (!value.eligible) setMode('HISTORY')
+          setCapability(value)
+        }
       })
       .catch((error: unknown) => {
         if (active && !controller.signal.aborted) setCapabilityError(error)
@@ -153,11 +156,9 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
           description="활성 상태의 Data Steward, Manager 또는 Admin만 등록 상태를 조회할 수 있습니다."
         />
       ) : (
-        <div className="registration-workspace-shell">
+        <div className="registration-workspace-shell registration-workspace-tabs">
           <div className="registration-workspace-main">
-            {capability.eligible ? (
-              <>
-                <div className="registration-mode-tabs" role="tablist" aria-label="등록 방식">
+            <div className="registration-mode-tabs" role="tablist" aria-label="등록 방식">
                   <button
                     type="button"
                     role="tab"
@@ -166,6 +167,7 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
                     aria-selected={mode === 'MANUAL'}
                     tabIndex={mode === 'MANUAL' ? 0 : -1}
                     className={mode === 'MANUAL' ? 'active' : ''}
+                    disabled={!capability.eligible}
                     onClick={() => setMode('MANUAL')}
                     title="단건 검토"
                   ><PencilLine size={13} />MANUAL</button>
@@ -177,12 +179,36 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
                     aria-selected={mode === 'BULK'}
                     tabIndex={mode === 'BULK' ? 0 : -1}
                     className={mode === 'BULK' ? 'active' : ''}
+                    disabled={!capability.eligible}
                     onClick={() => setMode('BULK')}
                     title="일괄 등록"
                   ><UploadCloud size={13} />BULK</button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="registration-history-tab"
+                    aria-controls="registration-history-panel"
+                    aria-selected={mode === 'HISTORY'}
+                    tabIndex={mode === 'HISTORY' ? 0 : -1}
+                    className={mode === 'HISTORY' ? 'active' : ''}
+                    onClick={() => setMode('HISTORY')}
+                    title="등록 실행 이력"
+                  ><History size={13} />HISTORY</button>
                 </div>
 
-                {mode === 'MANUAL' ? (
+                {mode === 'HISTORY' ? (
+                  <div id="registration-history-panel" role="tabpanel" aria-labelledby="registration-history-tab">
+                    <RegistrationRecentPanel
+                      client={client}
+                      canViewWorkspaceHistory={capability.can_view_workspace_history}
+                    />
+                  </div>
+                ) : !capability.eligible ? (
+                  <GovernedUnavailable
+                    title="등록관리 조회 전용"
+                    description="Manager는 HISTORY에서 접근 가능한 준비·성공·실패 상태를 확인할 수 있지만 Manual/Bulk 실행과 변경요청 생성은 할 수 없습니다."
+                  />
+                ) : mode === 'MANUAL' ? (
                   <div className="registration-manual-workbench" id="registration-manual-panel" role="tabpanel" aria-labelledby="registration-manual-tab">
                     <CatalogResourceTree
                       client={client}
@@ -218,18 +244,7 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
                     <RegistrationBulkWorkbench client={client} />
                   </div>
                 )}
-              </>
-            ) : (
-              <GovernedUnavailable
-                title="등록관리 조회 전용"
-                description="Manager는 접근 가능한 대상의 준비·성공·실패 상태를 확인할 수 있지만 Manual/Bulk 실행과 변경요청 생성은 할 수 없습니다."
-              />
-            )}
           </div>
-          <RegistrationRecentPanel
-            client={client}
-            canViewWorkspaceHistory={capability.can_view_workspace_history}
-          />
         </div>
       )}
     </section>

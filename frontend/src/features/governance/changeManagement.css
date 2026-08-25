@@ -66,7 +66,11 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  margin-bottom: 16px;
+  min-height: 48px;
+  margin: 0;
+  border-bottom: 2px solid var(--blue-700);
+  padding: 7px 10px;
+  background: #f3f5f6;
 }
 
 .governance-combined-header h2,
@@ -88,31 +92,81 @@
   justify-content: flex-end;
 }
 
+.governance-page-actions > .button,
+.governance-date-range {
+  min-height: 32px;
+  box-sizing: border-box;
+}
+
 .governance-date-range {
   display: flex;
-  align-items: end;
+  align-items: center;
   gap: 6px;
   border: 1px solid var(--line-300);
-  padding: 5px 7px;
+  padding: 3px 7px;
   background: white;
 }
 
 .governance-date-range label {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   color: var(--text-500);
   font-size: 9px;
   font-weight: 900;
 }
 
 .governance-date-range input {
-  min-height: 26px;
+  height: 24px;
   border: 0;
   padding: 0;
   color: var(--text-700);
   background: transparent;
   font: inherit;
 }
+
+.governance-combined-overview,
+.governance-detected-panel {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  background: #fff;
+}
+
+.governance-combined-overview .governance-status-overview {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.governance-detected-disclosure {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-bottom: 2px solid var(--blue-700);
+  padding: 7px 10px;
+  color: var(--navy-900);
+  text-align: left;
+  background: #f3f5f6;
+}
+
+.governance-detected-disclosure > span:last-child { min-width: 0; display: grid; gap: 1px; }
+.governance-detected-disclosure strong { font-size: 13px; }
+.governance-detected-disclosure small { overflow: hidden; color: var(--text-500); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.governance-detected-disclosure:hover,
+.governance-detected-disclosure:focus-visible { background: var(--blue-100); }
+.governance-detected-panel > div { padding: 10px; }
+
+.governance-toolbar,
+.governance-combined-overview,
+.governance-detected-panel,
+.governance-list-panel { font-size: 13px; }
+
+.governance-status-overview td { font-size: 13px; }
 
 .governance-event-count {
   border: 0;

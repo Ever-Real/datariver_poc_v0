@@ -126,6 +126,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('state.write', 'PUT', /^\/poc-api\/state\/(core|knowledge|governance)$/, 'CAPABILITY_PROTECTED', null),
   route('providers.capabilities', 'GET', /^\/poc-api\/capabilities$/, 'CAPABILITY_PROTECTED', 'monitoring.read'),
   route('catalog.search', 'GET', /^\/poc-api\/datahub\/catalog$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
+  route('catalog.locate', 'GET', /^\/poc-api\/datahub\/catalog\/locate$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.tree', 'GET', /^\/poc-api\/datahub\/tree$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.facets', 'GET', /^\/poc-api\/datahub\/facets$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.dashboard', 'GET', /^\/poc-api\/datahub\/dashboard$/, 'CAPABILITY_PROTECTED', 'catalog.read'),

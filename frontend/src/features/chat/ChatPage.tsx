@@ -9,16 +9,20 @@ import {
 } from 'react'
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Database,
   History,
   MessageSquarePlus,
+  Pencil,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightOpen,
   Route,
   Send,
   Sparkles,
+  Square,
   Star,
   Trash2,
 } from 'lucide-react'
@@ -32,7 +36,8 @@ import type {
   ChatSession,
   ChatWorkflowStep,
 } from '../../api/types'
-import { AccordionItem } from '../../components/common/Accordion'
+import { CytoscapeReadGraph } from '../../components/graph/CytoscapeReadGraph'
+import type { ReadGraphModel } from '../../components/graph/CytoscapeGraphAdapter'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { ChatRouteMenu, type ChatRouteOption } from './ChatRouteMenu'
@@ -89,6 +94,7 @@ interface ChatViewMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
+  fullText?: string
   evidence?: ChatEvidence[]
   route?: ChatRouteDecision
   workflow?: ChatWorkflowStep[]
@@ -177,6 +183,39 @@ function isKnowledgeEvidence(item: ChatEvidence): boolean {
   return item.source_type.startsWith('KNOWLEDGE_ASSET_')
 }
 
+function authorizedEvidenceGraph(evidence: ChatEvidence[]): ReadGraphModel | undefined {
+  const nodes = new Map<string, NonNullable<ChatEvidence['graph_nodes']>[number]>()
+  const edges = new Map<string, NonNullable<ChatEvidence['graph_edges']>[number]>()
+  for (const item of evidence) {
+    for (const node of item.graph_nodes ?? []) nodes.set(node.id, node)
+    for (const edge of item.graph_edges ?? []) edges.set(edge.id, edge)
+  }
+  if (!nodes.size) return undefined
+  const visibleEdges = [...edges.values()].filter((edge) => nodes.has(edge.source) && nodes.has(edge.target))
+  const rootId = [...nodes.values()].find((node) => node.role === 'ROOT')?.id
+  return {
+    kind: 'LINEAGE',
+    rootId,
+    nodes: [...nodes.values()].map((node) => ({
+      id: node.id,
+      label: node.label,
+      entityType: node.entity_type,
+      role: node.role,
+      properties: { source_locator: node.source_locator },
+      provenance: [{ source_locator: node.source_locator }],
+    })),
+    edges: visibleEdges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.relation_type,
+      relationType: edge.relation_type,
+      properties: { source_locator: edge.source_locator },
+      provenance: [{ source_locator: edge.source_locator }],
+    })),
+  }
+}
+
 export function ChatPage({ client }: { client: ApiClient }) {
   const [question, setQuestion] = useState('')
   const [mode, setMode] = useState<ChatMode>('AUTO')
@@ -202,6 +241,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const chatLogRef = useRef<HTMLDivElement | null>(null)
   const messageElementsRef = useRef(new Map<string, HTMLElement>())
   const answerFocusEnabledRef = useRef(false)
+  const activeRequestRef = useRef<AbortController | undefined>(undefined)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const refreshSessions = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -214,6 +255,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     const controller = new AbortController()
+    activeRequestRef.current?.abort()
     historyRequestVersion.current += 1
     setSessions([])
     setSessionId(undefined)
@@ -226,8 +268,23 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setRevealingMessageId(undefined)
     answerFocusEnabledRef.current = false
     void refreshSessions(controller.signal)
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      activeRequestRef.current?.abort()
+    }
   }, [client, refreshSessions])
+
+  useEffect(() => {
+    const textarea = composerRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const computed = getComputedStyle(textarea)
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 18
+    const verticalPadding = Number.parseFloat(computed.paddingTop) + Number.parseFloat(computed.paddingBottom)
+    const maximumHeight = lineHeight * 6 + verticalPadding
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maximumHeight)}px`
+    textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? 'auto' : 'hidden'
+  }, [question])
 
   const latestAssistant = useMemo(() => lastAssistant(messages), [messages])
   const selectedAssistant = useMemo(
@@ -248,6 +305,12 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const visibleEvidence = useMemo(
     () => [...(visibleAssistant?.evidence ?? [])].sort((left, right) => left.rank - right.rank),
     [visibleAssistant],
+  )
+  const visibleEvidenceGraph = useMemo(
+    () => visibleAssistant?.route?.selected_mode === 'GRAPH'
+      ? authorizedEvidenceGraph(visibleEvidence)
+      : undefined,
+    [visibleAssistant?.route?.selected_mode, visibleEvidence],
   )
   const visibleSessions = useMemo(
     () => historyTab === 'FAVORITES'
@@ -280,6 +343,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   }
 
   const startNewSession = useCallback(() => {
+    activeRequestRef.current?.abort()
     historyRequestVersion.current += 1
     setSessionId(undefined)
     setQuestion('')
@@ -343,11 +407,17 @@ export function ChatPage({ client }: { client: ApiClient }) {
     const label = message.role === 'user' ? '질문' : '답변'
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
-      await navigator.clipboard.writeText(message.text)
+      await navigator.clipboard.writeText(message.fullText ?? message.text)
       setCopyFeedback({ messageId: message.id, status: 'SUCCESS', label })
     } catch {
       setCopyFeedback({ messageId: message.id, status: 'FAILED', label })
     }
+  }
+
+  const editQuestion = (message: ChatViewMessage) => {
+    if (message.role !== 'user') return
+    setQuestion(message.text)
+    requestAnimationFrame(() => composerRef.current?.focus())
   }
 
   const selectAssistantEvidence = (message: ChatViewMessage) => {
@@ -358,6 +428,12 @@ export function ChatPage({ client }: { client: ApiClient }) {
 
   const cancelAnswerFocus = useCallback(() => {
     answerFocusEnabledRef.current = false
+  }, [])
+
+  const syncAnswerFocus = useCallback(() => {
+    const log = chatLogRef.current
+    if (!log) return
+    answerFocusEnabledRef.current = log.scrollHeight - log.scrollTop - log.clientHeight <= 56
   }, [])
 
   useEffect(() => {
@@ -373,11 +449,26 @@ export function ChatPage({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     if (!revealingMessageId) return undefined
-    const timeout = window.setTimeout(() => setRevealingMessageId((current) => (
-      current === revealingMessageId ? undefined : current
-    )), 520)
+    const message = messages.find((item) => item.id === revealingMessageId)
+    if (!message?.fullText || message.text === message.fullText) {
+      setRevealingMessageId((current) => current === revealingMessageId ? undefined : current)
+      return undefined
+    }
+    const chunkSize = Math.max(18, Math.ceil(message.fullText.length / 18))
+    const timeout = window.setTimeout(() => {
+      setMessages((current) => current.map((item) => item.id === revealingMessageId && item.fullText
+        ? { ...item, text: item.fullText.slice(0, Math.min(item.fullText.length, item.text.length + chunkSize)) }
+        : item))
+    }, 28)
     return () => window.clearTimeout(timeout)
-  }, [revealingMessageId])
+  }, [messages, revealingMessageId])
+
+  const stopAnswer = () => {
+    activeRequestRef.current?.abort()
+    activeRequestRef.current = undefined
+    setLoading(false)
+    setLiveWorkflow([])
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -395,6 +486,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setLiveWorkflow([])
     setRevealingMessageId(undefined)
     answerFocusEnabledRef.current = true
+    const controller = new AbortController()
+    activeRequestRef.current = controller
     try {
       const result = await client.requestEventStream<ChatResponse>(
         '/chat/query/stream',
@@ -406,6 +499,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
             maximum_evidence: 5,
             mode,
           }),
+          signal: controller.signal,
         },
         (event) => {
           const step = event.data
@@ -425,7 +519,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
         {
           id: result.response_message_id,
           role: 'assistant',
-          text: result.answer,
+          text: '',
+          fullText: result.answer,
           evidence: result.evidence,
           route: result.route,
           workflow: result.workflow,
@@ -434,10 +529,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setEvidenceCollapsed(false)
       await refreshSessions()
     } catch (next) {
-      setMessages((current) => current.filter((message) => message.id !== pendingMessageId))
-      setQuestion(text)
-      setError(next)
+      if (controller.signal.aborted || (next instanceof DOMException && next.name === 'AbortError')) {
+        setError(undefined)
+      } else {
+        setMessages((current) => current.filter((message) => message.id !== pendingMessageId))
+        setQuestion(text)
+        setError(next)
+      }
     } finally {
+      if (activeRequestRef.current === controller) activeRequestRef.current = undefined
       setLoading(false)
     }
   }
@@ -601,8 +701,11 @@ export function ChatPage({ client }: { client: ApiClient }) {
               }
             }}
             onPointerDown={cancelAnswerFocus}
+            onScroll={syncAnswerFocus}
             onTouchStart={cancelAnswerFocus}
-            onWheel={cancelAnswerFocus}
+            onWheel={(event) => {
+              if (event.deltaY < 0) cancelAnswerFocus()
+            }}
             ref={chatLogRef}
             tabIndex={0}
           >
@@ -637,7 +740,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   >
                     <SafeMarkdown value={message.text} />
                   </div>
-                ) : <p className="chat-question-text">{message.text}</p>}
+                ) : <div className="chat-user-bubble"><p className="chat-question-text">{message.text}</p></div>}
                 <footer>
                   {message.role === 'assistant' && (
                     <button
@@ -658,6 +761,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
                       : <Copy size={12} />}
                     복사
                   </button>
+                  {message.role === 'user' && (
+                    <button
+                      aria-label="질문을 입력창에서 편집"
+                      onClick={() => editQuestion(message)}
+                      type="button"
+                    >
+                      <Pencil size={12} />메시지 편집
+                    </button>
+                  )}
                 </footer>
               </article>
             ))}
@@ -697,6 +809,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 onChange={(event) => setQuestion(event.target.value.slice(0, maximumQuestionCharacters))}
                 onKeyDown={submitOnEnter}
                 placeholder="예: 고객 주문 데이터는 어떤 테이블에 있나요?"
+                ref={composerRef}
+                rows={1}
                 value={question}
               />
               <span className="chat-question-meta">
@@ -704,14 +818,25 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 <small aria-live="polite" id="chat-question-count">{question.length.toLocaleString()} / {maximumQuestionCharacters.toLocaleString()}</small>
               </span>
             </div>
-            <button
-              aria-label={loading ? '응답 대기 중' : '질문 전송'}
-              className="chat-send-button"
-              disabled={loading || question.trim().length < 2}
-              type="submit"
-            >
-              <Send size={17} />
-            </button>
+            {loading ? (
+              <button
+                aria-label="답변 생성 중지"
+                className="chat-send-button chat-stop-button"
+                onClick={stopAnswer}
+                type="button"
+              >
+                <Square size={15} />
+              </button>
+            ) : (
+              <button
+                aria-label="질문 전송"
+                className="chat-send-button"
+                disabled={question.trim().length < 2}
+                type="submit"
+              >
+                <Send size={17} />
+              </button>
+            )}
           </form>
         </main>
 
@@ -764,13 +889,32 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 </div>
                 <ChatWorkflowRail isStreaming={loading} steps={visibleWorkflow} />
               </section>
-              <AccordionItem
-                expanded={evidenceExpanded}
-                itemId="citations"
-                onToggle={() => setEvidenceExpanded((value) => !value)}
-                summary={`${visibleEvidence.length} items`}
-                title="인가된 인용 근거"
-              >
+              {visibleEvidenceGraph && (
+                <section className="chat-graph-evidence" aria-label="답변에 사용된 인가 그래프 근거">
+                  <div className="chat-evidence-section-heading">
+                    <span>Authorized graph evidence</span>
+                    <small>{visibleEvidenceGraph.nodes.length} nodes · {visibleEvidenceGraph.edges.length} edges</small>
+                  </div>
+                  <CytoscapeReadGraph
+                    ariaLabel="답변에 사용된 인가 그래프"
+                    boundNotice="답변 생성에 실제 사용된 권한 내 bounded subgraph입니다."
+                    graph={visibleEvidenceGraph}
+                    height={250}
+                  />
+                </section>
+              )}
+              <section className="chat-citation-section">
+                <button
+                  aria-expanded={evidenceExpanded}
+                  className="chat-citation-header"
+                  onClick={() => setEvidenceExpanded((value) => !value)}
+                  type="button"
+                >
+                  <span>인가된 인용 근거</span>
+                  <small>{visibleEvidence.length} items</small>
+                  {evidenceExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+                {evidenceExpanded && (
                 <ol className="chat-evidence-list">
                   {visibleEvidence.map((item) => {
                     const description = evidenceDescriptionForDisplay(item.description)
@@ -808,7 +952,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
                     </li>
                   )}
                 </ol>
-              </AccordionItem>
+                )}
+              </section>
             </div>
           )}
         </aside>

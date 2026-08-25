@@ -270,10 +270,16 @@ describe('GovernancePage', () => {
 
     const combined = screen.getByRole('region', { name: '현재 권한과 기간의 스키마별 변경 현황' })
       .closest('.governance-combined-overview')
-    expect(combined).toHaveAccessibleName('CR 및 감지 변경 현황')
+    expect(combined).toHaveAccessibleName('통합 변경 현황')
     expect(within(combined as HTMLElement).queryByTestId('detected-change-cr-panel')).not.toBeInTheDocument()
     fireEvent.click(within(combined as HTMLElement).getByRole('button', { name: 'Monitoring Dashboard' }))
     expect(onNavigate).toHaveBeenCalledWith('monitoring')
+    const disclosure = screen.getByRole('button', { name: /감지 변경과 CR 연결/ })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('detected-change-history-panel')).not.toBeInTheDocument()
+    fireEvent.click(disclosure)
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByTestId('detected-change-history-panel')).toBeInTheDocument()
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
   })
 

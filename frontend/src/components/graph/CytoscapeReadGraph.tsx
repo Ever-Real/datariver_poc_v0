@@ -817,7 +817,8 @@ export function CytoscapeReadGraph({
         >{entityType}</span>)}
       </div>
       {graph.nodes.length > 0 && <details className="cy-read-graph-entity-list">
-        <summary>접근 가능한 bounded entity 목록 · {graph.nodes.length}</summary>
+        <summary>권한 범위의 그래프 개체 · 현재 {graph.nodes.length}개{boundNotice ? ' · 조회 제한 적용' : ''}</summary>
+        <p>서버가 현재 권한을 확인한 뒤 이 화면에 제한된 범위로 제공한 개체입니다. 유형·근거를 확인하거나 상세 및 2-level 확장 기능을 사용할 수 있습니다.</p>
         <ul>{graph.nodes.map((node) => <li key={node.id}>
           {onActivateNode && <button aria-label={`${node.label} 상세 열기`} onClick={() => onActivateNode(node.id)} type="button"><strong>{node.label}</strong><span>{node.entityType}</span></button>}
           <button aria-label={`${node.label}, ${node.entityType} 선택 · 근거 ${node.provenance.length}`} aria-pressed={node.id === internalSelectedId} onClick={() => selectNode(node.id)} type="button">선택</button>

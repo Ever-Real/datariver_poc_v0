@@ -7,6 +7,7 @@ import type {
   CatalogAsset,
   CatalogAssetDetail,
   CatalogFacets,
+  CatalogLocate,
   CatalogSearch,
   CatalogSuggestion,
   CatalogSuggestions,
@@ -117,6 +118,15 @@ export function CatalogPage({
   const workspaceRef = useRef<HTMLDivElement>(null)
   const initialQueryRef = useRef(initialQuery)
   const hasSearchTargets = filters.searchFields.length > 0
+  const isDefaultResultState = query.trim() === ''
+    && filters.assetType === ''
+    && filters.platform === ''
+    && filters.databaseName === ''
+    && filters.schemaName === ''
+    && filters.domain === ''
+    && filters.classification === ''
+    && filters.lifecycle === ''
+    && filters.searchFields.length === allSearchFields.length
 
   useEffect(() => {
     if (initialQueryRef.current === initialQuery) return
@@ -166,6 +176,24 @@ export function CatalogPage({
     gcTime: 10 * 60 * 1000,
   })
 
+  const { data: treeLocation, error: treeLocationError } = useQuery({
+    queryKey: ['catalog', 'asset-location', treeAssetId, pageSize],
+    queryFn: async ({ signal }) => client.request<CatalogLocate>(
+      `/catalog/assets/locate?asset_id=${encodeURIComponent(treeAssetId ?? '')}&limit=${pageSize}`,
+      { signal },
+    ),
+    enabled: Boolean(treeAssetId && isDefaultResultState),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+
+  useEffect(() => {
+    if (!treeAssetId || treeLocation?.asset_id !== treeAssetId) return
+    setCursors(treeLocation.cursors.map((cursor) => cursor ?? undefined))
+    setPageIndex(treeLocation.page_index)
+  }, [treeAssetId, treeLocation])
+
   useEffect(() => {
     if (!treeAssetId || !treeAsset) return
     if (treeAsset.id !== treeAssetId) {
@@ -177,12 +205,7 @@ export function CatalogPage({
     setSelectedAssetId(treeAsset.id)
   }, [treeAsset, treeAssetId])
 
-  const resolvedTreeAsset = treeAsset?.id === treeAssetId ? treeAsset : undefined
-  const displayedItems = resolvedTreeAsset
-    ? [resolvedTreeAsset]
-    : hasSearchTargets
-      ? result?.items ?? []
-      : []
+  const displayedItems = hasSearchTargets ? result?.items ?? [] : []
 
   const qualityAssetIds = useMemo(() => {
     return hasSearchTargets ? result?.items.map((item) => item.id) ?? [] : []
@@ -280,8 +303,8 @@ export function CatalogPage({
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
     { id: 'number', header: 'No', size: 36, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
     { accessorKey: 'asset_type', header: 'Type', size: 76, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
-    { accessorKey: 'platform', header: 'Platform', size: 60, cell: ({ row }) => optionalTableText(row.original.platform) },
-    { accessorKey: 'database_name', header: 'Database', size: 68, cell: ({ row }) => optionalTableText(row.original.database_name) },
+    { accessorKey: 'platform', header: 'Platform', size: 84, cell: ({ row }) => optionalTableText(row.original.platform) },
+    { accessorKey: 'database_name', header: 'Database', size: 92, cell: ({ row }) => optionalTableText(row.original.database_name) },
     { accessorKey: 'schema_name', header: 'Schema', size: 68, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
     {
@@ -410,8 +433,8 @@ export function CatalogPage({
     page: pageIndex + 1,
     pageSize,
     pageSizeOptions: [25, 50, 100],
-    canPrevious: hasSearchTargets && !resolvedTreeAsset && pageIndex > 0,
-    canNext: hasSearchTargets && !resolvedTreeAsset && Boolean(result?.page.next_cursor),
+    canPrevious: hasSearchTargets && pageIndex > 0,
+    canNext: hasSearchTargets && Boolean(result?.page.next_cursor),
     itemCount: displayedItems.length,
     onPrevious: () => {
       setTreeAssetId(undefined); setSelectedAssetId(undefined); setFocusedAssetId(undefined)
@@ -480,16 +503,24 @@ export function CatalogPage({
         />
       </div>
     </div>
-    <ErrorNotice error={error ?? treeAssetError} />
+    <ErrorNotice error={error ?? treeAssetError ?? treeLocationError} />
     {/* 오버레이 모드: catalog-workspace는 2컬럼 공유, 상세 창은 fixed overlay로 뜸 */}
     <div
       className="catalog-workspace"
       ref={workspaceRef}
       aria-busy={loading || treeAssetLoading}
     >
-      <CatalogResourceTree client={client} selectedAssetId={focusedAssetId} onSelectAsset={focusTreeAsset} />
+      <CatalogResourceTree
+        client={client}
+        selectedAssetId={focusedAssetId}
+        onSelectAsset={focusTreeAsset}
+        onRefresh={() => {
+          void queryClient.invalidateQueries({ queryKey: ['catalog', 'assets'] })
+          void queryClient.invalidateQueries({ queryKey: ['catalog', 'facets'] })
+        }}
+      />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{resolvedTreeAsset ? '정확히 선택된 1 item' : hasSearchTargets && result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{hasSearchTargets && result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={displayedItems} getRowId={(item) => item.id} loading={(hasSearchTargets && loading) || treeAssetLoading} emptyMessage={!hasSearchTargets ? '검색 대상을 하나 이상 선택하세요.' : query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={focusedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {displayedItems.length.toLocaleString()}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />

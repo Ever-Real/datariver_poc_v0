@@ -713,6 +713,13 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   const second = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=evidence&limit=1&cursor=${encodeURIComponent(first.page.next_cursor)}`)).json()
   assert.equal(second.items[0].name, 'wafer_events')
   assert.equal(second.page.next_cursor, null)
+  const located = await (await fetch(
+    `${pocOrigin}/poc-api/datahub/catalog/locate?asset_id=${encodeURIComponent(second.items[0].id)}&q=*&search_fields=SCHEMA%2CTABLE%2CCOLUMN%2CTAG%2CTERM%2CDESCRIPTION&limit=1`,
+  )).json()
+  assert.equal(located.asset_id, second.items[0].id)
+  assert.equal(located.page_index, 1)
+  assert.equal(located.cursors.length, 2)
+  assert.ok(located.cursors[1])
   const inventoryRequest = requests.find((request) => (
     request.path === '/api/graphql' && request.body.includes('DataRiverPocCatalogEmbeddingInventory')
   ))
@@ -726,6 +733,8 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   const root = await (await fetch(`${pocOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=100`)).json()
   assert.deepEqual(root.items.map((item) => item.label), ['postgres'])
   assert.equal(root.items[0].asset_count, 2)
+  const refreshedRoot = await (await fetch(`${pocOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=100&refresh=true`)).json()
+  assert.deepEqual(refreshedRoot.items.map((item) => item.label), ['postgres'])
   const dashboard = await (await fetch(`${pocOrigin}/poc-api/datahub/dashboard`)).json()
   assert.equal(dashboard.catalog_asset_count, 2)
   const coverage = await (await fetch(`${pocOrigin}/poc-api/datahub/profile-coverage`)).json()
@@ -1782,6 +1791,12 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     assert.equal(mainChat.route.knowledge_scope.policy_id, 'knowledge-k7-policy')
     assert.equal(mainChat.evidence.filter((item) => item.evidence_type === 'KNOWLEDGE_ASSET_NODE').length, 2)
     assert.equal(mainChat.evidence.filter((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION').length, 1)
+    assert.equal(mainChat.evidence.flatMap((item) => item.graph_nodes || []).length, 2)
+    assert.equal(mainChat.evidence.flatMap((item) => item.graph_edges || []).length, 1)
+    assert.deepEqual(
+      mainChat.evidence.flatMap((item) => item.graph_edges || []).map((edge) => [edge.source, edge.target]),
+      [[snapshot.edges[0].source_id, snapshot.edges[0].target_id]],
+    )
     assert.ok(mainChat.evidence.every((item) => item.source_locator.includes(tableUrn)))
     assert.equal(
       mainChat.workflow.find((step) => step.stage === 'CITATION_VALIDATION')?.detail_code,

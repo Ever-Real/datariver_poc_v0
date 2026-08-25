@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Box, ChevronDown, ChevronRight, Database, Layers3, Table2 } from 'lucide-react'
+import { Box, ChevronDown, ChevronRight, Database, Layers3, RefreshCw, Table2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAsset, CatalogSearch, CatalogTreeNode, CatalogTreePage } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -76,6 +76,7 @@ export function CatalogResourceTree({
   searchable = false,
   searchIdPrefix = 'resource-tree',
   searchLabel = 'Resource Tree 검색',
+  onRefresh,
 }: {
   client: ApiClient
   selectedAssetId?: string
@@ -83,6 +84,7 @@ export function CatalogResourceTree({
   searchable?: boolean
   searchIdPrefix?: string
   searchLabel?: string
+  onRefresh?: () => void
 }) {
   const [branches, setBranches] = useState<Record<string, Branch>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -94,6 +96,7 @@ export function CatalogResourceTree({
   const [searchCursors, setSearchCursors] = useState<Array<string | undefined>>([undefined])
   const [searchPageIndex, setSearchPageIndex] = useState(0)
   const [searchResetGeneration, setSearchResetGeneration] = useState(0)
+  const [hierarchyRefreshGeneration, setHierarchyRefreshGeneration] = useState(0)
   const generation = useRef(0)
   const controllers = useRef(new Map<string, AbortController>())
   const activeBranchKeys = useRef(new Set<string>())
@@ -103,6 +106,7 @@ export function CatalogResourceTree({
     parent?: CatalogTreeNode,
     append = false,
     expectedGeneration = generation.current,
+    forceCurrent = false,
   ) => {
     const key = branchKey(parent)
     if (controllers.current.has(key)) return
@@ -111,6 +115,7 @@ export function CatalogResourceTree({
     setLoading((current) => new Set(current).add(key)); setError(undefined)
     try {
       const parameters = new URLSearchParams(parent ? treePath(parent) : 'parent_kind=ROOT&limit=100')
+      if (!parent && forceCurrent) parameters.set('refresh', 'true')
       const cursor = append ? branches[key]?.nextCursor : undefined
       if (cursor) parameters.set('cursor', cursor)
       const page = await client.request<CatalogTreePage>(`/catalog/tree/nodes?${parameters}`, {
@@ -150,7 +155,7 @@ export function CatalogResourceTree({
     activeBranchKeys.current.clear()
     expandedOrder.current = []
     setBranches({}); setExpanded(new Set()); setLoading(new Set()); setError(undefined)
-    void loadBranch(undefined, false, currentGeneration)
+    void loadBranch(undefined, false, currentGeneration, hierarchyRefreshGeneration > 0)
     return () => {
       generation.current += 1
       activeControllers.forEach((controller) => controller.abort())
@@ -159,7 +164,7 @@ export function CatalogResourceTree({
     // The Resource Tree is a standalone authorized hierarchy.  Search filters
     // never narrow it or mutate the active Search Results filter state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client])
+  }, [client, hierarchyRefreshGeneration])
 
   useEffect(() => {
     if (!searchable || !searchQuery) {
@@ -280,7 +285,16 @@ export function CatalogResourceTree({
   }
 
   return <aside className="catalog-tree panel" aria-label="Resource Tree">
-    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><span>{searchQuery ? searchResult?.total ?? 0 : rows.length}</span></header>
+    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><div className="catalog-tree-header-actions"><span>{searchQuery ? searchResult?.total ?? 0 : rows.length}</span><button
+      aria-label="현재 DataHub 기준으로 Resource Tree 새로고침"
+      className="button button-secondary"
+      disabled={loading.size > 0}
+      onClick={() => {
+        onRefresh?.()
+        setHierarchyRefreshGeneration((current) => current + 1)
+      }}
+      type="button"
+    ><RefreshCw size={12} aria-hidden="true" />새로고침</button></div></header>
     {searchable && <div className="catalog-tree-search">
       <GlobalCatalogSearch
         key={`${searchIdPrefix}-${searchResetGeneration}`}

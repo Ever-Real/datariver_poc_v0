@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   ChangeRequestRecord,
@@ -202,6 +202,7 @@ export function GovernancePage({
   const [overviewTruncated, setOverviewTruncated] = useState(false)
   const [dateRange, setDateRange] = useState(currentKstWeekRange)
   const [eventSelection, setEventSelection] = useState<DetectedChangeSelection>()
+  const [detectedChangesOpen, setDetectedChangesOpen] = useState(false)
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<unknown>()
   const [selectedId, setSelectedId] = useState<string>()
@@ -818,8 +819,9 @@ export function GovernancePage({
       <section className="governance-combined-overview panel" aria-labelledby="governance-combined-heading">
         <header className="governance-combined-header">
           <div>
-            <h2 id="governance-combined-heading">CR 및 감지 변경 현황</h2>
-            <p>CR 요청 상태를 조회하고 감지된 변경 사항과 CR을 연결합니다.</p>
+            <span className="governance-kicker">Consolidated Change Overview</span>
+            <h2 id="governance-combined-heading">통합 변경 현황</h2>
+            <p>현재 기간과 권한 범위의 감지 이벤트 및 CR 상태를 정본 집계로 확인합니다.</p>
           </div>
           <button type="button" className="button button-secondary" onClick={() => onNavigate?.('monitoring')}>
             Monitoring Dashboard
@@ -827,7 +829,7 @@ export function GovernancePage({
         </header>
 
         <div className="governance-status-overview" role="region" aria-label="현재 권한과 기간의 스키마별 변경 현황">
-          <header><span className="governance-kicker">Consolidated Change Overview</span><small>서버가 KST 기간, 현재 권한, 스키마와 시스템을 함께 적용한 정본 집계입니다. 이벤트는 발생 시각 기준 distinct normalized transaction, CR은 요청 생성 시각 기준입니다.{overviewTruncated ? ' 100개를 넘는 행은 기존 저사양 보호 한도에 따라 생략되었습니다.' : ''}</small></header>
+          <header><strong>스키마·시스템별 집계</strong><small>서버가 KST 기간, 현재 권한, 스키마와 시스템을 함께 적용한 정본 집계입니다. 이벤트는 발생 시각 기준 distinct normalized transaction, CR은 요청 생성 시각 기준입니다.{overviewTruncated ? ' 100개를 넘는 행은 기존 저사양 보호 한도에 따라 생략되었습니다.' : ''}</small></header>
           <div className="governance-status-scroll"><table><colgroup>{overviewColumnWidths.map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup><thead><tr><th>스키마명</th><th>시스템</th><th>이벤트 수</th><th>미진행 이벤트 수</th><th>CR 전체</th><th>접수 완료</th><th>재검토</th><th>변경/TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
             {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
               return <tr className="governance-schema-summary-row" key={schemaKey(row)}>
@@ -858,12 +860,26 @@ export function GovernancePage({
         />
         <ErrorNotice error={listError} />
 
-        <DetectedChangeCrPanel
-          client={client}
-          changeRequests={requests}
-          dateRange={dateRange}
-        />
+      </section>
 
+      <section className="governance-detected-panel panel" aria-labelledby="governance-detected-heading">
+        <button
+          aria-controls="governance-detected-content"
+          aria-expanded={detectedChangesOpen}
+          className="governance-detected-disclosure"
+          onClick={() => setDetectedChangesOpen((current) => !current)}
+          type="button"
+        >
+          <span aria-hidden="true">{detectedChangesOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
+          <span><span className="governance-kicker">Detected Change → CR</span><strong id="governance-detected-heading">감지 변경과 CR 연결</strong><small>{dateRange.from}–{dateRange.to} · Monitoring과 동일한 canonical ledger · {detectedChangesOpen ? '펼침' : '기본 접힘'}</small></span>
+        </button>
+        {detectedChangesOpen && <div id="governance-detected-content">
+          <DetectedChangeCrPanel
+            client={client}
+            changeRequests={requests}
+            dateRange={dateRange}
+          />
+        </div>}
       </section>
 
       <section className="governance-list-panel panel" aria-labelledby="governance-list-heading">

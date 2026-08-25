@@ -39,6 +39,7 @@
 .cy-read-graph-detail button { justify-self: start; }
 .cy-read-graph-entity-list { border-top: 1px solid var(--line-200); padding: 6px 7px; color: var(--text-600); background: #fff; font-size: 9px; }
 .cy-read-graph-entity-list summary { color: var(--blue-700); font-weight: 800; cursor: pointer; }
+.cy-read-graph-entity-list > p { margin: 7px 0; color: var(--text-600); font-size: 9px; line-height: 1.45; }
 .cy-read-graph-entity-list ul { display: grid; max-height: 180px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; margin: 7px 0 0; padding: 0; overflow: auto; list-style: none; }
 .cy-read-graph-entity-list li { display: grid; align-content: start; gap: 3px; }
 .cy-read-graph-entity-list button { display: grid; width: 100%; gap: 1px; border: 1px solid var(--line-200); padding: 5px 6px; color: var(--navy-900); text-align: left; background: #fff; }

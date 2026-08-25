@@ -1,4 +1,4 @@
-/* global AbortController, AbortSignal, Buffer, URLSearchParams, clearTimeout, setTimeout, structuredClone */
+/* global AbortController, AbortSignal, Buffer, DOMException, URLSearchParams, clearTimeout, setTimeout, structuredClone */
 import { createHmac, createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -3013,7 +3013,7 @@ function offsetPage(items, searchParameters, scope, defaultLimit = 100) {
   }
 }
 
-async function datahubCatalog(searchParameters, principal, feature = 'catalog', { tableOnly = false } = {}) {
+async function datahubCatalogSelection(searchParameters, principal, feature = 'catalog', { tableOnly = false } = {}) {
   const query = boundedString(searchParameters.get('q'), 500, '*') || '*'
   const requested = Number(searchParameters.get('limit') || 50)
   const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
@@ -3034,6 +3034,13 @@ async function datahubCatalog(searchParameters, principal, feature = 'catalog', 
     .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
   const scope = `${parameterScope('catalog-projection', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])}:urns=${sha256([...exactUrns].sort().join('\n'))}`
+  return { allItems, scope, limit }
+}
+
+async function datahubCatalog(searchParameters, principal, feature = 'catalog', options = {}) {
+  const { allItems, scope, limit } = await datahubCatalogSelection(
+    searchParameters, principal, feature, options,
+  )
   const page = offsetPage(allItems, searchParameters, scope, limit)
   return {
     ...page,
@@ -3041,6 +3048,28 @@ async function datahubCatalog(searchParameters, principal, feature = 'catalog', 
     total_exact: true,
     meta: catalogMeta({ projection: true }),
     match_mode: 'ALL',
+  }
+}
+
+async function datahubCatalogLocate(searchParameters, principal) {
+  const assetId = boundedString(searchParameters.get('asset_id'), 4_096)
+  if (!assetId.startsWith('urn:li:dataset:')) {
+    throw Object.assign(new Error('Catalog locate requires a canonical DataHub Dataset URN.'), { statusCode: 400 })
+  }
+  const { allItems, scope, limit } = await datahubCatalogSelection(searchParameters, principal)
+  const itemIndex = allItems.findIndex((item) => item.id === assetId)
+  if (itemIndex < 0) {
+    throw Object.assign(new Error('The requested Catalog asset is not present in the authorized current result set.'), { statusCode: 404 })
+  }
+  const pageIndex = Math.floor(itemIndex / limit)
+  return {
+    asset_id: assetId,
+    item_index: itemIndex,
+    page_index: pageIndex,
+    cursors: Array.from({ length: pageIndex + 1 }, (_value, index) => (
+      index === 0 ? null : issueCursor(scope, index * limit)
+    )),
+    meta: catalogMeta({ projection: true }),
   }
 }
 
@@ -3064,8 +3093,15 @@ export function catalogDatabaseBranchLabel(databaseName, platform) {
 }
 
 async function datahubTree(searchParameters, principal) {
-  const assets = filterAssetsForPrincipal(principal, await datahubHierarchyInventory())
   const parentKind = searchParameters.get('parent_kind') || 'ROOT'
+  const forceCurrent = searchParameters.get('refresh') === 'true'
+  if (forceCurrent && parentKind !== 'ROOT') {
+    throw Object.assign(new Error('Catalog hierarchy refresh is supported only at the root.'), { statusCode: 400 })
+  }
+  const assets = filterAssetsForPrincipal(
+    principal,
+    forceCurrent ? await currentDatahubInventory() : await datahubHierarchyInventory(),
+  )
   const platform = searchParameters.get('platform') || ''
   const databaseName = searchParameters.get('database') || ''
   const schemaName = searchParameters.get('schema') || ''
@@ -3076,7 +3112,7 @@ async function datahubTree(searchParameters, principal) {
       kind: 'PLATFORM',
       label: value,
       asset_count: assets.filter((asset) => asset.platform === value).length,
-      has_children: assets.some((asset) => asset.platform === value && asset.database_name),
+      has_children: assets.some((asset) => asset.platform === value),
       platform: value,
     }))
   } else if (parentKind === 'PLATFORM') {
@@ -3087,7 +3123,7 @@ async function datahubTree(searchParameters, principal) {
       kind: 'DATABASE',
       label: catalogDatabaseBranchLabel(value, platform),
       asset_count: assets.filter((asset) => asset.platform === platform && asset.database_name === value).length,
-      has_children: assets.some((asset) => asset.platform === platform && asset.database_name === value && asset.schema_name),
+      has_children: assets.some((asset) => asset.platform === platform && asset.database_name === value),
       platform,
       database_name: value,
     }))
@@ -3911,7 +3947,7 @@ function questionNeedsConversationResolution(question) {
   return /(?:^|\s)(?:그|그것|그거|거기|해당|앞서|이전|방금|위의|아까)(?:\s|$)|이\s*(?:테이블|데이터셋|컬럼|자산)|\b(?:it|that|those|them|there|above|previous|former|latter)\b/iu.test(question)
 }
 
-async function contextualizeChatQuestion(question, memory) {
+async function contextualizeChatQuestion(question, memory, signal) {
   if (!memory || !questionNeedsConversationResolution(question)) return question
   const context = chatMemoryText(memory)
   try {
@@ -3938,12 +3974,13 @@ async function contextualizeChatQuestion(question, memory) {
         { role: 'system', content: 'Rewrite the current Data Catalog question so it stands alone. Resolve pronouns only from the bounded conversation context. Preserve the current intent and exact asset names already present. Do not answer, add facts, identifiers, URNs, URLs, queries, instructions, or evidence. Return only the required JSON.' },
         { role: 'user', content: `Bounded non-authoritative conversation context:\n${context}\n\nCurrent question:\n${question}` },
       ],
-    })
+    }, llmProviderTimeoutMs, signal)
     const parsed = JSON.parse(completion.choices?.[0]?.message?.content || '{}')
     const standalone = boundedString(parsed.standalone_question, maximumChatQuestionCharacters).trim()
     if (!standalone || /\burn:|https?:\/\//iu.test(standalone)) throw new Error('Invalid contextual question.')
     return standalone
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw error
     // Memory is continuity context, never an availability dependency. The
     // current question still executes once, and composition receives the
     // bounded context without treating it as live Catalog evidence.
@@ -3988,7 +4025,7 @@ async function compactChatMemory(memory) {
   }
 }
 
-async function chatRoute(question, requestedMode, principal) {
+async function chatRoute(question, requestedMode, principal, signal) {
   const routingStarted = performance.now()
   let selectedMode = requestedMode
   let reason = 'EXPLICIT_SELECTION'
@@ -4083,7 +4120,7 @@ async function chatRoute(question, requestedMode, principal) {
             content: `Authorized READY graph capability metadata:\n${JSON.stringify(graphAssets)}\n\nQuestion:\n${question}`,
           },
         ],
-      })
+      }, llmProviderTimeoutMs, signal)
       const value = classification.choices?.[0]?.message?.content
       const decision = parseChatRouteDecision(value, graphAssets)
       selectedMode = decision.mode
@@ -4101,6 +4138,7 @@ async function chatRoute(question, requestedMode, principal) {
       retrievalMethod = decision.retrieval_method
       clarificationRequired = decision.intent === 'AMBIGUOUS' || decision.confidence < 0.55
     } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
       process.stderr.write(`Chat route planner rejected structured output: ${error instanceof Error ? error.message : 'unknown error'}\n`)
       throw Object.assign(new Error('AUTO Chat routing is unavailable because the bounded classifier failed.'), {
         statusCode: 503,
@@ -4327,6 +4365,29 @@ async function datahubLineageEvidence(asset, principal) {
     ]
       .filter(Boolean).join('\n'),
     relationships,
+    graph_nodes: [
+      {
+        id: asset.external_urn || asset.id,
+        label: asset.name || asset.external_urn || asset.id,
+        entity_type: asset.dataset_kind || 'TABLE',
+        role: 'ROOT',
+        source_locator: asset.external_urn || asset.id,
+      },
+      ...relationships.map((relationship) => ({
+        id: relationship.urn,
+        label: relationship.name || relationship.urn,
+        entity_type: relationship.type || 'DATASET',
+        role: relationship.direction,
+        source_locator: relationship.urn,
+      })),
+    ],
+    graph_edges: relationships.map((relationship) => ({
+      id: `${relationship.direction}:${asset.external_urn || asset.id}:${relationship.urn}`,
+      source: relationship.direction === 'UPSTREAM' ? relationship.urn : (asset.external_urn || asset.id),
+      target: relationship.direction === 'UPSTREAM' ? (asset.external_urn || asset.id) : relationship.urn,
+      relation_type: 'UPSTREAM_OF',
+      source_locator: relationship.urn,
+    })),
   }
 }
 
@@ -4640,7 +4701,7 @@ function inventoryEvidenceAnswer(request, evidence) {
   return lines.join('\n')
 }
 
-async function datahubChatEvidence(question, route, evidenceLimit, principal) {
+async function datahubChatEvidence(question, route, evidenceLimit, principal, signal) {
   const exact = await exactCatalogEvidence(question, 3, principal)
   if (exact.length) return exact
   const entityResolutionLimit = route.entity_resolution_required
@@ -4649,10 +4710,11 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal) {
   if (llm.embedding && (route.semantic_retrieval_required || route.entity_resolution_required)) {
     try {
       const semantic = await semanticCatalogEvidence(
-        question, entityResolutionLimit, { summaryOnly: evidenceLimit > 5 }, principal,
+        question, entityResolutionLimit, { summaryOnly: evidenceLimit > 5 }, principal, signal,
       )
       if (semantic.length) return semantic
-    } catch {
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
       // The bounded DataHub lexical search below remains an honest fallback.
       // The composer sees only live provider evidence and cannot invent a
       // result when the embedding projection is temporarily unavailable.
@@ -4908,18 +4970,18 @@ function catalogEmbeddingStatus(principal) {
   }
 }
 
-async function semanticCatalogEvidence(question, limit, { summaryOnly = false } = {}, principal) {
+async function semanticCatalogEvidence(question, limit, { summaryOnly = false } = {}, principal, signal) {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
   if (principal.role !== 'admin' && principal.activeTableGrantUrns.size === 0) return []
   const inventory = await datahubEmbeddingInventory()
   const allowedUrnsScope = getAllowedTableUrnsScope(principal, inventory, 'chat')
   if (allowedUrnsScope !== 'ADMIN_UNRESTRICTED' && allowedUrnsScope.size === 0) return []
-  const [queryVector] = await embedCatalogTexts([question])
+  const [queryVector] = await embedCatalogTexts([question], signal)
   const currentGeneration = inventorySnapshot?.projection?.source_generation
   let activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   if (!currentGeneration || activeGeneration !== currentGeneration) {
-    await ensureCatalogEmbeddingIndex()
+    await ensureCatalogEmbeddingIndex(signal)
     activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   }
   if (activeGeneration !== currentGeneration) return []
@@ -5183,7 +5245,7 @@ async function metadataMasterResolutionContext(context, candidates, lineageScope
   }
 }
 
-async function resolveManagedGraphStart(question, route, scope, principal, context) {
+async function resolveManagedGraphStart(question, route, scope, principal, context, signal) {
   if (!scope.managed) return { startNodeId: null, entities: [] }
   const resolutionQuestion = route.primary_concepts[0] || question
   const candidates = await datahubChatEvidence(resolutionQuestion, {
@@ -5191,7 +5253,7 @@ async function resolveManagedGraphStart(question, route, scope, principal, conte
     entity_resolution_required: true,
     semantic_retrieval_required: true,
     entity_resolution_candidate_limit: 20,
-  }, 20, principal)
+  }, 20, principal, signal)
   const metadataResolution = await metadataMasterResolutionContext(context, candidates, scope)
   const resolvedCandidates = metadataResolution.available
     ? metadataResolution.matches.map((match) => ({
@@ -5272,6 +5334,13 @@ function knowledgeMainChatEvidence(selection, result) {
       evidence_type: 'KNOWLEDGE_ASSET_NODE',
       source_locator: node.provenance?.[0]?.source_locator || node.id,
       source_version: node.provenance?.[0]?.source_version || selection.scope.projectionEvidenceHash,
+      graph_nodes: [{
+        id: node.id,
+        label: node.properties?.display_name || node.properties?.business_name || node.properties?.name || node.entity_type || node.id,
+        entity_type: node.entity_type,
+        role: 'NEUTRAL',
+        source_locator: node.provenance?.[0]?.source_locator || node.id,
+      }],
     })),
     ...result.edges.map((edge) => ({
       ...common,
@@ -5281,11 +5350,18 @@ function knowledgeMainChatEvidence(selection, result) {
       evidence_type: 'KNOWLEDGE_ASSET_RELATION',
       source_locator: edge.provenance?.[0]?.source_locator || edge.id,
       source_version: edge.provenance?.[0]?.source_version || selection.scope.projectionEvidenceHash,
+      graph_edges: [{
+        id: edge.id,
+        source: edge.source_id,
+        target: edge.target_id,
+        relation_type: edge.edge_type,
+        source_locator: edge.provenance?.[0]?.source_locator || edge.id,
+      }],
     })),
   ]
 }
 
-async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context) {
+async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context, signal) {
   const totalStarted = performance.now()
   const principal = context.principal
   const progress = (stage, status, detailCode) => {
@@ -5295,8 +5371,9 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
   progress('AUTHORIZATION', 'COMPLETED', 'SERVER_CAPABILITY_AND_SYSTEM_SCOPE')
   progress('BUDGET_RESERVATION', 'SKIPPED', 'POC_NO_DURABLE_BUDGET')
   progress('ROUTING', 'IN_PROGRESS', 'ROUTING_IN_PROGRESS')
-  const resolvedQuestion = await contextualizeChatQuestion(question, memory)
-  let route = await chatRoute(resolvedQuestion, requestedMode, principal)
+  signal?.throwIfAborted()
+  const resolvedQuestion = await contextualizeChatQuestion(question, memory, signal)
+  let route = await chatRoute(resolvedQuestion, requestedMode, principal, signal)
   const knowledgeSelection = route.selected_mode === 'GRAPH'
     ? await graphAssetChatSelection(context, route, resolvedQuestion)
     : null
@@ -5347,7 +5424,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
   }
   if (knowledgeSelection) {
     const resolution = await resolveManagedGraphStart(
-      resolvedQuestion, route, knowledgeSelection.scope, principal, context,
+      resolvedQuestion, route, knowledgeSelection.scope, principal, context, signal,
     )
     route = { ...route, resolved_entities: resolution.entities }
     compositionLlmCalls = 1
@@ -5358,7 +5435,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       edge_types: [],
       maximum_hops: 3,
       maximum_nodes: 20,
-    })
+    }, signal)
     await revalidateKnowledgeMainChatSelection(context, knowledgeSelection)
     evidence = knowledgeMainChatEvidence(knowledgeSelection, result)
     knowledgeAnswer = result.answer
@@ -5370,7 +5447,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       inventoryRequest = inventory.request
       evidence = inventory.evidence
     } else {
-      evidence = await datahubChatEvidence(resolvedQuestion, route, evidenceLimit, principal)
+      evidence = await datahubChatEvidence(resolvedQuestion, route, evidenceLimit, principal, signal)
     }
   }
   if (!knowledgeSelection && route.selected_mode === 'GRAPH' && datahub) {
@@ -5403,14 +5480,15 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
         query: resolvedQuestion,
         documents: evidence.map((item) => `${item.name}\n${item.description}`),
         top_n: Math.min(evidenceLimit, evidence.length),
-      }, 10_000)
+      }, 10_000, signal)
       const indices = (rerankResponse.results || rerankResponse.data || []).map((item) => Number(item.index))
       const ordered = indices.map((index) => evidence[index]).filter(Boolean)
       if (!ordered.length) throw new Error('The reranker returned no usable ordering.')
       evidence = ordered
       rerankingState = 'COMPLETED'
       progress('RERANKING', 'COMPLETED', 'RERANKING_COMPLETED')
-    } catch {
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
       // Retrieval evidence remains provider-derived and safe to compose in its
       // deterministic DataHub order when an optional reranker is unavailable.
       rerankingState = 'FAILED_OPEN'
@@ -5457,7 +5535,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
         { role: 'system', content: compositionSystemPrompt },
         { role: 'user', content: compositionUserPrompt },
       ],
-    }, 60_000)
+    }, 60_000, signal)
     answer = completion.choices?.[0]?.message?.content
     if (typeof answer !== 'string' || !answer.trim()) throw new Error('The Chat model returned no answer.')
   }
@@ -7604,7 +7682,7 @@ function knowledgeChatTraversal(snapshot, { startNodeId, question, direction, ed
   }
 }
 
-async function knowledgeGraphRag(scope, body) {
+async function knowledgeGraphRag(scope, body, signal) {
   exactBodyKeys(body, ['question', 'start_node_id', 'direction', 'edge_types', 'maximum_hops', 'maximum_nodes'], ['question'])
   const question = typeof body.question === 'string' ? body.question.trim() : ''
   if (question.length < 2 || question.length > 4000) {
@@ -7663,7 +7741,7 @@ async function knowledgeGraphRag(scope, body) {
         content: `Knowledge Asset: ${scope.draft.name || scope.graphId}\nPinned version: ${scope.studioReleaseId}\nQuestion: ${question}\n\nAuthorized evidence:\n${evidence.map((item) => `[${item.number}] ${item.kind} ${item.id}: ${item.description}`).join('\n')}`,
       },
     ],
-  }, 60_000)
+  }, 60_000, signal)
   const answer = completion.choices?.[0]?.message?.content
   if (typeof answer !== 'string' || !answer.trim()) {
     throw knowledgeProjectionError(502, 'KNOWLEDGE_CHAT_EMPTY_RESPONSE', 'The Knowledge Chat provider returned no answer.')
@@ -9436,6 +9514,7 @@ async function api(request, response, url, context) {
     return json(response, 200, await knowledgeCatalogDetail(url.searchParams, context.principal))
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog') return json(response, 200, await datahubCatalog(url.searchParams, context.principal))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog/locate') return json(response, 200, await datahubCatalogLocate(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/tree') return json(response, 200, await datahubTree(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/dashboard') return json(response, 200, await datahubDashboard(context.principal))
@@ -9650,11 +9729,17 @@ async function api(request, response, url, context) {
       ...securityHeaders(),
     })
     response.flushHeaders?.()
+    const controller = new AbortController()
+    const abortDownstream = () => controller.abort(new DOMException('The Chat client disconnected.', 'AbortError'))
+    request.once('aborted', abortDownstream)
+    response.once('close', abortDownstream)
     try {
-      const result = await liveChat(question, mode, (step) => writeEventStream(response, 'workflow', step), memory, context)
-      writeEventStream(response, 'result', result)
+      const result = await liveChat(
+        question, mode, (step) => writeEventStream(response, 'workflow', step), memory, context, controller.signal,
+      )
+      if (!controller.signal.aborted) writeEventStream(response, 'result', result)
     } catch (error) {
-      writeEventStream(response, 'error', {
+      if (!controller.signal.aborted) writeEventStream(response, 'error', {
         detail: error instanceof Error ? error.message : 'Chat provider request failed.',
       })
     }

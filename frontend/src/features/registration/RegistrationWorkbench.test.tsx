@@ -157,10 +157,10 @@ describe('Registration workbench', () => {
       allowed_roles: ['ADMIN', 'DATA_STEWARD'],
     })} />)
 
-    expect(await screen.findByText('등록관리 조회 전용')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '최근 실행' })).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: /MANUAL/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: /BULK/ })).not.toBeInTheDocument()
+    expect(await screen.findByRole('tab', { name: /HISTORY/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: '등록 실행 이력' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /MANUAL/ })).toBeDisabled()
+    expect(screen.getByRole('tab', { name: /BULK/ })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /SAVE|검증 업로드 시작/ })).not.toBeInTheDocument()
   })
 
@@ -176,7 +176,7 @@ describe('Registration workbench', () => {
     })} />)
 
     expect(await screen.findByText('등록관리 접근 권한이 없습니다')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '최근 실행' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '등록 실행 이력' })).not.toBeInTheDocument()
     expect(request).not.toHaveBeenCalled()
   })
 
@@ -222,6 +222,7 @@ describe('Registration workbench', () => {
       true,
     )} />)
 
+    fireEvent.click(await screen.findByRole('tab', { name: /HISTORY/ }))
     expect(await screen.findByText('asset-wafer')).toBeInTheDocument()
     expect(screen.getByText('bulk-catalog.csv')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('실행 유형 필터'), { target: { value: 'MANUAL' } })
@@ -319,9 +320,12 @@ describe('Registration workbench', () => {
     render(<RegistrationPage client={clientWith(request)} />)
 
     expect(await screen.findByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('heading', { name: '최근 실행' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /HISTORY/ })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '등록 실행 이력' })).not.toBeInTheDocument()
     expect(screen.getByText('GOVERNED')).toBeInTheDocument()
     expect(screen.getByText(/Resource Tree에서 테이블을 선택하세요/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Table Properties' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Column Schema Specifications' })).toBeInTheDocument()
     expect(screen.getByText('Metadata Registration')).toBeInTheDocument()
     expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
@@ -501,6 +505,7 @@ describe('Registration workbench', () => {
     expect(screen.getByText('wafer_id')).toBeInTheDocument()
     expect(screen.getByText('Wafer identifier')).toBeInTheDocument()
     const columnGrid = screen.getByRole('region', { name: 'Column Schema Specifications' })
+    expect(columnGrid.querySelector('.registration-columns-scroll')).not.toBeNull()
     expect(within(columnGrid).getByRole('columnheader', { name: 'Logical Name' })).toBeInTheDocument()
     expect(within(columnGrid).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(screen.getByLabelText('테이블 Description')).toHaveValue('Wafer production records.')

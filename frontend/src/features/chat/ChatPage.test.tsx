@@ -184,6 +184,11 @@ describe('ChatPage', () => {
         source_version: 'release-7',
         extraction_method: 'K5_PROJECTED_RECEIPT',
         retrieval_method: 'KNOWLEDGE_GRAPH_RAG',
+        graph_nodes: [
+          { id: 'node-1', label: '품질 원천', entity_type: 'TABLE', role: 'ROOT', source_locator: 'urn:node-1' },
+          { id: 'node-2', label: '품질 결과', entity_type: 'TABLE', role: 'DOWNSTREAM', source_locator: 'urn:node-2' },
+        ],
+        graph_edges: [{ id: 'edge-1', source: 'node-1', target: 'node-2', relation_type: 'UPSTREAM_OF', source_locator: 'urn:edge-1' }],
       }],
     }
     const { client: baseClient } = chatClient()
@@ -206,6 +211,8 @@ describe('ChatPage', () => {
     const evidenceButton = screen.getByRole('button', { name: '근거 1 Wafer W-001 상세 열기' })
     expect(evidenceButton).toBeDisabled()
     expect(screen.getByText('지식 그래프 근거')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '답변에 사용된 인가 그래프 근거' })).toHaveTextContent('2 nodes · 1 edges')
+    expect(screen.getByRole('region', { name: '답변에 사용된 인가 그래프' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: '근거 테이블 상세와 Lineage' })).not.toBeInTheDocument()
   })
 
@@ -226,7 +233,7 @@ describe('ChatPage', () => {
       maximum_evidence: 5,
       mode: 'VECTOR',
     })
-    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(await screen.findByRole('table')).toBeInTheDocument()
     expect(screen.getByLabelText('서버 라우팅 결정')).toHaveTextContent('요청 벡터 → 선택 벡터')
     const workflow = screen.getByLabelText('질문 응답 Workflow')
     expect(within(workflow).getByText('1. 권한 확인')).toBeInTheDocument()
@@ -338,6 +345,67 @@ describe('ChatPage', () => {
     if (!renderedQuestion) throw new Error('Expected the submitted question to be rendered')
     expect(renderedQuestion).toHaveClass('chat-question-text')
     expect(renderedQuestion.textContent).toBe('첫 줄\n둘째 줄')
+  })
+
+  it('copies an immutable historical question into the composer and resends it as a new question', async () => {
+    const { client, requestEventStream } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '원래 질문' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    await screen.findByRole('heading', { name: '확인된 테이블' })
+    fireEvent.click(screen.getByRole('button', { name: '질문을 입력창에서 편집' }))
+    expect(screen.getByLabelText('카탈로그 질문')).toHaveValue('원래 질문')
+    expect(screen.getAllByText('원래 질문')).toHaveLength(2)
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '수정한 새 질문' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    await waitFor(() => expect(requestEventStream).toHaveBeenCalledTimes(2))
+    expect(requestBody(requestEventStream.mock.calls[1]?.[1])).toEqual(expect.objectContaining({
+      question: '수정한 새 질문',
+    }))
+    expect(screen.getByText('원래 질문')).toBeInTheDocument()
+  })
+
+  it('aborts an in-flight answer without persisting an incomplete assistant response', async () => {
+    const { client: baseClient } = chatClient()
+    let observedSignal: AbortSignal | undefined
+    const requestEventStream = vi.fn((_path: string, options: RequestOptions) => {
+      observedSignal = options.signal ?? undefined
+      return new Promise<ChatResponse>((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      })
+    })
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '중지할 질문' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    fireEvent.click(await screen.findByRole('button', { name: '답변 생성 중지' }))
+
+    await waitFor(() => expect(observedSignal?.aborted).toBe(true))
+    expect(screen.getByText('중지할 질문')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '답변 근거 다시 보기' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/오류|aborted/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '질문 전송' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '질문을 입력창에서 편집' }))
+    expect(screen.getByRole('button', { name: '질문 전송' })).toBeEnabled()
+  })
+
+  it('auto-grows the composer to a six-line cap and then uses vertical scrolling', async () => {
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+    const question = screen.getByLabelText<HTMLTextAreaElement>('카탈로그 질문')
+    Object.defineProperty(question, 'scrollHeight', { configurable: true, value: 360 })
+    fireEvent.change(question, { target: { value: Array.from({ length: 8 }, (_, index) => `줄 ${index}`).join('\n') } })
+    expect(question).toHaveAttribute('rows', '1')
+    expect(question.style.overflowY).toBe('auto')
+    expect(Number.parseFloat(question.style.height)).toBeLessThan(150)
   })
 
   it('caps questions at 12,000 characters and shows the live count at the composer edge', async () => {

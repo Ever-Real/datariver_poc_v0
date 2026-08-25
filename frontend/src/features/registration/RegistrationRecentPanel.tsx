@@ -193,8 +193,8 @@ export function RegistrationRecentPanel({
     <aside className="registration-recent-panel" aria-labelledby="registration-recent-title">
       <header className="registration-recent-header">
         <div>
-          <span className="eyebrow">Activity</span>
-          <h2 id="registration-recent-title">최근 실행</h2>
+          <span className="eyebrow">History</span>
+          <h2 id="registration-recent-title">등록 실행 이력</h2>
         </div>
         <button
           type="button"
