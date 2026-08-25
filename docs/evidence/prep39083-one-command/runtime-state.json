@@ -1,0 +1,94 @@
+{
+  "phase": "PREP39083 ONE-COMMAND DEPLOYMENT SIMPLIFICATION",
+  "status_at_evidence": "DEV_RUNTIME_VERIFIED_HANDOFF_PENDING",
+  "observed_at": "2026-08-25T06:24:26Z",
+  "base": {
+    "product_sha": "ced6ffeedc9ee9786abc6d12c41c30540201f600",
+    "evidence_sha": "6098200d86f5c3058eb1ac3343f585d78f1a635a",
+    "handoff_commit": "c07f94c58b4ff6c374067e36d1267b395a470090"
+  },
+  "product_sha": "fab42bd03eb8cbe9b3bcbff6c4cfdb2cf5e5fc6c",
+  "canonical_prep_command": "./scripts/prep39083 deploy",
+  "operator_environment": "deploy/prep39083/.env.prep",
+  "optional_environment": "deploy/prep39083/.env.prep.optional",
+  "generated_environment": "deploy/prep39083/.env.prep.runtime",
+  "release_identity": "deploy/prep39083/release.json",
+  "contracts": {
+    "environment": "DATARIVER_PREP39083_ENV_V2",
+    "ops_release": "DATARIVER_PREP39083_OPS_RELEASE_V2",
+    "platform": "linux/amd64",
+    "port": 39083,
+    "project": "datariver-prep39083",
+    "uv": "uv run --frozen",
+    "image_reference": "AUTO_RESOLVED_FROM_COMPOSE"
+  },
+  "environment_verification": {
+    "operator_env_preserved": "PASS",
+    "required_key_fail_fast": "PASS",
+    "generated_secrets_stable": "PASS",
+    "generated_secret_mode": "0600",
+    "optional_mcl_absent": "PASS",
+    "mcl_default": "DISABLED",
+    "proxy_to_uv": "PASS",
+    "proxy_to_docker_build": "PASS",
+    "required_no_proxy_merge": "PASS",
+    "empty_image_ref_impossible": "PASS"
+  },
+  "bootstrap_verification": {
+    "fresh_volume": "PASS",
+    "bootstrap_uses_compose_environment": "PASS",
+    "admin_create_once": "PASS",
+    "second_reconcile_no_duplicate": "PASS",
+    "k9_mcp_subjects_distinct": "PASS",
+    "k9_mcp_idempotent": "PASS",
+    "postgres_credential_contract": "PASS",
+    "wrong_credential_classification": "PREP_LOCAL_DB_CREDENTIAL_MISMATCH / PASS",
+    "automatic_accepted_volume_destruction": false
+  },
+  "image_verification": {
+    "tag": "datariver-poc:fab42bd03eb8cbe9b3bcbff6c4cfdb2cf5e5fc6c",
+    "os": "linux",
+    "architecture": "amd64",
+    "oci_revision": "fab42bd03eb8cbe9b3bcbff6c4cfdb2cf5e5fc6c",
+    "proxy_secret_in_config_or_history": false,
+    "prep_bootstrap_entrypoint_present": true
+  },
+  "source_gates": {
+    "focused_deployment_handoff": "22/22 PASS",
+    "prep_bootstrap": "3/3 PASS",
+    "poc_server": "122/122 PASS",
+    "ui": "90 files / 658 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS",
+    "static": "PASS",
+    "ruff": "PASS",
+    "mypy_strict": "PASS",
+    "shell_and_node_syntax": "PASS",
+    "compose_parse": "PASS",
+    "diff_check": "PASS",
+    "broad_backend_observation": "3890 PASS / 115 SKIP / 55 ACCEPTED-BASE UNRELATED FAILURES"
+  },
+  "dev_runtime": {
+    "port_39083_http": 200,
+    "container_health": "healthy",
+    "container_restarts": 0,
+    "exact_product_oci": true,
+    "protected_api_unauthenticated_http": 401,
+    "port_39090_http": 200,
+    "port_39080_unchanged": true
+  },
+  "cleanup": {
+    "temporary_simulation_containers": 0,
+    "temporary_simulation_networks": 0,
+    "temporary_simulation_volumes": 0,
+    "temporary_password_files": 0,
+    "temporary_environment_files": 0,
+    "accepted_persistent_state_deleted": false
+  },
+  "actual_prep_deployment": "NOT EXECUTED",
+  "actual_prep_runtime_verification": "NOT EXECUTED",
+  "actual_ops_deployment": "NOT EXECUTED",
+  "actual_ops_runtime_verification": "NOT EXECUTED",
+  "current_blocker": "NONE"
+}
