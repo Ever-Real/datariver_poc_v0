@@ -1,0 +1,114 @@
+{
+  "phase": "DATARIVER REMAINING PRODUCT REFINEMENT",
+  "status": "PARTIAL_BROWSER_ACCEPTANCE_BLOCKED",
+  "observed_at": "2026-08-25T16:25:40Z",
+  "base": {
+    "product_sha": "46500c130de9c8bebedd143eca946b5d9166e63b",
+    "evidence_sha": "7dde689f7c0fe8de71b7fb8b86046a65aaecc504",
+    "handoff_commit": "6fd9a0f5c5c30ab74af38530e81c06a961ea97de"
+  },
+  "product_sha": "ed5d5a6e37d509ede85c3c3bd58f331fd8117306",
+  "runtime": {
+    "oci_tag": "datariver-poc:ed5d5a6e37d509ede85c3c3bd58f331fd8117306",
+    "oci_revision": "ed5d5a6e37d509ede85c3c3bd58f331fd8117306",
+    "oci_architecture": "linux/amd64",
+    "port_39083_http": 200,
+    "container_health": "healthy",
+    "port_39090_http": 200,
+    "port_39080_before": "DOWN",
+    "port_39080_after": "DOWN"
+  },
+  "search": {
+    "current_inventory_refresh": "PASS",
+    "resource_tree_root_count": 2,
+    "default_page_item_count": 25,
+    "neighboring_rows_preserved": true,
+    "canonical_locate": "PASS",
+    "lineage_profile": "SEARCH_LINEAGE_CLASSIC",
+    "label_navigation": "focused interaction PASS",
+    "bounded_entity_copy": "PASS",
+    "sortable_headers_one_line": "PASS"
+  },
+  "change_management": {
+    "canonical_ledger_events": 73,
+    "schema_events": 17,
+    "metadata_events": 56,
+    "active_exact_table_system_mappings": 0,
+    "authorized_runtime_rows": 0,
+    "authorization": "FAIL-CLOSED / PASS",
+    "production_authorization_widened": false,
+    "populated_presentation": "focused integration PASS",
+    "default_detected_change_collapsed": true,
+    "monitoring_read_model_reused": true
+  },
+  "chat": {
+    "account_history_isolation": "existing server ownership tests PASS",
+    "immutable_edit_resend": "PASS",
+    "abort_and_no_incomplete_persistence": "PASS",
+    "composer_one_to_six_lines": "PASS",
+    "scroll_follow_pause_resume": "PASS",
+    "authorized_progressive_reveal": "PASS",
+    "graph_evidence": "authorization-filtered answer subgraph PASS",
+    "representative": {
+      "GENERAL": "G12 PASS",
+      "VECTOR": "V18 PASS",
+      "GRAPH": "R01 PASS",
+      "route_correct": "3/3",
+      "runtime_pass": "3/3"
+    },
+    "router_60_rerun": false,
+    "router_60_reason": "semantic routing, retrieval and reranking contracts unchanged"
+  },
+  "registration": {
+    "tabs": ["MANUAL", "BULK", "HISTORY"],
+    "history_read_model_reused": true,
+    "manager_read_only_history": "PASS",
+    "right_recent_panel_removed": true,
+    "default_empty_workbench": "PASS",
+    "bounded_column_scroll": "PASS"
+  },
+  "source_gates": {
+    "focused_ui": "6 files / 138 tests PASS",
+    "final_chat_registration": "2 files / 56 tests PASS",
+    "ui_full": "90 files / 661 tests PASS",
+    "node_product_server": "129/129 PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "build_poc": "PASS",
+    "ruff_lint": "PASS",
+    "strict_mypy": "PASS / 588 source files",
+    "static": "PASS",
+    "prep_handoff_focused": "35/35 PASS",
+    "prep_smoke_contract": "3/3 PASS",
+    "diff_check": "PASS",
+    "python_full_legacy": "3875 PASS / 117 SKIP / 84 pre-existing migration-contract failures",
+    "ruff_format_legacy": "4 unchanged test files would reformat"
+  },
+  "browser": {
+    "result": "BLOCKED",
+    "reason": "in-app Browser runtime available-browser list was empty",
+    "unsafe_fallback_used": false
+  },
+  "deployment": {
+    "canonical_command": "./scripts/prep39083 deploy",
+    "docker_compose_env_changed": false,
+    "database_schema_changed": false,
+    "operator_step_added": false,
+    "portable_contract_focused_tests": "PASS",
+    "actual_prep": "NOT EXECUTED",
+    "actual_ops": "NOT EXECUTED"
+  },
+  "cleanup": {
+    "disabled_test_credentials": 1,
+    "revoked_test_sessions": 2,
+    "active_test_sessions": 0,
+    "disabled_relogin": "DENIED",
+    "temporary_host_credential_artifacts": 0,
+    "temporary_container_credential_artifacts": 0,
+    "temporary_event_mapping_fixtures": 0,
+    "temporary_documents": 0,
+    "canonical_state_deleted": false
+  },
+  "current_blocker": "FINAL_BROWSER_ACCEPTANCE_SURFACE_UNAVAILABLE"
+}
