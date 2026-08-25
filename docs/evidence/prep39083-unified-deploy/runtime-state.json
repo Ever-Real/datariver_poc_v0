@@ -1,0 +1,92 @@
+{
+  "phase": "PREP39083 UNIFIED FRESH/UPDATE DEPLOY CORRECTION",
+  "status_at_evidence": "DEV_RUNTIME_VERIFIED_HANDOFF_PENDING",
+  "observed_at": "2026-08-25T08:42:53Z",
+  "base": {
+    "product_sha": "fab42bd03eb8cbe9b3bcbff6c4cfdb2cf5e5fc6c",
+    "evidence_sha": "5761754d3a09b714b31f5430744e8b9da6b15136",
+    "handoff_commit": "9644c0274c321f6b224ca487f2c2d5529c51f947"
+  },
+  "product_sha": "99acf0d2a8be977323ead2f8647ef5b2ad77add7",
+  "canonical_prep_command": "./scripts/prep39083 deploy",
+  "state_machine": {
+    "fresh_clean": "PASS",
+    "existing_accepted_running": "PASS",
+    "existing_accepted_stopped": "PASS",
+    "same_release_rerun": "PASS",
+    "failed_first_install_recoverable": "PASS",
+    "existing_state_ambiguous": "FAIL_CLOSED_PASS",
+    "database_state_inferred_from_container_only": false
+  },
+  "secret_selection_priority": [
+    "existing valid .env.prep.runtime",
+    "legacy generated secret in .env.prep",
+    "proven recoverable failed-install credential path",
+    "new generation only for proven fresh/recoverable state"
+  ],
+  "residual_recovery": {
+    "postgres_public_tables_empty_required": true,
+    "neo4j_nodes_zero_required": true,
+    "postgres_password_rotation_transport": "STDIN",
+    "automatic_volume_deletion": false,
+    "durable_state_behavior": "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY"
+  },
+  "k9_contract": {
+    "studio_database_url_class": "FEATURE_REQUIRED_WHEN_K9_ENABLED",
+    "url_absent": "CORE_BOOT_PASS / K9_DEFERRED",
+    "url_present": "K9_DAILY_ENABLED / MANAGED_ASSETS_REQUIRED",
+    "fake_url_or_state": false,
+    "k9_and_mcp_subjects_distinct": true
+  },
+  "isolated_docker_verification": {
+    "result": "PASS",
+    "duration_seconds": 197.46,
+    "fresh_zero_artifacts": "PASS",
+    "fresh_postgres_shared_credential": "PASS",
+    "same_release_idempotence": "PASS",
+    "running_update": "PASS",
+    "stopped_update": "PASS",
+    "empty_residual_non_destructive_recovery": "PASS",
+    "durable_row_ambiguous_rejection": "PASS"
+  },
+  "source_gates": {
+    "deployment_handoff_focused": "31/31 PASS",
+    "bootstrap_smoke_node": "6/6 PASS",
+    "poc_server": "122/122 PASS",
+    "ui": "90 files / 658 tests PASS",
+    "eslint": "PASS",
+    "typescript": "PASS",
+    "build_poc": "PASS",
+    "static": "PASS",
+    "ruff": "PASS",
+    "mypy_strict": "PASS",
+    "shell_node_python_syntax": "PASS",
+    "compose": "PASS",
+    "diff_check": "PASS",
+    "secret_scan": "PASS"
+  },
+  "dev_runtime": {
+    "image_id": "sha256:884e01f6b47a5147ad320a7b5b4131bad055f6d8a0859e595321068ac9ecd120",
+    "image_os": "linux",
+    "image_architecture": "amd64",
+    "oci_revision": "99acf0d2a8be977323ead2f8647ef5b2ad77add7",
+    "port_39083_http": 200,
+    "container_health": "healthy",
+    "container_restarts": 0,
+    "protected_api_unauthenticated_http": 401,
+    "port_39090_http": 200
+  },
+  "cleanup": {
+    "temporary_simulation_containers": 0,
+    "temporary_simulation_networks": 0,
+    "temporary_simulation_volumes": 0,
+    "temporary_effective_environment_files": 0,
+    "temporary_credential_files": 0,
+    "accepted_persistent_state_deleted": false
+  },
+  "actual_prep_deployment": "NOT EXECUTED",
+  "actual_prep_runtime_verification": "NOT EXECUTED",
+  "actual_ops_deployment": "NOT EXECUTED",
+  "actual_ops_runtime_verification": "NOT EXECUTED",
+  "current_blocker": "NONE"
+}
