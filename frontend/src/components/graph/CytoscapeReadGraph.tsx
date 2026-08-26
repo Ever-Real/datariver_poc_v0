@@ -239,7 +239,20 @@ export function graphStyles(
       },
       { selector: 'node.graph-hover-neighbor', style: { 'text-opacity': 1 } },
       { selector: 'node.graph-hover', style: { 'text-opacity': 1 } },
-      { selector: 'edge', style: { 'text-opacity': 0, width: 2.2 } },
+      {
+        selector: 'edge',
+        style: {
+          'font-size': 8.5,
+          label: 'data(displayLabel)',
+          'text-background-color': '#ffffff',
+          'text-background-opacity': 0.9,
+          'text-background-padding': '2px',
+          'text-opacity': 1,
+          'text-rotation': 'autorotate',
+          width: 2.2,
+        },
+      },
+      { selector: 'edge.graph-hover-edge', style: { 'text-opacity': 1 } },
     )
   }
   return styles

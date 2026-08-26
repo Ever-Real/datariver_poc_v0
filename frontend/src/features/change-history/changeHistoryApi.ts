@@ -246,6 +246,17 @@ function assertEvent(value: unknown, detail = false): asserts value is ChangeHis
       !== (value.change_type === 'SCHEMA_CHANGE'))
     || !bounded(value.source_aspect, 100)
     || !operations.has(value.operation as ChangeHistoryOperation)
+    || !['TABLE', 'COLUMN'].includes(String(value.target_kind))
+    || !(value.field_name === null || bounded(value.field_name, 900))
+    || !['TABLE_CREATE', 'TABLE_DELETE', 'TABLE_CHANGE', 'COLUMN_CREATE', 'COLUMN_DELETE', 'COLUMN_CHANGE']
+      .includes(String(value.presentation_change_type))
+    || !bounded(value.change_summary, 100)
+    || !Array.isArray(value.change_detail) || value.change_detail.length > 8
+    || value.change_detail.some((item) => !isRecord(item)
+      || !['DESCRIPTION', 'TAG', 'GLOSSARY_TERM', 'OWNER', 'DOMAIN', 'TYPE', 'NULLABLE', 'SCHEMA', 'PROPERTY']
+        .includes(String(item.field))
+      || !(item.before === null || bounded(item.before, 500))
+      || !(item.after === null || bounded(item.after, 500)))
     || !(value.precision === null || precisions.has(value.precision as ChangeHistoryPrecision))
     || !nullableTimestamp(value.source_occurred_at) || !timestamp(value.detected_at) || !timestamp(value.captured_at)
     || !nonNegativeInteger(value.link_version)

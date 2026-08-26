@@ -704,6 +704,87 @@ function changeHistoryAllowedLinkActions(row, principal) {
   return []
 }
 
+function changeHistoryPresentationRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+}
+
+function changeHistoryPresentationValue(value) {
+  if (value === null || value === undefined || value === '') return null
+  const rendered = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : JSON.stringify(value)
+  if (rendered === undefined) return null
+  return rendered.length <= 500 ? rendered : `${rendered.slice(0, 497)}…`
+}
+
+export function changeHistoryPresentation(row) {
+  const event = row.event
+  const before = changeHistoryPresentationRecord(event.before_data)
+  const after = changeHistoryPresentationRecord(event.after_data)
+  const fieldName = boundedString(after?.field_path, 900) || boundedString(before?.field_path, 900) || null
+  const targetKind = (fieldName
+    || String(event.normalized_entity_key).startsWith('field:')
+    || String(event.normalized_entity_key).startsWith('field-metadata:'))
+    ? 'COLUMN'
+    : 'TABLE'
+  const lifecycle = event.category === 'LIFECYCLE' && ['entity', 'status'].includes(event.source_aspect)
+  const columnLifecycle = targetKind === 'COLUMN'
+    && event.category === 'TECHNICAL_SCHEMA'
+    && event.source_aspect === 'schemaMetadata'
+  const presentationChangeType = lifecycle && event.operation === 'CREATE' ? 'TABLE_CREATE'
+    : lifecycle && event.operation === 'DELETE' ? 'TABLE_DELETE'
+      : columnLifecycle && event.operation === 'CREATE' ? 'COLUMN_CREATE'
+        : columnLifecycle && event.operation === 'DELETE' ? 'COLUMN_DELETE'
+          : targetKind === 'COLUMN' ? 'COLUMN_CHANGE' : 'TABLE_CHANGE'
+  const fields = []
+  const addField = (field, beforeValue, afterValue) => {
+    const beforeText = changeHistoryPresentationValue(beforeValue)
+    const afterText = changeHistoryPresentationValue(afterValue)
+    if (beforeText === afterText) return
+    fields.push({ field, before: beforeText, after: afterText })
+  }
+  if (!['TABLE_CREATE', 'TABLE_DELETE', 'COLUMN_CREATE', 'COLUMN_DELETE'].includes(presentationChangeType)) {
+    if (event.category === 'DOCUMENTATION') {
+      addField('DESCRIPTION', before?.description, after?.description)
+      addField('PROPERTY', before?.custom_properties, after?.custom_properties)
+    } else if (event.category === 'TAG') {
+      addField('TAG', before?.tag_urn, after?.tag_urn)
+    } else if (event.category === 'GLOSSARY_TERM') {
+      addField('GLOSSARY_TERM', before?.term_urn, after?.term_urn)
+    } else if (event.category === 'DOMAIN') {
+      addField('DOMAIN', before?.domain_urn, after?.domain_urn)
+    } else if (event.category === 'OWNERSHIP') {
+      addField('OWNER', before && {
+        owner_urn: before.owner_urn ?? null,
+        ownership_type: before.ownership_type ?? null,
+      }, after && {
+        owner_urn: after.owner_urn ?? null,
+        ownership_type: after.ownership_type ?? null,
+      })
+    } else if (event.category === 'TECHNICAL_SCHEMA' && targetKind === 'COLUMN') {
+      addField('TYPE', before && {
+        native_data_type: before.native_data_type ?? null,
+        logical_type: before.logical_type ?? null,
+      }, after && {
+        native_data_type: after.native_data_type ?? null,
+        logical_type: after.logical_type ?? null,
+      })
+      addField('NULLABLE', before?.nullable, after?.nullable)
+      addField('DESCRIPTION', before?.description, after?.description)
+    } else if (event.category === 'TECHNICAL_SCHEMA') {
+      addField('SCHEMA', before, after)
+    }
+    if (fields.length === 0 && (before !== null || after !== null)) addField('PROPERTY', before, after)
+  }
+  return {
+    target_kind: targetKind,
+    field_name: fieldName,
+    presentation_change_type: presentationChangeType,
+    change_summary: `${event.operation} · ${event.category}`,
+    change_detail: fields.slice(0, 8),
+  }
+}
+
 function changeHistoryPublicRow(row, detail = false) {
   const event = row.event
   return {
@@ -729,6 +810,7 @@ function changeHistoryPublicRow(row, detail = false) {
     current_primary: row.current.primary,
     current_candidates: row.current.candidates,
     link_version: row.current.link_version,
+    ...changeHistoryPresentation(row),
     ...(detail ? { before: event.before_data, after: event.after_data } : {}),
   }
 }

@@ -71,16 +71,16 @@ const eventColumns: ColumnDef<ChangeHistoryEvent>[] = [
 ]
 
 const historyColumns: ColumnDef<ChangeHistoryEvent>[] = [
-  { accessorKey: 'detected_at', header: '감지 시각', size: 150, enableSorting: false, cell: ({ row }) => formatKst(row.original.detected_at) },
-  { accessorKey: 'change_type', header: '유형', size: 130, enableSorting: false },
-  { id: 'location', header: '시스템 / Database / Schema', size: 240, enableSorting: false, cell: ({ row }) => {
-    const event = row.original
-    return [event.system.system_id ?? '시스템 미지정', event.locator?.database_name, event.locator?.schema_name].filter(Boolean).join(' · ')
+  { id: 'platform', header: '플랫폼', size: 90, enableSorting: false, meta: { className: 'detected-change-ellipsis' }, cell: ({ row }) => <span title={row.original.locator?.platform ?? ''}>{row.original.locator?.platform ?? '없음'}</span> },
+  { id: 'schema', header: '스키마', size: 130, enableSorting: false, meta: { className: 'detected-change-ellipsis' }, cell: ({ row }) => <span title={row.original.locator?.schema_name ?? ''}>{row.original.locator?.schema_name ?? '없음'}</span> },
+  { id: 'change_date', header: '변경일', size: 110, enableSorting: false, meta: { className: 'detected-change-nowrap' }, cell: ({ row }) => formatKstDate(row.original.source_occurred_at ?? row.original.detected_at) },
+  { id: 'presentation_change_type', header: '변경유형', size: 130, enableSorting: false, meta: { className: 'detected-change-nowrap' }, cell: ({ row }) => presentationChangeTypeLabel(row.original.presentation_change_type) },
+  { id: 'table', header: '테이블명', size: 160, enableSorting: false, meta: { className: 'detected-change-ellipsis' }, cell: ({ row }) => <span title={row.original.locator?.asset_name ?? row.original.entity_key}>{row.original.locator?.asset_name ?? row.original.entity_key}</span> },
+  { id: 'summary', header: '변경요약', size: 150, enableSorting: false, meta: { className: 'detected-change-wrap' }, cell: ({ row }) => <span title={row.original.change_summary}>{row.original.change_summary}</span> },
+  { id: 'detail', header: '변경내용', size: 230, enableSorting: false, meta: { className: 'detected-change-wrap detected-change-detail-cell' }, cell: ({ row }) => {
+    const detail = presentationChangeDetail(row.original)
+    return <span title={detail}>{detail}</span>
   } },
-  { id: 'target', header: '영향 대상', size: 190, enableSorting: false, cell: ({ row }) => row.original.locator?.asset_name ?? row.original.entity_key },
-  { id: 'summary', header: '변경 요약', size: 180, enableSorting: false, cell: ({ row }) => `${row.original.operation} · ${row.original.category}` },
-  { id: 'status', header: '상태 / 관련 CR', size: 180, enableSorting: false, cell: ({ row }) => row.original.current_primary ? `${row.original.current_stage} · ${row.original.current_primary.change_request_id}` : `${row.original.current_stage} · 미연결` },
-  { id: 'source', header: 'Source', size: 160, enableSorting: false, cell: ({ row }) => `DataHub · ${row.original.source_aspect}` },
 ]
 
 export function DetectedChangeCrPanel({
@@ -344,6 +344,8 @@ export function DetectedChangeCrPanel({
         getRowId={(event) => event.event_id}
         emptyMessage={changeHistoryEmptyMessage(page, Boolean(selection))}
         onRowActivate={(event) => void loadDetail(event.event_id)}
+        className={dateRange && !selection ? 'detected-change-history-table' : undefined}
+        fitContainer={Boolean(dateRange && !selection)}
       /> : page ? (
         <div className="detected-change-table-wrap">
           <table>
@@ -449,6 +451,40 @@ function actionLabel(action: ChangeHistoryLinkAction) {
 
 function formatKst(value: string) {
   return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
+}
+
+function formatKstDate(value: string) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(value))
+}
+
+function presentationChangeTypeLabel(value: ChangeHistoryEvent['presentation_change_type']) {
+  return ({
+    TABLE_CREATE: '테이블생성',
+    TABLE_DELETE: '테이블삭제',
+    TABLE_CHANGE: '테이블변경',
+    COLUMN_CREATE: '컬럼추가',
+    COLUMN_DELETE: '컬럼삭제',
+    COLUMN_CHANGE: '컬럼변경',
+  })[value]
+}
+
+function presentationChangeDetail(event: ChangeHistoryEvent) {
+  const tableName = event.locator?.asset_name ?? event.entity_key
+  if (event.presentation_change_type === 'TABLE_CREATE') return `테이블 ${tableName} 생성`
+  if (event.presentation_change_type === 'TABLE_DELETE') return `테이블 ${tableName} 삭제`
+  if (event.presentation_change_type === 'COLUMN_CREATE') return `컬럼 ${event.field_name ?? '이름 없음'} 생성`
+  if (event.presentation_change_type === 'COLUMN_DELETE') return `컬럼 ${event.field_name ?? '이름 없음'} 삭제`
+  const fieldLabels: Record<ChangeHistoryEvent['change_detail'][number]['field'], string> = {
+    DESCRIPTION: 'Desc', TAG: 'Tag', GLOSSARY_TERM: 'Term', OWNER: 'Owner', DOMAIN: 'Domain',
+    TYPE: 'Type', NULLABLE: 'Nullable', SCHEMA: 'Schema', PROPERTY: 'Property',
+  }
+  const prefix = event.target_kind === 'COLUMN' ? `${event.field_name ?? '컬럼 이름 없음'} ` : ''
+  const changes = event.change_detail.map((change) => (
+    `${prefix}${fieldLabels[change.field]} 기존(${change.before ?? '없음'})에서 변경(${change.after ?? '없음'})`
+  ))
+  return changes.length ? changes.join(' · ') : event.change_summary
 }
 
 function formatDiff(value: Record<string, unknown> | null) {

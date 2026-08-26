@@ -755,7 +755,11 @@ export function ChatPage({ client }: { client: ApiClient }) {
                     <SafeMarkdown value={message.text} />
                   </div>
                 ) : <div className="chat-user-bubble"><p className="chat-question-text">{message.text}</p></div>}
-                <footer className={message.role === 'user' ? 'chat-message-actions chat-message-actions-user' : 'chat-message-actions'}>
+                <div
+                  aria-label={message.role === 'user' ? '질문 작업' : '답변 작업'}
+                  className={message.role === 'user' ? 'chat-message-actions chat-message-actions-user' : 'chat-message-actions'}
+                  role="group"
+                >
                   {message.role === 'assistant' && (
                     <button
                       aria-label="답변 근거 다시 보기"
@@ -784,7 +788,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                       <Pencil size={12} />메시지 편집
                     </button>
                   )}
-                </footer>
+                </div>
               </article>
             ))}
             {loading && (

@@ -253,6 +253,18 @@ function compactCanvasLabel(value: string, maximum = 28): string {
   return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum - 1)}…`
 }
 
+export function searchLineageEdgeLabel(
+  edge: Pick<ReadGraphEdge, 'label' | 'relationType'>,
+  branch: ReadGraphRole,
+): string {
+  if (branch === 'UPSTREAM') return 'Upstream'
+  if (branch === 'DOWNSTREAM') return 'Downstream'
+  const relationType = edge.relationType.trim()
+  if (relationType && relationType.toLocaleUpperCase() !== 'LINEAGE') return relationType
+  const label = edge.label.trim()
+  return label && label.toLocaleUpperCase() !== 'LINEAGE' ? label : 'Lineage'
+}
+
 export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] {
   const nodeIds = new Set<string>()
   const nodeRoles = new Map(graph.nodes.map((node) => [node.id, node.role ?? 'NEUTRAL']))
@@ -283,6 +295,11 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
       throw new Error(`Graph edge ${edge.id} references a missing canonical endpoint.`)
     }
     edgeIds.add(edge.id)
+    const branch: ReadGraphRole = nodeRoles.get(edge.source) === 'UPSTREAM' || nodeRoles.get(edge.target) === 'UPSTREAM'
+      ? 'UPSTREAM'
+      : nodeRoles.get(edge.source) === 'DOWNSTREAM' || nodeRoles.get(edge.target) === 'DOWNSTREAM'
+        ? 'DOWNSTREAM'
+        : 'NEUTRAL'
     elements.push({
       group: 'edges',
       data: {
@@ -290,12 +307,9 @@ export function toCytoscapeElements(graph: ReadGraphModel): ElementDefinition[] 
         source: edge.source,
         target: edge.target,
         label: edge.label,
+        displayLabel: searchLineageEdgeLabel(edge, branch),
         relationType: edge.relationType,
-        branch: nodeRoles.get(edge.source) === 'UPSTREAM' || nodeRoles.get(edge.target) === 'UPSTREAM'
-          ? 'UPSTREAM'
-          : nodeRoles.get(edge.source) === 'DOWNSTREAM' || nodeRoles.get(edge.target) === 'DOWNSTREAM'
-            ? 'DOWNSTREAM'
-            : 'NEUTRAL',
+        branch,
       },
     })
   }

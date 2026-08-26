@@ -9,6 +9,24 @@ export type ChangeHistoryCategory =
 
 export type ChangeHistoryChangeType = 'SCHEMA_CHANGE' | 'METADATA_CHANGE'
 export type ChangeHistoryOperation = 'CREATE' | 'UPDATE' | 'UPSERT' | 'DELETE' | 'ADD' | 'REMOVE'
+export type ChangeHistoryTargetKind = 'TABLE' | 'COLUMN'
+export type ChangeHistoryPresentationType =
+  | 'TABLE_CREATE'
+  | 'TABLE_DELETE'
+  | 'TABLE_CHANGE'
+  | 'COLUMN_CREATE'
+  | 'COLUMN_DELETE'
+  | 'COLUMN_CHANGE'
+export type ChangeHistoryPresentationField =
+  | 'DESCRIPTION'
+  | 'TAG'
+  | 'GLOSSARY_TERM'
+  | 'OWNER'
+  | 'DOMAIN'
+  | 'TYPE'
+  | 'NULLABLE'
+  | 'SCHEMA'
+  | 'PROPERTY'
 export type ChangeHistoryPrecision =
   | 'EXACT_TIMELINE'
   | 'EXACT_MCL'
@@ -53,6 +71,15 @@ export interface ChangeHistoryEvent {
   change_type: ChangeHistoryChangeType
   source_aspect: string
   operation: ChangeHistoryOperation
+  target_kind: ChangeHistoryTargetKind
+  field_name: string | null
+  presentation_change_type: ChangeHistoryPresentationType
+  change_summary: string
+  change_detail: Array<{
+    field: ChangeHistoryPresentationField
+    before: string | null
+    after: string | null
+  }>
   precision: ChangeHistoryPrecision | null
   source_occurred_at: string | null
   detected_at: string

@@ -564,8 +564,11 @@ describe('ChatPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '질문 복사' }))
     expect(await screen.findByRole('status')).toHaveTextContent('질문 복사 완료')
-    expect(screen.getByRole('button', { name: '질문 복사' }).closest('footer'))
-      .toHaveClass('chat-message-actions-user')
+    const questionActions = screen.getByRole('group', { name: '질문 작업' })
+    expect(questionActions.tagName).toBe('DIV')
+    expect(questionActions).toHaveClass('chat-message-actions-user')
+    expect(questionActions.closest('footer')).toBeNull()
+    expect(questionActions.parentElement).toHaveClass('message-user')
     clipboard.writeText.mockRejectedValueOnce(new Error('denied'))
     fireEvent.click(screen.getByRole('button', { name: '답변 복사' }))
     expect(await screen.findByRole('status')).toHaveTextContent('답변 복사 실패')

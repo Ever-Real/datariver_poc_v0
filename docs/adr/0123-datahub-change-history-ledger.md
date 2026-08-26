@@ -341,7 +341,7 @@ API는 고정 typed adapter 결과만 제공하고 raw GraphQL/Avro/SQL/offset-r
 | 계약 | 의미 |
 |---|---|
 | `GET /api/v1/change-history/summary` | 권한 범위의 category/precision/current health와 `source_occurred_at`, `detected_at`, `captured_at`, `effective_week_start`, `history_available_from`, `ledger_guarantee_from`, `first_exact_capture_at`, `first_timeline_checkpoint`, MCL 적용 시 nullable partition별 `first_mcl_offset`, `last_successful_capture_at` watermark 요약 |
-| `GET /api/v1/change-history/events?...&cursor=&limit=` | 발생 시각/event ID keyset 순서의 bounded list; category, precision, System, assignee, CR link 필터 |
+| `GET /api/v1/change-history/events?...&cursor=&limit=` | 발생 시각/event ID keyset 순서의 bounded list; category, precision, System, assignee, CR link 필터와 정규화된 `target_kind`, `field_name`, `presentation_change_type`, `change_summary`, 최대 8개 typed `change_detail` projection. 표 한 페이지가 event별 detail을 다시 조회하지 않으며 raw provider document는 list에 포함하지 않는다. |
 | `GET /api/v1/change-history/events/{event_id}` | bounded normalized diff, current/tombstone, source precision, assignee/link evidence의 정확한 detail |
 | `GET /api/v1/change-history/weekly?week_start=` | 아래 exact KST week/stage 집계 |
 | `GET /api/v1/change-history/events/{event_id}/cr-links` | primary/candidate와 append-only link history의 bounded page |

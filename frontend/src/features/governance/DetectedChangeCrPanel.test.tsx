@@ -97,10 +97,13 @@ describe('DetectedChangeCrPanel', () => {
 
     expect(await screen.findByRole('heading', { name: 'Schema / Metadata 감지 변경 이력' })).toBeInTheDocument()
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      '감지 시각', '유형', '시스템 / Database / Schema', '영향 대상', '변경 요약', '상태 / 관련 CR', 'Source',
+      '플랫폼', '스키마', '변경일', '변경유형', '테이블명', '변경요약', '변경내용',
     ])
-    expect(screen.getByText('SCHEMA_CHANGE')).toBeInTheDocument()
-    expect(screen.getByText('DataHub · schemaMetadata')).toBeInTheDocument()
+    expect(screen.getByText('컬럼변경')).toBeInTheDocument()
+    expect(screen.getByText('customer_id Nullable 기존(true)에서 변경(false)')).toBeInTheDocument()
+    expect(screen.getByText('2026-08-11')).toBeInTheDocument()
+    expect(screen.getByLabelText('현재 기간과 권한 범위의 Schema 및 Metadata 감지 변경 이력 스크롤 영역'))
+      .toHaveClass('detected-change-history-table')
     let url = new URL(eventPaths(request)[0]!, 'https://datariver.invalid')
     expect(Object.fromEntries(url.searchParams)).toEqual({ limit: '50', date_from: '2026-08-01', date_to: '2026-08-24' })
     expect(weeklyPaths(request)).toHaveLength(0)
@@ -114,6 +117,42 @@ describe('DetectedChangeCrPanel', () => {
     const detail = await screen.findByLabelText('선택 이벤트 CR 연결')
     expect(within(detail).getByText('DataHub · schemaMetadata · EXACT_MCL')).toBeInTheDocument()
     expect(within(detail).getAllByText('{}')).toHaveLength(2)
+  })
+
+  it('renders the bounded seven-column presentation matrix without list-to-detail N+1 requests', async () => {
+    const items = [
+      presentationEvent(1, { category: 'LIFECYCLE', source_aspect: 'entity', operation: 'CREATE', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CREATE', change_summary: 'CREATE · LIFECYCLE', change_detail: [] }),
+      presentationEvent(2, { category: 'LIFECYCLE', source_aspect: 'status', operation: 'DELETE', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_DELETE', change_summary: 'DELETE · LIFECYCLE', change_detail: [] }),
+      presentationEvent(3, { category: 'DOCUMENTATION', source_aspect: 'datasetProperties', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE', change_summary: 'UPDATE · DOCUMENTATION', change_detail: [{ field: 'DESCRIPTION', before: 'old', after: 'new' }] }),
+      presentationEvent(4, { category: 'TAG', source_aspect: 'globalTags', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE', change_summary: 'ADD · TAG', change_detail: [{ field: 'TAG', before: null, after: 'curated' }] }),
+      presentationEvent(5, { category: 'GLOSSARY_TERM', source_aspect: 'glossaryTerms', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE', change_summary: 'ADD · GLOSSARY_TERM', change_detail: [{ field: 'GLOSSARY_TERM', before: null, after: 'business-term' }] }),
+      presentationEvent(6, { category: 'OWNERSHIP', source_aspect: 'ownership', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE', change_summary: 'UPDATE · OWNERSHIP', change_detail: [{ field: 'OWNER', before: 'owner-a', after: 'owner-b' }] }),
+      presentationEvent(7, { category: 'DOMAIN', source_aspect: 'domains', target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE', change_summary: 'UPDATE · DOMAIN', change_detail: [{ field: 'DOMAIN', before: 'domain-a', after: 'domain-b' }] }),
+      presentationEvent(8, { operation: 'CREATE', target_kind: 'COLUMN', field_name: 'amount', presentation_change_type: 'COLUMN_CREATE', change_summary: 'CREATE · TECHNICAL_SCHEMA', change_detail: [] }),
+      presentationEvent(9, { operation: 'DELETE', target_kind: 'COLUMN', field_name: 'legacy_amount', presentation_change_type: 'COLUMN_DELETE', change_summary: 'DELETE · TECHNICAL_SCHEMA', change_detail: [] }),
+      presentationEvent(10, { target_kind: 'COLUMN', field_name: 'amount', presentation_change_type: 'COLUMN_CHANGE', change_summary: 'UPDATE · TECHNICAL_SCHEMA', change_detail: [{ field: 'TYPE', before: 'integer', after: 'bigint' }, { field: 'NULLABLE', before: 'true', after: 'false' }, { field: 'DESCRIPTION', before: 'old', after: 'new' }] }),
+    ]
+    const request = vi.fn((path: string) => path.startsWith('/change-history/events?')
+      ? Promise.resolve(eventPage(items))
+      : Promise.reject(new Error(`Unexpected path: ${path}`)))
+    const requestWithMeta = vi.fn()
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[]}
+      dateRange={{ from: '2026-08-01', to: '2026-08-24' }}
+    />)
+
+    expect(await screen.findByText('테이블 orders 생성')).toBeInTheDocument()
+    expect(screen.getByText('테이블 orders 삭제')).toBeInTheDocument()
+    expect(screen.getByText('Desc 기존(old)에서 변경(new)')).toBeInTheDocument()
+    expect(screen.getByText('Tag 기존(없음)에서 변경(curated)')).toBeInTheDocument()
+    expect(screen.getByText('Term 기존(없음)에서 변경(business-term)')).toBeInTheDocument()
+    expect(screen.getByText('Owner 기존(owner-a)에서 변경(owner-b)')).toBeInTheDocument()
+    expect(screen.getByText('Domain 기존(domain-a)에서 변경(domain-b)')).toBeInTheDocument()
+    expect(screen.getByText('컬럼 amount 생성')).toBeInTheDocument()
+    expect(screen.getByText('컬럼 legacy_amount 삭제')).toBeInTheDocument()
+    expect(screen.getByText('amount Type 기존(integer)에서 변경(bigint) · amount Nullable 기존(true)에서 변경(false) · amount Desc 기존(old)에서 변경(new)')).toBeInTheDocument()
+    expect(requestWithMeta).not.toHaveBeenCalled()
   })
 
   it('hides every mutation control when the fresh event grants no link actions', async () => {
@@ -412,6 +451,11 @@ function event(allowedLinkActions: ChangeHistoryLinkAction[] = []): ChangeHistor
     change_type: 'SCHEMA_CHANGE',
     source_aspect: 'schemaMetadata',
     operation: 'UPDATE',
+    target_kind: 'COLUMN',
+    field_name: 'customer_id',
+    presentation_change_type: 'COLUMN_CHANGE',
+    change_summary: 'UPDATE · TECHNICAL_SCHEMA',
+    change_detail: [{ field: 'NULLABLE', before: 'true', after: 'false' }],
     precision: 'EXACT_MCL',
     source_occurred_at: timestamp,
     detected_at: timestamp,
@@ -431,6 +475,20 @@ function event(allowedLinkActions: ChangeHistoryLinkAction[] = []): ChangeHistor
     current_primary: null,
     current_candidates: [],
     link_version: 0,
+  }
+}
+
+function presentationEvent(index: number, overrides: Partial<ChangeHistoryEvent>): ChangeHistoryEvent {
+  const merged = {
+    ...event(),
+    event_id: index.toString(16).padStart(64, '0'),
+    ...overrides,
+  }
+  return {
+    ...merged,
+    change_type: merged.category === 'TECHNICAL_SCHEMA' && merged.source_aspect === 'schemaMetadata'
+      ? 'SCHEMA_CHANGE'
+      : 'METADATA_CHANGE',
   }
 }
 

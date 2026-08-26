@@ -1682,6 +1682,67 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
   }
 })
 
+test('projects bounded Table and Column presentation without list-detail fanout', async () => {
+  const { changeHistoryPresentation } = await import('./poc-server.mjs?change-history-presentation-contract')
+  const event = (overrides) => ({
+    normalized_entity_key: 'dataset-properties', category: 'DOCUMENTATION', source_aspect: 'datasetProperties',
+    operation: 'UPDATE', before_data: null, after_data: null, ...overrides,
+  })
+  const present = (overrides) => changeHistoryPresentation({ event: event(overrides) })
+
+  assert.deepEqual(present({
+    normalized_entity_key: 'asset:lifecycle', category: 'LIFECYCLE', source_aspect: 'entity', operation: 'CREATE',
+  }), {
+    target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CREATE',
+    change_summary: 'CREATE · LIFECYCLE', change_detail: [],
+  })
+  assert.equal(present({
+    normalized_entity_key: 'asset:lifecycle:removed', category: 'LIFECYCLE', source_aspect: 'status', operation: 'DELETE',
+    before_data: { removed: false }, after_data: { removed: true },
+  }).presentation_change_type, 'TABLE_DELETE')
+  assert.deepEqual(present({
+    before_data: { description: 'old', custom_properties: {} },
+    after_data: { description: 'new', custom_properties: {} },
+  }), {
+    target_kind: 'TABLE', field_name: null, presentation_change_type: 'TABLE_CHANGE',
+    change_summary: 'UPDATE · DOCUMENTATION',
+    change_detail: [{ field: 'DESCRIPTION', before: 'old', after: 'new' }],
+  })
+  assert.deepEqual(present({
+    normalized_entity_key: 'field:amount', category: 'TECHNICAL_SCHEMA', source_aspect: 'schemaMetadata', operation: 'CREATE',
+    after_data: { field_path: 'amount', native_data_type: 'integer', logical_type: 'NumberType', nullable: true },
+  }).presentation_change_type, 'COLUMN_CREATE')
+  assert.equal(present({
+    normalized_entity_key: 'field:amount', category: 'TECHNICAL_SCHEMA', source_aspect: 'schemaMetadata', operation: 'DELETE',
+    before_data: { field_path: 'amount', native_data_type: 'integer', logical_type: 'NumberType', nullable: true },
+  }).presentation_change_type, 'COLUMN_DELETE')
+  assert.deepEqual(present({
+    normalized_entity_key: 'field:amount', category: 'TECHNICAL_SCHEMA', source_aspect: 'schemaMetadata', operation: 'UPDATE',
+    before_data: { field_path: 'amount', native_data_type: 'integer', logical_type: 'NumberType', nullable: true, description: 'old' },
+    after_data: { field_path: 'amount', native_data_type: 'bigint', logical_type: 'NumberType', nullable: false, description: 'new' },
+  }).change_detail.map(({ field }) => field), ['TYPE', 'NULLABLE', 'DESCRIPTION'])
+
+  const semanticCases = [
+    ['TAG', 'globalTags', { tag_urn: 'urn:li:tag:old' }, { tag_urn: 'urn:li:tag:new' }, 'TAG'],
+    ['GLOSSARY_TERM', 'glossaryTerms', { term_urn: 'urn:li:glossaryTerm:old' }, { term_urn: 'urn:li:glossaryTerm:new' }, 'GLOSSARY_TERM'],
+    ['DOMAIN', 'domains', { domain_urn: 'urn:li:domain:old' }, { domain_urn: 'urn:li:domain:new' }, 'DOMAIN'],
+    ['OWNERSHIP', 'ownership', { owner_urn: 'urn:li:corpuser:old', ownership_type: 'TECHNICAL_OWNER' }, { owner_urn: 'urn:li:corpuser:new', ownership_type: 'DATAOWNER' }, 'OWNER'],
+  ]
+  for (const [category, sourceAspect, beforeData, afterData, expectedField] of semanticCases) {
+    const projection = present({
+      category, source_aspect: sourceAspect, operation: 'UPDATE', before_data: beforeData, after_data: afterData,
+    })
+    assert.equal(projection.presentation_change_type, 'TABLE_CHANGE')
+    assert.equal(projection.change_detail[0].field, expectedField)
+  }
+  const columnDescription = present({
+    normalized_entity_key: 'field:amount', category: 'DOCUMENTATION', source_aspect: 'editableSchemaMetadata', operation: 'UPDATE',
+    before_data: { field_path: 'amount', description: 'old' }, after_data: { field_path: 'amount', description: 'new' },
+  })
+  assert.equal(columnDescription.presentation_change_type, 'COLUMN_CHANGE')
+  assert.deepEqual(columnDescription.change_detail, [{ field: 'DESCRIPTION', before: 'old', after: 'new' }])
+})
+
 test('prunes assigned-role rows, keeps viewer read-only, and fails closed on stale or unmapped mutations', async () => {
   const { createPocServer } = await import('./poc-server.mjs?change-history-role-contract')
   const { approvedDefaultFeatureSecurityPolicy } = await import('./poc-feature-security-policy.mjs')

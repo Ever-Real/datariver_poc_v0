@@ -23,6 +23,8 @@ interface DenseDataTableProps<T> {
   expandedRowId?: string
   onRowActivate?: (row: T) => void
   renderExpandedRow?: (row: T) => ReactNode
+  className?: string
+  fitContainer?: boolean
 }
 
 function columnCellClassName(meta: unknown): string | undefined {
@@ -44,6 +46,8 @@ export function DenseDataTable<T>({
   expandedRowId,
   onRowActivate,
   renderExpandedRow,
+  className,
+  fitContainer = false,
 }: DenseDataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [expanded, setExpanded] = useState<ExpandedState>(initialExpanded && getSubRows ? true : {})
@@ -74,8 +78,8 @@ export function DenseDataTable<T>({
   }, [data, selectedRowId])
 
   return (
-    <div className="dense-table-frame" aria-busy={loading} aria-label={`${caption} 스크롤 영역`} tabIndex={0}>
-      <table className="dense-data-table" style={{ width: table.getTotalSize() }}>
+    <div className={['dense-table-frame', className].filter(Boolean).join(' ')} aria-busy={loading} aria-label={`${caption} 스크롤 영역`} tabIndex={0}>
+      <table className="dense-data-table" style={{ width: fitContainer ? '100%' : table.getTotalSize() }}>
         <caption className="sr-only">{caption}</caption>
         <thead>
           {table.getHeaderGroups().map((headerGroup) => (

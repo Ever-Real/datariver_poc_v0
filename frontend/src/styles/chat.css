@@ -353,6 +353,9 @@
   align-self: flex-end;
   padding: 0;
   color: #1b2f40;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
 }
 
 .chat-user-bubble {
@@ -622,7 +625,7 @@
   font-size: 11px;
 }
 
-.chat-conversation .message footer {
+.chat-conversation .chat-message-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -631,18 +634,19 @@
   padding-top: 7px;
 }
 
-.chat-conversation article.message-user > footer.chat-message-actions-user {
+.chat-conversation article.message-user > .chat-message-actions-user {
   justify-content: flex-end;
   gap: 2px;
   margin-top: 1px;
   border: 0;
   padding-top: 0;
-  background: none;
+  background: transparent;
+  background-color: transparent;
   background-image: none;
   box-shadow: none;
 }
 
-.chat-conversation .message footer button {
+.chat-conversation .chat-message-actions button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -655,7 +659,7 @@
   opacity: .7;
 }
 
-.chat-conversation .message footer button:hover {
+.chat-conversation .chat-message-actions button:hover {
   background: rgba(92, 117, 136, .12);
   opacity: 1;
 }

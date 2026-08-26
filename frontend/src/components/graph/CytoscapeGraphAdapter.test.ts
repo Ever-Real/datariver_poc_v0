@@ -8,6 +8,7 @@ import {
   knowledgeSnapshotToReadGraph,
   mergeReadGraphs,
   nodeGroupColor,
+  searchLineageEdgeLabel,
   toCytoscapeElements,
 } from './CytoscapeGraphAdapter'
 
@@ -62,7 +63,13 @@ describe('Cytoscape graph adapter', () => {
     ])
     expect(first.edges.map((edge) => edge.id)).toEqual(second.edges.map((edge) => edge.id))
     expect(first.edges[0]?.id).toContain('table%3Aupstream')
-    expect(toCytoscapeElements(first).map((element) => element.data.id)).toContain('table:current')
+    const elements = toCytoscapeElements(first)
+    expect(elements.map((element) => element.data.id)).toContain('table:current')
+    const edgeElements = elements.filter((element) => element.group === 'edges')
+    expect(edgeElements.map((element) => String(element.data.branch))).toEqual(['UPSTREAM', 'DOWNSTREAM'])
+    expect(edgeElements.map((element) => String(element.data.displayLabel))).toEqual(['Upstream', 'Downstream'])
+    expect(searchLineageEdgeLabel({ relationType: 'CUSTOM_RELATION', label: 'fallback' }, 'NEUTRAL')).toBe('CUSTOM_RELATION')
+    expect(searchLineageEdgeLabel({ relationType: 'LINEAGE', label: 'LINEAGE' }, 'NEUTRAL')).toBe('Lineage')
   })
 
   it('preserves canonical managed node, edge, provenance and root identities', () => {

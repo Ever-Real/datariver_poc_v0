@@ -111,6 +111,9 @@ describe('CytoscapeReadGraph', () => {
       'background-color': '#effaf4',
     })
     expect(style('node:selected')).not.toHaveProperty('width')
+    expect(style('edge')).toMatchObject({
+      label: 'data(displayLabel)', 'text-opacity': 1, 'font-size': 8.5, 'text-rotation': 'autorotate',
+    })
     expect(graphStyles(document.createElement('div')).filter((entry) => entry.selector === 'node')).toHaveLength(1)
   })
 
