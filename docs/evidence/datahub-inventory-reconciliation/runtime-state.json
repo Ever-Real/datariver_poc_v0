@@ -1,0 +1,42 @@
+{
+  "contract": "DATARIVER_DATAHUB_INVENTORY_RECONCILIATION_EVIDENCE_V1",
+  "product_sha": "d69c582867e7666b763bed67dc6def257ea6b909",
+  "prep_observation": {
+    "provider_total": 2036,
+    "provider_pages": 9,
+    "scope": "EVIDENCE_ONLY",
+    "encoded_in_runtime_or_tests": false
+  },
+  "root_cause": {
+    "phase": "INVENTORY_VALIDATION",
+    "old_invalid_invariant": "normalized_unique_current_count == raw_provider_total",
+    "correct_invariant": "raw_processed_count == provider_total == normalized_current_count + filtered_noncurrent_count + deduplicated_count"
+  },
+  "runtime_constants": {
+    "prep_specific_dataset_count": "NONE",
+    "prep_specific_page_count": "NONE",
+    "provider_total": "DYNAMIC",
+    "canonical_current_count": "INDEPENDENTLY_DERIVED"
+  },
+  "tests": {
+    "generic_inventory": "4/4 PASS",
+    "smoke": "5/5 PASS",
+    "server": "136/136 PASS",
+    "ui": "90 files / 663 PASS",
+    "prep_unit_contract": "35/35 PASS",
+    "docker_state_matrix": "PASS 205.58s",
+    "docker_smoke_retry": "PASS 203.29s"
+  },
+  "dev_runtime": {
+    "canonical_current_inventory_count": 2003,
+    "image": "datariver-poc:d69c582867e7666b763bed67dc6def257ea6b909",
+    "image_id": "sha256:edf4ae18674d25f784cde8972653d6c3649796ba61463b0f1888bdab7ffd2817",
+    "platform": "linux/amd64",
+    "oci_revision": "d69c582867e7666b763bed67dc6def257ea6b909",
+    "port_39083": "UP HTTP 200 HEALTHY RESTART 0",
+    "port_39090": "UP HTTP 200",
+    "port_39080": "UNTOUCHED DOWN"
+  },
+  "actual_prep": "NOT EXECUTED",
+  "actual_ops": "NOT EXECUTED"
+}
