@@ -574,6 +574,75 @@ def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
     assert captured.value.code == "PREP_SMOKE_UNKNOWN_FAILED"
 
 
+@pytest.mark.parametrize(
+    "classification",
+    sorted(deploy.SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES),
+)
+def test_deploy_wrapper_preserves_bounded_general_provider_smoke_classification(
+    classification: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps({"classification": classification}),
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(["node"], 2, "", "")
+            raise deploy.CommandFailure(["node"], completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            k9_mode="DEFERRED",
+        )
+
+    assert captured.value.code == classification
+
+
+def test_deploy_wrapper_rejects_untrusted_general_provider_classification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps(
+                    {"classification": "PREP_SMOKE_GENERAL_PROVIDER_UNTRUSTED_FAILED"},
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(["node"], 2, "", "")
+            raise deploy.CommandFailure(["node"], completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            k9_mode="DEFERRED",
+        )
+
+    assert captured.value.code == "PREP_SMOKE_UNKNOWN_FAILED"
+
+
 def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "except CommandFailure:" in source
@@ -636,6 +705,7 @@ def test_docker_proxy_is_step_local_and_not_an_image_environment() -> None:
     assert "npm config set strict-ssl false" in dockerfile
     assert "npm config set strict-ssl true" in dockerfile
     assert 'rm -f "${NPM_CONFIG_USERCONFIG}"' in dockerfile
+    assert "COPY frontend/poc-llm-timeout.mjs ./poc-llm-timeout.mjs" in dockerfile
     assert "HTTP_PROXY: ${HTTP_PROXY:-}" in compose
     assert "HTTPS_PROXY: ${HTTPS_PROXY:-}" in compose
     assert "NO_PROXY: ${NO_PROXY:-}" in compose

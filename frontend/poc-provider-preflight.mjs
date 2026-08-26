@@ -9,9 +9,11 @@ import {
   joinProviderUrl,
   llmEndpoint,
 } from './poc-provider-transport.mjs'
+import { parseLlmProviderTimeoutMs } from './poc-llm-timeout.mjs'
 
 const { Pool } = pg
-const timeoutMs = 60_000
+const providerTimeoutMs = 60_000
+const llmProviderTimeoutMs = parseLlmProviderTimeoutMs(process.env.POC_LLM_TIMEOUT_MS)
 
 function required(name) {
   const value = process.env[name]?.trim()
@@ -28,10 +30,10 @@ function classified(stage, kind, message, status) {
 }
 
 function statusKind(status) {
-  return [401, 403].includes(status) ? 'AUTH' : 'CONNECTIVITY'
+  return [401, 403].includes(status) ? 'AUTH' : 'HTTP'
 }
 
-async function response(providerTransport, stage, url, options) {
+async function response(providerTransport, stage, url, options, timeoutMs = providerTimeoutMs) {
   let result
   try {
     result = await providerTransport.fetch(url, {
@@ -39,8 +41,12 @@ async function response(providerTransport, stage, url, options) {
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     })
-  } catch {
-    throw classified(stage, 'CONNECTIVITY', `${stage} request failed.`)
+  } catch (error) {
+    throw classified(
+      stage,
+      error?.name === 'TimeoutError' ? 'TIMEOUT' : 'CONNECTIVITY',
+      `${stage} request failed.`,
+    )
   }
   if (!result.ok) throw classified(stage, statusKind(result.status), `${stage} request was rejected.`, result.status)
   return result
@@ -70,12 +76,12 @@ function stage(prefix) {
   }
 }
 
-async function llmPost(providerTransport, name, provider, endpoint, body) {
+async function llmPost(providerTransport, name, provider, endpoint, body, timeoutMs = providerTimeoutMs) {
   const result = await response(providerTransport, name, llmEndpoint(provider, endpoint), {
     method: 'POST',
     headers: { Authorization: `Bearer ${provider.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  })
+  }, timeoutMs)
   return result.json().catch(() => null)
 }
 
@@ -86,7 +92,7 @@ async function providerPreflights(providerTransport) {
     messages: [{ role: 'user', content: 'Reply with OK.' }],
     max_tokens: 1,
     temperature: 0,
-  })
+  }, llmProviderTimeoutMs)
   if (!Array.isArray(chatBody?.choices)) throw classified('CHAT', 'CONTRACT', 'Chat returned no choices.')
 
   const embedding = stage('LLM_EMBEDDING')

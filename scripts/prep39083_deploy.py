@@ -58,6 +58,16 @@ SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES = frozenset(
         "PREP_DATAHUB_INVENTORY_PROMOTION_FAILED",
     },
 )
+SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES = frozenset(
+    {
+        "PREP_SMOKE_GENERAL_PROVIDER_FAILED",
+        "PREP_SMOKE_GENERAL_PROVIDER_AUTH_FAILED",
+        "PREP_SMOKE_GENERAL_PROVIDER_CONNECTIVITY_FAILED",
+        "PREP_SMOKE_GENERAL_PROVIDER_CONTRACT_FAILED",
+        "PREP_SMOKE_GENERAL_PROVIDER_HTTP_FAILED",
+        "PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED",
+    },
+)
 
 
 class PrepError(RuntimeError):
@@ -1767,9 +1777,13 @@ def run_smoke(
             except PrepError:
                 failure = {}
             code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
+            if code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES and not re.fullmatch(
+                r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code
+            ):
+                code = "PREP_SMOKE_UNKNOWN_FAILED"
             if (
-                code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES
-                and not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code)
+                code.startswith("PREP_SMOKE_GENERAL_PROVIDER_")
+                and code not in SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES
             ):
                 code = "PREP_SMOKE_UNKNOWN_FAILED"
             action = (

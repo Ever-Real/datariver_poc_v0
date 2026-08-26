@@ -1,3 +1,4 @@
+/* global setTimeout */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
@@ -7,14 +8,17 @@ import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'poc-provider-preflight.mjs')
 
-async function fixture({ chatStatus = 200, environment = {} } = {}) {
+async function fixture({ chatStatus = 200, chatDelayMs = 0, environment = {} } = {}) {
   const server = createServer((request, response) => {
     const json = (status, body) => {
       response.writeHead(status, { 'Content-Type': 'application/json' })
       response.end(JSON.stringify(body))
     }
     if (request.url === '/api/graphql') json(200, { data: { search: { start: 0, count: 1, total: 1 } } })
-    else if (request.url === '/chat/completions') json(chatStatus, chatStatus === 200 ? { choices: [{}] } : { error: 'denied' })
+    else if (request.url === '/chat/completions') setTimeout(
+      () => json(chatStatus, chatStatus === 200 ? { choices: [{}] } : { error: 'denied' }),
+      chatDelayMs,
+    )
     else if (request.url === '/embeddings') json(200, { data: [{ embedding: [0.1] }] })
     else if (request.url === '/rerank') json(200, { results: [{ index: 0, score: 1 }] })
     else json(404, { error: 'not found' })
@@ -74,6 +78,28 @@ test('provider preflight classifies authentication without exposing response bod
   assert.equal(failure.status_class, '4xx')
   assert.equal(completed.stderr.includes('test-chat-token'), false)
   assert.equal(completed.stderr.includes('denied'), false)
+})
+
+test('provider preflight keeps provider HTTP rejection distinct from connectivity', async () => {
+  const completed = await fixture({ chatStatus: 502 })
+  assert.equal(completed.code, 2)
+  const failure = JSON.parse(completed.stderr.trim())
+  assert.equal(failure.stage, 'CHAT')
+  assert.equal(failure.classification, 'PREP_PREFLIGHT_CHAT_HTTP_FAILED')
+  assert.equal(failure.status_class, '5xx')
+  assert.equal(completed.stderr.includes('denied'), false)
+})
+
+test('provider preflight uses the shared bounded Chat timeout classification', async () => {
+  const completed = await fixture({
+    chatDelayMs: 1_200,
+    environment: { POC_LLM_TIMEOUT_MS: '1000' },
+  })
+  assert.equal(completed.code, 2)
+  const failure = JSON.parse(completed.stderr.trim())
+  assert.equal(failure.stage, 'CHAT')
+  assert.equal(failure.classification, 'PREP_PREFLIGHT_CHAT_TIMEOUT_FAILED')
+  assert.equal(failure.status_class, null)
 })
 
 test('provider preflight classifies invalid runtime routing before any provider request', async () => {

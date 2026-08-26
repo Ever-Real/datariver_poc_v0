@@ -76,6 +76,7 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert '"FIXED"' in contract
     contract_value = json.loads(contract)
     assert "POC_K9_SCHEDULER_ENABLED" not in contract_value["ownership"]["FIXED"]
+    assert contract_value["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "120000"
 
 
 def test_ops_override_removes_build_and_forbids_pull() -> None:
@@ -168,6 +169,11 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
 
 def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     smoke = (ROOT / "scripts" / "smoke_prep39083.mjs").read_text(encoding="utf-8")
+    compose = (ROOT / "deploy" / "poc" / "docker-compose.poc.yaml").read_text(
+        encoding="utf-8",
+    )
+    poc_example = (ROOT / "deploy" / "poc" / ".env.example").read_text(encoding="utf-8")
+    ops_example = (DEPLOYMENT / ".env.ops.example").read_text(encoding="utf-8")
 
     assert "/auth/login" in smoke
     assert "/auth/logout" in smoke
@@ -184,7 +190,11 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     assert "k9Mode === 'REQUIRED'" in smoke
     assert "'DEFERRED'" in smoke
     assert "PREP_SMOKE_GENERAL_PROVIDER_FAILED" in smoke
+    assert "PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED" in smoke
     assert "--failure-output" in smoke
+    assert "POC_LLM_TIMEOUT_MS: ${POC_LLM_TIMEOUT_MS:-120000}" in compose
+    assert "POC_LLM_TIMEOUT_MS=120000" in poc_example
+    assert "POC_LLM_TIMEOUT_MS=120000" in ops_example
 
 
 def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:

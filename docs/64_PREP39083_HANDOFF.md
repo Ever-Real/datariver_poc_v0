@@ -193,6 +193,14 @@ attempt receipt and any Product-owned durable mutation. A configured Studio DB r
 connection/`SELECT 1`; absent Studio configuration remains K9 DEFERRED. These checks use configured
 exact endpoints rather than assuming `/health` or `/models`.
 
+The tracked Product and Chat preflight share the fixed `POC_LLM_TIMEOUT_MS=120000` per-call policy.
+It is derived from `env-contract.json`, not requested from the PREP operator. The authenticated
+smoke retains a 300,000 ms outer HTTP envelope so the bounded AUTO classifier and GENERAL composer
+can complete sequentially without overriding either Product call deadline. Product timeout,
+authentication, connectivity, provider HTTP and response-contract failures remain distinct
+sanitized smoke classifications; a GENERAL route/evidence mismatch remains
+`PREP_SMOKE_GENERAL_ROUTE_FAILED`.
+
 Authenticated smoke emits stage progress and bounded heartbeats instead of hiding a long captured
 subprocess. Failures are classified as DataHub connectivity/auth, K9/semantic readiness, GENERAL
 provider/route, or administrator authentication. Sanitized failure metadata is stored in ignored

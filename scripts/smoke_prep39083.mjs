@@ -3,6 +3,8 @@
 import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import process from 'node:process'
 
+import { prepGeneralSmokeClassification } from '../frontend/poc-llm-timeout.mjs'
+
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([
   'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
@@ -46,8 +48,11 @@ async function responseJson(url, init, stage, classification) {
   let response
   try {
     response = await fetch(url, { ...init, signal: AbortSignal.timeout(300_000) })
-  } catch {
-    throw smokeFailure(stage, classification, `${stage} request failed.`)
+  } catch (error) {
+    const requestClassification = stage === 'GENERAL_PROVIDER' && error?.name === 'TimeoutError'
+      ? 'PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED'
+      : classification
+    throw smokeFailure(stage, requestClassification, `${stage} request failed.`)
   }
   const body = await response.json().catch(() => null)
   if (!response.ok) {
@@ -56,12 +61,16 @@ async function responseJson(url, init, stage, classification) {
       && inventoryFailureClassifications.has(body.code)
       ? body.code
       : classification
+    const generalClassification = stage === 'GENERAL_PROVIDER'
+      ? prepGeneralSmokeClassification(body?.code)
+      : undefined
+    const failureClassification = generalClassification || inventoryClassification
     throw smokeFailure(
       stage,
-      inventoryClassification,
+      failureClassification,
       `${stage} request was rejected.`,
       response.status,
-      inventoryClassification === body?.code ? body?.diagnostic : null,
+      failureClassification === body?.code ? body?.diagnostic : null,
     )
   }
   return { response, body }

@@ -630,6 +630,16 @@ only terminal workflow events may be persisted or returned in Chat history. The 
 uses `Cache-Control: no-store` and `X-Accel-Buffering: no`, and never transmits raw model tokens,
 thoughts, prompts, unapproved evidence, raw graph queries, credentials or adapter diagnostics.
 
+The POC OpenAI-compatible Chat adapter applies one bounded per-call timeout from
+`POC_LLM_TIMEOUT_MS`; its tracked remote-inference default is 120,000 ms and the accepted validation
+range remains 1,000 through 300,000 ms. Contextualization, AUTO classification, memory compaction
+and answer composition use the same value. A client disconnect still aborts independently. Provider
+timeout, authentication, transport, non-authentication HTTP rejection and response-contract failure
+return only the sanitized codes `POC_LLM_PROVIDER_TIMEOUT`, `POC_LLM_PROVIDER_AUTH_FAILED`,
+`POC_LLM_PROVIDER_CONNECTIVITY_FAILED`, `POC_LLM_PROVIDER_HTTP_FAILED` and
+`POC_LLM_PROVIDER_CONTRACT_FAILED`; response bodies, endpoints and credentials are never copied into
+the error contract. This changes neither routing semantics nor the zero-evidence GENERAL contract.
+
 Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
 exact policy ID/hash, database transaction time and policy-derived deadline in one locked
 transaction. Missing active policy returns `409`; a legacy-unbound, expired or superseded-policy

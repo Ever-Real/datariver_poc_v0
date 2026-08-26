@@ -55,6 +55,7 @@ COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
 COPY frontend/poc-prep-bootstrap.mjs ./poc-prep-bootstrap.mjs
 COPY frontend/poc-provider-preflight.mjs ./poc-provider-preflight.mjs
 COPY frontend/poc-provider-transport.mjs ./poc-provider-transport.mjs
+COPY frontend/poc-llm-timeout.mjs ./poc-llm-timeout.mjs
 COPY frontend/poc-disable-local-credential.mjs ./poc-disable-local-credential.mjs
 COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs

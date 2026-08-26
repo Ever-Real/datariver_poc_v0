@@ -8,7 +8,12 @@ import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 
-async function fixture(k9Mode, { chatStatus = 200, catalogFailure = null, readinessTimeoutMs = '5000' } = {}) {
+async function fixture(k9Mode, {
+  chatStatus = 200,
+  chatFailureCode = null,
+  catalogFailure = null,
+  readinessTimeoutMs = '5000',
+} = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'prep39083-smoke-'))
   const passwordFile = join(directory, 'password')
   const output = join(directory, 'smoke.json')
@@ -41,7 +46,7 @@ async function fixture(k9Mode, { chatStatus = 200, catalogFailure = null, readin
     } else if (request.url === '/poc-api/llm/chat') {
       json(chatStatus, chatStatus === 200
         ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
-        : { error: 'provider failed with sensitive body' })
+        : { code: chatFailureCode, error: 'provider failed with sensitive body' })
     } else {
       json(404, { error: 'not found' })
     }
@@ -101,6 +106,32 @@ test('PREP smoke persists sanitized stage classification and emits progress', as
   assert.equal(typeof result.failure.elapsed_ms, 'number')
   assert.match(result.completed.stdout, /\[SMOKE 1\/5\].*PASS/u)
   assert.equal(result.completed.stderr.includes('sensitive body'), false)
+})
+
+test('PREP smoke preserves bounded Product GENERAL provider failure classifications', async (context) => {
+  const mappings = {
+    POC_LLM_PROVIDER_AUTH_FAILED: 'PREP_SMOKE_GENERAL_PROVIDER_AUTH_FAILED',
+    POC_LLM_PROVIDER_CONNECTIVITY_FAILED: 'PREP_SMOKE_GENERAL_PROVIDER_CONNECTIVITY_FAILED',
+    POC_LLM_PROVIDER_CONTRACT_FAILED: 'PREP_SMOKE_GENERAL_PROVIDER_CONTRACT_FAILED',
+    POC_LLM_PROVIDER_HTTP_FAILED: 'PREP_SMOKE_GENERAL_PROVIDER_HTTP_FAILED',
+    POC_LLM_PROVIDER_TIMEOUT: 'PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED',
+  }
+  for (const [productCode, expected] of Object.entries(mappings)) {
+    await context.test(productCode, async () => {
+      const result = await fixture('deferred', { chatStatus: 502, chatFailureCode: productCode })
+      assert.equal(result.completed.code, 2)
+      assert.equal(result.failure.stage, 'GENERAL_PROVIDER')
+      assert.equal(result.failure.classification, expected)
+      assert.equal(result.failure.status_class, '5xx')
+    })
+  }
+  await context.test('unrecognized Product code retains the legacy bounded fallback', async () => {
+    const result = await fixture('deferred', {
+      chatStatus: 502,
+      chatFailureCode: 'POC_LLM_PROVIDER_UNTRUSTED',
+    })
+    assert.equal(result.failure.classification, 'PREP_SMOKE_GENERAL_PROVIDER_FAILED')
+  })
 })
 
 test('PREP smoke fails fast with the exact terminal inventory phase instead of connectivity', async () => {
