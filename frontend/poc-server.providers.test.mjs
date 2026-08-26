@@ -724,11 +724,9 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
     request.path === '/api/graphql' && request.body.includes('DataRiverPocCatalogEmbeddingInventory')
   ))
   assert.ok(inventoryRequest, 'the fixed DataHub inventory query must be observed')
-  assert.equal(
-    Object.hasOwn(JSON.parse(inventoryRequest.body).variables.input, 'sortInput'),
-    false,
-    'DataHub v1.6 supplies deterministic score/URN scroll ordering when sortInput is omitted',
-  )
+  assert.deepEqual(JSON.parse(inventoryRequest.body).variables.input.sortInput, {
+    sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }],
+  })
 
   const root = await (await fetch(`${pocOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=100`)).json()
   assert.deepEqual(root.items.map((item) => item.label), ['postgres'])

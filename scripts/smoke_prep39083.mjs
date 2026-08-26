@@ -4,6 +4,14 @@ import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import process from 'node:process'
 
 const processStarted = Date.now()
+const inventoryFailureClassifications = new Set([
+  'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
+  'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+  'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED',
+  'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+  'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+  'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED',
+])
 
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
@@ -45,7 +53,7 @@ async function responseJson(url, init, stage, classification) {
   if (!response.ok) {
     const inventoryClassification = stage === 'DATAHUB'
       && typeof body?.code === 'string'
-      && /^PREP_DATAHUB_INVENTORY_[A-Z_]+$/.test(body.code)
+      && inventoryFailureClassifications.has(body.code)
       ? body.code
       : classification
     throw smokeFailure(

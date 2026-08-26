@@ -1,4 +1,4 @@
-/* global Buffer, URL, fetch, process, structuredClone, setTimeout */
+/* global Buffer, fetch, process, structuredClone, setTimeout */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
@@ -139,26 +139,36 @@ async function waitForCatalog(origin) {
 
 async function exactInventoryScenario(rawEntities, suffix) {
   let providerRequests = 0
+  const providerPages = []
+  const stableProviderEntities = [...rawEntities].sort((left, right) => (
+    String(left?.urn || '').localeCompare(String(right?.urn || ''))
+  ))
   const provider = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.match(body.query, /DataRiverPocCatalogEmbeddingInventory/u)
     assert.equal(body.variables.input.count, providerPageSize)
+    assert.deepEqual(body.variables.input.sortInput, {
+      sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }],
+    })
     const offset = body.variables.input.scrollId ? Number(body.variables.input.scrollId) : 0
     const count = body.variables.input.count
-    const items = rawEntities.slice(offset, offset + count)
+    const items = stableProviderEntities.slice(offset, offset + count)
     const nextOffset = offset + items.length
-    const exactBoundaryConfirmation = rawEntities.length > 0
-      && nextOffset === rawEntities.length && items.length === count
-    const nextScrollId = nextOffset < rawEntities.length || exactBoundaryConfirmation
+    const exactBoundaryConfirmation = stableProviderEntities.length > 0
+      && nextOffset === stableProviderEntities.length && items.length === count
+    const nextScrollId = nextOffset < stableProviderEntities.length || exactBoundaryConfirmation
       ? String(nextOffset)
       : null
     providerRequests += 1
+    providerPages.push({ metadataCount: count, envelopeCount: items.length, nextScrollId })
     response.writeHead(200, { 'Content-Type': 'application/json' })
     response.end(JSON.stringify({ data: { scrollAcrossEntities: {
-      count: items.length,
-      total: rawEntities.length,
+      // DataHub ScrollResults.count is provider page-size metadata, not the
+      // number of materialized SearchResult envelopes on a partial page.
+      count,
+      total: stableProviderEntities.length,
       nextScrollId,
       searchResults: items.map((entity) => ({ entity })),
     } } }))
@@ -194,6 +204,7 @@ async function exactInventoryScenario(rawEntities, suffix) {
   return {
     origin,
     providerRequests: () => providerRequests,
+    providerPages: () => structuredClone(providerPages),
     store,
     close: async () => {
       await close(server)
@@ -280,10 +291,31 @@ test('keeps inventory pagination count-independent at dynamic provider boundarie
       assert.equal(body.meta.inventory_refresh.normalized_count, count)
       assert.equal(body.meta.inventory_refresh.skipped_noncurrent_count, 0)
       assert.equal(body.meta.inventory_refresh.duplicate_count, 0)
+      assert.equal(body.meta.inventory_refresh.unresolved_search_result_count, 0)
+      assert.equal(body.meta.inventory_refresh.raw_search_result_count, count)
       assert.ok(scenario.providerRequests() >= 1)
     } finally {
       await scenario.close()
     }
+  }
+})
+
+test('accepts a cursor-driven partial terminal page whose provider count metadata exceeds its envelopes', async () => {
+  const generatedCount = providerPageSize * 2 + 7
+  const scenario = await exactInventoryScenario(
+    Array.from({ length: generatedCount }, (_value, index) => dataset(index)),
+    'partial-terminal-page',
+  )
+  try {
+    const { body } = await waitForCatalog(scenario.origin)
+    const terminal = scenario.providerPages().at(-1)
+    assert.equal(terminal.metadataCount, providerPageSize)
+    assert.equal(terminal.envelopeCount, generatedCount % providerPageSize)
+    assert.equal(terminal.nextScrollId, null)
+    assert.equal(body.meta.inventory_refresh.raw_search_result_count, generatedCount)
+    assert.equal(body.meta.inventory_refresh.expected_total, generatedCount)
+  } finally {
+    await scenario.close()
   }
 })
 
@@ -320,6 +352,7 @@ test('promotes a large generated rich inventory after explicit noncurrent filter
       normalized_count: current.length,
       skipped_noncurrent_count: noncurrent.length,
       duplicate_count: 1,
+      unresolved_search_result_count: 0,
       terminal: false,
     })
     assert.deepEqual(body.meta.inventory_refresh.filtered_noncurrent_reasons, {
@@ -329,7 +362,8 @@ test('promotes a large generated rich inventory after explicit noncurrent filter
       body.meta.inventory_refresh.processed_count,
       body.meta.inventory_refresh.normalized_count
         + body.meta.inventory_refresh.skipped_noncurrent_count
-        + body.meta.inventory_refresh.duplicate_count,
+        + body.meta.inventory_refresh.duplicate_count
+        + body.meta.inventory_refresh.unresolved_search_result_count,
     )
     assert.ok(body.meta.inventory_refresh.elapsed_ms < 10_000)
     assert.ok(body.meta.inventory_refresh.page_fetch_ms < 10_000)
@@ -345,37 +379,58 @@ test('promotes a large generated rich inventory after explicit noncurrent filter
   }
 })
 
-test('surfaces deterministic inventory contract and normalization failures without blind retries', async () => {
-  const malformed = await classifiedFailureScenario('entity-contract', async ({ response }) => {
-    response.writeHead(200, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
-      count: 1, total: 1, nextScrollId: null,
-      searchResults: [{ entity: { urn: null, type: 'DATASET' } }],
-    } } }))
-  })
-  try {
-    const { response, body } = await terminalCatalogFailure(malformed)
-    assert.equal(response.status, 502)
-    assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED')
-    assert.equal(body.diagnostic.phase, 'ENTITY_EXTRACTION')
-    assert.equal(body.diagnostic.terminal, true)
-    const requests = malformed.requests()
-    const repeated = await fetch(`${malformed.origin}/poc-api/datahub/catalog?limit=1`)
-    assert.equal((await repeated.json()).code, body.code)
-    assert.equal(malformed.requests(), requests, 'terminal contract failures must fail fast during cooldown')
-  } finally {
-    await malformed.close()
+test('accounts from SearchResult envelopes and classifies deterministic extraction failures exactly', async () => {
+  const cases = [
+    { suffix: 'page-count', count: null, results: [{ entity: dataset(1) }], reason: 'PAGE_RESULT_COUNT_CONTRACT' },
+    { suffix: 'envelope', count: 1, results: [null], reason: 'SEARCH_RESULT_ENVELOPE_INVALID' },
+    { suffix: 'entity-absent', count: 1, results: [{ entity: null }], reason: 'SEARCH_RESULT_ENTITY_ABSENT' },
+    {
+      suffix: 'entity-type', count: 1,
+      results: [{ entity: { urn: 'urn:li:chart:test', type: 'CHART' } }],
+      reason: 'SEARCH_RESULT_ENTITY_TYPE_INVALID',
+    },
+    {
+      suffix: 'dataset-urn', count: 1,
+      results: [{ entity: { urn: 'not-a-dataset-urn', type: 'DATASET' } }],
+      reason: 'SEARCH_RESULT_DATASET_URN_INVALID',
+    },
+  ]
+  for (const value of cases) {
+    const scenario = await classifiedFailureScenario(value.suffix, async ({ response }) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+        count: value.count, total: value.results.length, nextScrollId: null,
+        searchResults: value.results,
+      } } }))
+    })
+    try {
+      const { response, body } = await terminalCatalogFailure(scenario)
+      assert.equal(response.status, 502)
+      assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED')
+      assert.equal(body.diagnostic.phase, 'ENTITY_EXTRACTION')
+      assert.equal(body.diagnostic.extraction_reason, value.reason)
+      assert.equal(body.diagnostic.search_result_envelope_count, value.results.length)
+      assert.equal(body.diagnostic.raw_search_result_count, value.results.length)
+      assert.equal(body.diagnostic.terminal, true)
+      const requests = scenario.requests()
+      const repeated = await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=1`)
+      assert.equal((await repeated.json()).code, body.code)
+      assert.equal(scenario.requests(), requests, 'terminal extraction failures must fail fast during cooldown')
+    } finally {
+      await scenario.close()
+    }
   }
 
-  const invalidOptionalShape = dataset(1)
-  invalidOptionalShape.browsePathV2 = { path: {} }
   const normalization = await classifiedFailureScenario('entity-normalization', async ({ response }) => {
+    const invalidOptionalShape = dataset(1)
+    invalidOptionalShape.browsePathV2 = { path: {} }
     response.writeHead(200, { 'Content-Type': 'application/json' })
     response.end(JSON.stringify({ data: { scrollAcrossEntities: {
       count: 1, total: 1, nextScrollId: null,
       searchResults: [{ entity: invalidOptionalShape }],
     } } }))
   })
+
   try {
     const { body } = await terminalCatalogFailure(normalization)
     assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED')

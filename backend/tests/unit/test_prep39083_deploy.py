@@ -501,6 +501,79 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert 'advance_attempt_phase(attempt, "SMOKE_FAILED")' in source
 
 
+@pytest.mark.parametrize(
+    "classification",
+    sorted(deploy.SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES),
+)
+def test_deploy_wrapper_preserves_bounded_inventory_smoke_classification(
+    classification: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps(
+                    {
+                        "contract": "DATARIVER_PREP39083_SMOKE_FAILURE_V1",
+                        "classification": classification,
+                    },
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(["node"], 2, "", "")
+            raise deploy.CommandFailure(["node"], completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            k9_mode="DEFERRED",
+        )
+
+    assert captured.value.step == "RUNTIME_SMOKE"
+    assert captured.value.code == classification
+
+
+def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps({"classification": "PREP_DATAHUB_INVENTORY_UNTRUSTED_FAILED"}),
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(["node"], 2, "", "")
+            raise deploy.CommandFailure(["node"], completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            k9_mode="DEFERRED",
+        )
+
+    assert captured.value.code == "PREP_SMOKE_UNKNOWN_FAILED"
+
+
 def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "except CommandFailure:" in source

@@ -163,3 +163,49 @@ test('PREP smoke retains transient DataHub retry classification without hiding i
   assert.equal(result.failure.diagnostic.terminal, false)
   assert.match(result.completed.stdout, /inventory page 3; 500\/700 processed/u)
 })
+
+test('PREP smoke propagates only the bounded Product inventory failure classifications', async (context) => {
+  const classifications = [
+    'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
+    'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+    'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED',
+    'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+    'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+    'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED',
+  ]
+  for (const classification of classifications) {
+    await context.test(classification, async () => {
+      const result = await fixture('deferred', {
+        readinessTimeoutMs: '1000',
+        catalogFailure: {
+          status: 502,
+          body: {
+            code: classification,
+            diagnostic: {
+              phase: classification.endsWith('NORMALIZATION_FAILED')
+                ? 'ENTITY_NORMALIZATION' : 'ENTITY_EXTRACTION',
+              terminal: !classification.endsWith('QUERY_FAILED') && !classification.endsWith('PAGE_FAILED'),
+            },
+          },
+        },
+      })
+      assert.equal(result.completed.code, 2)
+      assert.equal(result.failure.classification, classification)
+    })
+  }
+
+  await context.test('rejects an unrecognized inventory-shaped classification', async () => {
+    const result = await fixture('deferred', {
+      readinessTimeoutMs: '1000',
+      catalogFailure: {
+        status: 502,
+        body: {
+          code: 'PREP_DATAHUB_INVENTORY_UNTRUSTED_FAILED',
+          diagnostic: { phase: 'ENTITY_EXTRACTION', terminal: true },
+        },
+      },
+    })
+    assert.equal(result.completed.code, 2)
+    assert.equal(result.failure.classification, 'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED')
+  })
+})

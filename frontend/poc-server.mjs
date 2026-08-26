@@ -2810,6 +2810,7 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
     query: '*',
     count: 250,
     keepAlive: '1m',
+    sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
     searchFlags: { skipAggregates: true, skipHighlighting: true },
   }
   if (providerCursor) input.scrollId = providerCursor
@@ -2845,29 +2846,73 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
       'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
       'ENTITY_EXTRACTION',
       'DataHub inventory returned a malformed entity page.',
-      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+      {
+        ...progressDiagnostic,
+        page_number: pageNumber,
+        extraction_reason: 'SEARCH_RESULT_ENVELOPE_INVALID',
+        elapsed_ms: Date.now() - progressDiagnostic.started_at,
+      },
     )
   }
-  if (!Number.isSafeInteger(page.count) || page.count < 0 || page.count !== page.searchResults.length) {
+  const searchResultEnvelopeCount = page.searchResults.length
+  const pageDiagnostic = {
+    ...progressDiagnostic,
+    page_number: pageNumber,
+    raw_search_result_count: progressDiagnostic.processed_count + searchResultEnvelopeCount,
+    provider_metadata_count: page.count,
+    search_result_envelope_count: searchResultEnvelopeCount,
+    elapsed_ms: Date.now() - progressDiagnostic.started_at,
+  }
+  if (!Number.isSafeInteger(page.count) || page.count < 0) {
     throw inventoryFailure(
       'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
       'ENTITY_EXTRACTION',
-      'DataHub inventory page count does not match its entity results.',
-      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+      'DataHub inventory returned invalid provider page-count metadata.',
+      {
+        ...pageDiagnostic,
+        extraction_reason: 'PAGE_RESULT_COUNT_CONTRACT',
+      },
     )
   }
   const items = []
   let skippedNoncurrentCount = 0
   let normalizationMs = 0
+  const extractionDiagnostic = (reason) => ({
+    ...pageDiagnostic,
+    extraction_reason: reason,
+  })
   for (const result of page.searchResults) {
-    const entity = result?.entity
-    if (!entity || typeof entity !== 'object' || Array.isArray(entity)
-      || !isCanonicalDatahubDatasetUrn(entity.urn) || entity.type !== 'DATASET') {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
       throw inventoryFailure(
         'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
         'ENTITY_EXTRACTION',
-        'DataHub inventory contains an entity without a canonical Dataset identity.',
-        { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+        'DataHub inventory contains a malformed SearchResult envelope.',
+        extractionDiagnostic('SEARCH_RESULT_ENVELOPE_INVALID'),
+      )
+    }
+    const entity = result?.entity
+    if (entity === null || entity === undefined) {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+        'ENTITY_EXTRACTION',
+        'DataHub inventory contains a SearchResult without its required entity.',
+        extractionDiagnostic('SEARCH_RESULT_ENTITY_ABSENT'),
+      )
+    }
+    if (typeof entity !== 'object' || Array.isArray(entity) || entity.type !== 'DATASET') {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+        'ENTITY_EXTRACTION',
+        'DataHub inventory contains a SearchResult with an invalid entity type.',
+        extractionDiagnostic('SEARCH_RESULT_ENTITY_TYPE_INVALID'),
+      )
+    }
+    if (!isCanonicalDatahubDatasetUrn(entity.urn)) {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+        'ENTITY_EXTRACTION',
+        'DataHub inventory contains a Dataset without a canonical identity.',
+        extractionDiagnostic('SEARCH_RESULT_DATASET_URN_INVALID'),
       )
     }
     if (!currentDatahubDatasetExists(entity, entity.urn)) {
@@ -2882,7 +2927,7 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
         'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
         'ENTITY_NORMALIZATION',
         'DataHub inventory Dataset normalization failed.',
-        { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+        pageDiagnostic,
         error,
       )
     } finally {
@@ -2911,9 +2956,12 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
   return {
     items,
     total: page.total,
-    rawCount: page.searchResults.length,
+    rawCount: searchResultEnvelopeCount,
+    providerMetadataCount: page.count,
+    searchResultEnvelopeCount,
     skippedNoncurrentCount,
     skippedNoncurrentReasons: { DATASET_CURRENT_ASPECTS_ABSENT: skippedNoncurrentCount },
+    unresolvedSearchResultCount: 0,
     nextProviderCursor,
     pageFetchMs: Date.now() - pageStartedAt,
     normalizationMs,
@@ -3047,11 +3095,31 @@ function boundedInventoryDiagnostic(value = {}) {
     skipped_noncurrent_count: Number.isSafeInteger(value.skipped_noncurrent_count) && value.skipped_noncurrent_count >= 0
       ? value.skipped_noncurrent_count : 0,
     duplicate_count: Number.isSafeInteger(value.duplicate_count) && value.duplicate_count >= 0 ? value.duplicate_count : 0,
+    unresolved_search_result_count: Number.isSafeInteger(value.unresolved_search_result_count)
+      && value.unresolved_search_result_count >= 0 ? value.unresolved_search_result_count : 0,
     elapsed_ms: Number.isSafeInteger(value.elapsed_ms) && value.elapsed_ms >= 0 ? value.elapsed_ms : 0,
     error_class: typeof value.error_class === 'string' && /^[A-Z0-9_]{1,80}$/.test(value.error_class)
       ? value.error_class : null,
     terminal: value.terminal === true,
   }
+  if (Number.isSafeInteger(value.raw_search_result_count) && value.raw_search_result_count >= 0) {
+    result.raw_search_result_count = value.raw_search_result_count
+  }
+  if (Number.isSafeInteger(value.provider_metadata_count) && value.provider_metadata_count >= 0) {
+    result.provider_metadata_count = value.provider_metadata_count
+  }
+  if (Number.isSafeInteger(value.search_result_envelope_count) && value.search_result_envelope_count >= 0) {
+    result.search_result_envelope_count = value.search_result_envelope_count
+  }
+  const extractionReasons = new Set([
+    'PAGE_RESULT_COUNT_CONTRACT',
+    'SEARCH_RESULT_ENVELOPE_INVALID',
+    'SEARCH_RESULT_ENTITY_ABSENT',
+    'SEARCH_RESULT_ENTITY_TYPE_INVALID',
+    'SEARCH_RESULT_DATASET_URN_INVALID',
+    'DATASET_CURRENT_ASPECTS_ABSENT',
+  ])
+  if (extractionReasons.has(value.extraction_reason)) result.extraction_reason = value.extraction_reason
   const currentAspectsAbsent = value.filtered_noncurrent_reasons?.DATASET_CURRENT_ASPECTS_ABSENT
   if (Number.isSafeInteger(currentAspectsAbsent) && currentAspectsAbsent >= 0) {
     result.filtered_noncurrent_reasons = { DATASET_CURRENT_ASPECTS_ABSENT: currentAspectsAbsent }
@@ -3111,12 +3179,16 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
     let skippedNoncurrentCount = 0
     let skippedCurrentAspectsAbsentCount = 0
     let duplicateCount = 0
+    let unresolvedSearchResultCount = 0
+    let providerMetadataCount = 0
+    let searchResultEnvelopeCount = 0
     let pageFetchMs = 0
     let normalizationMs = 0
     let pageCount = 0
     const progressDiagnostic = () => ({
       started_at: startedAt,
       processed_count: processedCount,
+      raw_search_result_count: processedCount,
       expected_total: providerTotal,
       normalized_count: observed.size,
       skipped_noncurrent_count: skippedNoncurrentCount,
@@ -3124,10 +3196,13 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
         DATASET_CURRENT_ASPECTS_ABSENT: skippedCurrentAspectsAbsentCount,
       },
       duplicate_count: duplicateCount,
+      unresolved_search_result_count: unresolvedSearchResultCount,
+      provider_metadata_count: providerMetadataCount,
+      search_result_envelope_count: searchResultEnvelopeCount,
     })
     const commit = async () => {
       signal?.throwIfAborted()
-      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount
+      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount + unresolvedSearchResultCount
       if (processedCount !== providerTotal || processedCount !== accountingTotal) {
         throw inventoryFailure(
           'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
@@ -3203,6 +3278,8 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       pageCount = pageOrdinal
       pageFetchMs += page.pageFetchMs
       normalizationMs += page.normalizationMs
+      providerMetadataCount = page.providerMetadataCount
+      searchResultEnvelopeCount = page.searchResultEnvelopeCount
       if (!Number.isSafeInteger(page.total) || page.total < 0) {
         throw inventoryFailure(
           'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
@@ -3221,6 +3298,7 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
         )
       }
       processedCount += page.rawCount
+      unresolvedSearchResultCount += page.unresolvedSearchResultCount
       skippedNoncurrentCount += page.skippedNoncurrentCount
       skippedCurrentAspectsAbsentCount += page.skippedNoncurrentReasons.DATASET_CURRENT_ASPECTS_ABSENT
       for (const item of page.items) {
@@ -3256,7 +3334,7 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
         normalization_ms: normalizationMs,
         elapsed_ms: Date.now() - startedAt,
       })
-      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount
+      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount + unresolvedSearchResultCount
       if (processedCount > providerTotal || processedCount !== accountingTotal) {
         throw inventoryFailure(
           'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',

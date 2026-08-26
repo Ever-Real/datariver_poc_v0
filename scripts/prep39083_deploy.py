@@ -48,6 +48,16 @@ SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CHANGE_ME_PREFIX = "CHANGE_ME"
 INSPECTION_PLACEHOLDER = "prep-inspection-only-not-persisted"
+SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES = frozenset(
+    {
+        "PREP_DATAHUB_INVENTORY_QUERY_FAILED",
+        "PREP_DATAHUB_INVENTORY_PAGE_FAILED",
+        "PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED",
+        "PREP_DATAHUB_INVENTORY_CONTRACT_FAILED",
+        "PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED",
+        "PREP_DATAHUB_INVENTORY_PROMOTION_FAILED",
+    },
+)
 
 
 class PrepError(RuntimeError):
@@ -1757,7 +1767,10 @@ def run_smoke(
             except PrepError:
                 failure = {}
             code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
-            if not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code):
+            if (
+                code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES
+                and not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code)
+            ):
                 code = "PREP_SMOKE_UNKNOWN_FAILED"
             action = (
                 "Rerun deploy with the correct existing administrator password."
