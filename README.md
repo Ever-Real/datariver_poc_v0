@@ -47,31 +47,28 @@ Remaining WSL/external-provider/browser/load/physical-retention checks are expli
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
 source must not be represented as having that protection.
 
-## 고정 개발·준비 PC 루프
+## 개발·PREP39083 브랜치 루프
 
-일상 업데이트는 아래 두 명령을 호환 인터페이스로 사용한다. 구현 내부가 바뀌더라도 명령 이름,
-기본 환경 파일과 검증 의미는 유지한다. 두 명령 모두 `dev`와
-`https://github.com/Ever-Real/datariver_v1.git`만 허용하고 branch를 생성하지 않는다.
+`dev`는 개발 통합 브랜치이고 `main`은 GitHub 기본 브랜치이자 명시적으로 검증된 PREP39083
+Handoff만 가리키는 promotion branch다. `dev`가 전진해도 PREP candidate는 자동으로 바뀌지
+않는다. 개발/feature PR은 보통 `dev`를 대상으로 하며, `main`은 검증된 Handoff의 fast-forward
+promotion으로만 이동한다.
 
 ```bash
 # 개발 PC: 변경을 dev에 commit한 뒤 검증, Mac runtime 적용, dev push, GitHub SHA 확인
 ./scripts/development_cycle.py dev-publish
 
-# 준비 PC: dev fast-forward pull, 필요한 offline dependency sync, 환경 schema 재적용,
-# migration, source-host 시작, API/Web/OIDC 확인
-./scripts/development_cycle.py prep-update
+# PREP39083: promoted main을 fast-forward하고 동일 one-command deploy
+git switch main
+git pull --ff-only origin main
+./scripts/prep39083 deploy
 ```
 
-준비 PC가 이미 최신일 때 pull 없이 상태만 다시 확인하려면
-`./scripts/development_cycle.py prep-check`를 사용한다. 개발 PC에서 push 없이 전체 source gate만
-재실행하려면 `./scripts/development_cycle.py verify`를 사용한다.
-
-준비 PC의 승격 검증은 성공한 `prep-update` 직후 `prep-check`를 실행하고, source·환경·runtime을
-변경하지 않은 상태에서 같은 `prep-check`를 한 번 더 실행하는 순서다. 두 번째 검증을
-`prep-update`로 대체하지 않는다. `prep-update`는 최신 SHA에서도 환경 schema 재적용, migration,
-bootstrap과 start를 수행하는 update 명령이며 no-op 검증 명령이 아니다. 두 번의 `prep-check`가
-같은 readiness payload로 성공한 exact `origin/dev` SHA만 승인 절차를 거쳐 `main` checkpoint로
-승격한다.
+개발 PC에서 push 없이 전체 source gate만 재실행하려면
+`./scripts/development_cycle.py verify`를 사용한다. 기존 `development_cycle.py prep-update`는
+구형 source-host workflow이며 PREP39083 release authority가 아니다. PREP39083의 ignored
+`.env.prep`, `.env.prep.runtime`, attempt receipt와 persistent volume은 `main` checkout update로
+변경되지 않는다.
 
 일상 명령이 읽는 canonical ignored 환경은 개발 PC의 `.env.mac-development`와 준비 PC의
 `.env.wsl-intranet-development`다. 이 파일과 `secrets/`는 PC별로 한 번 구성하고 Git으로
@@ -245,9 +242,10 @@ and operations deployment remain HOLD until their existing target gates are exec
 
 ## 소스 없는 폐쇄망 amd64 Pilot 운영 배포
 
-개발 Mac에서 준비 PC까지는 계속 `origin/dev` source 경로만 사용하며 Docker image, container,
-registry를 전달하지 않는다. 위의 준비 PC 검증을 통과한 exact SHA를 `main`으로 승격한 뒤,
-clean amd64 준비 PC의 그 `main` checkout에서만 아래의 별도 Pilot image bundle을 만든다.
+개발 Mac에서는 `origin/dev`에 통합하고, 검증된 exact Handoff만 `origin/main`으로 fast-forward
+promotion한다. 준비 PC는 `origin/main` source만 사용하며 Docker image, container, registry를
+전달받지 않는다. clean amd64 준비 PC의 그 `main` checkout에서만 아래의 별도 Pilot image
+bundle을 만든다.
 운영 서버에는 source/Git/build context를 복제하지 않는다.
 
 ```bash

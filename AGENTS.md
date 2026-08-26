@@ -20,12 +20,16 @@ authoritative; an agent may not silently relax a security invariant or productio
 
 - Keep only the long-lived `dev` and `main` branches. Do not create task, feature, agent or Codex
   branches unless the user explicitly overrides this repository policy.
-- Perform ongoing development on `dev` and push each coherent, completed change to `origin/dev`
-  promptly so the preparation PC can test the current source without waiting for a release merge.
-- Treat `main` as a deliberate checkpoint branch. Merge `dev` into `main` only when the user asks
-  to preserve or release a tested checkpoint; a routine development save does not target `main`.
-- Preparation and development PCs update application source from `origin/dev`. Production or
-  release workflows continue to use `main` and the accepted production gates.
+- Perform ongoing development on `dev` and push each coherent, completed change to `origin/dev`.
+  Development and feature pull requests normally target `dev` even though GitHub defaults new pull
+  requests to the repository default branch.
+- Treat `main` as the controlled PREP promotion branch and GitHub default branch. It advances only
+  by a fast-forward of an exact verified Product/Evidence/Handoff descendant from `dev`; never
+  commit features directly, force-push, rebase published history, squash, or create a promotion-only
+  merge commit on `main`.
+- PREP39083 updates application source only from `origin/main` and runs
+  `./scripts/prep39083 deploy`. Advancement of `origin/dev` alone never changes the PREP candidate.
+  OPS continues to consume only the exact image accepted and exported on PREP, never a Git branch.
 - Direct-to-`dev` publication does not waive security, schema or production evidence requirements.
   Report incomplete gates honestly and do not use a branch-policy shortcut to bypass them.
 
@@ -33,25 +37,24 @@ authoritative; an agent may not silently relax a security invariant or productio
 
 - Do not use Docker images, containers or registries to transfer or deploy the application between
   the development PC and the preparation PC.
-- Transfer source through `origin/dev` and transfer approved, checksum-verified dependency
-  artifacts separately when the preparation PC cannot reach an external package index.
+- Transfer a verified PREP39083 source candidate through `origin/main`; transfer approved,
+  checksum-verified dependency artifacts separately when the preparation PC cannot reach an
+  external package index. Ongoing development remains on `origin/dev` until explicit promotion.
 - Build platform-specific dependency artifacts on a connected host that matches the preparation
   PC's operating system, CPU architecture and pinned toolchain. Platform-independent wheels may be
   prepared on another host only when their lockfile hash and artifact checksum are verified.
 
 ## Stable daily development loop
 
-- Treat `./scripts/development_cycle.py dev-publish` on the arm64 Mac and
-  `./scripts/development_cycle.py prep-update` on the amd64 Linux/WSL preparation PC as stable
-  operator interfaces. Do not rename them, change their existing action semantics, or add required
-  daily arguments without an explicit operator migration plan.
+- Treat `./scripts/development_cycle.py dev-publish` on the arm64 Mac as the stable development
+  publication interface. Treat `./scripts/prep39083 deploy` from a clean `main` checkout as the
+  only normal PREP39083 deployment interface.
 - `dev-publish` requires a clean committed `dev`, runs the repository source gates, applies that
   commit to the Mac development runtime, pushes only `origin/dev`, and verifies the exact remote
   SHA. It never creates a branch or merges `main`.
-- `prep-update` requires a clean `dev`, accepts only a fast-forward from the exact
-  `Ever-Real/datariver_v1` origin, performs offline dependency sync only when a lock changed or an
-  installation is absent, reapplies the ignored source-host environment schema, migrates, starts,
-  and verifies API/Web/OIDC health.
+- The older `development_cycle.py prep-update` source-host workflow is not PREP39083 release
+  authority and must not be substituted for the `origin/main` plus `./scripts/prep39083 deploy`
+  contract.
 - The canonical daily environment files are `.env.mac-development` on the development PC and
   `.env.wsl-intranet-development` on the preparation PC. They and `secrets/` remain ignored,
   host-local and outside Git. A normal daily update must not require copying, renaming or editing an

@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  a09cd4cb47db7bb31f608dfd94c61f34844d33af
-Evidence 07d6344ab287fa83c4611c780d3c8a23f8ffb878
+Product  749f568f4ea0dcddd3e837e76d83fe784985bb5b
+Evidence c71a18333fc05540ac9723983ec6997936c5c7d4
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -20,11 +20,23 @@ IDs in a shell.
 
 ## Normal operator path
 
-Update the source checkout on the WSL Linux filesystem:
+`origin/dev` is the development integration source. `origin/main` is the controlled PREP promotion
+source and advances only by fast-forward to an already verified Handoff. For the first local
+checkout where `main` does not exist:
 
 ```bash
-git switch dev
-git pull --ff-only origin dev
+git fetch origin main
+git switch --track -c main origin/main
+./scripts/prep39083 deploy
+```
+
+For every later PREP update:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+./scripts/prep39083 deploy
 ```
 
 On the first installation only, create the target-owned operator configuration:
@@ -34,7 +46,7 @@ install -m 0600 deploy/prep39083/.env.prep.example deploy/prep39083/.env.prep
 editor deploy/prep39083/.env.prep
 ```
 
-For every initial deployment and later release update, run exactly one command:
+After the checkout is updated, the Product deployment itself remains exactly one command:
 
 ```bash
 ./scripts/prep39083 deploy

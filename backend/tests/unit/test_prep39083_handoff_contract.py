@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import tarfile
 from pathlib import Path
 from types import ModuleType
@@ -28,6 +29,20 @@ def _load_module() -> ModuleType:
 
 
 release = _load_module()
+
+
+def _git(
+    repository: Path,
+    *arguments: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed Git executable and isolated test repository.
+        ["/usr/bin/git", *arguments],
+        cwd=repository,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> None:
@@ -150,9 +165,12 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     prep = (ROOT / "docs" / "64_PREP39083_HANDOFF.md").read_text(encoding="utf-8")
     ops = (ROOT / "docs" / "65_PREP_TO_OPS_PROMOTION.md").read_text(encoding="utf-8")
     cycle = (ROOT / "docs" / "66_RELEASE_CYCLE.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "./scripts/prep39083 deploy" in prep
-    assert "git pull --ff-only origin dev" in prep
+    assert "git pull --ff-only origin main" in prep
+    assert "git switch --track -c main origin/main" in prep
     assert "PRODUCT_SHA" in prep and "Operators do not" in prep
     assert "docker compose run --no-deps" in prep
     assert "raw `docker run`" in prep
@@ -169,6 +187,49 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "before reconciling or writing" in prep
     assert "legacy V1 receipt" in prep
     assert "ownership-only V2" in cycle
+    assert "git merge-base --is-ancestor origin/main" in cycle
+    assert '"$CANDIDATE":refs/heads/main' in cycle
+    assert "Development and feature pull requests normally target `dev`" in agents
+    assert "PREP39083 updates application source only from `origin/main`" in agents
+    assert 'branches: [dev, main, "codex/**"]' in workflow
+
+
+def test_main_promotion_is_fast_forward_only_and_dev_advancement_is_isolated(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "branch-policy"
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=dev")
+    _git(repository, "config", "user.name", "DataRiver Test")
+    _git(repository, "config", "user.email", "datariver-test@example.invalid")
+    policy = repository / "policy.txt"
+    policy.write_text("verified handoff\n", encoding="utf-8")
+    _git(repository, "add", "policy.txt")
+    _git(repository, "commit", "-m", "verified handoff")
+    handoff = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    _git(repository, "branch", "main", handoff)
+
+    policy.write_text("verified handoff\ndev-only advancement\n", encoding="utf-8")
+    _git(repository, "commit", "-am", "dev only")
+    dev_head = _git(repository, "rev-parse", "dev").stdout.strip()
+    assert dev_head != handoff
+    assert _git(repository, "rev-parse", "main").stdout.strip() == handoff
+    assert _git(repository, "merge-base", "--is-ancestor", "main", "dev").returncode == 0
+
+    _git(repository, "switch", "--orphan", "unrelated")
+    (repository / "unrelated.txt").write_text("unrelated root\n", encoding="utf-8")
+    _git(repository, "add", "unrelated.txt")
+    _git(repository, "commit", "-m", "unrelated root")
+    rejected = _git(
+        repository,
+        "merge-base",
+        "--is-ancestor",
+        "main",
+        "unrelated",
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert _git(repository, "rev-parse", "main").stdout.strip() == handoff
 
 
 def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:

@@ -5,9 +5,10 @@
 ```text
 DEV macOS arm64
   develop → verify → Product/Evidence closeout → git push origin/dev
-       ↓ source only
+  → exact verified Handoff → fast-forward promotion to origin/main
+       ↓ promoted source only
 PREP WSL/Linux amd64
-  git switch dev → git pull --ff-only origin dev
+  git switch main → git pull --ff-only origin main
   → ./scripts/prep39083 deploy
   → browser/explicit acceptance
   → ./scripts/prep39083 export
@@ -25,8 +26,8 @@ PREP39083. DataHub, Airflow, MinIO and OpenAI-compatible inference remain extern
 After the one-time `.env.prep` configuration, normal release updates require only:
 
 ```bash
-git switch dev
-git pull --ff-only origin dev
+git switch main
+git pull --ff-only origin main
 ./scripts/prep39083 deploy
 ```
 
@@ -43,7 +44,8 @@ Ambiguous or durable unaccepted state stops without deleting a volume.
 |---|---|
 | runtime source | accepted Product Git SHA in `release.json` |
 | verification narrative | accepted Evidence Git SHA in `release.json` |
-| PREP fetch | `origin/dev`, fast-forward only |
+| development integration | `origin/dev` |
+| GitHub default / PREP promotion | `origin/main`, fast-forward only |
 | PREP runtime | `datariver-prep39083`, port 39083, Linux amd64 |
 | external endpoints/proxy | target-local mode-0600 `.env.prep` |
 | local secrets/derived topology | generated mode-0600 `.env.prep.runtime` |
@@ -59,7 +61,8 @@ completed generation. No PREP setting disables this contract.
 ## Gates
 
 1. DEV: source gates, new Product/Evidence, exact DEV OCI/browser and clean secret scan.
-2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`.
+2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`; then
+   fast-forward `origin/main` to that exact verified Handoff without rebuilding or modifying it.
 3. PREP deploy: native amd64, target-state classification, separate build/runtime proxy policy,
    exact Product image, read-only provider preflight, attempt receipt, isolated Compose, idempotent
    bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
@@ -74,6 +77,39 @@ receipt, runtime secret, container, database, or volume to apply a legitimate re
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.
+
+## Controlled `dev` → `main` promotion
+
+Feature and Product development stays on `dev`; development pull requests normally target `dev`.
+`main` is not an ordinary feature-merge destination. Given one exact verified Handoff:
+
+```bash
+git fetch origin dev main
+
+CANDIDATE=<exact-verified-dev-handoff-sha>
+PRODUCT=<product-sha-from-candidate-release-json>
+EVIDENCE=<evidence-sha-from-candidate-release-json>
+VERIFY_DIR=../datariver-prep39083-promotion-check
+
+git merge-base --is-ancestor origin/main "$CANDIDATE"
+git worktree add --detach "$VERIFY_DIR" "$CANDIDATE"
+(
+  cd "$VERIFY_DIR"
+  uv run --frozen python scripts/prep39083_release.py source-check \
+    --product-sha "$PRODUCT" --evidence-sha "$EVIDENCE"
+)
+git worktree remove "$VERIFY_DIR"
+git push origin "$CANDIDATE":refs/heads/main
+```
+
+The ancestry command is the fast-forward gate: a non-descendant candidate is rejected before the
+push. Never force-push, squash, rebase published release history, cherry-pick Product commits into
+`main`, or create a merge commit only for promotion. Advancing `dev` after promotion leaves `main`
+and the current PREP candidate unchanged until this procedure is run again. Candidate/accepted tags
+may be added as immutable audit references but are not required for deployment.
+
+Changing GitHub's default branch to `main` does not change OPS authority: OPS receives only the
+checksum-verified exact image actually accepted and exported on PREP, with no rebuild.
 
 Detailed commands are in [PREP39083 one-command deployment](64_PREP39083_HANDOFF.md) and
 [PREP39083 to OPS image promotion](65_PREP_TO_OPS_PROMOTION.md).
