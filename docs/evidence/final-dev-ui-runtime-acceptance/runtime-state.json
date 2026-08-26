@@ -1,0 +1,85 @@
+{
+  "contract": "DATARIVER_FINAL_DEV_UI_RUNTIME_ACCEPTANCE_V1",
+  "captured_at": "2026-08-26T11:51:38+09:00",
+  "base": {
+    "product_sha": "a09cd4cb47db7bb31f608dfd94c61f34844d33af",
+    "evidence_sha": "07d6344ab287fa83c4611c780d3c8a23f8ffb878",
+    "handoff_sha": "48b9dd7eee42a7d3bec413396c2fc6026a06d314"
+  },
+  "product_sha": "0be3551e95755cc7ffb4733ab4a90fd9610b81a3",
+  "runtime": {
+    "port_39083": {
+      "http": 200,
+      "container": "running",
+      "health": "healthy",
+      "platform": "linux/amd64",
+      "oci_revision_exact": true,
+      "image_id": "sha256:0817bd7d0deaeecef01a9a984305ca8ccf7ab37e9a7f199352657ac127204b64"
+    },
+    "port_39090": {
+      "http": 200
+    },
+    "port_39080": {
+      "http": 0,
+      "state": "unchanged_down"
+    }
+  },
+  "change_history": {
+    "ledger_total": 100,
+    "ledger_schema": 28,
+    "ledger_metadata": 72,
+    "active_exact_mapping_count": 1,
+    "authorized_schema_rows": 11,
+    "authorized_metadata_rows": 14,
+    "system_resolution": "RESOLVED",
+    "fake_ledger_insertion": false,
+    "authorization_widened": false
+  },
+  "resource_tree": {
+    "missing_database_branch_count": 0,
+    "stale_deleted_branch_count": 0,
+    "root_refresh": "PASS"
+  },
+  "chat_history": {
+    "same_account_relogin": "PASS",
+    "cross_account_isolation": "PASS",
+    "container_restart_persistence": "PASS",
+    "local_storage_authority": false,
+    "temporary_sessions_active": 0,
+    "temporary_credentials_enabled": 0,
+    "temporary_relogin_http": [401, 401]
+  },
+  "chat_stream": {
+    "answer_delta_sse": "PASS",
+    "general_delta_count": 13,
+    "vector_delta_count": 4,
+    "graph_delta_count": 7,
+    "partial_assistant_persisted_after_abort": false,
+    "client_fake_reveal_removed": true,
+    "auto_follow_tests": "PASS",
+    "scroll_up_stop_tests": "PASS"
+  },
+  "source_gates": {
+    "node_product": "131/131 PASS",
+    "ui": "90 files / 662 tests PASS",
+    "focused_ui": "5 files / 99 tests PASS",
+    "prep_contract": "41/41 PASS",
+    "prep_smoke": "3/3 PASS",
+    "prep_state_integration": "1/1 PASS",
+    "prep_retry_integration": "1/1 PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "poc_build": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "PASS",
+    "static": "PASS",
+    "compose": "PASS",
+    "secret_proxy_scan": "PASS",
+    "diff_check": "PASS"
+  },
+  "browser_visual_acceptance": "FINAL_BROWSER_ACCEPTANCE_SURFACE_UNAVAILABLE",
+  "overall_status": "PARTIAL_BROWSER_ACCEPTANCE_BLOCKED",
+  "actual_prep": "NOT_EXECUTED",
+  "actual_ops": "NOT_EXECUTED"
+}
