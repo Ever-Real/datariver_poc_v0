@@ -1,0 +1,63 @@
+{
+  "contract": "DATARIVER_PREP_GENERAL_CHAT_TIMEOUT_EVIDENCE_V1",
+  "recorded_at": "2026-08-26T09:25:25Z",
+  "base": {
+    "product_sha": "1e9574d6af42b6bff6826e2352601c0c8891e572",
+    "evidence_sha": "18f6cab3e136eb72731cc0a83f702cc246787bb7",
+    "handoff_sha": "8ee4529851837f0917f72423332bdbef25c5cb66"
+  },
+  "product_sha": "2dc2b56a0a056bfa6cd6e6985c42fb1418be5b99",
+  "root_cause": {
+    "provider_preflight": "PASS",
+    "provider_direct_request": "PASS",
+    "auto_classifier": "PASS",
+    "boundary": "INCOHERENT_PRODUCT_CHAT_TIMEOUT_POLICY",
+    "old_tracked_timeout_ms": 15000,
+    "old_preflight_timeout_ms": 60000,
+    "old_general_composer_override_ms": 60000
+  },
+  "timeout_policy": {
+    "operator_owned": false,
+    "per_call_ms": 120000,
+    "minimum_ms": 1000,
+    "maximum_ms": 300000,
+    "smoke_http_envelope_ms": 300000,
+    "shared_by_product_chat_and_preflight": true
+  },
+  "classifications": {
+    "timeout": "PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED",
+    "authentication": "PREP_SMOKE_GENERAL_PROVIDER_AUTH_FAILED",
+    "connectivity": "PREP_SMOKE_GENERAL_PROVIDER_CONNECTIVITY_FAILED",
+    "provider_http": "PREP_SMOKE_GENERAL_PROVIDER_HTTP_FAILED",
+    "response_contract": "PREP_SMOKE_GENERAL_PROVIDER_CONTRACT_FAILED",
+    "route_contract": "PREP_SMOKE_GENERAL_ROUTE_FAILED",
+    "bounded_propagation": "PASS"
+  },
+  "verification": {
+    "focused_timeout": "5/5 PASS",
+    "node_product_server": "144/144 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "poc_build": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "PASS (588 files)",
+    "static": "PASS",
+    "prep_unit_handoff": "49/49 PASS",
+    "docker_state_recovery": "PASS",
+    "failed_smoke_same_command_resume": "1/1 PASS (113.82s)",
+    "exact_oci_architecture": "linux/amd64",
+    "exact_oci_revision": "2dc2b56a0a056bfa6cd6e6985c42fb1418be5b99",
+    "exact_oci_image_id": "sha256:20aed124f502f9b7f714d6d02daa77977c63c527c7ccdb77e1a4b0855859d9e3",
+    "runtime_proxy_or_credential_env_leak": "NONE"
+  },
+  "router_semantics_changed": false,
+  "router_60_boundary_8_rerun": "NOT_REQUIRED",
+  "operator_env_change_required": false,
+  "one_command": "./scripts/prep39083 deploy",
+  "existing_owned_smoke_failed_resume": "COMPATIBLE",
+  "manual_volume_deletion": "NONE",
+  "actual_prep": "NOT_EXECUTED_BY_DEV_AGENT",
+  "actual_ops": "NOT_EXECUTED_BY_DEV_AGENT"
+}
