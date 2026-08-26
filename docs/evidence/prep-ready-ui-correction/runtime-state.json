@@ -1,0 +1,78 @@
+{
+  "contract": "DATARIVER_PREP_READY_UI_CORRECTION_V1",
+  "captured_at": "2026-08-26T12:43:14+09:00",
+  "base": {
+    "product_sha": "0be3551e95755cc7ffb4733ab4a90fd9610b81a3",
+    "evidence_sha": "8aa70152d0d5d65b8555ee3f0e7f74c0ea2d3e94",
+    "handoff_sha": "e208e1b3282d014c82a85add2a7a57436cd7cd2a"
+  },
+  "product_sha": "2eceb8839252200dd67abd6910e1b5ed2541c89c",
+  "chat_action": {
+    "element": "DIV_ROLE_GROUP",
+    "effective_background": "TRANSPARENT_NONE",
+    "background_image": "NONE",
+    "border": 0,
+    "box_shadow": "NONE",
+    "bubble_gap_px": 1,
+    "exact_runtime_bundle": "PASS"
+  },
+  "detected_change": {
+    "columns": [
+      "플랫폼",
+      "스키마",
+      "변경일",
+      "변경유형",
+      "테이블명",
+      "변경요약",
+      "변경내용"
+    ],
+    "server_bounded_projection": "PASS",
+    "n_plus_one_detail_requests": 0,
+    "table_create_delete_change": "PASS",
+    "column_create_delete_change": "PASS",
+    "current_ledger_count": 100,
+    "current_active_exact_mapping_count": 1
+  },
+  "search_lineage": {
+    "upstream_label": "PASS",
+    "downstream_label": "PASS",
+    "canonical_other_relation": "PASS",
+    "organic_profile_unchanged": true
+  },
+  "runtime": {
+    "port_39083": {
+      "http": 200,
+      "health": 200,
+      "restart_count": 0,
+      "platform": "linux/amd64",
+      "oci_revision_exact": true,
+      "image_id": "sha256:7107ed3624498502ddfb92947029a49e2ae3bd16b2b901bff705263a52b3aa5a"
+    },
+    "port_39090": 200,
+    "port_39080": "UNCHANGED_DOWN"
+  },
+  "source_gates": {
+    "focused_ui": "7 files / 119 tests PASS",
+    "focused_server": "36/36 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "node_product": "132/132 PASS",
+    "prep_unit": "35/35 PASS",
+    "prep_smoke_bootstrap": "9/9 PASS",
+    "prep_state_integration": "1/1 PASS",
+    "prep_retry_integration": "1/1 PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "poc_build": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "588 files PASS",
+    "static": "PASS",
+    "compose": "PASS",
+    "secret_proxy_scan": "PASS",
+    "diff_check": "PASS"
+  },
+  "prep_one_command": "./scripts/prep39083 deploy",
+  "browser_visual_acceptance": "FINAL_BROWSER_ACCEPTANCE_SURFACE_UNAVAILABLE",
+  "actual_prep": "NOT_EXECUTED",
+  "actual_ops": "NOT_EXECUTED"
+}
