@@ -8,7 +8,7 @@ import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 
-async function fixture(k9Mode, { chatStatus = 200 } = {}) {
+async function fixture(k9Mode, { chatStatus = 200, catalogFailure = null, readinessTimeoutMs = '5000' } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'prep39083-smoke-'))
   const passwordFile = join(directory, 'password')
   const output = join(directory, 'smoke.json')
@@ -28,8 +28,10 @@ async function fixture(k9Mode, { chatStatus = 200 } = {}) {
       json(200, { status: 'PASS' }, { 'Set-Cookie': 'session=opaque; HttpOnly' })
     } else if (request.url === '/auth/logout') {
       json(200, { status: 'PASS' })
-    } else if (request.url === '/poc-api/datahub/catalog?limit=1') {
-      json(200, { items: [] })
+    } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1'
+      || request.url === '/poc-api/datahub/catalog?limit=1') {
+      if (catalogFailure) json(catalogFailure.status, catalogFailure.body)
+      else json(200, { items: [], meta: { refresh_state: 'CURRENT_OR_REFRESHING' } })
     } else if (request.url === '/poc-api/knowledge/managed-assets') {
       managedRequests += 1
       json(200, { items: [
@@ -54,7 +56,7 @@ async function fixture(k9Mode, { chatStatus = 200 } = {}) {
       '--username', 'admin',
       '--password-file', passwordFile,
       '--k9-mode', k9Mode,
-      '--readiness-timeout-ms', '5000',
+      '--readiness-timeout-ms', readinessTimeoutMs,
       '--output', output,
       '--failure-output', failureOutput,
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -99,4 +101,65 @@ test('PREP smoke persists sanitized stage classification and emits progress', as
   assert.equal(typeof result.failure.elapsed_ms, 'number')
   assert.match(result.completed.stdout, /\[SMOKE 1\/5\].*PASS/u)
   assert.equal(result.completed.stderr.includes('sensitive body'), false)
+})
+
+test('PREP smoke fails fast with the exact terminal inventory phase instead of connectivity', async () => {
+  const result = await fixture('deferred', {
+    readinessTimeoutMs: '5000',
+    catalogFailure: {
+      status: 502,
+      body: {
+        code: 'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+        detail: 'sanitized inventory failure',
+        diagnostic: {
+          phase: 'ENTITY_NORMALIZATION',
+          page_number: 4,
+          processed_count: 700,
+          expected_total: 703,
+          normalized_count: 698,
+          skipped_noncurrent_count: 1,
+          duplicate_count: 1,
+          elapsed_ms: 432,
+          error_class: 'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+          terminal: true,
+        },
+      },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'DATAHUB')
+  assert.equal(result.failure.classification, 'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED')
+  assert.equal(result.failure.diagnostic.phase, 'ENTITY_NORMALIZATION')
+  assert.equal(result.failure.diagnostic.terminal, true)
+  assert.ok(result.failure.elapsed_ms < 5_000)
+  assert.equal(result.completed.stderr.includes('sanitized inventory failure'), false)
+})
+
+test('PREP smoke retains transient DataHub retry classification without hiding it as success', async () => {
+  const result = await fixture('deferred', {
+    readinessTimeoutMs: '1000',
+    catalogFailure: {
+      status: 502,
+      body: {
+        code: 'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+        detail: 'transient inventory page failure',
+        diagnostic: {
+          phase: 'PAGE_FETCH',
+          page_number: 3,
+          processed_count: 500,
+          expected_total: 700,
+          normalized_count: 499,
+          skipped_noncurrent_count: 1,
+          duplicate_count: 0,
+          elapsed_ms: 200,
+          error_class: 'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+          terminal: false,
+        },
+      },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_DATAHUB_INVENTORY_PAGE_FAILED')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.match(result.completed.stdout, /inventory page 3; 500\/700 processed/u)
 })

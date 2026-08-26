@@ -143,6 +143,8 @@ let inventorySnapshot
 let inventoryRefreshPromise
 let inventoryRefreshFailedAt
 let inventoryRefreshRetryAt = 0
+let inventoryRefreshDiagnostic
+let inventoryRefreshLastError
 let catalogEmbeddingSnapshot
 let catalogEmbeddingRefreshPromise
 let catalogEmbeddingRefreshStartedAt = 0
@@ -366,8 +368,14 @@ function json(response, status, value, extraHeaders = {}) {
   response.end(body)
 }
 
-function problem(response, status, code, detail) {
-  json(response, status, { code, detail, status, title: 'POC integration request failed' })
+function problem(response, status, code, detail, diagnostic) {
+  json(response, status, {
+    code,
+    detail,
+    status,
+    title: 'POC integration request failed',
+    ...(diagnostic ? { diagnostic } : {}),
+  })
 }
 
 function writeEventStream(response, event, value) {
@@ -2106,19 +2114,40 @@ query DataRiverPocGlossaryAssignments($urn: String!, $input: RelationshipsInput!
 
 async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, signal) {
   if (!datahub) throw Object.assign(new Error('DataHub is not configured.'), { statusCode: 503 })
-  const response = await providerFetch(joinProviderUrl(datahub.url, '/api/graphql'), {
-    method: 'POST',
-    headers: {
-      ...(datahub.token ? { Authorization: `Bearer ${datahub.token}` } : {}),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query, variables }),
-    timeoutMs,
-    signal,
-  })
-  await requireOk(response, 'DataHub')
-  const payload = await response.json()
-  if (payload.errors?.length) throw new Error('DataHub rejected the fixed POC GraphQL query.')
+  let response
+  try {
+    response = await providerFetch(joinProviderUrl(datahub.url, '/api/graphql'), {
+      method: 'POST',
+      headers: {
+        ...(datahub.token ? { Authorization: `Bearer ${datahub.token}` } : {}),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, variables }),
+      timeoutMs,
+      signal,
+    })
+  } catch (error) {
+    throw Object.assign(error, { providerFailureKind: error?.providerFailureKind || 'TRANSPORT' })
+  }
+  try {
+    await requireOk(response, 'DataHub')
+  } catch (error) {
+    throw Object.assign(error, {
+      providerFailureKind: 'HTTP',
+      providerHttpClass: `${Math.floor(response.status / 100)}xx`,
+    })
+  }
+  let payload
+  try {
+    payload = await response.json()
+  } catch (error) {
+    throw Object.assign(error, { providerFailureKind: 'RESPONSE_JSON' })
+  }
+  if (payload.errors?.length) {
+    throw Object.assign(new Error('DataHub rejected the fixed POC GraphQL query.'), {
+      providerFailureKind: 'GRAPHQL',
+    })
+  }
   return payload.data
 }
 
@@ -2739,6 +2768,9 @@ function catalogMeta({ projection = false } = {}) {
         : 'PROCESS_MEMORY_CURRENT_PROJECTION',
       source_generation: current.source_generation,
       refresh_state: inventoryRefreshFailedAt ? 'DEGRADED_LAST_GOOD' : 'CURRENT_OR_REFRESHING',
+      ...(inventoryRefreshDiagnostic || current.refresh_diagnostics
+        ? { inventory_refresh: inventoryRefreshDiagnostic || current.refresh_diagnostics }
+        : {}),
     } : {}),
   }
 }
@@ -2772,7 +2804,7 @@ function cursorValue(token, scope) {
   return entry.value
 }
 
-async function datahubCatalogPage(providerCursor, signal) {
+async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDiagnostic) {
   const input = {
     types: ['DATASET'],
     query: '*',
@@ -2781,24 +2813,111 @@ async function datahubCatalogPage(providerCursor, signal) {
     searchFlags: { skipAggregates: true, skipHighlighting: true },
   }
   if (providerCursor) input.scrollId = providerCursor
-  const data = await datahubGraphql(datahubEmbeddingInventoryQuery, {
-    input,
-  }, 60_000, signal)
-  const page = data.scrollAcrossEntities
-  const items = (page?.searchResults || [])
-    .map((item) => item?.entity)
-    .filter((entity) => currentDatahubDatasetExists(entity, entity?.urn))
-    .map(detailedDatasetAsset)
+  const pageStartedAt = Date.now()
+  inventoryRefreshDiagnostic = boundedInventoryDiagnostic({
+    ...progressDiagnostic,
+    phase: 'PAGE_FETCH',
+    page_number: pageNumber,
+    elapsed_ms: Date.now() - progressDiagnostic.started_at,
+  })
+  let data
+  try {
+    data = await datahubGraphql(datahubEmbeddingInventoryQuery, { input }, 60_000, signal)
+  } catch (error) {
+    if (signal?.aborted || ['AbortError', 'TimeoutError'].includes(error?.name) && signal?.aborted) throw error
+    const code = error?.providerFailureKind === 'GRAPHQL'
+      ? 'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED'
+      : error?.providerFailureKind === 'RESPONSE_JSON'
+        ? 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED'
+        : pageNumber === 1
+          ? 'PREP_DATAHUB_INVENTORY_QUERY_FAILED'
+          : 'PREP_DATAHUB_INVENTORY_PAGE_FAILED'
+    throw inventoryFailure(code, 'PAGE_FETCH', 'DataHub inventory page retrieval failed.', {
+      ...progressDiagnostic,
+      page_number: pageNumber,
+      elapsed_ms: Date.now() - progressDiagnostic.started_at,
+      provider_http_class: error?.providerHttpClass,
+    }, error)
+  }
+  const page = data?.scrollAcrossEntities
+  if (!page || typeof page !== 'object' || !Array.isArray(page.searchResults)) {
+    throw inventoryFailure(
+      'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      'ENTITY_EXTRACTION',
+      'DataHub inventory returned a malformed entity page.',
+      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+    )
+  }
+  if (!Number.isSafeInteger(page.count) || page.count < 0 || page.count !== page.searchResults.length) {
+    throw inventoryFailure(
+      'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      'ENTITY_EXTRACTION',
+      'DataHub inventory page count does not match its entity results.',
+      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+    )
+  }
+  const items = []
+  let skippedNoncurrentCount = 0
+  let normalizationMs = 0
+  for (const result of page.searchResults) {
+    const entity = result?.entity
+    if (!entity || typeof entity !== 'object' || Array.isArray(entity)
+      || !isCanonicalDatahubDatasetUrn(entity.urn) || entity.type !== 'DATASET') {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+        'ENTITY_EXTRACTION',
+        'DataHub inventory contains an entity without a canonical Dataset identity.',
+        { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+      )
+    }
+    if (!currentDatahubDatasetExists(entity, entity.urn)) {
+      skippedNoncurrentCount += 1
+      continue
+    }
+    const normalizationStartedAt = Date.now()
+    try {
+      items.push(detailedDatasetAsset(entity))
+    } catch (error) {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+        'ENTITY_NORMALIZATION',
+        'DataHub inventory Dataset normalization failed.',
+        { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+        error,
+      )
+    } finally {
+      normalizationMs += Date.now() - normalizationStartedAt
+    }
+  }
   const rawNextProviderCursor = page?.nextScrollId
   if (rawNextProviderCursor !== null && rawNextProviderCursor !== undefined
     && (typeof rawNextProviderCursor !== 'string' || !rawNextProviderCursor)) {
-    throw Object.assign(new Error('DataHub returned a malformed scroll cursor.'), { statusCode: 502 })
+    throw inventoryFailure(
+      'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      'INVENTORY_VALIDATION',
+      'DataHub inventory returned a malformed scroll cursor.',
+      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+    )
   }
   const nextProviderCursor = rawNextProviderCursor || undefined
   if (nextProviderCursor && nextProviderCursor === providerCursor) {
-    throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
+    throw inventoryFailure(
+      'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      'INVENTORY_VALIDATION',
+      'DataHub inventory returned a repeated scroll cursor.',
+      { ...progressDiagnostic, page_number: pageNumber, elapsed_ms: Date.now() - progressDiagnostic.started_at },
+    )
   }
-  return { items, total: page?.total, nextProviderCursor }
+  return {
+    items,
+    total: page.total,
+    rawCount: page.searchResults.length,
+    skippedNoncurrentCount,
+    skippedNoncurrentReasons: { DATASET_CURRENT_ASPECTS_ABSENT: skippedNoncurrentCount },
+    nextProviderCursor,
+    pageFetchMs: Date.now() - pageStartedAt,
+    normalizationMs,
+  }
 }
 
 async function datahubInventory({ signal = serverBackgroundAbortController?.signal } = {}) {
@@ -2815,15 +2934,21 @@ async function datahubInventory({ signal = serverBackgroundAbortController?.sign
     return inventorySnapshot.items
   }
   if (!inventoryRefreshPromise && inventoryRefreshRetryAt > now) {
-    throw Object.assign(
-      new Error('The Catalog projection refresh recently failed; retry later.'),
-      { statusCode: 503 },
-    )
+    if (inventoryRefreshLastError?.inventoryTerminal) throw inventoryRefreshLastError
+    throw Object.assign(new Error('The Catalog projection refresh recently failed; retry later.'), {
+      statusCode: 503,
+      code: inventoryRefreshLastError?.code || 'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+      inventoryDiagnostic: inventoryRefreshLastError?.inventoryDiagnostic || inventoryRefreshDiagnostic,
+    })
   }
   const refresh = startDatahubInventoryRefresh({ signal })
   if (pocStateStore.configured.postgres) {
     void refresh.catch(() => undefined)
-    throw Object.assign(new Error('The PostgreSQL Catalog projection is warming; retry shortly.'), { statusCode: 503 })
+    throw Object.assign(new Error('The PostgreSQL Catalog projection is warming; retry shortly.'), {
+      statusCode: 503,
+      code: 'DATAHUB_INVENTORY_WARMING',
+      inventoryDiagnostic: inventoryRefreshDiagnostic,
+    })
   }
   return (await refresh).items
 }
@@ -2882,7 +3007,7 @@ async function storedDatahubInventory() {
   return validDatahubInventory(stored.value) ? stored.value : undefined
 }
 
-function datahubInventoryProjection(items) {
+function datahubInventoryProjection(items, refreshDiagnostics) {
   const sorted = [...items].sort((left, right) => left.id.localeCompare(right.id))
   const sourceGeneration = sha256(sorted.map((item) => {
     const generationItem = { ...item }
@@ -2896,7 +3021,76 @@ function datahubInventoryProjection(items) {
     source_generation: sourceGeneration,
     observed_at: new Date().toISOString(),
     items: sorted,
+    ...(refreshDiagnostics ? { refresh_diagnostics: refreshDiagnostics } : {}),
   }
+}
+
+const inventoryDiagnosticPhases = new Set([
+  'PAGE_FETCH',
+  'ENTITY_EXTRACTION',
+  'ENTITY_NORMALIZATION',
+  'INVENTORY_VALIDATION',
+  'DEDUPLICATION',
+  'SNAPSHOT_PERSISTENCE',
+  'SNAPSHOT_PROMOTION',
+  'AUTHORIZATION_PROJECTION',
+  'RESPONSE_BUILD',
+])
+
+function boundedInventoryDiagnostic(value = {}) {
+  const result = {
+    phase: inventoryDiagnosticPhases.has(value.phase) ? value.phase : 'INVENTORY_VALIDATION',
+    page_number: Number.isSafeInteger(value.page_number) && value.page_number >= 0 ? value.page_number : 0,
+    processed_count: Number.isSafeInteger(value.processed_count) && value.processed_count >= 0 ? value.processed_count : 0,
+    expected_total: Number.isSafeInteger(value.expected_total) && value.expected_total >= 0 ? value.expected_total : null,
+    normalized_count: Number.isSafeInteger(value.normalized_count) && value.normalized_count >= 0 ? value.normalized_count : 0,
+    skipped_noncurrent_count: Number.isSafeInteger(value.skipped_noncurrent_count) && value.skipped_noncurrent_count >= 0
+      ? value.skipped_noncurrent_count : 0,
+    duplicate_count: Number.isSafeInteger(value.duplicate_count) && value.duplicate_count >= 0 ? value.duplicate_count : 0,
+    elapsed_ms: Number.isSafeInteger(value.elapsed_ms) && value.elapsed_ms >= 0 ? value.elapsed_ms : 0,
+    error_class: typeof value.error_class === 'string' && /^[A-Z0-9_]{1,80}$/.test(value.error_class)
+      ? value.error_class : null,
+    terminal: value.terminal === true,
+  }
+  const currentAspectsAbsent = value.filtered_noncurrent_reasons?.DATASET_CURRENT_ASPECTS_ABSENT
+  if (Number.isSafeInteger(currentAspectsAbsent) && currentAspectsAbsent >= 0) {
+    result.filtered_noncurrent_reasons = { DATASET_CURRENT_ASPECTS_ABSENT: currentAspectsAbsent }
+  }
+  if (typeof value.provider_http_class === 'string' && /^[1-5]xx$/.test(value.provider_http_class)) {
+    result.provider_http_class = value.provider_http_class
+  }
+  if (Number.isSafeInteger(value.page_fetch_ms) && value.page_fetch_ms >= 0) result.page_fetch_ms = value.page_fetch_ms
+  if (Number.isSafeInteger(value.normalization_ms) && value.normalization_ms >= 0) result.normalization_ms = value.normalization_ms
+  if (Number.isSafeInteger(value.snapshot_persistence_ms) && value.snapshot_persistence_ms >= 0) {
+    result.snapshot_persistence_ms = value.snapshot_persistence_ms
+  }
+  return result
+}
+
+function inventoryFailure(code, phase, message, diagnostic = {}, cause) {
+  const terminal = ![
+    'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
+    'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+  ].includes(code)
+  const safeDiagnostic = boundedInventoryDiagnostic({
+    ...diagnostic,
+    phase,
+    terminal,
+    error_class: code,
+  })
+  return Object.assign(new Error(message, cause ? { cause } : undefined), {
+    statusCode: 502,
+    code,
+    inventoryTerminal: terminal,
+    inventoryDiagnostic: safeDiagnostic,
+  })
+}
+
+function stableInventoryItemHash(item) {
+  const stable = { ...item }
+  delete stable.observed_at
+  delete stable.matches
+  return canonicalHash(stable)
 }
 
 export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortController?.signal } = {}) {
@@ -2906,19 +3100,93 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
   }
   signal?.throwIfAborted()
   inventoryRefreshPromise = (async () => {
+    const startedAt = Date.now()
     const items = []
-    const observed = new Set()
+    const observed = new Map()
     const providerCursors = new Set()
     let providerTotal
     let providerCursor
     let terminalConfirmationPending = false
+    let processedCount = 0
+    let skippedNoncurrentCount = 0
+    let skippedCurrentAspectsAbsentCount = 0
+    let duplicateCount = 0
+    let pageFetchMs = 0
+    let normalizationMs = 0
+    let pageCount = 0
+    const progressDiagnostic = () => ({
+      started_at: startedAt,
+      processed_count: processedCount,
+      expected_total: providerTotal,
+      normalized_count: observed.size,
+      skipped_noncurrent_count: skippedNoncurrentCount,
+      filtered_noncurrent_reasons: {
+        DATASET_CURRENT_ASPECTS_ABSENT: skippedCurrentAspectsAbsentCount,
+      },
+      duplicate_count: duplicateCount,
+    })
     const commit = async () => {
       signal?.throwIfAborted()
-      const projection = datahubInventoryProjection(items)
-      await pocStateStore.write(datahubInventoryStateScope, projection)
+      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount
+      if (processedCount !== providerTotal || processedCount !== accountingTotal) {
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+          'INVENTORY_VALIDATION',
+          'DataHub inventory reconciliation accounting is incomplete.',
+          { ...progressDiagnostic(), page_number: pageCount, elapsed_ms: Date.now() - startedAt },
+        )
+      }
+      const refreshDiagnostics = boundedInventoryDiagnostic({
+        ...progressDiagnostic(),
+        phase: 'SNAPSHOT_PERSISTENCE',
+        page_number: pageCount,
+        page_fetch_ms: pageFetchMs,
+        normalization_ms: normalizationMs,
+        elapsed_ms: Date.now() - startedAt,
+      })
+      inventoryRefreshDiagnostic = refreshDiagnostics
+      let projection
+      try {
+        projection = datahubInventoryProjection(items, refreshDiagnostics)
+      } catch (error) {
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED',
+          'SNAPSHOT_PROMOTION',
+          'DataHub inventory projection generation failed.',
+          { ...progressDiagnostic(), page_number: pageCount, elapsed_ms: Date.now() - startedAt },
+          error,
+        )
+      }
+      const persistenceStartedAt = Date.now()
+      try {
+        await pocStateStore.write(datahubInventoryStateScope, projection)
+      } catch (error) {
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED',
+          'SNAPSHOT_PERSISTENCE',
+          'DataHub inventory projection persistence failed.',
+          {
+            ...progressDiagnostic(),
+            page_number: pageCount,
+            elapsed_ms: Date.now() - startedAt,
+            snapshot_persistence_ms: Date.now() - persistenceStartedAt,
+          },
+          error,
+        )
+      }
       inventorySnapshot = inventorySnapshotFrom(projection)
+      inventoryRefreshDiagnostic = boundedInventoryDiagnostic({
+        ...progressDiagnostic(),
+        phase: 'SNAPSHOT_PROMOTION',
+        page_number: pageCount,
+        page_fetch_ms: pageFetchMs,
+        normalization_ms: normalizationMs,
+        snapshot_persistence_ms: Date.now() - persistenceStartedAt,
+        elapsed_ms: Date.now() - startedAt,
+      })
       inventoryRefreshFailedAt = undefined
       inventoryRefreshRetryAt = 0
+      inventoryRefreshLastError = undefined
       try {
         await pocStateStore.cacheSet(datahubInventoryCacheKey, projection, datahubInventoryTtlMs / 1_000)
       } catch { /* Redis is optional. */ }
@@ -2930,54 +3198,124 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       return inventorySnapshot
     }
     for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-      const page = await datahubCatalogPage(providerCursor, signal)
+      const pageOrdinal = pageNumber + 1
+      const page = await datahubCatalogPage(providerCursor, signal, pageOrdinal, progressDiagnostic())
+      pageCount = pageOrdinal
+      pageFetchMs += page.pageFetchMs
+      normalizationMs += page.normalizationMs
       if (!Number.isSafeInteger(page.total) || page.total < 0) {
-        throw Object.assign(new Error('DataHub returned a malformed inventory total.'), { statusCode: 502 })
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+          'INVENTORY_VALIDATION',
+          'DataHub inventory returned a malformed total.',
+          { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+        )
       }
       if (providerTotal === undefined) providerTotal = page.total
       if (page.total !== providerTotal) {
-        throw Object.assign(new Error('DataHub changed its inventory total during the scroll.'), { statusCode: 502 })
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+          'INVENTORY_VALIDATION',
+          'DataHub changed its inventory total during the scroll.',
+          { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+        )
       }
+      processedCount += page.rawCount
+      skippedNoncurrentCount += page.skippedNoncurrentCount
+      skippedCurrentAspectsAbsentCount += page.skippedNoncurrentReasons.DATASET_CURRENT_ASPECTS_ABSENT
       for (const item of page.items) {
         if (typeof item.id !== 'string' || !item.id) {
-          throw Object.assign(new Error('DataHub returned an inventory asset without a valid identity.'), { statusCode: 502 })
+          throw inventoryFailure(
+            'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
+            'ENTITY_NORMALIZATION',
+            'DataHub inventory normalization produced an invalid identity.',
+            { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+          )
         }
+        const itemHash = stableInventoryItemHash(item)
         if (!observed.has(item.id)) {
-          observed.add(item.id)
+          observed.set(item.id, itemHash)
           items.push(item)
+        } else {
+          duplicateCount += 1
+          if (observed.get(item.id) !== itemHash) {
+            throw inventoryFailure(
+              'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+              'DEDUPLICATION',
+              'DataHub inventory returned conflicting metadata for one Dataset identity.',
+              { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+            )
+          }
         }
       }
-      if (observed.size > providerTotal) {
-        throw Object.assign(new Error('DataHub returned more unique assets than its inventory total.'), { statusCode: 502 })
+      inventoryRefreshDiagnostic = boundedInventoryDiagnostic({
+        ...progressDiagnostic(),
+        phase: 'INVENTORY_VALIDATION',
+        page_number: pageOrdinal,
+        page_fetch_ms: pageFetchMs,
+        normalization_ms: normalizationMs,
+        elapsed_ms: Date.now() - startedAt,
+      })
+      const accountingTotal = observed.size + skippedNoncurrentCount + duplicateCount
+      if (processedCount > providerTotal || processedCount !== accountingTotal) {
+        throw inventoryFailure(
+          'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+          'INVENTORY_VALIDATION',
+          'DataHub inventory reconciliation accounting exceeded or lost provider results.',
+          { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+        )
       }
       if (page.nextProviderCursor) {
         if (providerCursors.has(page.nextProviderCursor)) {
-          throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
+          throw inventoryFailure(
+            'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+            'INVENTORY_VALIDATION',
+            'DataHub inventory returned a repeated scroll cursor.',
+            { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+          )
         }
         providerCursors.add(page.nextProviderCursor)
       }
       if (terminalConfirmationPending) {
-        if (page.items.length !== 0 || page.nextProviderCursor) {
-          throw Object.assign(
-            new Error('DataHub returned an invalid terminal inventory confirmation page.'),
-            { statusCode: 502 },
+        if (page.rawCount !== 0 || page.nextProviderCursor) {
+          throw inventoryFailure(
+            'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+            'INVENTORY_VALIDATION',
+            'DataHub inventory returned an invalid terminal confirmation page.',
+            { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
           )
         }
         return commit()
       }
       if (!page.nextProviderCursor) {
-        if (observed.size !== providerTotal) {
-          throw Object.assign(new Error('DataHub ended its scroll before the complete unique inventory was observed.'), { statusCode: 502 })
+        if (processedCount !== providerTotal) {
+          throw inventoryFailure(
+            'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+            'INVENTORY_VALIDATION',
+            'DataHub ended its scroll before the complete raw inventory was observed.',
+            { ...progressDiagnostic(), page_number: pageOrdinal, elapsed_ms: Date.now() - startedAt },
+          )
         }
         return commit()
       }
-      if (observed.size === providerTotal) terminalConfirmationPending = true
+      if (processedCount === providerTotal) terminalConfirmationPending = true
       providerCursor = page.nextProviderCursor
     }
-    throw Object.assign(new Error('DataHub inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
+    throw inventoryFailure(
+      'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      'INVENTORY_VALIDATION',
+      'DataHub inventory exceeded the bounded reconciliation page safety limit.',
+      { ...progressDiagnostic(), page_number: pageCount, elapsed_ms: Date.now() - startedAt },
+    )
   })().catch((error) => {
     inventoryRefreshFailedAt = new Date().toISOString()
     inventoryRefreshRetryAt = Date.now() + datahubInventoryFailureRetryMs
+    inventoryRefreshLastError = error
+    inventoryRefreshDiagnostic = error?.inventoryDiagnostic || boundedInventoryDiagnostic({
+      phase: 'INVENTORY_VALIDATION',
+      error_class: 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+      terminal: true,
+    })
     throw error
   }).finally(() => {
     inventoryRefreshPromise = undefined
@@ -3151,26 +3489,73 @@ async function datahubCatalogSelection(searchParameters, principal, feature = 'c
   }
   const exactUrns = new Set(requestedUrns)
   const inventory = await datahubInventory()
-  const allItems = (principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory)
-    .filter((item) => !tableOnly || item.dataset_kind === 'TABLE')
-    .filter((item) => !exactUrns.size || exactUrns.has(item.id))
-    .filter((item) => assetMatches(item, searchParameters, fields))
-    .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+  const authorizationStartedAt = Date.now()
+  let allItems
+  try {
+    allItems = (principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory)
+      .filter((item) => !tableOnly || item.dataset_kind === 'TABLE')
+      .filter((item) => !exactUrns.size || exactUrns.has(item.id))
+      .filter((item) => assetMatches(item, searchParameters, fields))
+      .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+  } catch (error) {
+    error.inventoryDiagnostic ||= boundedInventoryDiagnostic({
+      phase: 'AUTHORIZATION_PROJECTION',
+      processed_count: inventory.length,
+      normalized_count: 0,
+      elapsed_ms: Date.now() - authorizationStartedAt,
+      error_class: 'AUTHORIZATION_PROJECTION_FAILED',
+      terminal: true,
+    })
+    throw error
+  }
   const scope = `${parameterScope('catalog-projection', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])}:urns=${sha256([...exactUrns].sort().join('\n'))}`
-  return { allItems, scope, limit }
+  return {
+    allItems,
+    scope,
+    limit,
+    requestDiagnostic: boundedInventoryDiagnostic({
+      phase: 'AUTHORIZATION_PROJECTION',
+      processed_count: inventory.length,
+      normalized_count: allItems.length,
+      elapsed_ms: Date.now() - authorizationStartedAt,
+    }),
+  }
 }
 
 async function datahubCatalog(searchParameters, principal, feature = 'catalog', options = {}) {
-  const { allItems, scope, limit } = await datahubCatalogSelection(
+  const responseStartedAt = Date.now()
+  const { allItems, scope, limit, requestDiagnostic } = await datahubCatalogSelection(
     searchParameters, principal, feature, options,
   )
-  const page = offsetPage(allItems, searchParameters, scope, limit)
+  let page
+  try {
+    page = offsetPage(allItems, searchParameters, scope, limit)
+  } catch (error) {
+    error.inventoryDiagnostic ||= boundedInventoryDiagnostic({
+      phase: 'RESPONSE_BUILD',
+      processed_count: allItems.length,
+      normalized_count: 0,
+      elapsed_ms: Date.now() - responseStartedAt,
+      error_class: 'RESPONSE_BUILD_FAILED',
+      terminal: true,
+    })
+    throw error
+  }
   return {
     ...page,
     total: allItems.length,
     total_exact: true,
-    meta: catalogMeta({ projection: true }),
+    meta: {
+      ...catalogMeta({ projection: true }),
+      catalog_request: boundedInventoryDiagnostic({
+        ...requestDiagnostic,
+        phase: 'RESPONSE_BUILD',
+        processed_count: allItems.length,
+        normalized_count: page.items.length,
+        elapsed_ms: Date.now() - responseStartedAt,
+      }),
+    },
     match_mode: 'ALL',
   }
 }
@@ -10270,7 +10655,13 @@ export function createPocServer({
       if (response.headersSent) return response.end()
       const status = Number(error?.statusCode) || (error instanceof SyntaxError ? 400 : 502)
       const code = error?.statusCode && typeof error?.code === 'string' ? error.code : 'POC_PROVIDER_ERROR'
-      return problem(response, status, code, error instanceof Error ? error.message : 'Provider request failed.')
+      return problem(
+        response,
+        status,
+        code,
+        error instanceof Error ? error.message : 'Provider request failed.',
+        error?.inventoryDiagnostic,
+      )
     }
   })
 }

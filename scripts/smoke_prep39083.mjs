@@ -10,8 +10,14 @@ function argument(name, fallback = null) {
   return index >= 0 ? process.argv[index + 1] : fallback
 }
 
-function smokeFailure(stage, classification, message, status = null) {
-  return Object.assign(new Error(message), { stage, classification, status })
+function smokeFailure(stage, classification, message, status = null, diagnostic = null) {
+  return Object.assign(new Error(message), {
+    stage,
+    classification,
+    status,
+    diagnostic,
+    terminal: diagnostic?.terminal === true,
+  })
 }
 
 async function privateSecret(path) {
@@ -36,7 +42,20 @@ async function responseJson(url, init, stage, classification) {
     throw smokeFailure(stage, classification, `${stage} request failed.`)
   }
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw smokeFailure(stage, classification, `${stage} request was rejected.`, response.status)
+  if (!response.ok) {
+    const inventoryClassification = stage === 'DATAHUB'
+      && typeof body?.code === 'string'
+      && /^PREP_DATAHUB_INVENTORY_[A-Z_]+$/.test(body.code)
+      ? body.code
+      : classification
+    throw smokeFailure(
+      stage,
+      inventoryClassification,
+      `${stage} request was rejected.`,
+      response.status,
+      inventoryClassification === body?.code ? body?.diagnostic : null,
+    )
+  }
   return { response, body }
 }
 
@@ -63,9 +82,22 @@ async function retryReadiness(operation, timeoutMs, label) {
       return await operation()
     } catch (error) {
       lastError = error
+      if (error?.terminal) throw error
       if (Date.now() >= deadline) break
-      progress(label, `still pending (elapsed ${Math.round((Date.now() - started) / 1000)}s)`)
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 15_000))
+      const diagnostic = error?.diagnostic
+      if (diagnostic && Number.isSafeInteger(diagnostic.page_number) && diagnostic.page_number > 0) {
+        const pageProgress = `inventory page ${diagnostic.page_number}`
+        const countProgress = Number.isSafeInteger(diagnostic.expected_total)
+          ? `; ${diagnostic.processed_count}/${diagnostic.expected_total} processed`
+          : ''
+        progress(label, `${pageProgress}${countProgress}`)
+      } else {
+        progress(label, `still pending (elapsed ${Math.round((Date.now() - started) / 1000)}s)`)
+      }
+      const remaining = deadline - Date.now()
+      if (remaining > 0) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(15_000, remaining)))
+      }
     }
   } while (Date.now() < deadline)
   throw lastError
@@ -162,6 +194,17 @@ async function main() {
   }
   try {
     await retryReadiness(async () => {
+      const currentInventory = await withHeartbeat(responseJson(
+        `${origin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`,
+        { headers: { Cookie: cookie } },
+        'DATAHUB',
+        'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED',
+      ), '3/5 DataHub current inventory')
+      if (!currentInventory.body || typeof currentInventory.body !== 'object') {
+        throw smokeFailure('DATAHUB', 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED', 'Current DataHub inventory response is invalid.', null, {
+          phase: 'RESPONSE_BUILD', terminal: true,
+        })
+      }
       const catalog = await responseJson(`${origin}/poc-api/datahub/catalog?limit=1`, {
         headers: { Cookie: cookie },
       }, 'DATAHUB', 'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED')
@@ -232,6 +275,7 @@ main().catch(async (error) => {
     elapsed_ms: Date.now() - processStarted,
     k9_mode: k9Mode,
     failed_at: new Date().toISOString(),
+    ...(error?.diagnostic ? { diagnostic: error.diagnostic } : {}),
   }
   if (failureOutput) await atomicJson(failureOutput, failure).catch(() => undefined)
   process.stderr.write(`${JSON.stringify(failure)}\n`)

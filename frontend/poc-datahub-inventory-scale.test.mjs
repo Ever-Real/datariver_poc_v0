@@ -1,0 +1,464 @@
+/* global Buffer, URL, fetch, process, structuredClone, setTimeout */
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { test } from 'node:test'
+
+const providerPageSize = 250
+
+async function listen(server) {
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const address = server.address()
+  assert(address && typeof address === 'object')
+  return `http://127.0.0.1:${address.port}`
+}
+
+async function close(server) {
+  server.closeAllConnections()
+  await new Promise((resolvePromise, reject) => server.close((error) => (
+    error ? reject(error) : resolvePromise()
+  )))
+}
+
+function dataset(index, { sparse = false, missingHierarchy = false, view = false } = {}) {
+  const suffix = String(index).padStart(5, '0')
+  const qualifiedName = missingHierarchy ? `asset_${suffix}` : `warehouse.analytics.asset_${suffix}`
+  const urn = `urn:li:dataset:(urn:li:dataPlatform:postgres,${qualifiedName},PROD)`
+  const optional = sparse ? null : {
+    globalTags: { tags: [{ tag: {
+      urn: `urn:li:tag:inventory-${index % 7}`,
+      name: `inventory-${index % 7}`,
+      properties: { name: `inventory-${index % 7}`, description: 'bounded test tag' },
+    } }] },
+    glossaryTerms: { terms: [{ term: {
+      urn: `urn:li:glossaryTerm:inventory-${index % 5}`,
+      name: `inventory-${index % 5}`,
+      properties: { name: `inventory-${index % 5}`, description: 'bounded test term' },
+    } }] },
+    domain: { domain: {
+      urn: `urn:li:domain:inventory-${index % 3}`,
+      properties: { name: `Inventory ${index % 3}`, description: 'bounded test domain' },
+    } },
+    ownership: { owners: [{ owner: { urn: `urn:li:corpuser:test-owner-${index % 4}` }, type: 'TECHNICAL_OWNER' }] },
+  }
+  return {
+    urn,
+    type: 'DATASET',
+    name: `asset_${suffix}`,
+    subTypes: { typeNames: [view ? 'View' : 'Table'] },
+    platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+    properties: {
+      name: `asset_${suffix}`,
+      qualifiedName,
+      description: sparse ? null : `Inventory description ${index}`,
+      created: index % 2 ? null : 1_704_164_645_000,
+      customProperties: sparse ? null : [{ key: 'inventory.test', value: String(index) }],
+    },
+    editableProperties: sparse ? null : { description: null },
+    container: sparse ? null : {
+      urn: 'urn:li:container:warehouse-analytics',
+      properties: { name: 'analytics', qualifiedName: 'warehouse.analytics', customProperties: [] },
+      subTypes: { typeNames: ['Schema'] },
+    },
+    dataPlatformInstance: sparse ? null : {
+      urn: 'urn:li:dataPlatformInstance:(urn:li:dataPlatform:postgres,prod)',
+      instanceId: 'prod',
+      properties: { name: 'prod', description: '', customProperties: [] },
+    },
+    browsePathV2: missingHierarchy || sparse ? null : { path: [
+      { name: 'warehouse', entity: { type: 'CONTAINER', properties: { name: 'warehouse' }, subTypes: { typeNames: ['Database'] } } },
+      { name: 'analytics', entity: { type: 'CONTAINER', properties: { name: 'analytics' }, subTypes: { typeNames: ['Schema'] } } },
+    ] },
+    structuredProperties: sparse ? null : { properties: [] },
+    ownership: optional?.ownership ?? null,
+    globalTags: optional?.globalTags ?? null,
+    glossaryTerms: optional?.glossaryTerms ?? null,
+    domain: optional?.domain ?? null,
+    schemaMetadata: { fields: index % 11 === 0 ? [] : [{
+      fieldPath: `column_${index % 13}`,
+      label: null,
+      type: index % 2 ? 'STRING' : 'NUMBER',
+      nativeDataType: index % 2 ? 'varchar' : 'numeric',
+      description: sparse ? null : 'bounded schema field',
+      nullable: index % 3 !== 0,
+      globalTags: null,
+      glossaryTerms: null,
+      schemaFieldEntity: null,
+    }] },
+    editableSchemaMetadata: sparse ? null : { editableSchemaFieldInfo: [] },
+    latestFullTableProfile: sparse ? null : [],
+    fineGrainedLineages: sparse ? null : [],
+  }
+}
+
+function inventoryStore() {
+  let persisted
+  let writes = 0
+  return {
+    stateStore: {
+      configured: { postgres: true, redis: true },
+      async read() { return { value: persisted ? structuredClone(persisted) : null, version: writes } },
+      async write(_scope, value) {
+        persisted = structuredClone(value)
+        writes += 1
+        return writes
+      },
+      async cacheGet() { return undefined },
+      async cacheSet() {},
+      async cacheDelete() {},
+      async readChangeHistoryAccess() {
+        return {
+          access: { version: 1, value: {
+            schema_version: 1,
+            active_subject_id: 'inventory-scale-subject',
+            users: [{
+              subject_id: 'inventory-scale-subject', role: 'admin', active: true,
+              provider_owner_refs: [], max_security_grade: 'restricted',
+            }],
+            system_assignments: [],
+          } },
+          core: { version: 0, value: null },
+        }
+      },
+    },
+    observation() { return { persisted: structuredClone(persisted), writes } },
+  }
+}
+
+async function waitForCatalog(origin) {
+  const deadline = Date.now() + 10_000
+  let response
+  while (Date.now() < deadline) {
+    response = await fetch(`${origin}/poc-api/datahub/catalog?limit=1`)
+    if (response.status === 200) return { response, body: await response.json() }
+    const body = await response.json()
+    if (body.diagnostic?.terminal) throw new Error(`${body.code}: ${body.detail}`)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+  }
+  throw new Error(`Catalog did not become ready; last status ${response?.status}`)
+}
+
+async function exactInventoryScenario(rawEntities, suffix) {
+  let providerRequests = 0
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    assert.match(body.query, /DataRiverPocCatalogEmbeddingInventory/u)
+    assert.equal(body.variables.input.count, providerPageSize)
+    const offset = body.variables.input.scrollId ? Number(body.variables.input.scrollId) : 0
+    const count = body.variables.input.count
+    const items = rawEntities.slice(offset, offset + count)
+    const nextOffset = offset + items.length
+    const exactBoundaryConfirmation = rawEntities.length > 0
+      && nextOffset === rawEntities.length && items.length === count
+    const nextScrollId = nextOffset < rawEntities.length || exactBoundaryConfirmation
+      ? String(nextOffset)
+      : null
+    providerRequests += 1
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: items.length,
+      total: rawEntities.length,
+      nextScrollId,
+      searchResults: items.map((entity) => ({ entity })),
+    } } }))
+  })
+  const providerOrigin = await listen(provider)
+  Object.assign(process.env, {
+    POC_ENV_FILE: 'poc-datahub-inventory-scale.test.env.missing',
+    POC_DATABASE_URL: '',
+    POC_POSTGRES_HOST: '',
+    POC_REDIS_URL: '',
+    DATAHUB_GMS_URL: providerOrigin,
+    DATAHUB_GMS_TOKEN: 'inventory-scale-test-token',
+    LLM_CHAT_URL: '',
+    LLM_CHAT_MODEL: '',
+    LLM_CHAT_TOKEN: '',
+    LLM_EMBEDDING_URL: '',
+    LLM_EMBEDDING_MODEL: '',
+    LLM_EMBEDDING_TOKEN: '',
+    LLM_RERANKER_URL: '',
+    LLM_RERANKER_MODEL: '',
+    LLM_RERANKER_TOKEN: '',
+  })
+  const store = inventoryStore()
+  const module = await import(`./poc-server.mjs?inventory-scale-${suffix}`)
+  const server = module.createPocServer({
+    stateStore: store.stateStore,
+    authenticator: {
+      async authenticate() { return { subjectId: 'inventory-scale-subject', tokenHash: 'f'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
+  const origin = await listen(server)
+  return {
+    origin,
+    providerRequests: () => providerRequests,
+    store,
+    close: async () => {
+      await close(server)
+      await close(provider)
+    },
+  }
+}
+
+async function classifiedFailureScenario(suffix, providerHandler, stateStoreOverride) {
+  let requests = 0
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    requests += 1
+    await providerHandler({ body, requestNumber: requests, response })
+  })
+  const providerOrigin = await listen(provider)
+  Object.assign(process.env, {
+    POC_ENV_FILE: 'poc-datahub-inventory-scale.test.env.missing',
+    POC_DATABASE_URL: '',
+    POC_POSTGRES_HOST: '',
+    POC_REDIS_URL: '',
+    DATAHUB_GMS_URL: providerOrigin,
+    DATAHUB_GMS_TOKEN: 'inventory-scale-test-token',
+    LLM_CHAT_URL: '', LLM_CHAT_MODEL: '', LLM_CHAT_TOKEN: '',
+    LLM_EMBEDDING_URL: '', LLM_EMBEDDING_MODEL: '', LLM_EMBEDDING_TOKEN: '',
+    LLM_RERANKER_URL: '', LLM_RERANKER_MODEL: '', LLM_RERANKER_TOKEN: '',
+  })
+  const store = inventoryStore()
+  const module = await import(`./poc-server.mjs?inventory-failure-${suffix}`)
+  const server = module.createPocServer({
+    stateStore: stateStoreOverride || store.stateStore,
+    authenticator: {
+      async authenticate() { return { subjectId: 'inventory-scale-subject', tokenHash: 'f'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
+  const origin = await listen(server)
+  return {
+    origin,
+    requests: () => requests,
+    close: async () => {
+      await close(server)
+      await close(provider)
+    },
+  }
+}
+
+async function terminalCatalogFailure(scenario) {
+  assert.equal((await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=1`)).status, 503)
+  const deadline = Date.now() + 2_000
+  let response
+  let body
+  while (Date.now() < deadline) {
+    response = await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=1`)
+    body = await response.json()
+    if (body.diagnostic?.terminal) return { response, body }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+  }
+  throw new Error(`Terminal inventory diagnostic did not surface: ${response?.status} ${body?.code}`)
+}
+
+test('keeps inventory pagination count-independent at dynamic provider boundaries', async () => {
+  const counts = [
+    0,
+    1,
+    providerPageSize - 1,
+    providerPageSize,
+    providerPageSize + 1,
+    providerPageSize * 2 + 3,
+  ]
+  for (const count of counts) {
+    const scenario = await exactInventoryScenario(
+      Array.from({ length: count }, (_value, index) => dataset(index)),
+      `dynamic-${count}`,
+    )
+    try {
+      const { body } = await waitForCatalog(scenario.origin)
+      assert.equal(body.total, count)
+      assert.equal(scenario.store.observation().persisted.items.length, count)
+      assert.equal(body.meta.inventory_refresh.processed_count, count)
+      assert.equal(body.meta.inventory_refresh.expected_total, count)
+      assert.equal(body.meta.inventory_refresh.normalized_count, count)
+      assert.equal(body.meta.inventory_refresh.skipped_noncurrent_count, 0)
+      assert.equal(body.meta.inventory_refresh.duplicate_count, 0)
+      assert.ok(scenario.providerRequests() >= 1)
+    } finally {
+      await scenario.close()
+    }
+  }
+})
+
+test('promotes a large generated rich inventory after explicit noncurrent filtering and canonical deduplication', async () => {
+  const generatedRawCount = providerPageSize * 6 + 37
+  const current = Array.from({ length: generatedRawCount - 3 }, (_value, index) => dataset(index, {
+    sparse: index % 17 === 0,
+    missingHierarchy: index % 31 === 0,
+    view: index % 19 === 0,
+  }))
+  const noncurrent = [dataset(50_000), dataset(50_001)].map((value) => ({
+    ...value,
+    properties: null,
+    schemaMetadata: null,
+  }))
+  const rawEntities = [...current, ...noncurrent, structuredClone(current[17])]
+  assert.equal(rawEntities.length, generatedRawCount)
+  const scenario = await exactInventoryScenario(rawEntities, 'large-generated-rich-inventory')
+  try {
+    const { body } = await waitForCatalog(scenario.origin)
+    const observation = scenario.store.observation()
+    assert.ok(scenario.providerRequests() > 2)
+    assert.equal(observation.writes, 1)
+    assert.equal(observation.persisted.items.length, current.length)
+    assert.equal(body.total, current.length)
+    assert.equal(body.items.length, 1)
+    assert.equal(body.meta.catalog_request.phase, 'RESPONSE_BUILD')
+    assert.equal(body.meta.catalog_request.processed_count, current.length)
+    assert.equal(body.meta.catalog_request.normalized_count, 1)
+    assert.deepEqual(body.meta.inventory_refresh, {
+      ...body.meta.inventory_refresh,
+      processed_count: generatedRawCount,
+      expected_total: generatedRawCount,
+      normalized_count: current.length,
+      skipped_noncurrent_count: noncurrent.length,
+      duplicate_count: 1,
+      terminal: false,
+    })
+    assert.deepEqual(body.meta.inventory_refresh.filtered_noncurrent_reasons, {
+      DATASET_CURRENT_ASPECTS_ABSENT: noncurrent.length,
+    })
+    assert.equal(
+      body.meta.inventory_refresh.processed_count,
+      body.meta.inventory_refresh.normalized_count
+        + body.meta.inventory_refresh.skipped_noncurrent_count
+        + body.meta.inventory_refresh.duplicate_count,
+    )
+    assert.ok(body.meta.inventory_refresh.elapsed_ms < 10_000)
+    assert.ok(body.meta.inventory_refresh.page_fetch_ms < 10_000)
+    assert.ok(body.meta.inventory_refresh.normalization_ms < 10_000)
+
+    const platformTree = await (
+      await fetch(`${scenario.origin}/poc-api/datahub/tree?parent_kind=PLATFORM&platform=postgres&limit=100`)
+    ).json()
+    assert.equal(platformTree.items.some((item) => !item.label), false)
+    assert.equal(JSON.stringify(platformTree).includes('Database 메타데이터 없음'), false)
+  } finally {
+    await scenario.close()
+  }
+})
+
+test('surfaces deterministic inventory contract and normalization failures without blind retries', async () => {
+  const malformed = await classifiedFailureScenario('entity-contract', async ({ response }) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: 1, total: 1, nextScrollId: null,
+      searchResults: [{ entity: { urn: null, type: 'DATASET' } }],
+    } } }))
+  })
+  try {
+    const { response, body } = await terminalCatalogFailure(malformed)
+    assert.equal(response.status, 502)
+    assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED')
+    assert.equal(body.diagnostic.phase, 'ENTITY_EXTRACTION')
+    assert.equal(body.diagnostic.terminal, true)
+    const requests = malformed.requests()
+    const repeated = await fetch(`${malformed.origin}/poc-api/datahub/catalog?limit=1`)
+    assert.equal((await repeated.json()).code, body.code)
+    assert.equal(malformed.requests(), requests, 'terminal contract failures must fail fast during cooldown')
+  } finally {
+    await malformed.close()
+  }
+
+  const invalidOptionalShape = dataset(1)
+  invalidOptionalShape.browsePathV2 = { path: {} }
+  const normalization = await classifiedFailureScenario('entity-normalization', async ({ response }) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: 1, total: 1, nextScrollId: null,
+      searchResults: [{ entity: invalidOptionalShape }],
+    } } }))
+  })
+  try {
+    const { body } = await terminalCatalogFailure(normalization)
+    assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED')
+    assert.equal(body.diagnostic.phase, 'ENTITY_NORMALIZATION')
+  } finally {
+    await normalization.close()
+  }
+})
+
+test('classifies provider query, page, GraphQL, and snapshot promotion failures separately', async () => {
+  const cases = [
+    {
+      suffix: 'query',
+      expected: 'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
+      terminal: false,
+      handler: async ({ response }) => {
+        response.writeHead(503, { 'Content-Type': 'application/json' })
+        response.end('{}')
+      },
+    },
+    {
+      suffix: 'page',
+      expected: 'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+      terminal: false,
+      handler: async ({ requestNumber, response }) => {
+        if (requestNumber === 1) {
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+            count: 1, total: 2, nextScrollId: 'next-page',
+            searchResults: [{ entity: dataset(1) }],
+          } } }))
+          return
+        }
+        response.writeHead(503, { 'Content-Type': 'application/json' })
+        response.end('{}')
+      },
+    },
+    {
+      suffix: 'graphql',
+      expected: 'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED',
+      terminal: true,
+      handler: async ({ response }) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ errors: [{ message: 'sanitized test rejection' }] }))
+      },
+    },
+  ]
+  for (const value of cases) {
+    const scenario = await classifiedFailureScenario(value.suffix, value.handler)
+    try {
+      assert.equal((await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=1`)).status, 503)
+      const deadline = Date.now() + 2_000
+      let body
+      while (Date.now() < deadline) {
+        const response = await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=1`)
+        body = await response.json()
+        if (body.code === value.expected) break
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+      }
+      assert.equal(body.code, value.expected)
+      assert.equal(body.diagnostic.terminal, value.terminal)
+    } finally {
+      await scenario.close()
+    }
+  }
+
+  const baseStore = inventoryStore()
+  const promotionStore = {
+    ...baseStore.stateStore,
+    async write() { throw new Error('bounded snapshot write failure') },
+  }
+  const promotion = await classifiedFailureScenario('promotion', async ({ response }) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: 1, total: 1, nextScrollId: null,
+      searchResults: [{ entity: dataset(1) }],
+    } } }))
+  }, promotionStore)
+  try {
+    const { body } = await terminalCatalogFailure(promotion)
+    assert.equal(body.code, 'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED')
+    assert.equal(body.diagnostic.phase, 'SNAPSHOT_PERSISTENCE')
+  } finally {
+    await promotion.close()
+  }
+})
