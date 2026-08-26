@@ -1,0 +1,49 @@
+{
+  "contract": "DATARIVER_DATAHUB_INVENTORY_SCROLL_EVIDENCE_V1",
+  "recorded_at": "2026-08-26T08:04:19Z",
+  "product_sha": "1e9574d6af42b6bff6826e2352601c0c8891e572",
+  "root_cause": {
+    "phase": "ENTITY_EXTRACTION",
+    "branch": "PAGE_RESULT_COUNT_CONTRACT",
+    "condition": "PROVIDER_PAGE_METADATA_COUNT_IS_NOT_MATERIALIZED_ENVELOPE_COUNT",
+    "stable_sort": "URN_ASCENDING"
+  },
+  "accounting": {
+    "raw_unit": "SEARCH_RESULT_ENVELOPE",
+    "provider_total": "DYNAMICALLY_OBSERVED",
+    "canonical_current_count": "INDEPENDENTLY_DERIVED",
+    "successful_unresolved_policy": "NONE",
+    "null_entity_policy": "TERMINAL_SEARCH_RESULT_ENTITY_ABSENT",
+    "noncurrent_policy": "DATASET_CURRENT_ASPECTS_ABSENT"
+  },
+  "prep_specific_constants": {
+    "runtime_counts": "NONE",
+    "test_counts": "NONE",
+    "runtime_page_count": "NONE",
+    "test_page_count": "NONE"
+  },
+  "verification": {
+    "inventory_focused": "5/5 PASS",
+    "smoke_focused": "13/13 PASS",
+    "node_product_server": "137/137 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS",
+    "poc_build": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "PASS (578 files)",
+    "static": "PASS",
+    "prep_unit_handoff": "42/42 PASS",
+    "docker_state_recovery": "PASS",
+    "failed_smoke_same_command_resume": "PASS",
+    "exact_oci_architecture": "linux/amd64",
+    "exact_oci_revision": "1e9574d6af42b6bff6826e2352601c0c8891e572",
+    "exact_oci_image_id": "sha256:71983de5f27327a23894afc6bd8c80150ab0673b76372772bfcc6cba54290aa8",
+    "runtime_proxy_env_leak": "NONE"
+  },
+  "one_command": "./scripts/prep39083 deploy",
+  "existing_owned_smoke_failed_resume": "COMPATIBLE",
+  "actual_prep": "NOT_EXECUTED_BY_DEV_AGENT",
+  "actual_ops": "NOT_EXECUTED_BY_DEV_AGENT"
+}
