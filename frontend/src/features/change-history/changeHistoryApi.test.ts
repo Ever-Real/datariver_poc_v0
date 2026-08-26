@@ -14,6 +14,7 @@ describe('ChangeHistoryApi', () => {
     const request = vi.fn((path: string) => {
       if (path.startsWith('/change-history/events?')) return Promise.resolve({
         items: [event()], next_cursor: null, limit: 25, total: 1,
+        empty_state_reason: null, empty_state_detail: null,
       })
       if (path.startsWith('/change-history/weekly?')) return Promise.resolve(weekly())
       if (path.startsWith('/change-history/summary?')) return Promise.resolve(summary())
@@ -183,7 +184,10 @@ describe('ChangeHistoryApi', () => {
       entity_key: 'asset:lifecycle:removed',
     }
     const api = new ChangeHistoryApi({
-      request: vi.fn().mockResolvedValue({ items: [lifecycle], next_cursor: null, limit: 50, total: 1 }),
+      request: vi.fn().mockResolvedValue({
+        items: [lifecycle], next_cursor: null, limit: 50, total: 1,
+        empty_state_reason: null, empty_state_detail: null,
+      }),
       requestWithMeta: vi.fn().mockResolvedValue({ data: { ...lifecycle, before: { removed: false }, after: { removed: true } }, etag: '"0"' }),
     })
     expect((await api.events({ category: 'LIFECYCLE' })).items[0]?.source_aspect).toBe('status')

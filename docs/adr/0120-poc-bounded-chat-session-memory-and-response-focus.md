@@ -1,31 +1,30 @@
 # ADR-0120: POC bounded Chat session memory and response focus
 
-- Status: Accepted for the authentication-free POC only
+- Status: Accepted for the authenticated POC
 - Date: 2026-08-12
+- Refined: 2026-08-26
 - Refines: ADR-0089, ADR-0102, ADR-0117, ADR-0118, ADR-0119
 - Does not modify: production Chat retention/authorization, canonical evidence ownership,
-  provider token streaming, or production conversation checkpoints
+  raw provider-token exposure, or production conversation checkpoints
 
 ## Context
 
-The POC retained visible questions and answers in its browser-owned session list, but every provider
-request contained only the current question. A follow-up such as `그 테이블의 컬럼은?` therefore
-lost the preceding asset reference. Sending the complete transcript on every request would grow the
+The earlier POC retained visible questions and answers in a browser-owned session list, so refresh,
+relogin or a web restart could not prove account-scoped history. A follow-up such as
+`그 테이블의 컬럼은?` also needs bounded context. Sending the complete transcript would grow the
 prompt without a bound and would incorrectly encourage treating a previous assistant answer as
 current DataHub evidence.
 
 The composer also limited questions to 4,000 characters and did not expose the limit. When a result
-arrived, the conversation did not focus the new answer. A token-by-token replay would improve the
-appearance of streaming but would delay an answer that the server had already completed.
+arrived, the conversation did not focus the new answer. A client timer replay could imitate
+streaming but would not be a truthful network-progress contract.
 
 ## Decision
 
-The POC browser keeps request-time memory only for the same POC Chat session. Each completed turn is
-reduced to at most 900 question characters and 1,300 answer characters. At most five uncompacted
-turns and one summary of at most 5,000 characters cross the same-origin gateway; the complete memory
-payload is capped at 16,000 characters. After every five completed questions the browser schedules
-one fixed Chat-model compaction. Successful compaction replaces those five turns with the summary.
-Failure falls back to a deterministic bounded transcript summary and never blocks the next question.
+The POC PostgreSQL state store owns account-scoped sessions and completed turns. An existing session
+is read only for its exact authenticated owner; client local storage is not a history authority.
+At most five persisted turns are reduced to bounded request-time continuity memory. Each question
+is capped at 900 characters and each answer at 1,300 characters within that derived memory.
 
 For a referential follow-up only, the server uses a closed JSON-schema model call to rewrite the
 current text as a standalone question. Routing and live DataHub/Neo4j retrieval use that rewritten
@@ -39,28 +38,24 @@ Question input is capped at 12,000 Unicode code units in both browser and gatewa
 answer. Any user wheel, touch, pointer/scrollbar or scrolling-key action disables that follow mode
 until the next submitted question.
 
-The complete answer is inserted into the document immediately. A 480 ms CSS blur-to-sharp sweep
-provides a streaming-like reveal without delaying content, making extra provider calls, or replaying
-characters. Reduced-motion preference disables the effect.
+After the server has fully composed, grounded and authorized an answer, it emits bounded
+`answer_delta` frames before the canonical persisted result. The browser displays those network
+chunks directly and follows the newest content until the user scrolls away from the bottom.
 
 ## Consequences
 
 - Pronoun-based follow-ups can preserve same-session intent while every Catalog fact is still
   revalidated against live provider evidence.
-- Prompt growth is bounded independently of the visible session history. Compaction is a five-turn
-  cadence, not an unbounded append and not a production durable checkpoint.
-- Refreshing the POC process/browser memory may discard this convenience memory; it is not a
-  retention, audit, multi-user or production continuity claim.
-- The response animation is presentation only. Server SSE continues to stream real workflow stages,
-  not provider output tokens.
+- Prompt growth is bounded independently of visible, durable session history.
+- Restarting the web container does not discard completed session history because PostgreSQL is the
+  canonical store. A different subject cannot list or read another subject's session.
+- Server SSE streams real workflow stages and approved answer chunks, never raw provider tokens.
 
 ## Required evidence
 
-1. The sixth same-session request carries either the completed five-turn summary or the still-bounded
-   five recent turns when compaction is pending.
-2. Oversized questions, summaries, turn fields and more than five recent turns fail before provider
-   execution.
+1. A same-session follow-up derives continuity from no more than five completed persisted turns.
+2. Oversized question and derived-memory fields fail before provider execution.
 3. Referential follow-ups are resolved and retrieve current DataHub evidence; no memory record is
    returned as evidence.
-4. The 12,000-character counter and clamp, answer focusing, user-scroll cancellation, reveal class
-   and reduced-motion fallback have component/browser evidence.
+4. The 12,000-character counter and clamp, answer-delta following and user-scroll cancellation have
+   component/browser evidence.

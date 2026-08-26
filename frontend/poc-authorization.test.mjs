@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 82)
+  assert.equal(POC_ROUTE_REGISTRY.length, 86)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 7,
     AUTHENTICATED: 2,
-    CAPABILITY_PROTECTED: 71,
+    CAPABILITY_PROTECTED: 75,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -141,6 +141,10 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['GET', '/poc-api/datahub/asset', 'catalog.asset'],
     ['GET', '/poc-api/datahub/catalog/locate', 'catalog.locate'],
     ['POST', '/poc-api/llm/chat/stream', 'chat.stream'],
+    ['GET', '/poc-api/chat/sessions', 'chat.sessions.list'],
+    ['GET', '/poc-api/chat/sessions/session-1/messages', 'chat.messages.list'],
+    ['PATCH', '/poc-api/chat/sessions/session-1/favorite', 'chat.session.favorite'],
+    ['DELETE', '/poc-api/chat/sessions/session-1', 'chat.session.archive'],
     ['PUT', '/poc-api/minio/uploads/upload-1/parts/1', 'provider.minio.part'],
   ]
   for (const [method, path, expected] of cases) assert.equal(resolvePocRoute(method, path)?.id, expected)

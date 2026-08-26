@@ -212,7 +212,7 @@ describe('POC compatibility application', () => {
     expect(await screen.findByText(/검증 불가: LLM Chat 연결을 설정해야 합니다/)).toBeVisible()
     expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
-    expect(providerRequestPaths()).toEqual([])
+    expect(providerRequestPaths()).toEqual(['/poc-api/chat/sessions'])
   })
 
   it('shows the bounded POC user and system settings administration surfaces', async () => {

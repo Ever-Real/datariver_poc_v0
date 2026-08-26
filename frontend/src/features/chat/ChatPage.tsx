@@ -18,7 +18,6 @@ import {
   Pencil,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightOpen,
   Route,
   Send,
   Sparkles,
@@ -94,7 +93,6 @@ interface ChatViewMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
-  fullText?: string
   evidence?: ChatEvidence[]
   route?: ChatRouteDecision
   workflow?: ChatWorkflowStep[]
@@ -128,6 +126,13 @@ function isWorkflowProgressStep(value: unknown): value is ChatWorkflowProgressSt
     && workflowStages.has(candidate.stage as ChatWorkflowProgressStep['stage'])
     && workflowStatuses.has(candidate.status as ChatWorkflowProgressStep['status'])
   )
+}
+
+function isAnswerDelta(value: unknown): value is { delta: string } {
+  return Boolean(value && typeof value === 'object'
+    && typeof (value as Record<string, unknown>).delta === 'string'
+    && (value as { delta: string }).delta.length > 0
+    && (value as { delta: string }).delta.length <= 1_000)
 }
 
 function mergeWorkflowProgress(
@@ -231,11 +236,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>()
   const [historyTab, setHistoryTab] = useState<'RECENT' | 'FAVORITES'>('RECENT')
   const [historyCollapsed, setHistoryCollapsed] = useState(false)
-  const [evidenceCollapsed, setEvidenceCollapsed] = useState(false)
   const [evidenceExpanded, setEvidenceExpanded] = useState(true)
   const [selectedAssistantMessageId, setSelectedAssistantMessageId] = useState<string>()
   const [selectedEvidenceAssetId, setSelectedEvidenceAssetId] = useState<string>()
-  const [revealingMessageId, setRevealingMessageId] = useState<string>()
+  const [streamingAssistantMessageId, setStreamingAssistantMessageId] = useState<string>()
   const historyRequestVersion = useRef(0)
   const evidenceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const chatLogRef = useRef<HTMLDivElement | null>(null)
@@ -265,7 +269,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedEvidenceAssetId(undefined)
     setPersistence(undefined)
     setCopyFeedback(undefined)
-    setRevealingMessageId(undefined)
+    setStreamingAssistantMessageId(undefined)
     answerFocusEnabledRef.current = false
     void refreshSessions(controller.signal)
     return () => {
@@ -332,7 +336,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setSessionId(id)
       setMessages(restored)
       setSelectedAssistantMessageId(lastAssistant(restored)?.id)
-      setRevealingMessageId(undefined)
+      setStreamingAssistantMessageId(undefined)
       answerFocusEnabledRef.current = false
       setPersistence(undefined)
     } catch (next) {
@@ -354,7 +358,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setCopyFeedback(undefined)
-    setRevealingMessageId(undefined)
+    setStreamingAssistantMessageId(undefined)
     answerFocusEnabledRef.current = false
     setError(undefined)
     setLoading(false)
@@ -407,7 +411,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     const label = message.role === 'user' ? '질문' : '답변'
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
-      await navigator.clipboard.writeText(message.fullText ?? message.text)
+      await navigator.clipboard.writeText(message.text)
       setCopyFeedback({ messageId: message.id, status: 'SUCCESS', label })
     } catch {
       setCopyFeedback({ messageId: message.id, status: 'FAILED', label })
@@ -423,7 +427,6 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const selectAssistantEvidence = (message: ChatViewMessage) => {
     if (message.role !== 'assistant') return
     setSelectedAssistantMessageId(message.id)
-    setEvidenceCollapsed(false)
   }
 
   const cancelAnswerFocus = useCallback(() => {
@@ -438,34 +441,20 @@ export function ChatPage({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     if (!answerFocusEnabledRef.current) return
-    const target = revealingMessageId ? messageElementsRef.current.get(revealingMessageId) : undefined
+    const target = streamingAssistantMessageId ? messageElementsRef.current.get(streamingAssistantMessageId) : undefined
     if (target && typeof target.scrollIntoView === 'function') {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      target.scrollIntoView({ behavior: 'smooth', block: 'end' })
       return
     }
     const log = chatLogRef.current
     if (log) log.scrollTo?.({ top: log.scrollHeight, behavior: 'smooth' })
-  }, [liveWorkflow, loading, messages, revealingMessageId])
-
-  useEffect(() => {
-    if (!revealingMessageId) return undefined
-    const message = messages.find((item) => item.id === revealingMessageId)
-    if (!message?.fullText || message.text === message.fullText) {
-      setRevealingMessageId((current) => current === revealingMessageId ? undefined : current)
-      return undefined
-    }
-    const chunkSize = Math.max(18, Math.ceil(message.fullText.length / 18))
-    const timeout = window.setTimeout(() => {
-      setMessages((current) => current.map((item) => item.id === revealingMessageId && item.fullText
-        ? { ...item, text: item.fullText.slice(0, Math.min(item.fullText.length, item.text.length + chunkSize)) }
-        : item))
-    }, 28)
-    return () => window.clearTimeout(timeout)
-  }, [messages, revealingMessageId])
+  }, [liveWorkflow, loading, messages, streamingAssistantMessageId])
 
   const stopAnswer = () => {
     activeRequestRef.current?.abort()
     activeRequestRef.current = undefined
+    setMessages((current) => current.filter((message) => message.id !== streamingAssistantMessageId))
+    setStreamingAssistantMessageId(undefined)
     setLoading(false)
     setLiveWorkflow([])
   }
@@ -475,6 +464,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     const text = question.trim()
     if (text.length < 2 || loading) return
     const pendingMessageId = `pending-${crypto.randomUUID()}`
+    const pendingAssistantMessageId = `pending-answer-${crypto.randomUUID()}`
     setMessages((current) => [...current, { id: pendingMessageId, role: 'user', text }])
     setQuestion('')
     setLoading(true)
@@ -484,7 +474,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setLiveWorkflow([])
-    setRevealingMessageId(undefined)
+    setStreamingAssistantMessageId(undefined)
     answerFocusEnabledRef.current = true
     const controller = new AbortController()
     activeRequestRef.current = controller
@@ -502,37 +492,62 @@ export function ChatPage({ client }: { client: ApiClient }) {
           signal: controller.signal,
         },
         (event) => {
-          const step = event.data
-          if (event.event !== 'workflow' || !isWorkflowProgressStep(step)) return
-          setLiveWorkflow((current) => mergeWorkflowProgress(current, step))
+          if (event.event === 'workflow' && isWorkflowProgressStep(event.data)) {
+            const workflowProgress = event.data
+            setLiveWorkflow((current) => mergeWorkflowProgress(current, workflowProgress))
+            return
+          }
+          if (event.event !== 'answer_delta' || !isAnswerDelta(event.data)) return
+          const delta = event.data.delta
+          setStreamingAssistantMessageId(pendingAssistantMessageId)
+          setMessages((current) => {
+            const existing = current.find((message) => message.id === pendingAssistantMessageId)
+            return existing
+              ? current.map((message) => message.id === pendingAssistantMessageId
+                ? { ...message, text: `${message.text}${delta}` }
+                : message)
+              : [...current, { id: pendingAssistantMessageId, role: 'assistant', text: delta }]
+          })
         },
       )
       setSessionId(result.session_id)
       setPersistence(result.persistence)
       setLiveWorkflow(result.workflow)
       setSelectedAssistantMessageId(result.response_message_id)
-      setRevealingMessageId(result.response_message_id)
-      setMessages((current) => [
-        ...current.map((message) => message.id === pendingMessageId
-          ? { ...message, id: result.request_message_id }
-          : message),
-        {
+      setStreamingAssistantMessageId(undefined)
+      setMessages((current) => {
+        const hasPendingAssistant = current.some((message) => message.id === pendingAssistantMessageId)
+        const replaced = current.map((message) => {
+          if (message.id === pendingMessageId) return { ...message, id: result.request_message_id }
+          if (message.id === pendingAssistantMessageId) return {
+            ...message,
+            id: result.response_message_id,
+            text: result.answer,
+            evidence: result.evidence,
+            route: result.route,
+            workflow: result.workflow,
+          }
+          return message
+        })
+        return hasPendingAssistant ? replaced : [...replaced, {
           id: result.response_message_id,
-          role: 'assistant',
-          text: '',
-          fullText: result.answer,
+          role: 'assistant' as const,
+          text: result.answer,
           evidence: result.evidence,
           route: result.route,
           workflow: result.workflow,
-        },
-      ])
-      setEvidenceCollapsed(false)
+        }]
+      })
       await refreshSessions()
     } catch (next) {
       if (controller.signal.aborted || (next instanceof DOMException && next.name === 'AbortError')) {
+        setMessages((current) => current.filter((message) => message.id !== pendingAssistantMessageId))
+        setStreamingAssistantMessageId(undefined)
         setError(undefined)
       } else {
-        setMessages((current) => current.filter((message) => message.id !== pendingMessageId))
+      setMessages((current) => current.filter((message) => (
+        message.id !== pendingMessageId && message.id !== pendingAssistantMessageId
+      )))
         setQuestion(text)
         setError(next)
       }
@@ -577,7 +592,6 @@ export function ChatPage({ client }: { client: ApiClient }) {
         className={[
           'chat-workspace',
           historyCollapsed ? 'is-history-collapsed' : '',
-          evidenceCollapsed ? 'is-evidence-collapsed' : '',
         ].filter(Boolean).join(' ')}
       >
         <aside className="chat-session-panel panel">
@@ -715,7 +729,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   'message',
                   `message-${message.role}`,
                   message.id === visibleAssistant?.id ? 'is-evidence-selected' : '',
-                  message.id === revealingMessageId ? 'is-revealing' : '',
+                  message.id === streamingAssistantMessageId ? 'is-revealing' : '',
                 ].filter(Boolean).join(' ')}
                 key={message.id}
                 ref={(node) => {
@@ -843,19 +857,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
         <aside className="chat-evidence-panel panel">
           <header>
             <div className="chat-panel-heading">
-              <button
-                aria-label={evidenceCollapsed ? 'EVIDENCE 패널 펼치기' : 'EVIDENCE 패널 숨기기'}
-                className="chat-panel-toggle chat-evidence-heading-toggle"
-                onClick={() => setEvidenceCollapsed((current) => !current)}
-                type="button"
-              >
-                {evidenceCollapsed ? <PanelRightOpen size={16} /> : <PanelLeftClose size={16} />}
-              </button>
-              {!evidenceCollapsed && <div><span className="eyebrow">Evidence</span><h2>근거와 처리 흐름</h2></div>}
+              <div><span className="eyebrow">Evidence</span><h2>근거와 처리 흐름</h2></div>
             </div>
           </header>
-          {!evidenceCollapsed && (
-            <div className="chat-evidence-scroll">
+          <div className="chat-evidence-scroll">
               {visibleAssistant?.route && (
                 <section aria-label="서버 라우팅 결정" className="chat-route-summary">
                   <strong><Route size={13} />서버 라우팅</strong>
@@ -954,8 +959,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 </ol>
                 )}
               </section>
-            </div>
-          )}
+          </div>
         </aside>
       </div>
       {selectedEvidenceAssetId && (

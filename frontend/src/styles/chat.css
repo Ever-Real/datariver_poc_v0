@@ -17,10 +17,6 @@
   --chat-history-width: 52px;
 }
 
-.chat-workspace.is-evidence-collapsed {
-  --chat-evidence-width: 52px;
-}
-
 .chat-session-panel,
 .chat-conversation,
 .chat-evidence-panel {
@@ -635,13 +631,15 @@
   padding-top: 7px;
 }
 
-.chat-conversation .message-user .chat-message-actions-user {
+.chat-conversation article.message-user > footer.chat-message-actions-user {
   justify-content: flex-end;
   gap: 2px;
-  margin-top: 2px;
-  border-top: 0;
+  margin-top: 1px;
+  border: 0;
   padding-top: 0;
-  background: transparent;
+  background: none;
+  background-image: none;
+  box-shadow: none;
 }
 
 .chat-conversation .message footer button {
@@ -1264,8 +1262,7 @@
   text-align: center;
 }
 
-.chat-workspace.is-history-collapsed .chat-session-panel > header,
-.chat-workspace.is-evidence-collapsed .chat-evidence-panel > header {
+.chat-workspace.is-history-collapsed .chat-session-panel > header {
   height: 100%;
   align-items: flex-start;
   justify-content: center;
@@ -1274,16 +1271,6 @@
 
 .chat-workspace.is-history-collapsed .chat-panel-heading {
   display: none;
-}
-
-.chat-workspace.is-evidence-collapsed .chat-evidence-panel .chat-panel-heading {
-  display: flex;
-}
-
-.chat-evidence-heading-toggle {
-  width: 28px;
-  height: 28px;
-  flex-basis: 28px;
 }
 
 .chat-evidence-modal {
@@ -1868,8 +1855,7 @@
 
 @media (max-width: 980px) {
   .chat-workspace,
-  .chat-workspace.is-history-collapsed,
-  .chat-workspace.is-evidence-collapsed {
+  .chat-workspace.is-history-collapsed {
     grid-template-columns: 1fr;
   }
 
@@ -1892,13 +1878,11 @@
     max-height: 620px;
   }
 
-  .chat-workspace.is-history-collapsed .chat-session-panel,
-  .chat-workspace.is-evidence-collapsed .chat-evidence-panel {
+  .chat-workspace.is-history-collapsed .chat-session-panel {
     height: 52px;
   }
 
-  .chat-workspace.is-history-collapsed .chat-session-panel > header,
-  .chat-workspace.is-evidence-collapsed .chat-evidence-panel > header {
+  .chat-workspace.is-history-collapsed .chat-session-panel > header {
     height: 52px;
     align-items: center;
   }

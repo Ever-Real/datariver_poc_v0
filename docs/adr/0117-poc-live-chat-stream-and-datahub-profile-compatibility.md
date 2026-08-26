@@ -20,8 +20,9 @@ properties. Reading only the first profile lost valid Oracle and PostgreSQL obse
 
 The POC server exposes a same-origin SSE Chat endpoint. It emits workflow events when the real
 authorization, routing, retrieval, reranking, composition, citation and persistence stages start or
-finish, then emits exactly one final result. The POC browser consumes this stream directly and does
-not manufacture progress events. Fast greeting, definition, discovery and graph heuristics execute
+finish. After final answer/evidence authorization it emits bounded `answer_delta` frames, persists
+the completed turn atomically, then emits exactly one canonical final result. The POC browser consumes
+this stream directly and does not manufacture progress or answer replay. Fast greeting, definition, discovery and graph heuristics execute
 before any whole-inventory read; the bounded typed classifier remains the fallback. No user text is
 accepted as Cypher, GraphQL or provider request syntax.
 

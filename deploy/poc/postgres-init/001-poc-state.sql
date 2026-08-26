@@ -172,6 +172,59 @@ CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_subject
 CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_expiry
   ON poc_local_sessions (expires_at) WHERE revoked_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS poc_chat_sessions (
+  session_id text PRIMARY KEY,
+  owner_subject_id text NOT NULL,
+  title text NOT NULL,
+  is_favorite boolean NOT NULL DEFAULT false,
+  archived boolean NOT NULL DEFAULT false,
+  version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (session_id, owner_subject_id),
+  CONSTRAINT ck_poc_chat_session_id CHECK (char_length(session_id) BETWEEN 1 AND 200),
+  CONSTRAINT ck_poc_chat_session_owner CHECK (char_length(owner_subject_id) BETWEEN 1 AND 255),
+  CONSTRAINT ck_poc_chat_session_title CHECK (char_length(title) BETWEEN 1 AND 240),
+  CONSTRAINT ck_poc_chat_session_version CHECK (version > 0)
+);
+
+CREATE INDEX IF NOT EXISTS ix_poc_chat_sessions_owner_updated
+  ON poc_chat_sessions (owner_subject_id, updated_at DESC, session_id DESC)
+  WHERE NOT archived;
+
+CREATE TABLE IF NOT EXISTS poc_chat_messages (
+  message_id text PRIMARY KEY,
+  session_id text NOT NULL,
+  owner_subject_id text NOT NULL,
+  ordinal bigint NOT NULL,
+  role text NOT NULL,
+  content text NOT NULL,
+  evidence_json jsonb,
+  route_json jsonb,
+  workflow_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (session_id, ordinal),
+  FOREIGN KEY (session_id, owner_subject_id)
+    REFERENCES poc_chat_sessions(session_id, owner_subject_id),
+  CONSTRAINT ck_poc_chat_message_id CHECK (char_length(message_id) BETWEEN 1 AND 200),
+  CONSTRAINT ck_poc_chat_message_owner CHECK (char_length(owner_subject_id) BETWEEN 1 AND 255),
+  CONSTRAINT ck_poc_chat_message_ordinal CHECK (ordinal > 0),
+  CONSTRAINT ck_poc_chat_message_role CHECK (role IN ('user', 'assistant')),
+  CONSTRAINT ck_poc_chat_message_content CHECK (char_length(content) BETWEEN 1 AND 200000),
+  CONSTRAINT ck_poc_chat_message_evidence CHECK (
+    evidence_json IS NULL OR (jsonb_typeof(evidence_json) = 'array' AND octet_length(evidence_json::text) <= 1048576)
+  ),
+  CONSTRAINT ck_poc_chat_message_route CHECK (
+    route_json IS NULL OR (jsonb_typeof(route_json) = 'object' AND octet_length(route_json::text) <= 262144)
+  ),
+  CONSTRAINT ck_poc_chat_message_workflow CHECK (
+    jsonb_typeof(workflow_json) = 'array' AND octet_length(workflow_json::text) <= 262144
+  )
+);
+
+CREATE INDEX IF NOT EXISTS ix_poc_chat_messages_owner_session
+  ON poc_chat_messages (owner_subject_id, session_id, ordinal);
+
 CREATE TABLE IF NOT EXISTS poc_user_table_grants (
   subject_id text NOT NULL,
   table_urn text NOT NULL,

@@ -293,6 +293,66 @@ const LOCAL_AUTH_SCHEMA = [
   `,
 ]
 
+const CHAT_HISTORY_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_chat_sessions (
+      session_id text PRIMARY KEY,
+      owner_subject_id text NOT NULL,
+      title text NOT NULL,
+      is_favorite boolean NOT NULL DEFAULT false,
+      archived boolean NOT NULL DEFAULT false,
+      version bigint NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      UNIQUE (session_id, owner_subject_id),
+      CONSTRAINT ck_poc_chat_session_id CHECK (char_length(session_id) BETWEEN 1 AND 200),
+      CONSTRAINT ck_poc_chat_session_owner CHECK (char_length(owner_subject_id) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_chat_session_title CHECK (char_length(title) BETWEEN 1 AND 240),
+      CONSTRAINT ck_poc_chat_session_version CHECK (version > 0)
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_chat_sessions_owner_updated
+      ON poc_chat_sessions (owner_subject_id, updated_at DESC, session_id DESC)
+      WHERE NOT archived
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS poc_chat_messages (
+      message_id text PRIMARY KEY,
+      session_id text NOT NULL,
+      owner_subject_id text NOT NULL,
+      ordinal bigint NOT NULL,
+      role text NOT NULL,
+      content text NOT NULL,
+      evidence_json jsonb,
+      route_json jsonb,
+      workflow_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      UNIQUE (session_id, ordinal),
+      FOREIGN KEY (session_id, owner_subject_id)
+        REFERENCES poc_chat_sessions(session_id, owner_subject_id),
+      CONSTRAINT ck_poc_chat_message_id CHECK (char_length(message_id) BETWEEN 1 AND 200),
+      CONSTRAINT ck_poc_chat_message_owner CHECK (char_length(owner_subject_id) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_chat_message_ordinal CHECK (ordinal > 0),
+      CONSTRAINT ck_poc_chat_message_role CHECK (role IN ('user', 'assistant')),
+      CONSTRAINT ck_poc_chat_message_content CHECK (char_length(content) BETWEEN 1 AND 200000),
+      CONSTRAINT ck_poc_chat_message_evidence CHECK (
+        evidence_json IS NULL OR (jsonb_typeof(evidence_json) = 'array' AND octet_length(evidence_json::text) <= 1048576)
+      ),
+      CONSTRAINT ck_poc_chat_message_route CHECK (
+        route_json IS NULL OR (jsonb_typeof(route_json) = 'object' AND octet_length(route_json::text) <= 262144)
+      ),
+      CONSTRAINT ck_poc_chat_message_workflow CHECK (
+        jsonb_typeof(workflow_json) = 'array' AND octet_length(workflow_json::text) <= 262144
+      )
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_chat_messages_owner_session
+      ON poc_chat_messages (owner_subject_id, session_id, ordinal)
+  `,
+]
+
 const USER_TABLE_GRANT_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS poc_user_table_grants (
@@ -467,6 +527,8 @@ export function createPocStateStore({ databasePool } = {}) {
   const memoryCredentialSubjectByUsername = new Map()
   const memorySessions = new Map()
   const memoryUserTableGrants = new Map()
+  const memoryChatSessions = new Map()
+  const memoryChatMessages = new Map()
   let pool = databasePool
   let studioPool
   let redis
@@ -525,6 +587,7 @@ export function createPocStateStore({ databasePool } = {}) {
       `)
       for (const statement of CHANGE_HISTORY_SCHEMA) await pool.query(statement)
       for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
+      for (const statement of CHAT_HISTORY_SCHEMA) await pool.query(statement)
       for (const statement of USER_TABLE_GRANT_SCHEMA) await pool.query(statement)
       for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await pool.query(statement)
       for (const statement of K9_MANAGED_GRAPH_SCHEMA) await pool.query(statement)
@@ -2757,6 +2820,197 @@ export function createPocStateStore({ databasePool } = {}) {
     }
   }
 
+  async function listChatSessions(subjectIdValue, limitValue = 50) {
+    const subjectId = requireBoundedString(subjectIdValue, 'subjectId', 255)
+    const limit = Number(limitValue)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Chat session limit must be between 1 and 100.')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT s.session_id AS id, s.title, s.is_favorite, s.version,
+          s.created_at, s.updated_at, count(m.message_id)::integer AS message_count
+        FROM poc_chat_sessions s
+        LEFT JOIN poc_chat_messages m
+          ON m.session_id = s.session_id AND m.owner_subject_id = s.owner_subject_id
+        WHERE s.owner_subject_id = $1 AND NOT s.archived
+        GROUP BY s.session_id
+        ORDER BY s.updated_at DESC, s.session_id DESC
+        LIMIT $2
+      `, [subjectId, limit])
+      return result.rows.map(chatSessionRecord)
+    }
+    return [...memoryChatSessions.values()]
+      .filter((session) => session.owner_subject_id === subjectId && !session.archived)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.session_id.localeCompare(left.session_id))
+      .slice(0, limit)
+      .map((session) => chatSessionRecord({
+        ...session,
+        id: session.session_id,
+        message_count: (memoryChatMessages.get(session.session_id) ?? []).length,
+      }))
+  }
+
+  async function listChatMessages(subjectIdValue, sessionIdValue, limitValue = 200) {
+    const subjectId = requireBoundedString(subjectIdValue, 'subjectId', 255)
+    const sessionId = requireBoundedString(sessionIdValue, 'sessionId', 200)
+    const limit = Number(limitValue)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('Chat message limit must be between 1 and 500.')
+    await startDatabase()
+    if (pool) {
+      const session = await pool.query(`
+        SELECT 1 FROM poc_chat_sessions
+        WHERE session_id = $1 AND owner_subject_id = $2 AND NOT archived
+      `, [sessionId, subjectId])
+      if (!session.rows.length) throw chatHistoryNotFound()
+      const result = await pool.query(`
+        SELECT message_id AS id, session_id, role, content, evidence_json,
+          route_json AS route, workflow_json AS workflow, created_at
+        FROM poc_chat_messages
+        WHERE session_id = $1 AND owner_subject_id = $2
+        ORDER BY ordinal ASC
+        LIMIT $3
+      `, [sessionId, subjectId, limit])
+      return result.rows.map(chatMessageRecord)
+    }
+    const session = memoryChatSessions.get(sessionId)
+    if (!session || session.owner_subject_id !== subjectId || session.archived) throw chatHistoryNotFound()
+    return (memoryChatMessages.get(sessionId) ?? []).slice(0, limit).map(chatMessageRecord)
+  }
+
+  async function appendChatTurn(commandValue) {
+    const command = normalizeChatTurn(commandValue)
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`poc-chat:${command.sessionId}`])
+        const selected = await client.query(`
+          SELECT owner_subject_id, archived
+          FROM poc_chat_sessions WHERE session_id = $1 FOR UPDATE
+        `, [command.sessionId])
+        const existing = selected.rows[0]
+        if (existing && (existing.owner_subject_id !== command.subjectId || existing.archived)) throw chatHistoryNotFound()
+        if (!existing) {
+          await client.query(`
+            INSERT INTO poc_chat_sessions (session_id, owner_subject_id, title)
+            VALUES ($1, $2, $3)
+          `, [command.sessionId, command.subjectId, command.title])
+        }
+        const ordinal = await client.query(`
+          SELECT COALESCE(max(ordinal), 0)::bigint AS maximum
+          FROM poc_chat_messages WHERE session_id = $1
+        `, [command.sessionId])
+        const firstOrdinal = Number(ordinal.rows[0]?.maximum ?? 0) + 1
+        await client.query(`
+          INSERT INTO poc_chat_messages (
+            message_id, session_id, owner_subject_id, ordinal, role, content,
+            evidence_json, route_json, workflow_json, created_at
+          ) VALUES
+            ($1, $2, $3, $4, 'user', $5, NULL, NULL, '[]'::jsonb, $6),
+            ($7, $2, $3, $8, 'assistant', $9, $10::jsonb, $11::jsonb, $12::jsonb, $13)
+        `, [
+          command.requestMessageId, command.sessionId, command.subjectId, firstOrdinal,
+          command.question, command.createdAt, command.responseMessageId, firstOrdinal + 1,
+          command.answer, JSON.stringify(command.evidence), JSON.stringify(command.route),
+          JSON.stringify(command.workflow), command.createdAt,
+        ])
+        if (existing) {
+          await client.query(`
+            UPDATE poc_chat_sessions
+            SET updated_at = $2, version = version + 1
+            WHERE session_id = $1
+          `, [command.sessionId, command.createdAt])
+        } else {
+          await client.query('UPDATE poc_chat_sessions SET updated_at = $2 WHERE session_id = $1', [command.sessionId, command.createdAt])
+        }
+        await client.query('COMMIT')
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined)
+        throw error
+      } finally {
+        client.release()
+      }
+    } else {
+      const existing = memoryChatSessions.get(command.sessionId)
+      if (existing && (existing.owner_subject_id !== command.subjectId || existing.archived)) throw chatHistoryNotFound()
+      const messages = memoryChatMessages.get(command.sessionId) ?? []
+      messages.push(
+        chatMessageRecord({ id: command.requestMessageId, session_id: command.sessionId, role: 'user', content: command.question, evidence_json: null, route: null, workflow: [], created_at: command.createdAt }),
+        chatMessageRecord({ id: command.responseMessageId, session_id: command.sessionId, role: 'assistant', content: command.answer, evidence_json: command.evidence, route: command.route, workflow: command.workflow, created_at: command.createdAt }),
+      )
+      memoryChatMessages.set(command.sessionId, messages)
+      memoryChatSessions.set(command.sessionId, existing ? {
+        ...existing, updated_at: command.createdAt, version: existing.version + 1,
+      } : {
+        session_id: command.sessionId, owner_subject_id: command.subjectId, title: command.title,
+        is_favorite: false, archived: false, version: 1,
+        created_at: command.createdAt, updated_at: command.createdAt,
+      })
+    }
+    return {
+      sessionId: command.sessionId,
+      requestMessageId: command.requestMessageId,
+      responseMessageId: command.responseMessageId,
+    }
+  }
+
+  async function setChatSessionFavorite(subjectIdValue, sessionIdValue, isFavoriteValue, expectedVersionValue) {
+    const subjectId = requireBoundedString(subjectIdValue, 'subjectId', 255)
+    const sessionId = requireBoundedString(sessionIdValue, 'sessionId', 200)
+    if (typeof isFavoriteValue !== 'boolean') throw new Error('isFavorite must be boolean.')
+    const expectedVersion = requirePositiveInteger(expectedVersionValue, 'expectedVersion')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_chat_sessions
+        SET is_favorite = $3, version = version + 1, updated_at = clock_timestamp()
+        WHERE session_id = $1 AND owner_subject_id = $2 AND NOT archived AND version = $4
+        RETURNING session_id AS id, title, is_favorite, version, created_at, updated_at,
+          (SELECT count(*)::integer FROM poc_chat_messages WHERE session_id = $1) AS message_count
+      `, [sessionId, subjectId, isFavoriteValue, expectedVersion])
+      if (result.rows[0]) return chatSessionRecord(result.rows[0])
+      const current = await pool.query(`
+        SELECT version FROM poc_chat_sessions
+        WHERE session_id = $1 AND owner_subject_id = $2 AND NOT archived
+      `, [sessionId, subjectId])
+      if (!current.rows.length) throw chatHistoryNotFound()
+      throw chatHistoryVersionConflict()
+    }
+    const current = memoryChatSessions.get(sessionId)
+    if (!current || current.owner_subject_id !== subjectId || current.archived) throw chatHistoryNotFound()
+    if (current.version !== expectedVersion) throw chatHistoryVersionConflict()
+    const updated = { ...current, is_favorite: isFavoriteValue, version: current.version + 1, updated_at: new Date().toISOString() }
+    memoryChatSessions.set(sessionId, updated)
+    return chatSessionRecord({ ...updated, id: sessionId, message_count: (memoryChatMessages.get(sessionId) ?? []).length })
+  }
+
+  async function archiveChatSession(subjectIdValue, sessionIdValue, expectedVersionValue) {
+    const subjectId = requireBoundedString(subjectIdValue, 'subjectId', 255)
+    const sessionId = requireBoundedString(sessionIdValue, 'sessionId', 200)
+    const expectedVersion = requirePositiveInteger(expectedVersionValue, 'expectedVersion')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_chat_sessions
+        SET archived = true, version = version + 1, updated_at = clock_timestamp()
+        WHERE session_id = $1 AND owner_subject_id = $2 AND NOT archived AND version = $3
+        RETURNING session_id
+      `, [sessionId, subjectId, expectedVersion])
+      if (result.rows.length) return
+      const current = await pool.query(`
+        SELECT version FROM poc_chat_sessions
+        WHERE session_id = $1 AND owner_subject_id = $2 AND NOT archived
+      `, [sessionId, subjectId])
+      if (!current.rows.length) throw chatHistoryNotFound()
+      throw chatHistoryVersionConflict()
+    }
+    const current = memoryChatSessions.get(sessionId)
+    if (!current || current.owner_subject_id !== subjectId || current.archived) throw chatHistoryNotFound()
+    if (current.version !== expectedVersion) throw chatHistoryVersionConflict()
+    memoryChatSessions.set(sessionId, { ...current, archived: true, version: current.version + 1, updated_at: new Date().toISOString() })
+  }
+
   return {
     read,
     readFeatureSecurityPolicy,
@@ -2816,9 +3070,88 @@ export function createPocStateStore({ databasePool } = {}) {
     finalizeK9RunFailure,
     executeK9Transaction,
     runK9Scheduler,
+    listChatSessions,
+    listChatMessages,
+    appendChatTurn,
+    setChatSessionFavorite,
+    archiveChatSession,
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
+}
+
+function normalizeChatTurn(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Chat turn must be an object.')
+  const subjectId = requireBoundedString(value.subjectId, 'turn.subjectId', 255)
+  const sessionId = requireBoundedString(value.sessionId, 'turn.sessionId', 200)
+  const requestMessageId = requireBoundedString(value.requestMessageId, 'turn.requestMessageId', 200)
+  const responseMessageId = requireBoundedString(value.responseMessageId, 'turn.responseMessageId', 200)
+  const question = requireBoundedString(value.question, 'turn.question', 12_000)
+  const answer = requireBoundedString(value.answer, 'turn.answer', 200_000)
+  const title = requireBoundedString(value.title, 'turn.title', 240)
+  const createdAt = explicitSchedulerTimestamp(value.createdAt, 'turn.createdAt')
+  return {
+    subjectId,
+    sessionId,
+    requestMessageId,
+    responseMessageId,
+    question,
+    answer,
+    title,
+    evidence: boundedChatJson(value.evidence, 'turn.evidence', 'array', 1_048_576),
+    route: boundedChatJson(value.route, 'turn.route', 'object', 262_144),
+    workflow: boundedChatJson(value.workflow, 'turn.workflow', 'array', 262_144),
+    createdAt,
+  }
+}
+
+function boundedChatJson(value, field, kind, maximumBytes) {
+  if ((kind === 'array' && !Array.isArray(value))
+    || (kind === 'object' && (!value || typeof value !== 'object' || Array.isArray(value)))) {
+    throw new Error(`${field} must be a JSON ${kind}.`)
+  }
+  const encoded = JSON.stringify(value)
+  if (new TextEncoder().encode(encoded).byteLength > maximumBytes) throw new Error(`${field} exceeds its byte bound.`)
+  return JSON.parse(encoded)
+}
+
+function chatSessionRecord(row) {
+  return {
+    id: row.id ?? row.session_id,
+    title: row.title,
+    is_favorite: row.is_favorite,
+    version: Number(row.version),
+    created_at: timestampValue(row.created_at),
+    updated_at: timestampValue(row.updated_at),
+    message_count: Number(row.message_count ?? 0),
+  }
+}
+
+function chatMessageRecord(row) {
+  return {
+    id: row.id ?? row.message_id,
+    session_id: row.session_id,
+    role: row.role,
+    content: row.content,
+    evidence_json: row.evidence_json ?? null,
+    created_at: timestampValue(row.created_at),
+    route: row.route ?? row.route_json ?? null,
+    workflow: row.workflow ?? row.workflow_json ?? [],
+  }
+}
+
+function chatHistoryNotFound() {
+  return Object.assign(new Error('The Chat session was not found.'), {
+    code: 'CHAT_SESSION_NOT_FOUND',
+    statusCode: 404,
+  })
+}
+
+function chatHistoryVersionConflict() {
+  return Object.assign(new Error('The Chat session version changed; read it and retry.'), {
+    code: 'CHAT_SESSION_VERSION_STALE',
+    statusCode: 409,
+  })
 }
 
 function credentialConflict() {

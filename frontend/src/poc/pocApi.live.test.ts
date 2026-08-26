@@ -505,12 +505,14 @@ function installGatewayMock() {
         deployment_tier: 'SINGLE_NODE_PILOT',
       }))
     }
-    if (url.pathname === '/poc-api/llm/chat/compact') {
-      return Promise.resolve(json({ summary: 'wafer_events 계보를 확인한 대화', compacted_turn_count: 5 }))
-    }
     if (url.pathname === '/poc-api/llm/chat/stream') {
+      const requestBody = JSON.parse(typeof options?.body === 'string' ? options.body : '{}') as { session_id?: string }
       const result = {
+        session_id: requestBody.session_id ?? 'server-session-1',
+        request_message_id: crypto.randomUUID(),
+        response_message_id: crypto.randomUUID(),
         answer: 'wafer_events는 source_events의 영향을 받습니다. [1]',
+        persistence: 'PERSISTED',
         route: {
           requested_mode: 'AUTO',
           selected_mode: 'GRAPH',
@@ -531,6 +533,7 @@ function installGatewayMock() {
           domain: 'manufacturing',
           source_version: 'datahub-live',
           evidence_type: 'DATAHUB_LINEAGE',
+          source_type: 'DATAHUB_LINEAGE',
           extraction_method: 'DATAHUB_GMS_LINEAGE',
           retrieval_method: 'GRAPH',
         }],
@@ -539,6 +542,8 @@ function installGatewayMock() {
         { event: 'workflow', data: { stage: 'ROUTING', status: 'IN_PROGRESS', detail_code: 'ROUTING_IN_PROGRESS' } },
         { event: 'workflow', data: { stage: 'ROUTING', status: 'COMPLETED', detail_code: 'GRAPH_ROUTE_SELECTED' } },
         { event: 'workflow', data: { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: 'GRAPH_RETRIEVAL_COMPLETED' } },
+        { event: 'answer_delta', data: { delta: 'wafer_events는 source_events의 ' } },
+        { event: 'answer_delta', data: { delta: '영향을 받습니다. [1]' } },
         { event: 'result', data: result },
       ].map((frame) => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`).join('')
       return Promise.resolve(new Response(frames, {
@@ -1232,7 +1237,7 @@ describe('POC live-provider compatibility adapter', () => {
     ]))
   })
 
-  it('carries bounded same-session question and answer memory and compacts every five turns', async () => {
+  it('forwards only the server session identity while PostgreSQL owns bounded continuity memory', async () => {
     const client = useStableApiClient()
     let sessionId: string | undefined
     for (let index = 1; index <= 5; index += 1) {
@@ -1251,22 +1256,6 @@ describe('POC live-provider compatibility adapter', () => {
       sessionId = result.session_id
     }
 
-    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => (
-      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
-        === '/poc-api/llm/chat/compact'
-    ))).toBe(true))
-    const compactCall = vi.mocked(fetch).mock.calls.find(([input]) => (
-      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
-        === '/poc-api/llm/chat/compact'
-    ))
-    const compactBodySource = compactCall?.[1]?.body
-    if (typeof compactBodySource !== 'string') throw new Error('Expected a JSON compaction request body')
-    const compactBody = JSON.parse(compactBodySource) as {
-      memory: { recent_turns: unknown[] }
-    }
-    expect(compactBody.memory.recent_turns).toHaveLength(5)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
     await client.requestEventStream(
       '/chat/query/stream',
       { method: 'POST', body: JSON.stringify({ session_id: sessionId, question: '그 테이블은?', mode: 'AUTO' }) },
@@ -1278,14 +1267,13 @@ describe('POC live-provider compatibility adapter', () => {
     ))
     const sixthBodySource = streamCalls.at(-1)?.[1]?.body
     if (typeof sixthBodySource !== 'string') throw new Error('Expected a JSON Chat request body')
-    const sixthBody = JSON.parse(sixthBodySource) as {
-      memory: { summary: string; compacted_turn_count: number; recent_turns: unknown[] }
-    }
-    expect(sixthBody.memory).toEqual({
-      summary: 'wafer_events 계보를 확인한 대화',
-      compacted_turn_count: 5,
-      recent_turns: [],
-    })
+    const sixthBody = JSON.parse(sixthBodySource) as Record<string, unknown>
+    expect(sixthBody.session_id).toBe('server-session-1')
+    expect(sixthBody).not.toHaveProperty('memory')
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => (
+      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
+        === '/poc-api/llm/chat/compact'
+    ))).toBe(false)
   })
 
   it('rejects a Chat question beyond 12,000 characters before a provider request', async () => {

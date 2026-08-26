@@ -816,7 +816,7 @@ test('counts the complete DataHub table inventory and returns the requested list
   assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore + 1)
 })
 
-test('streams real Chat workflow stages before the final provider result', async () => {
+test('streams approved answer deltas before the persisted final provider result', async () => {
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat/stream`, {
     method: 'POST',
     headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
@@ -828,8 +828,25 @@ test('streams real Chat workflow stages before the final provider result', async
   const frames = stream.trim().split(/\n\n+/)
   assert.match(frames[0], /^event: workflow\ndata: /)
   assert.match(frames[0], /"stage":"AUTHORIZATION","status":"IN_PROGRESS"/)
-  assert.ok(stream.indexOf('"stage":"ROUTING","status":"IN_PROGRESS"') < stream.indexOf('event: result'))
+  const answerDelta = stream.indexOf('event: answer_delta')
+  const persistence = stream.indexOf('"stage":"PERSISTENCE","status":"IN_PROGRESS"')
+  const result = stream.indexOf('event: result')
+  assert.ok(stream.indexOf('"stage":"ROUTING","status":"IN_PROGRESS"') < answerDelta)
+  assert.ok(answerDelta < persistence)
+  assert.ok(persistence < result)
+  assert.match(stream, /event: answer_delta\ndata: \{"delta":"/)
   assert.match(frames.at(-1) || '', /^event: result\ndata: /)
+  assert.match(frames.at(-1) || '', /"persistence":"PERSISTED"/)
+  const resultPayload = JSON.parse((frames.at(-1) || '').split('\ndata: ')[1])
+  const sessionsResponse = await fetch(`${pocOrigin}/poc-api/chat/sessions`)
+  assert.equal(sessionsResponse.status, 200)
+  const sessions = await sessionsResponse.json()
+  assert.equal(sessions.some((session) => session.id === resultPayload.session_id && session.message_count === 2), true)
+  const messagesResponse = await fetch(`${pocOrigin}/poc-api/chat/sessions/${resultPayload.session_id}/messages`)
+  assert.equal(messagesResponse.status, 200)
+  const messages = await messagesResponse.json()
+  assert.deepEqual(messages.map((message) => message.role), ['user', 'assistant'])
+  assert.equal(messages[1].content, resultPayload.answer)
 })
 
 test('uses bounded conversation memory to resolve a same-session follow-up without treating it as evidence', async () => {

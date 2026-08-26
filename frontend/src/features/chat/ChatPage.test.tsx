@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type { ChatResponse, ChatSession } from '../../api/types'
@@ -124,6 +124,9 @@ function chatClient() {
   ): Promise<unknown> => {
     if (path === '/chat/query/stream') {
       response.workflow.forEach((step) => onEvent({ event: 'workflow', data: step }))
+      const midpoint = Math.ceil(response.answer.length / 2)
+      onEvent({ event: 'answer_delta', data: { delta: response.answer.slice(0, midpoint) } })
+      onEvent({ event: 'answer_delta', data: { delta: response.answer.slice(midpoint) } })
       return Promise.resolve(response)
     }
     return Promise.reject(new Error(`Unexpected stream request: ${path}`))
@@ -421,35 +424,23 @@ describe('ChatPage', () => {
     expect(screen.getByText('12,000 / 12,000')).toBeInTheDocument()
   })
 
-  it('focuses the completed answer and applies a non-blocking reveal treatment', async () => {
-    const scrollIntoView = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    })
-    const { client } = chatClient()
-    render(<ChatPage client={client} />)
-    await screen.findByText('주문 데이터')
-
-    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블을 찾아줘' } })
-    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
-
-    const answerHeading = await screen.findByRole('heading', { name: '확인된 테이블' })
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' }))
-    expect(answerHeading.closest('article')).toHaveClass('is-revealing')
-  })
-
-  it('stops answer focusing as soon as the user scrolls the conversation', async () => {
+  it('renders server answer deltas before the final result and follows the streaming answer', async () => {
     let resolveResult: ((value: ChatResponse) => void) | undefined
+    let emit: ((event: { event: string; data: unknown }) => void) | undefined
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
       value: scrollIntoView,
     })
     const { client: baseClient } = chatClient()
-    const requestEventStream = vi.fn(() => new Promise<ChatResponse>((resolve) => {
-      resolveResult = resolve
-    }))
+    const requestEventStream = vi.fn((
+      _path: string,
+      _options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ) => {
+      emit = onEvent
+      return new Promise<ChatResponse>((resolve) => { resolveResult = resolve })
+    })
     render(<ChatPage client={{
       request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
       requestEventStream,
@@ -458,11 +449,60 @@ describe('ChatPage', () => {
 
     fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블을 찾아줘' } })
     fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
-    fireEvent.wheel(screen.getByLabelText('답변 생성 중').closest('.chat-log')!, { deltaY: -120 })
-    resolveResult?.(response)
 
-    expect(await screen.findByRole('heading', { name: '확인된 테이블' })).toBeInTheDocument()
+    const midpoint = Math.ceil(response.answer.length / 2)
+    act(() => emit?.({ event: 'answer_delta', data: { delta: response.answer.slice(0, midpoint) } }))
+    expect(screen.getByText(/확인된 테/)).toBeInTheDocument()
+    act(() => emit?.({ event: 'answer_delta', data: { delta: response.answer.slice(midpoint) } }))
+    const answerHeading = await screen.findByRole('heading', { name: '확인된 테이블' })
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' }))
+    expect(answerHeading.closest('article')).toHaveClass('is-revealing')
+    act(() => resolveResult?.(response))
+    await waitFor(() => expect(screen.getByRole('heading', { name: '확인된 테이블' }).closest('article')).not.toHaveClass('is-revealing'))
+  })
+
+  it('stops answer following on scroll-up, resumes at bottom, and restarts for a new question', async () => {
+    let resolveResult: ((value: ChatResponse) => void) | undefined
+    let emit: ((event: { event: string; data: unknown }) => void) | undefined
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn((
+      _path: string,
+      _options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ) => {
+      emit = onEvent
+      return new Promise<ChatResponse>((resolve) => { resolveResult = resolve })
+    })
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블을 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    act(() => emit?.({ event: 'answer_delta', data: { delta: '첫 번째 승인 chunk' } }))
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    scrollIntoView.mockClear()
+    const log = screen.getByLabelText('답변 생성 중').closest('.chat-log')!
+    fireEvent.wheel(log, { deltaY: -120 })
+    act(() => emit?.({ event: 'answer_delta', data: { delta: ' 두 번째 승인 chunk' } }))
     expect(scrollIntoView).not.toHaveBeenCalled()
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, value: 500 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, value: 300 },
+    })
+    fireEvent.scroll(log)
+    act(() => emit?.({ event: 'answer_delta', data: { delta: ' 세 번째 승인 chunk' } }))
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    act(() => resolveResult?.(response))
+    expect(await screen.findByRole('heading', { name: '확인된 테이블' })).toBeInTheDocument()
   })
 
   it('does not submit an Enter key event while an IME composition is active', async () => {
@@ -554,7 +594,7 @@ describe('ChatPage', () => {
     )
   })
 
-  it('collapses both side panels and reopens evidence when a past answer is selected', async () => {
+  it('collapses only history and keeps the fixed Evidence panel without a manual width toggle', async () => {
     const { client } = chatClient()
     render(<ChatPage client={client} />)
 
@@ -562,12 +602,8 @@ describe('ChatPage', () => {
     await screen.findByText('저장된 답변')
     fireEvent.click(screen.getByRole('button', { name: '대화 이력 숨기기' }))
     expect(screen.getByRole('button', { name: '대화 이력 펼치기' })).toBeInTheDocument()
-    const evidenceToggle = screen.getByRole('button', { name: 'EVIDENCE 패널 숨기기' })
-    expect(screen.getAllByRole('button', { name: 'EVIDENCE 패널 숨기기' })).toHaveLength(1)
-    expect(evidenceToggle.closest('.chat-panel-heading')).not.toBeNull()
-    fireEvent.click(evidenceToggle)
-    expect(screen.queryByRole('button', { name: '근거 1 orders 상세 열기' })).not.toBeInTheDocument()
-
+    expect(screen.queryByRole('button', { name: /EVIDENCE 패널 (?:숨기기|펼치기)/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '이 답변의 근거 다시 보기' }))
     expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
   })

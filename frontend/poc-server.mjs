@@ -1472,11 +1472,20 @@ async function changeHistoryApi(request, response, url, context) {
       && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary))
       && (!stage || row.current_stage === stage))
     const page = changeHistoryPage(filtered, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
+    const activeExactMappings = mappingDocument.bindings.filter((binding) => binding.active).length
+    const emptyStateReason = filtered.length ? null
+      : projection.events.length === 0 ? 'NO_LEDGER_EVENTS'
+      : rows.length === 0 ? 'EVENTS_EXIST_BUT_NOT_AUTHORIZED'
+      : 'FILTER_DATE_RANGE_EMPTY'
     return json(response, 200, {
       items: page.items.map((row) => changeHistoryPublicRow(row)),
       next_cursor: page.next_cursor,
       limit: page.limit,
       total: filtered.length,
+      empty_state_reason: emptyStateReason,
+      empty_state_detail: emptyStateReason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED'
+        ? activeExactMappings === 0 ? 'NO_EXACT_MAPPING' : 'AUTHORIZATION_SCOPE'
+        : null,
     })
   }
   if (request.method === 'GET' && eventMatch) {
@@ -3112,17 +3121,14 @@ function uniqueValues(values) {
 }
 
 function hierarchyValues(values) {
-  return [...new Set(values.map((value) => typeof value === 'string' ? value.trim() : ''))]
+  return [...new Set(values
+    .map((value) => typeof value === 'string' ? value.trim() : '')
+    .filter(Boolean))]
     .sort((left, right) => left.localeCompare(right))
 }
 
-export function catalogDatabaseBranchLabel(databaseName, platform) {
-  const canonicalDatabaseName = typeof databaseName === 'string' ? databaseName.trim() : ''
-  if (canonicalDatabaseName) return canonicalDatabaseName
-  const canonicalPlatformName = typeof platform === 'string' ? platform.trim() : ''
-  return canonicalPlatformName
-    ? `${canonicalPlatformName} · Database 메타데이터 없음`
-    : 'Database 메타데이터 없음'
+export function catalogDatabaseBranchLabel(databaseName) {
+  return typeof databaseName === 'string' ? databaseName.trim() : ''
 }
 
 async function datahubTree(searchParameters, principal) {
@@ -3154,7 +3160,7 @@ async function datahubTree(searchParameters, principal) {
       .map((asset) => asset.database_name)).map((value) => ({
       id: `DATABASE:${platform}:${value}`,
       kind: 'DATABASE',
-      label: catalogDatabaseBranchLabel(value, platform),
+      label: catalogDatabaseBranchLabel(value),
       asset_count: assets.filter((asset) => asset.platform === platform && asset.database_name === value).length,
       has_children: assets.some((asset) => asset.platform === platform && asset.database_name === value),
       platform,
@@ -5394,6 +5400,103 @@ function knowledgeMainChatEvidence(selection, result) {
   ]
 }
 
+function publicChatAssetKind(value) {
+  return ['VIEW', 'MATERIALIZED_VIEW', 'CATALOG'].includes(String(value)) ? value : 'TABLE'
+}
+
+function publicChatEvidence(items) {
+  const effectiveFrom = new Date().toISOString()
+  return items.map((item, index) => ({
+    chunk_id: `datahub-evidence-${index + 1}`,
+    resource_id: boundedString(item.id ?? item.external_urn, 4_096),
+    classification: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'].includes(String(item.classification))
+      ? item.classification
+      : 'INTERNAL',
+    system_id: boundedString(item.platform, 255) || null,
+    domain_id: boundedString(item.domain, 255) || null,
+    owner_department_id: null,
+    name: boundedString(item.name, 1_000, 'DataHub asset'),
+    asset_kind: publicChatAssetKind(item.dataset_kind),
+    description: boundedString(item.provider_description ?? item.description, 16_384) || null,
+    source_type: boundedString(item.evidence_type, 255, 'CATALOG_ASSET'),
+    source_locator: boundedString(item.source_locator ?? item.external_urn ?? item.id, 4_096),
+    source_version: boundedString(item.source_version, 255, 'datahub-live'),
+    content_hash: sha256(JSON.stringify(item)),
+    effective_from: effectiveFrom,
+    effective_until: null,
+    extraction_method: boundedString(item.extraction_method, 255, 'DATAHUB_GMS'),
+    rank: index + 1,
+    retrieval_method: boundedString(item.retrieval_method, 255, 'DATAHUB_SEARCH'),
+    ...(Array.isArray(item.graph_nodes) ? {
+      graph_nodes: item.graph_nodes.flatMap((node) => {
+        const id = boundedString(node?.id, 4_096)
+        if (!id) return []
+        const role = ['ROOT', 'UPSTREAM', 'DOWNSTREAM', 'NEUTRAL'].includes(String(node.role))
+          ? node.role
+          : 'NEUTRAL'
+        return [{
+          id,
+          label: boundedString(node.label, 1_000, id),
+          entity_type: boundedString(node.entity_type, 255, 'ENTITY'),
+          role,
+          source_locator: boundedString(node.source_locator, 4_096, id),
+        }]
+      }),
+    } : {}),
+    ...(Array.isArray(item.graph_edges) ? {
+      graph_edges: item.graph_edges.flatMap((edge) => {
+        const id = boundedString(edge?.id, 4_096)
+        const source = boundedString(edge?.source, 4_096)
+        const target = boundedString(edge?.target, 4_096)
+        if (!id || !source || !target) return []
+        return [{
+          id,
+          source,
+          target,
+          relation_type: boundedString(edge.relation_type, 255, 'RELATED_TO'),
+          source_locator: boundedString(edge.source_locator, 4_096, id),
+        }]
+      }),
+    } : {}),
+  }))
+}
+
+function persistedChatMemory(messages) {
+  const turns = []
+  for (let index = 0; index < messages.length - 1; index += 1) {
+    const question = messages[index]
+    const answer = messages[index + 1]
+    if (question?.role !== 'user' || answer?.role !== 'assistant') continue
+    turns.push({ question: question.content.slice(0, 900), answer: answer.content.slice(0, 1_300) })
+    index += 1
+  }
+  return turns.length ? { summary: '', compacted_turn_count: 0, recent_turns: turns.slice(-5) } : undefined
+}
+
+function persistedChatWorkflow(workflow) {
+  return workflow.map((step) => step.stage === 'PERSISTENCE'
+    ? { stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED' }
+    : step)
+}
+
+function safeAnswerChunks(answer) {
+  const characters = Array.from(answer)
+  const maximum = 160
+  const chunks = []
+  for (let start = 0; start < characters.length; start += maximum) {
+    chunks.push(characters.slice(start, start + maximum).join(''))
+  }
+  return chunks
+}
+
+async function writeApprovedAnswerStream(response, answer, signal) {
+  for (const delta of safeAnswerChunks(answer)) {
+    signal?.throwIfAborted()
+    writeEventStream(response, 'answer_delta', { delta })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+}
+
 async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context, signal) {
   const totalStarted = performance.now()
   const principal = context.principal
@@ -5436,7 +5539,6 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     progress('RERANKING', 'SKIPPED', 'RERANKING_NOT_USED')
     progress('COMPOSITION', 'SKIPPED', 'CLARIFICATION_PROMPT_RETURNED')
     progress('CITATION_VALIDATION', 'SKIPPED', 'NO_EVIDENCE_CLARIFICATION')
-    progress('PERSISTENCE', 'SKIPPED', 'EPHEMERAL_NO_STORE')
     return {
       answer: '질문의 범위를 확인해야 합니다. 찾으려는 데이터셋, 확인하려는 메타데이터, 또는 lineage/영향 분석 중 원하는 작업을 구체적으로 알려주세요.',
       route,
@@ -5582,7 +5684,6 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     : route.selected_mode === 'GRAPH'
     ? 'DATAHUB_LINEAGE_EVIDENCE_BOUND'
     : evidence.length ? 'AUTHORIZED_DATAHUB_EVIDENCE_BOUND' : 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER')
-  progress('PERSISTENCE', 'SKIPPED', 'EPHEMERAL_NO_STORE')
   route = {
     ...route,
     latency_ms: {
@@ -9581,6 +9682,41 @@ async function api(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems(context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams, context.principal))
+  if (request.method === 'GET' && url.pathname === '/poc-api/chat/sessions') {
+    const rawLimit = url.searchParams.get('limit') ?? '50'
+    if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100) {
+      return problem(response, 400, 'CHAT_PAGE_INVALID', 'Chat session limit must be between 1 and 100.')
+    }
+    return json(response, 200, await context.stateStore.listChatSessions(context.principal.subjectId, Number(rawLimit)))
+  }
+  const chatMessagesMatch = url.pathname.match(/^\/poc-api\/chat\/sessions\/([^/]+)\/messages$/)
+  if (request.method === 'GET' && chatMessagesMatch) {
+    const rawLimit = url.searchParams.get('limit') ?? '200'
+    if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 500) {
+      return problem(response, 400, 'CHAT_PAGE_INVALID', 'Chat message limit must be between 1 and 500.')
+    }
+    return json(response, 200, await context.stateStore.listChatMessages(
+      context.principal.subjectId, decodeURIComponent(chatMessagesMatch[1]), Number(rawLimit),
+    ))
+  }
+  const chatFavoriteMatch = url.pathname.match(/^\/poc-api\/chat\/sessions\/([^/]+)\/favorite$/)
+  if (request.method === 'PATCH' && chatFavoriteMatch) {
+    const body = await bodyJson(request)
+    return json(response, 200, await context.stateStore.setChatSessionFavorite(
+      context.principal.subjectId,
+      decodeURIComponent(chatFavoriteMatch[1]),
+      body.is_favorite,
+      body.expected_version,
+    ))
+  }
+  const chatSessionMatch = url.pathname.match(/^\/poc-api\/chat\/sessions\/([^/]+)$/)
+  if (request.method === 'DELETE' && chatSessionMatch) {
+    const expectedVersion = Number(url.searchParams.get('expected_version'))
+    await context.stateStore.archiveChatSession(
+      context.principal.subjectId, decodeURIComponent(chatSessionMatch[1]), expectedVersion,
+    )
+    return json(response, 200, {})
+  }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') {
     const asset = await datahubAsset(
       boundedString(url.searchParams.get('urn'), 4096),
@@ -9777,7 +9913,19 @@ async function api(request, response, url, context) {
     }
     const question = body.question
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(body.mode) ? body.mode : 'AUTO'
-    const memory = chatMemoryPayload(body.memory)
+    if (body.session_id !== undefined && (
+      typeof body.session_id !== 'string' || !body.session_id.trim() || body.session_id.length > 200
+    )) {
+      return problem(response, 400, 'CHAT_SESSION_INVALID', 'Chat session ID must be a non-empty string of at most 200 characters.')
+    }
+    const requestedSessionId = boundedString(body.session_id, 200).trim()
+    const sessionId = requestedSessionId || randomUUID()
+    let memory
+    if (requestedSessionId) {
+      memory = persistedChatMemory(await context.stateStore.listChatMessages(
+        context.principal.subjectId, requestedSessionId, 200,
+      ))
+    }
     if (!question.trim()) return problem(response, 400, 'QUESTION_REQUIRED', 'A non-empty question is required.')
     response.writeHead(200, {
       'Cache-Control': 'no-cache, no-store',
@@ -9795,7 +9943,43 @@ async function api(request, response, url, context) {
       const result = await liveChat(
         question, mode, (step) => writeEventStream(response, 'workflow', step), memory, context, controller.signal,
       )
-      if (!controller.signal.aborted) writeEventStream(response, 'result', result)
+      const evidence = publicChatEvidence(result.evidence)
+      await writeApprovedAnswerStream(response, result.answer, controller.signal)
+      controller.signal.throwIfAborted()
+      writeEventStream(response, 'workflow', {
+        stage: 'PERSISTENCE', status: 'IN_PROGRESS', detail_code: 'POSTGRES_ACCOUNT_HISTORY_IN_PROGRESS',
+      })
+      const createdAt = new Date().toISOString()
+      const requestMessageId = randomUUID()
+      const responseMessageId = randomUUID()
+      const workflow = persistedChatWorkflow(result.workflow)
+      await context.stateStore.appendChatTurn({
+        subjectId: context.principal.subjectId,
+        sessionId,
+        requestMessageId,
+        responseMessageId,
+        question: question.trim(),
+        answer: result.answer,
+        title: question.trim().slice(0, 240),
+        evidence,
+        route: result.route,
+        workflow,
+        createdAt,
+      })
+      controller.signal.throwIfAborted()
+      writeEventStream(response, 'workflow', {
+        stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED',
+      })
+      writeEventStream(response, 'result', {
+        session_id: sessionId,
+        request_message_id: requestMessageId,
+        response_message_id: responseMessageId,
+        answer: result.answer,
+        persistence: 'PERSISTED',
+        route: result.route,
+        workflow,
+        evidence,
+      })
     } catch (error) {
       if (!controller.signal.aborted) writeEventStream(response, 'error', {
         detail: error instanceof Error ? error.message : 'Chat provider request failed.',

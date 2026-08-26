@@ -19,10 +19,7 @@ import type {
   ChangeRequestSchemaOverview,
   ChangeRequestSummary,
   ChangeRequestState,
-  ChatMessage,
   ChatMode,
-  ChatResponse,
-  ChatSession,
   CapabilitiesResponse,
   ClassificationPolicySummary,
   GovernanceApplyReport,
@@ -215,10 +212,6 @@ function responseString(value: unknown, fallback: string): string {
     : fallback
 }
 
-function responseAssetKind(value: unknown): 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW' | 'CATALOG' {
-  return value === 'VIEW' || value === 'MATERIALIZED_VIEW' || value === 'CATALOG' ? value : 'TABLE'
-}
-
 async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...options,
@@ -360,7 +353,6 @@ const pocClassificationPolicySummary: ClassificationPolicySummary = {
 
 let sequence = 900
 let changeRecords: ChangeRequestRecord[] = []
-let chatSessions: ChatSession[] = []
 let uploadRecords: Array<Record<string, unknown>> = []
 let manualSubmissionReports: Array<Record<string, unknown>> = []
 let monitoringConfiguration: MonitoringConfiguration | undefined
@@ -403,20 +395,7 @@ let governanceVersions: GovernanceDocumentVersion[] = []
 let governanceReviews: GovernanceDocumentReview[] = []
 let governanceAttachments: GovernanceDocumentAttachment[] = []
 const governanceAttachmentLocations = new Map<string, { upload_id: string; key: string }>()
-const chatMessages = new Map<string, ChatMessage[]>()
 const CHAT_QUESTION_MAX_CHARACTERS = 12_000
-const CHAT_MEMORY_COMPACTION_INTERVAL = 5
-const CHAT_MEMORY_SUMMARY_CHARACTERS = 5_000
-const CHAT_MEMORY_TURN_QUESTION_CHARACTERS = 900
-const CHAT_MEMORY_TURN_ANSWER_CHARACTERS = 1_300
-interface PocChatMemoryTurn { question: string; answer: string }
-interface PocChatMemoryState {
-  summary: string
-  compactedTurnCount: number
-  recentTurns: PocChatMemoryTurn[]
-  compaction?: Promise<void>
-}
-const chatMemory = new Map<string, PocChatMemoryState>()
 const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file?: File }>>()
 const changeAttachmentLocations = new Map<string, { upload_id: string; display_name: string }>()
@@ -1563,15 +1542,6 @@ function managerUploadHistoryProjection(record: Record<string, unknown>): Record
   }
 }
 
-function chatRoute(mode: ChatMode) {
-  return {
-    requested_mode: mode,
-    selected_mode: mode === 'AUTO' ? 'VECTOR' as const : mode,
-    reason: mode === 'AUTO' ? 'SEMANTIC_INTENT' as const : 'EXPLICIT_SELECTION' as const,
-    adapter_state: 'READY' as const,
-  }
-}
-
 const systemConfigurationSpecs: Array<{
   systemId: SystemConfigurationEntry['system_id']
   label: string
@@ -1671,78 +1641,6 @@ async function testSystemConfiguration(
     configuration_version: 1,
     tested_at: capability?.observed_at ?? new Date().toISOString(),
   }
-}
-
-function boundedChatMemoryTurn(question: string, answer: string): PocChatMemoryTurn {
-  return {
-    question: question.slice(0, CHAT_MEMORY_TURN_QUESTION_CHARACTERS),
-    answer: answer.slice(0, CHAT_MEMORY_TURN_ANSWER_CHARACTERS),
-  }
-}
-
-function chatMemoryRequest(sessionId: string): Record<string, unknown> | undefined {
-  const state = chatMemory.get(sessionId)
-  if (!state || (!state.summary && !state.recentTurns.length)) return undefined
-  return {
-    summary: state.summary,
-    compacted_turn_count: state.compactedTurnCount,
-    recent_turns: state.recentTurns.slice(-CHAT_MEMORY_COMPACTION_INTERVAL),
-  }
-}
-
-function deterministicChatMemorySummary(previous: string, turns: PocChatMemoryTurn[]): string {
-  const turnText = turns.map((turn, index) => (
-    `${index + 1}. 질문: ${turn.question}\n답변 요지: ${turn.answer}`
-  )).join('\n')
-  return [previous ? `이전 요약:\n${previous}` : '', turnText]
-    .filter(Boolean)
-    .join('\n\n')
-    .slice(-CHAT_MEMORY_SUMMARY_CHARACTERS)
-}
-
-function scheduleChatMemoryCompaction(sessionId: string, state: PocChatMemoryState): void {
-  if (state.compaction || state.recentTurns.length < CHAT_MEMORY_COMPACTION_INTERVAL) return
-  const turns = state.recentTurns.slice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
-  const previousSummary = state.summary
-  const previousCompactedTurnCount = state.compactedTurnCount
-  state.compaction = gatewayRequest<{ summary: string; compacted_turn_count: number }>(
-    '/poc-api/llm/chat/compact',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        memory: {
-          summary: previousSummary,
-          compacted_turn_count: previousCompactedTurnCount,
-          recent_turns: turns,
-        },
-      }),
-    },
-  ).then((result) => {
-    if (chatMemory.get(sessionId) !== state) return
-    state.summary = result.summary.slice(0, CHAT_MEMORY_SUMMARY_CHARACTERS)
-    state.compactedTurnCount = result.compacted_turn_count
-    state.recentTurns.splice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
-  }).catch(() => {
-    if (chatMemory.get(sessionId) !== state) return
-    state.summary = deterministicChatMemorySummary(previousSummary, turns)
-    state.compactedTurnCount = previousCompactedTurnCount + turns.length
-    state.recentTurns.splice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
-  }).finally(() => {
-    if (chatMemory.get(sessionId) !== state) return
-    state.compaction = undefined
-    scheduleChatMemoryCompaction(sessionId, state)
-  })
-}
-
-function rememberChatTurn(sessionId: string, question: string, answer: string): void {
-  const state = chatMemory.get(sessionId) ?? {
-    summary: '',
-    compactedTurnCount: 0,
-    recentTurns: [],
-  }
-  if (!chatMemory.has(sessionId)) chatMemory.set(sessionId, state)
-  state.recentTurns.push(boundedChatMemoryTurn(question, answer))
-  scheduleChatMemoryCompaction(sessionId, state)
 }
 
 class PocApiClient {
@@ -1977,6 +1875,10 @@ class PocApiClient {
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (isRegistrationOperatorPath(parsed.pathname, method)) requireRegistrationOperator()
     if (isRegistrationReaderPath(parsed.pathname, method)) requireRegistrationReader(parsed.pathname)
+    if (parsed.pathname === '/chat/sessions' || parsed.pathname.startsWith('/chat/sessions/')) {
+      const headers = new Headers(options.headers)
+      return gatewayRequestWithMeta<T>(`/poc-api${path}`, { ...options, headers })
+    }
     if (((parsed.pathname === '/change-requests/summaries'
       || (method === 'GET'
         && /^\/change-requests\/(?!intake$|summaries$|systems$|targets$)[^/]+$/.test(parsed.pathname)))
@@ -2025,107 +1927,16 @@ class PocApiClient {
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(String(body.mode))
       ? body.mode as ChatMode
       : 'AUTO'
-    const sessionId = typeof body.session_id === 'string' && body.session_id
-      ? body.session_id
-      : nextId('chat-session')
-    const memory = chatMemoryRequest(sessionId)
-    const live = runtimeFlags().llmChat
-      ? gatewayEventStream<Pick<ChatResponse, 'answer' | 'route' | 'workflow'> & { evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat/stream', {
-          method: 'POST',
-          signal: options.signal,
-          body: JSON.stringify({ question, mode, ...(memory ? { memory } : {}) }),
-        }, onEvent)
-      : Promise.reject(new Error('검증 불가: LLM Chat 연결을 설정해야 합니다.'))
-    return live.then(async (liveResult) => {
-      const workflow = liveResult.workflow
-      const requestId = nextId('chat-request')
-      const responseId = nextId('chat-response')
-      const route = liveResult.route ?? chatRoute(mode)
-      const evidence = await Promise.all(liveResult.evidence.map(async (item, index) => {
-        const resourceId = responseString(item.id ?? item.external_urn, '')
-        const classification = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
-          .includes(String(item.classification))
-          ? item.classification as 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
-          : 'INTERNAL'
-        return {
-          chunk_id: `datahub-evidence-${index + 1}`,
-          resource_id: resourceId,
-          classification,
-          system_id: responseString(item.platform, '') || null,
-          domain_id: responseString(item.domain, '') || null,
-          owner_department_id: null,
-          name: responseString(item.name, 'DataHub asset'),
-          asset_kind: responseAssetKind(item.dataset_kind),
-          description: responseString(item.provider_description ?? item.description, '') || null,
-          source_type: responseString(item.evidence_type, 'CATALOG_ASSET'),
-          source_locator: responseString(item.source_locator ?? item.external_urn ?? item.id, ''),
-          source_version: responseString(item.source_version, 'datahub-live'),
-          content_hash: await sha256(JSON.stringify(item)),
-          effective_from: new Date().toISOString(),
-          effective_until: null,
-          extraction_method: responseString(item.extraction_method, 'DATAHUB_GMS'),
-          rank: index + 1,
-          retrieval_method: responseString(
-            item.retrieval_method,
-            runtimeFlags().llmReranker ? 'RERANKED' : 'DATAHUB_SEARCH',
-          ),
-          graph_nodes: Array.isArray(item.graph_nodes) ? item.graph_nodes.flatMap((node) => {
-            if (!node || typeof node !== 'object') return []
-            const value = node as Record<string, unknown>
-            const id = responseString(value.id, '')
-            if (!id) return []
-            const role = ['ROOT', 'UPSTREAM', 'DOWNSTREAM', 'NEUTRAL'].includes(String(value.role))
-              ? String(value.role) as 'ROOT' | 'UPSTREAM' | 'DOWNSTREAM' | 'NEUTRAL'
-              : 'NEUTRAL'
-            return [{
-              id,
-              label: responseString(value.label, id),
-              entity_type: responseString(value.entity_type, 'ENTITY'),
-              role,
-              source_locator: responseString(value.source_locator, id),
-            }]
-          }) : undefined,
-          graph_edges: Array.isArray(item.graph_edges) ? item.graph_edges.flatMap((edge) => {
-            if (!edge || typeof edge !== 'object') return []
-            const value = edge as Record<string, unknown>
-            const id = responseString(value.id, '')
-            const source = responseString(value.source, '')
-            const target = responseString(value.target, '')
-            if (!id || !source || !target) return []
-            return [{
-              id,
-              source,
-              target,
-              relation_type: responseString(value.relation_type, 'RELATED_TO'),
-              source_locator: responseString(value.source_locator, id),
-            }]
-          }) : undefined,
-        }
-      }))
-      const messages = chatMessages.get(sessionId) ?? []
-      messages.push({ id: requestId, session_id: sessionId, role: 'user', content: question, evidence_json: null, created_at: new Date().toISOString(), route: null, workflow: [] })
-      messages.push({ id: responseId, session_id: sessionId, role: 'assistant', content: liveResult.answer, evidence_json: evidence, created_at: new Date().toISOString(), route, workflow })
-      chatMessages.set(sessionId, messages)
-      rememberChatTurn(sessionId, question, liveResult.answer)
-      const existing = chatSessions.find((item) => item.id === sessionId)
-      if (existing) {
-        existing.message_count = messages.length
-        existing.updated_at = new Date().toISOString()
-        existing.version += 1
-      } else {
-        chatSessions.unshift({ id: sessionId, title: question.slice(0, 60), is_favorite: false, version: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), message_count: 2 })
-      }
-      return {
-        session_id: sessionId,
-        request_message_id: requestId,
-        response_message_id: responseId,
-        answer: liveResult.answer,
-        persistence: 'EPHEMERAL_NO_STORE',
-        route,
-        workflow,
-        evidence,
-      } as T
-    })
+    if (!runtimeFlags().llmChat) return Promise.reject(new Error('검증 불가: LLM Chat 연결을 설정해야 합니다.'))
+    return gatewayEventStream<T>('/poc-api/llm/chat/stream', {
+      method: 'POST',
+      signal: options.signal,
+      body: JSON.stringify({
+        question,
+        mode,
+        ...(typeof body.session_id === 'string' && body.session_id ? { session_id: body.session_id } : {}),
+      }),
+    }, onEvent)
   }
 
   download(path: string): Promise<ApiDownload> {
@@ -4903,25 +4714,6 @@ class PocApiClient {
       return { items: [], page: { next_cursor: null, limit } }
     }
 
-    if (path === '/chat/sessions') return chatSessions.map((item) => ({ ...item }))
-    const messageMatch = path.match(/^\/chat\/sessions\/([^/]+)\/messages$/)
-    if (messageMatch) return (chatMessages.get(messageMatch[1] ?? '') ?? []).map((item) => ({ ...item }))
-    const favoriteMatch = path.match(/^\/chat\/sessions\/([^/]+)\/favorite$/)
-    if (favoriteMatch && method === 'PATCH') {
-      const session = chatSessions.find((item) => item.id === favoriteMatch[1])
-      if (!session) throw new Error('Chat 세션을 찾을 수 없습니다.')
-      session.is_favorite = Boolean(jsonBody(options).is_favorite)
-      session.version += 1
-      session.updated_at = new Date().toISOString()
-      return { ...session }
-    }
-    const deleteMatch = path.match(/^\/chat\/sessions\/([^/]+)$/)
-    if (deleteMatch && method === 'DELETE') {
-      chatSessions = chatSessions.filter((item) => item.id !== deleteMatch[1])
-      chatMessages.delete(deleteMatch[1] ?? '')
-      chatMemory.delete(deleteMatch[1] ?? '')
-      return undefined
-    }
 
     if (path === '/api-products') return []
     if (/^\/api-products\/[^/]+\/grants$/.test(path)) return []
@@ -4964,7 +4756,6 @@ export function resetPocMemory(): void {
   pocClient.resetSecurityBoundary()
   sequence = 900
   changeRecords = []
-  chatSessions = []
   uploadRecords = []
   manualSubmissionReports = []
   monitoringConfiguration = undefined
@@ -4986,8 +4777,6 @@ export function resetPocMemory(): void {
   governanceReviews = []
   governanceAttachments = []
   governanceAttachmentLocations.clear()
-  chatMessages.clear()
-  chatMemory.clear()
   changeAttachmentUploads.clear()
   changeAttachments.clear()
   changeAttachmentLocations.clear()

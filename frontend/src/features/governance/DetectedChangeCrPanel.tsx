@@ -342,7 +342,7 @@ export function DetectedChangeCrPanel({
         columns={selection ? eventColumns : historyColumns}
         data={page.items}
         getRowId={(event) => event.event_id}
-        emptyMessage={selection ? '선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다.' : '선택한 기간과 변경 유형에 조회 가능한 감지 이력이 없습니다.'}
+        emptyMessage={changeHistoryEmptyMessage(page, Boolean(selection))}
         onRowActivate={(event) => void loadDetail(event.event_id)}
       /> : page ? (
         <div className="detected-change-table-wrap">
@@ -357,7 +357,7 @@ export function DetectedChangeCrPanel({
                 <td>{event.current_stage}</td>
                 <td>{event.current_primary ? `${event.current_primary.change_request_id} · round ${event.current_primary.change_request_round}` : '미연결'}</td>
               </tr>
-            )) : <tr><td colSpan={5}>선택한 주간 단계에 조회 가능한 이벤트가 없습니다.</td></tr>}</tbody>
+            )) : <tr><td colSpan={5}>{changeHistoryEmptyMessage(page, false)}</td></tr>}</tbody>
           </table>
         </div>
       ) : null}
@@ -400,6 +400,20 @@ export function DetectedChangeCrPanel({
 
 function targetValue(target: { change_request_id: string; change_request_round: number }) {
   return JSON.stringify([target.change_request_id, target.change_request_round])
+}
+
+function changeHistoryEmptyMessage(page: ChangeHistoryEventPage, selection: boolean) {
+  if (page.empty_state_reason === 'NO_LEDGER_EVENTS') {
+    return '현재 canonical change ledger에 감지 이벤트가 없습니다.'
+  }
+  if (page.empty_state_reason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED') {
+    return page.empty_state_detail === 'NO_EXACT_MAPPING'
+      ? '감지 이벤트는 존재하지만 현재 Table↔System exact mapping이 없어 권한 행을 표시할 수 없습니다.'
+      : '감지 이벤트는 존재하지만 현재 계정의 권한 범위에는 표시할 수 있는 행이 없습니다.'
+  }
+  return selection
+    ? '선택한 스키마·시스템·기간 필터에 일치하는 이벤트가 없습니다.'
+    : '선택한 기간 또는 변경 유형 필터에 일치하는 감지 이력이 없습니다.'
 }
 
 function freshDetail(

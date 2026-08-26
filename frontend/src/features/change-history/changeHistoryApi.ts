@@ -211,6 +211,15 @@ function assertEventPage(
   requestedCursor?: string,
 ): asserts value is ChangeHistoryEventPage {
   assertPage(value, expectedLimit, requestedCursor, true)
+  if (!isRecord(value)
+    || !['NO_LEDGER_EVENTS', 'EVENTS_EXIST_BUT_NOT_AUTHORIZED', 'FILTER_DATE_RANGE_EMPTY', null]
+      .includes(value.empty_state_reason as string | null)
+    || !['NO_EXACT_MAPPING', 'AUTHORIZATION_SCOPE', null]
+      .includes(value.empty_state_detail as string | null)
+    || (value.items.length > 0 && (value.empty_state_reason !== null || value.empty_state_detail !== null))
+    || (value.items.length === 0 && value.empty_state_reason === null)
+    || (value.empty_state_reason !== 'EVENTS_EXIST_BUT_NOT_AUTHORIZED' && value.empty_state_detail !== null)
+    || (value.empty_state_reason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED' && value.empty_state_detail === null)) invalid()
   value.items.forEach((item) => assertEvent(item))
 }
 

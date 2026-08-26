@@ -26,8 +26,10 @@ contract as `POST /chat/query`. It returns `text/event-stream` with `Cache-Contr
 The Chat application service owns an optional observational workflow observer. It publishes an
 `IN_PROGRESS` event immediately before each real server operation begins, then publishes the
 existing terminal event when that operation has actually resolved. The route relays only those
-typed stage, status and detail-code values, in order, followed by one unchanged final
-`ChatQueryResponse` result event. The browser replaces a stage's transient status with its terminal
+typed stage, status and detail-code values. After composition, citation validation and final evidence
+authorization succeed, it splits that approved answer into bounded `answer_delta` events and then
+emits one canonical persisted `ChatQueryResponse` result event. The browser renders those network
+chunks directly; it never replays a complete result string with a timer. The browser replaces a stage's transient status with its terminal
 status; it never invents or advances a stage locally.
 
 Transient `IN_PROGRESS` events are request-local and never become persisted Chat workflow records.
@@ -36,7 +38,7 @@ failure, a full bounded queue or a disconnected browser cannot affect authorizat
 answer composition, persistence or the final result. Stream failures have one generic client-safe
 error event; detailed RFC 9457 errors remain available from the ordinary endpoint.
 
-This is not LLM output-token streaming. It does not expose model thoughts, prompts, evidence before
+This is not raw LLM output-token streaming. It does not expose model thoughts, prompts, evidence before
 final authorization, provider credentials, raw Cypher, adapter diagnostics or a mutation path. It
 does not change provider bindings, routing intent policy, query scope or graph-adapter readiness.
 
@@ -53,7 +55,8 @@ does not change provider bindings, routing intent policy, query scope or graph-a
 
 - Chat service tests prove server-observed `IN_PROGRESS` transitions are emitted in operation order
   and never persisted.
-- SSE route tests prove workflow events precede the final result event.
+- SSE route tests prove workflow events precede approved answer deltas and those deltas precede the
+  persisted final result event.
 - Client and Chat page tests prove authenticated stream parsing, security-boundary fencing and UI
   rendering of an in-progress stage before the final answer.
 - The development runtime/browser check verifies a visible live stage and a final terminal trace;

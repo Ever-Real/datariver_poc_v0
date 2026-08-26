@@ -278,7 +278,14 @@ function summary(weekStart: string, overrides: Record<string, unknown> = {}) {
 }
 
 function eventPage(items: ChangeHistoryEvent[]) {
-  return { items, next_cursor: null, limit: 50, total: items.length }
+  return {
+    items,
+    next_cursor: null,
+    limit: 50,
+    total: items.length,
+    empty_state_reason: items.length ? null : 'NO_LEDGER_EVENTS' as const,
+    empty_state_detail: null,
+  }
 }
 
 function event(): ChangeHistoryEvent {

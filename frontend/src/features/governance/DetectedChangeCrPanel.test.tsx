@@ -4,6 +4,7 @@ import type { ApiClient, RequestOptions } from '../../api/client'
 import type { ChangeRequestSummary } from '../../api/types'
 import type {
   ChangeHistoryEvent,
+  ChangeHistoryEventPage,
   ChangeHistoryLinkAction,
   ChangeHistoryLinkPage,
 } from '../change-history/types'
@@ -72,7 +73,7 @@ describe('DetectedChangeCrPanel', () => {
     expect(within(counts).getByRole('button', { name: /변경 \/ TEST4/ })).toBeInTheDocument()
     expect(within(counts).getByRole('button', { name: /완료검토5/ })).toBeInTheDocument()
     expect(within(counts).getByRole('button', { name: /완료6/ })).toBeInTheDocument()
-    expect(screen.getByText('선택한 주간 단계에 조회 가능한 이벤트가 없습니다.')).toBeInTheDocument()
+    expect(screen.getByText('현재 canonical change ledger에 감지 이벤트가 없습니다.')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     view.unmount()
@@ -81,7 +82,7 @@ describe('DetectedChangeCrPanel', () => {
       changeRequests={[]}
     />)
     expect(await screen.findByRole('alert')).toHaveTextContent('주간 원장 조회 실패')
-    expect(screen.queryByText('선택한 주간 단계에 조회 가능한 이벤트가 없습니다.')).not.toBeInTheDocument()
+    expect(screen.queryByText('현재 canonical change ledger에 감지 이벤트가 없습니다.')).not.toBeInTheDocument()
   })
 
   it('uses the Change Management date range and canonical type filter for visible detection history', async () => {
@@ -280,7 +281,7 @@ describe('DetectedChangeCrPanel', () => {
 
   it('shows an authorized empty state inside the event drawer', async () => {
     const request = vi.fn((path: string) => path.startsWith('/change-history/events?')
-      ? Promise.resolve(eventPage([]))
+      ? Promise.resolve(eventPage([], 'FILTER_DATE_RANGE_EMPTY'))
       : Promise.reject(new Error(`Unexpected path: ${path}`)))
     render(<DetectedChangeCrPanel
       client={clientFor(request)}
@@ -291,7 +292,21 @@ describe('DetectedChangeCrPanel', () => {
       }}
       onClose={vi.fn()}
     />)
-    expect(await screen.findByText('선택한 스키마·시스템·기간에 조회 가능한 이벤트가 없습니다.')).toBeInTheDocument()
+    expect(await screen.findByText('선택한 스키마·시스템·기간 필터에 일치하는 이벤트가 없습니다.')).toBeInTheDocument()
+  })
+
+  it('distinguishes exact-mapping authorization emptiness from a date/type filter miss', async () => {
+    const request = vi.fn((path: string) => path.startsWith('/change-history/events?')
+      ? Promise.resolve(eventPage([], 'EVENTS_EXIST_BUT_NOT_AUTHORIZED', 'NO_EXACT_MAPPING'))
+      : Promise.reject(new Error(`Unexpected path: ${path}`)))
+    render(<DetectedChangeCrPanel
+      client={clientFor(request)}
+      changeRequests={[]}
+      dateRange={{ from: '2026-08-01', to: '2026-08-24' }}
+    />)
+    expect(await screen.findByText(
+      '감지 이벤트는 존재하지만 현재 Table↔System exact mapping이 없어 권한 행을 표시할 수 없습니다.',
+    )).toBeInTheDocument()
   })
 
   it('keeps every authorized exact-match event reachable across cursor pages', async () => {
@@ -309,8 +324,8 @@ describe('DetectedChangeCrPanel', () => {
       if (!path.startsWith('/change-history/events?')) throw new Error(`Unexpected path: ${path}`)
       const cursor = new URL(path, 'https://datariver.invalid').searchParams.get('cursor')
       return Promise.resolve(cursor
-        ? { items: [finalItem], next_cursor: null, limit: 50, total: 51 }
-        : { items: firstItems, next_cursor: 'cursor-2', limit: 50, total: 51 })
+        ? { items: [finalItem], next_cursor: null, limit: 50, total: 51, empty_state_reason: null, empty_state_detail: null }
+        : { items: firstItems, next_cursor: 'cursor-2', limit: 50, total: 51, empty_state_reason: null, empty_state_detail: null })
     })
     render(<DetectedChangeCrPanel
       client={clientFor(request)}
@@ -372,8 +387,19 @@ function weekly() {
   }
 }
 
-function eventPage(items: ChangeHistoryEvent[]) {
-  return { items, next_cursor: null, limit: 50, total: items.length }
+function eventPage(
+  items: ChangeHistoryEvent[],
+  emptyState: ChangeHistoryEventPage['empty_state_reason'] = 'NO_LEDGER_EVENTS',
+  emptyDetail: ChangeHistoryEventPage['empty_state_detail'] = null,
+) {
+  return {
+    items,
+    next_cursor: null,
+    limit: 50,
+    total: items.length,
+    empty_state_reason: items.length ? null : emptyState,
+    empty_state_detail: emptyDetail,
+  }
 }
 
 function event(allowedLinkActions: ChangeHistoryLinkAction[] = []): ChangeHistoryEvent {

@@ -597,7 +597,7 @@ bounded winner; a rejected call records no ledger, result or aggregate increment
 | Method/path | Action | Purpose |
 |---|---|---|
 | `POST /chat/query` | `chat.query` plus `catalog.read` / `kg.read` per citation | persist a grounded answer or an explicitly disclosed zero-evidence general-knowledge answer; development may use local Ollama or one allowlisted private OpenAI-compatible fixed tool contract |
-| `POST /chat/query/stream` | same as `POST /chat/query` | request-local server-observed workflow events followed by the same final Chat response; no model-token stream |
+| `POST /chat/query/stream` | same as `POST /chat/query` | request-local workflow, bounded server-approved `answer_delta`, then the persisted final Chat response |
 
 Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs,
 answer, route/workflow state and immutable evidence chunk metadata: `chunk_id`,
@@ -622,10 +622,13 @@ workflow detail and sends only the current question through the existing pipelin
 `POST /chat/query/stream` has the same request shape and authorization/policy semantics as the
 ordinary endpoint. Its `text/event-stream` body has ordered `workflow` events containing only the
 typed `{stage,status,detail_code}` transition that the server has actually started or completed,
-then exactly one `result` event containing the ordinary response. `IN_PROGRESS` is request-local;
+followed by bounded `answer_delta` events containing only the fully composed, citation-validated and
+authorized answer text, then exactly one `result` event containing the canonical persisted response.
+The server may buffer provider output until final authorization, but the browser never manufactures
+progress from a complete `result` string. `IN_PROGRESS` is request-local;
 only terminal workflow events may be persisted or returned in Chat history. The stream is bounded,
-uses `Cache-Control: no-store` and `X-Accel-Buffering: no`, and never transmits model tokens,
-prompts, unapproved evidence or adapter diagnostics.
+uses `Cache-Control: no-store` and `X-Accel-Buffering: no`, and never transmits raw model tokens,
+thoughts, prompts, unapproved evidence, raw graph queries, credentials or adapter diagnostics.
 
 Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
 exact policy ID/hash, database transaction time and policy-derived deadline in one locked

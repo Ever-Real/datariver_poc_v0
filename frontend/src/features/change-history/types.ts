@@ -77,6 +77,8 @@ export interface ChangeHistoryEventPage {
   next_cursor: string | null
   limit: number
   total: number
+  empty_state_reason: 'NO_LEDGER_EVENTS' | 'EVENTS_EXIST_BUT_NOT_AUTHORIZED' | 'FILTER_DATE_RANGE_EMPTY' | null
+  empty_state_detail: 'NO_EXACT_MAPPING' | 'AUTHORIZATION_SCOPE' | null
 }
 
 export interface ChangeHistoryWeeklySummary {

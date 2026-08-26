@@ -146,15 +146,12 @@ test('normalizes only controlled DataHub manual-metadata read-back fields', asyn
   )
 })
 
-test('labels missing database metadata without inventing a database identity', async () => {
+test('omits missing database metadata instead of inventing a hierarchy branch', async () => {
   const { catalogDatabaseBranchLabel } = await import('./poc-server.mjs?catalog-database-label-contract')
 
   assert.equal(catalogDatabaseBranchLabel('FINANCE', 'oracle'), 'FINANCE')
-  assert.equal(
-    catalogDatabaseBranchLabel('', 'postgres'),
-    'postgres · Database 메타데이터 없음',
-  )
-  assert.equal(catalogDatabaseBranchLabel('', ''), 'Database 메타데이터 없음')
+  assert.equal(catalogDatabaseBranchLabel('', 'postgres'), '')
+  assert.equal(catalogDatabaseBranchLabel('', ''), '')
 })
 
 test('accepts only bounded DataHub lineage direction and depth', async () => {
@@ -1426,6 +1423,8 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(list.status, 200)
     const listed = await list.json()
     assert.equal(listed.total, 1)
+    assert.equal(listed.empty_state_reason, null)
+    assert.equal(listed.empty_state_detail, null)
     assert.deepEqual(listed.items[0], {
       ...listed.items[0],
       change_type: 'SCHEMA_CHANGE',
@@ -1441,6 +1440,10 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(historicalAfterDeletion.total, 1, 'a mapped historical event survives current DataHub deletion')
     assert.equal(historicalAfterDeletion.items[0].locator.asset_name, 'orders')
     projection.catalog.value.items = currentCatalogItems
+    const emptyRange = await (await fetch(`${base}/api/v1/change-history/events?date_from=2026-01-01&date_to=2026-01-02`)).json()
+    assert.equal(emptyRange.total, 0)
+    assert.equal(emptyRange.empty_state_reason, 'FILTER_DATE_RANGE_EMPTY')
+    assert.equal(emptyRange.empty_state_detail, null)
     const rangeSummaryResponse = await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)
     assert.equal(rangeSummaryResponse.status, 200)
     const rangeSummary = await rangeSummaryResponse.json()
@@ -1750,6 +1753,17 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   const viewerReadBody = await viewerRead.result.json()
   assert.equal(viewerReadBody.total, 0)
   assert.deepEqual(viewerReadBody.items, [])
+  assert.equal(viewerReadBody.empty_state_reason, 'EVENTS_EXIST_BUT_NOT_AUTHORIZED')
+  assert.equal(viewerReadBody.empty_state_detail, 'AUTHORIZATION_SCOPE')
+  const noExactMapping = structuredClone(baseProjection)
+  noExactMapping.mapping.bindings = []
+  const noExactMappingBody = await (await run(
+    noExactMapping,
+    (origin) => fetch(`${origin}/api/v1/change-history/events`),
+  )).result.json()
+  assert.equal(noExactMappingBody.total, 0)
+  assert.equal(noExactMappingBody.empty_state_reason, 'EVENTS_EXIST_BUT_NOT_AUTHORIZED')
+  assert.equal(noExactMappingBody.empty_state_detail, 'NO_EXACT_MAPPING')
   const deniedDetail = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
   assert.equal(deniedDetail.result.status, 404)
   const viewerSummary = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))

@@ -234,6 +234,8 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_change_history_cr_link_events',
     'poc_local_credentials',
     'poc_local_sessions',
+    'poc_chat_sessions',
+    'poc_chat_messages',
     'poc_user_table_grants',
     'poc_knowledge_ingestion_jobs',
     'poc_knowledge_source_rows',
@@ -253,10 +255,64 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     "password_hash LIKE '$argon2id$v=19$%'",
     'expires_at > created_at',
     'PRIMARY KEY (subject_id, table_urn)',
+    'UNIQUE (session_id, owner_subject_id)',
+    'UNIQUE (session_id, ordinal)',
   ]) {
     assert.ok(startupSql.includes(contract), contract)
     assert.ok(initSql.includes(contract), contract)
   }
+  for (const schema of [startupSql, initSql]) {
+    const credentialTable = schema.slice(
+      schema.indexOf('CREATE TABLE IF NOT EXISTS poc_local_credentials'),
+      schema.indexOf('CREATE TABLE IF NOT EXISTS poc_local_sessions'),
+    )
+    const chatSessionTable = schema.slice(
+      schema.indexOf('CREATE TABLE IF NOT EXISTS poc_chat_sessions'),
+      schema.indexOf('CREATE INDEX IF NOT EXISTS ix_poc_chat_sessions_owner_updated'),
+    )
+    assert.doesNotMatch(credentialTable, /session_id|owner_subject_id/)
+    assert.match(chatSessionTable, /UNIQUE \(session_id, owner_subject_id\)/)
+  }
+})
+
+test('persists immutable bounded Chat turns by subject and fences favorite/archive ownership', async () => {
+  const store = createPocStateStore()
+  const command = {
+    subjectId: 'subject-a',
+    sessionId: 'session-a',
+    requestMessageId: 'request-a',
+    responseMessageId: 'response-a',
+    question: '데이터 계보가 무엇인지 알려줘.',
+    answer: '데이터 계보는 데이터의 출처와 흐름을 설명합니다.',
+    title: '데이터 계보가 무엇인지 알려줘.',
+    evidence: [],
+    route: { requested_mode: 'GENERAL', selected_mode: 'GENERAL' },
+    workflow: [{ stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED' }],
+    createdAt: '2026-08-26T01:00:00.000Z',
+  }
+  await store.appendChatTurn(command)
+  const sessions = await store.listChatSessions('subject-a')
+  assert.equal(sessions.length, 1)
+  assert.equal(sessions[0].message_count, 2)
+  assert.deepEqual((await store.listChatMessages('subject-a', 'session-a')).map((message) => (
+    [message.role, message.content]
+  )), [
+    ['user', command.question],
+    ['assistant', command.answer],
+  ])
+  assert.deepEqual(await store.listChatSessions('subject-b'), [])
+  await assert.rejects(store.listChatMessages('subject-b', 'session-a'), (error) => error.statusCode === 404)
+
+  const favorite = await store.setChatSessionFavorite('subject-a', 'session-a', true, 1)
+  assert.equal(favorite.is_favorite, true)
+  assert.equal(favorite.version, 2)
+  await assert.rejects(
+    store.setChatSessionFavorite('subject-a', 'session-a', false, 1),
+    (error) => error.statusCode === 409,
+  )
+  await store.archiveChatSession('subject-a', 'session-a', 2)
+  assert.deepEqual(await store.listChatSessions('subject-a'), [])
+  await assert.rejects(store.listChatMessages('subject-a', 'session-a'), (error) => error.statusCode === 404)
 })
 
 test('stores only the explicit User-Table domain relation with idempotent active lifecycle', async () => {
