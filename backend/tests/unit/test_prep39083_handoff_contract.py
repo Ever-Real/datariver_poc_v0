@@ -165,6 +165,10 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "DEV never claims PREP or OPS runtime acceptance" in cycle
     assert "Only one materializer" in cycle
     assert "./scripts/prep39083 deploy" in cycle
+    assert "ownership fingerprint covers only the generated" in prep
+    assert "before reconciling or writing" in prep
+    assert "legacy V1 receipt" in prep
+    assert "ownership-only V2" in cycle
 
 
 def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:

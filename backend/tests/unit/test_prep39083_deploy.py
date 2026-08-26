@@ -7,9 +7,11 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -61,6 +63,85 @@ def _write_private_env(path: Path, values: dict[str, str]) -> bytes:
 
 def _release() -> object:
     return deploy.ReleaseIdentity("a" * 40, "b" * 40, "linux/amd64", 39083, "datariver-prep39083")
+
+
+def _runtime_values(*, fixed_timeout: str = "120000") -> dict[str, str]:
+    contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
+    runtime = {str(key): str(value) for key, value in contract["ownership"]["FIXED"].items()}
+    runtime.update(
+        {
+            "POC_POSTGRES_PASSWORD": "preserved-postgres-secret",
+            "NEO4J_PASSWORD": "preserved-neo4j-secret",
+            "POC_MCP_SERVICE_TOKEN": "preserved-mcp-secret",
+            "POC_K9_SCHEDULER_ENABLED": "false",
+            "POC_IMAGE_TAG": "a" * 40,
+            "POC_SOURCE_COMMIT": "a" * 40,
+            "PREP_RELEASE_PRODUCT_SHA": "a" * 40,
+            "PREP_RELEASE_EVIDENCE_SHA": "b" * 40,
+            "POC_LLM_TIMEOUT_MS": fixed_timeout,
+        }
+    )
+    return runtime
+
+
+class AttemptValidationRunner:
+    def __init__(self, historical_contract: dict[str, object], *, ancestry: bool = True) -> None:
+        self.historical_contract = historical_contract
+        self.ancestry = ancestry
+
+    def output(self, arguments: Sequence[str]) -> str:
+        values = list(arguments)
+        assert values[:2] == ["git", "show"]
+        return json.dumps(self.historical_contract)
+
+    def run(
+        self,
+        arguments: Sequence[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check
+        values = list(arguments)
+        assert values[:3] == ["git", "merge-base", "--is-ancestor"]
+        return subprocess.CompletedProcess(values, 0 if self.ancestry else 1, "", "")
+
+
+def _attempt_inventory(receipt: dict[str, object]) -> Any:
+    return deploy.TargetInventory(
+        False,
+        False,
+        True,
+        True,
+        (),
+        tuple(
+            deploy.TargetVolume(name, name.removeprefix("datariver-prep39083_"))
+            for name in deploy.canonical_volume_identities(_release())
+        ),
+        ("datariver-prep39083-services",),
+        True,
+        True,
+        receipt,
+    )
+
+
+def _base_attempt_receipt(runtime: dict[str, str]) -> dict[str, object]:
+    return {
+        "contract": deploy.ATTEMPT_CONTRACT_V2,
+        "product_sha": "1" * 40,
+        "evidence_sha": "2" * 40,
+        "handoff_commit": "3" * 40,
+        "project": "datariver-prep39083",
+        "platform": "linux/amd64",
+        "port": 39083,
+        "target_state_before": "FRESH_CLEAN",
+        "ownership_fingerprint_contract": deploy.OWNERSHIP_FINGERPRINT_CONTRACT,
+        "ownership_fingerprint": deploy.target_ownership_fingerprint(runtime),
+        "volume_identities": list(deploy.canonical_volume_identities(_release())),
+        "k9_mode": "DEFERRED",
+        "phase": "SMOKE_FAILED",
+        "started_at": "2026-08-25T00:00:00+00:00",
+        "updated_at": "2026-08-25T00:00:01+00:00",
+    }
 
 
 def test_operator_environment_is_preserved_and_generated_secrets_are_stable(tmp_path: Path) -> None:
@@ -434,10 +515,141 @@ def test_attempt_receipt_is_atomic_secret_free_and_phase_progresses(
     assert stat.S_IMODE(attempt.stat().st_mode) == 0o600
     payload = attempt.read_text(encoding="utf-8")
     assert "secret-must-not-be-recorded" not in payload
-    assert receipt["runtime_env_fingerprint"] in payload
+    assert receipt["contract"] == deploy.ATTEMPT_CONTRACT_V2
+    assert receipt["ownership_fingerprint"] in payload
+    assert "runtime_env_fingerprint" not in receipt
+    assert deploy._attempt_receipt(attempt) == receipt
     advanced = deploy.advance_attempt_phase(receipt, "SMOKE_FAILED")
     assert advanced["phase"] == "SMOKE_FAILED"
     assert json.loads(attempt.read_text())["phase"] == "SMOKE_FAILED"
+
+
+def test_ownership_fingerprint_excludes_fixed_release_configuration() -> None:
+    before = _runtime_values(fixed_timeout="15000")
+    after = _runtime_values(fixed_timeout="120000")
+    assert deploy.target_ownership_fingerprint(before) == deploy.target_ownership_fingerprint(after)
+    after["POC_POSTGRES_PASSWORD"] = "changed-target-secret"
+    assert deploy.target_ownership_fingerprint(before) != deploy.target_ownership_fingerprint(after)
+
+
+def test_legacy_v1_receipt_migrates_after_runtime_already_has_descendant_fixed_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
+    historical_contract = json.loads(json.dumps(current_contract))
+    historical_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] = "15000"
+    old_runtime = _runtime_values(fixed_timeout="15000")
+    already_updated_runtime = _runtime_values(fixed_timeout="120000")
+    receipt = _base_attempt_receipt(old_runtime)
+    receipt.update(
+        {
+            "contract": deploy.ATTEMPT_CONTRACT_V1,
+            "runtime_env_fingerprint": deploy.legacy_runtime_env_fingerprint_v1(old_runtime),
+        }
+    )
+    receipt.pop("ownership_fingerprint_contract")
+    receipt.pop("ownership_fingerprint")
+    runner = AttemptValidationRunner(historical_contract)
+
+    validated = deploy.validate_owned_attempt(
+        runner,
+        _release(),
+        "4" * 40,
+        _attempt_inventory(receipt),
+        already_updated_runtime,
+        "DEFERRED",
+    )
+    assert validated == receipt
+
+    attempt_path = tmp_path / "deploy-attempt.json"
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
+    bundle = deploy.EnvironmentBundle(
+        {},
+        {},
+        already_updated_runtime,
+        already_updated_runtime,
+        (),
+        deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+        "DEFERRED",
+    )
+    migrated = deploy.write_attempt_receipt(
+        _release(),
+        "4" * 40,
+        bundle,
+        deploy.canonical_volume_identities(_release()),
+        phase="PREPARED",
+        previous=validated,
+    )
+    assert migrated["contract"] == deploy.ATTEMPT_CONTRACT_V2
+    assert migrated["migrated_from_contract"] == deploy.ATTEMPT_CONTRACT_V1
+    assert migrated["resumed_from_product_sha"] == receipt["product_sha"]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("secret", "volume", "project", "platform", "port", "k9", "ancestry", "malformed"),
+)
+def test_owned_attempt_negative_drift_matrix_fails_closed(drift: str) -> None:
+    runtime = _runtime_values()
+    receipt = _base_attempt_receipt(runtime)
+    inventory = _attempt_inventory(receipt)
+    runner = AttemptValidationRunner(
+        json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text()),
+        ancestry=drift != "ancestry",
+    )
+    expected_k9 = "DEFERRED"
+    if drift == "secret":
+        runtime["NEO4J_PASSWORD"] = "unauthorized-secret-change"
+    elif drift == "volume":
+        receipt["volume_identities"] = ["unrelated_volume"]
+    elif drift == "project":
+        receipt["project"] = "unrelated-project"
+    elif drift == "platform":
+        receipt["platform"] = "linux/arm64"
+    elif drift == "port":
+        receipt["port"] = 39084
+    elif drift == "k9":
+        expected_k9 = "REQUIRED"
+    elif drift == "malformed":
+        inventory = replace(inventory, attempt_receipt_valid=False)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_owned_attempt(
+            runner,
+            _release(),
+            "4" * 40,
+            inventory,
+            runtime,
+            expected_k9,
+        )
+    assert captured.value.code == "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY"
+
+
+def test_incomplete_runtime_is_not_rewritten_before_ownership_validation(
+    tmp_path: Path,
+) -> None:
+    operator = tmp_path / ".env.prep"
+    runtime_path = tmp_path / ".env.prep.runtime"
+    _write_private_env(operator, _operator_values(k9_configured=False))
+    old_runtime = _runtime_values(fixed_timeout="15000")
+    original = _write_private_env(runtime_path, old_runtime)
+    bundle = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=runtime_path,
+        target_state=deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+        persist_runtime=False,
+        random_token=lambda _count: pytest.fail("owned target secrets must be reused"),
+    )
+    assert runtime_path.read_bytes() == original
+    assert bundle.runtime["POC_LLM_TIMEOUT_MS"] == "120000"
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    prepare = source[
+        source.index("def prepare_deployment(") : source.index("def verify_source_identity(")
+    ]
+    assert prepare.index("validate_owned_attempt(") < prepare.index("reconcile_environment(")
 
 
 def test_accepted_state_never_generates_missing_runtime_secrets(tmp_path: Path) -> None:

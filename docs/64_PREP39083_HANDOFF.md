@@ -163,10 +163,23 @@ an existing role.
 
 Immediately before the first deployment-owned persistent mutation, the deployer atomically writes
 ignored mode-0600 `runtime/prep39083/deploy-attempt.json`. It binds Product, Evidence, handoff,
-project, volume identities, K9 mode and an HMAC runtime-config fingerprint without storing any
-secret. Its phase advances through state services, schema, bootstrap, web and smoke. A matching
-unfinished receipt is `EXISTING_OWNED_INCOMPLETE`; the same command reruns idempotent gates and
-reuses the existing admin, service Subjects, credentials and volumes.
+project, volume identities, K9 mode and a versioned HMAC target-ownership fingerprint without
+storing any secret. The ownership fingerprint covers only the generated PostgreSQL, Neo4j and MCP
+target secrets. Tracked `FIXED` release configuration is deliberately excluded: a descendant
+release may change it without pretending that the target or its volumes changed. Project,
+linux/amd64 platform, port 39083, K9 mode, canonical volume identities, and Product/Handoff ancestry
+remain separately fail-closed. Its phase advances through state services, schema, bootstrap, web
+and smoke. A matching unfinished receipt is `EXISTING_OWNED_INCOMPLETE`; the same command reruns
+idempotent gates and reuses the existing admin, service Subjects, credentials and volumes.
+
+For an unfinished deployment, the deployer reads the preserved runtime file and validates receipt
+ownership plus source ancestry before reconciling or writing the descendant release's tracked
+`FIXED` values. A legacy V1 receipt is validated against the historical environment contract at its
+recorded Handoff commit and then migrated atomically to the V2 ownership-only receipt. This remains
+valid when an earlier failed deploy already wrote descendant `FIXED` values: historical values are
+reconstructed for V1 verification while the preserved generated secrets and canonical volumes are
+verified unchanged. Malformed/unrelated receipts, secret drift, volume drift, topology drift,
+invalid ancestry, or K9-mode drift still stop without mutating the runtime file.
 
 Handoffs predating the receipt are recognized only when the existing bootstrap inspector proves
 the exact canonical administrator/MCP/K9 identity shape, no active session or unexpected business

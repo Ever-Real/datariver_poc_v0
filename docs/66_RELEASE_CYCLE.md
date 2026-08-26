@@ -65,6 +65,12 @@ completed generation. No PREP setting disables this contract.
    bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
    Assets are strict only when the feature-dependent Studio DB authority is configured; otherwise
    core boot reports K9 DEFERRED.
+
+Cross-release resume treats generated target secrets and canonical volume/topology identities as
+ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git
+ancestry are proven before the new release writes its runtime configuration. Legacy V1 unfinished
+receipts migrate automatically to the ownership-only V2 contract; operators never delete or edit a
+receipt, runtime secret, container, database, or volume to apply a legitimate release update.
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.

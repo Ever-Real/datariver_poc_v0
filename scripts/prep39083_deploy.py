@@ -207,6 +207,7 @@ class DeploymentPreparation:
     source: Mapping[str, str]
     inventory: TargetInventory
     before_39080: tuple[str, ...]
+    previous_attempt: Mapping[str, Any] | None = None
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -411,6 +412,15 @@ ATTEMPT_PHASES = frozenset(
         "ACCEPTED",
     }
 )
+ATTEMPT_CONTRACT_V1 = "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1"
+ATTEMPT_CONTRACT_V2 = "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V2"
+OWNERSHIP_FINGERPRINT_CONTRACT = "DATARIVER_PREP39083_TARGET_OWNERSHIP_V2"
+TARGET_OWNERSHIP_SECRET_KEYS = (
+    "NEO4J_PASSWORD",
+    "POC_MCP_SERVICE_TOKEN",
+    "POC_POSTGRES_PASSWORD",
+)
+PREP_VOLUME_LOGICAL_NAMES = ("neo4j-data", "neo4j-logs", "pgvector-data")
 
 
 def _attempt_receipt(path: Path) -> dict[str, Any] | None:
@@ -422,8 +432,20 @@ def _attempt_receipt(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         return None
+    contract = value.get("contract")
+    fingerprint_valid = (
+        isinstance(value.get("runtime_env_fingerprint"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", value["runtime_env_fingerprint"]))
+        if contract == ATTEMPT_CONTRACT_V1
+        else (
+            contract == ATTEMPT_CONTRACT_V2
+            and value.get("ownership_fingerprint_contract") == OWNERSHIP_FINGERPRINT_CONTRACT
+            and isinstance(value.get("ownership_fingerprint"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", value["ownership_fingerprint"]))
+        )
+    )
     valid = (
-        value.get("contract") == "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1"
+        contract in {ATTEMPT_CONTRACT_V1, ATTEMPT_CONTRACT_V2}
         and all(
             isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
             for key in ("product_sha", "evidence_sha", "handoff_commit")
@@ -435,8 +457,7 @@ def _attempt_receipt(path: Path) -> dict[str, Any] | None:
         and 1 <= value["port"] <= 65535
         and value.get("phase") in ATTEMPT_PHASES
         and value.get("k9_mode") in {"REQUIRED", "DEFERRED"}
-        and isinstance(value.get("runtime_env_fingerprint"), str)
-        and bool(re.fullmatch(r"[0-9a-f]{64}", value["runtime_env_fingerprint"]))
+        and fingerprint_valid
         and isinstance(value.get("volume_identities"), list)
         and all(isinstance(item, str) and item for item in value["volume_identities"])
     )
@@ -627,6 +648,15 @@ def _feature_keys(features: Mapping[str, Any]) -> set[str]:
     return keys
 
 
+def k9_mode_from_operator(operator: Mapping[str, str]) -> str:
+    studio_database_url = operator.get("POC_K9_STUDIO_DATABASE_URL", "").strip()
+    return (
+        "REQUIRED"
+        if studio_database_url and not studio_database_url.startswith(CHANGE_ME_PREFIX)
+        else "DEFERRED"
+    )
+
+
 def reconcile_environment(
     release: ReleaseIdentity,
     *,
@@ -635,6 +665,7 @@ def reconcile_environment(
     runtime_path: Path = RUNTIME_ENV,
     random_token: Callable[[int], str] = _token,
     target_state: TargetState = TargetState.FRESH_CLEAN,
+    persist_runtime: bool = True,
 ) -> EnvironmentBundle:
     contract = _read_json(ENV_CONTRACT, "environment contract")
     if contract.get("contract") != "DATARIVER_PREP39083_ENV_V4":
@@ -732,10 +763,8 @@ def reconcile_environment(
         if legacy:
             warnings.append(f"legacy generated key remains in .env.prep: {key}")
 
-    studio_database_url = operator.get("POC_K9_STUDIO_DATABASE_URL", "").strip()
-    k9_configured = bool(
-        studio_database_url and not studio_database_url.startswith(CHANGE_ME_PREFIX)
-    )
+    k9_mode = k9_mode_from_operator(operator)
+    k9_configured = k9_mode == "REQUIRED"
     for key, value in fixed.items():
         runtime[str(key)] = str(value)
     runtime["POC_K9_SCHEDULER_ENABLED"] = "true" if k9_configured else "false"
@@ -743,7 +772,7 @@ def reconcile_environment(
     runtime["POC_SOURCE_COMMIT"] = release.product_sha
     runtime["PREP_RELEASE_PRODUCT_SHA"] = release.product_sha
     runtime["PREP_RELEASE_EVIDENCE_SHA"] = release.evidence_sha
-    if target_state is not TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+    if persist_runtime and target_state is not TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
         _atomic_private_env(runtime_path, runtime)
 
     known_legacy = (
@@ -836,7 +865,7 @@ def reconcile_environment(
         effective,
         tuple(warnings),
         target_state,
-        "REQUIRED" if k9_configured else "DEFERRED",
+        k9_mode,
     )
 
 
@@ -982,9 +1011,31 @@ def prepare_deployment(
     runner.note(f"Classify PREP target state: {state.value}")
     if state is TargetState.EXISTING_STATE_AMBIGUOUS:
         _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
+    previous_attempt: Mapping[str, Any] | None = None
+    if state is TargetState.EXISTING_OWNED_INCOMPLETE:
+        preserved_runtime = read_env_file(
+            RUNTIME_ENV,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        previous_attempt = validate_owned_attempt(
+            runner,
+            release,
+            source["handoff_commit"],
+            inventory,
+            preserved_runtime,
+            k9_mode_from_operator(operator),
+        )
+        runner.note("Prove incomplete target ownership and source ancestry before reconciliation")
     bundle = reconcile_environment(release, target_state=state)
     runner.environment = child_environment(bundle.effective)
-    return bundle, DeploymentPreparation(runner, source, inventory, before_39080)
+    return bundle, DeploymentPreparation(
+        runner,
+        source,
+        inventory,
+        before_39080,
+        previous_attempt,
+    )
 
 
 def verify_source_identity(release: ReleaseIdentity) -> dict[str, str]:
@@ -1046,7 +1097,8 @@ def compose_volume_identities(config: Mapping[str, Any]) -> tuple[str, ...]:
     return names
 
 
-def runtime_env_fingerprint(runtime: Mapping[str, str]) -> str:
+def legacy_runtime_env_fingerprint_v1(runtime: Mapping[str, str]) -> str:
+    """Reproduce the retired V1 whole-runtime fingerprint for bounded migration only."""
     key = runtime.get("POC_MCP_SERVICE_TOKEN", "")
     if not key:
         raise PrepError(
@@ -1067,6 +1119,65 @@ def runtime_env_fingerprint(runtime: Mapping[str, str]) -> str:
         sort_keys=True,
     ).encode()
     return hmac.new(key.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def target_ownership_fingerprint(runtime: Mapping[str, str]) -> str:
+    values = {key: runtime.get(key, "") for key in TARGET_OWNERSHIP_SECRET_KEYS}
+    if any(not value or value == INSPECTION_PLACEHOLDER for value in values.values()):
+        raise PrepError(
+            "TARGET_STATE",
+            "PREP_RUNTIME_FINGERPRINT_UNAVAILABLE",
+            "The target-local ownership fingerprint cannot be derived.",
+            "Restore the preserved .env.prep.runtime file and retry.",
+        )
+    payload = json.dumps(
+        {"contract": OWNERSHIP_FINGERPRINT_CONTRACT, "generated": values},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hmac.new(values["POC_MCP_SERVICE_TOKEN"].encode(), payload, hashlib.sha256).hexdigest()
+
+
+def canonical_volume_identities(release: ReleaseIdentity) -> tuple[str, ...]:
+    return tuple(sorted(f"{release.project}_{name}" for name in PREP_VOLUME_LOGICAL_NAMES))
+
+
+def _historical_env_contract(runner: Runner, handoff: str) -> dict[str, Any]:
+    try:
+        raw = runner.output(
+            ["git", "show", f"{handoff}:deploy/prep39083/env-contract.json"],
+        )
+        contract = json.loads(raw)
+    except (CommandFailure, json.JSONDecodeError):
+        _ambiguous_state("The legacy attempt environment contract cannot be reconstructed.")
+    if not isinstance(contract, dict) or contract.get("contract") not in {
+        "DATARIVER_PREP39083_ENV_V3",
+        "DATARIVER_PREP39083_ENV_V4",
+    }:
+        _ambiguous_state(
+            "The legacy attempt environment contract is outside the supported migration boundary."
+        )
+    _environment_ownership(contract)
+    return contract
+
+
+def _legacy_runtime_for_receipt(
+    preserved_runtime: Mapping[str, str],
+    historical_contract: Mapping[str, Any],
+) -> dict[str, str]:
+    current_contract = _read_json(ENV_CONTRACT, "environment contract")
+    _, _, _, current_generated, current_fixed = _environment_ownership(current_contract)
+    _, _, _, historical_generated, historical_fixed = _environment_ownership(
+        historical_contract,
+    )
+    legacy = dict(preserved_runtime)
+    for key in set(current_fixed) - set(historical_fixed):
+        legacy.pop(str(key), None)
+    for key in set(current_generated) - set(historical_generated):
+        legacy.pop(str(key), None)
+    for key, value in historical_fixed.items():
+        legacy[str(key)] = str(value)
+    return legacy
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any], *, private: bool = True) -> None:
@@ -1099,7 +1210,7 @@ def write_attempt_receipt(
         raise ValueError("invalid deployment attempt phase")
     now = datetime.now(UTC).isoformat()
     payload: dict[str, Any] = {
-        "contract": "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1",
+        "contract": ATTEMPT_CONTRACT_V2,
         "product_sha": release.product_sha,
         "evidence_sha": release.evidence_sha,
         "handoff_commit": handoff,
@@ -1107,7 +1218,8 @@ def write_attempt_receipt(
         "platform": release.platform,
         "port": release.port,
         "target_state_before": bundle.target_state.value,
-        "runtime_env_fingerprint": runtime_env_fingerprint(bundle.runtime),
+        "ownership_fingerprint_contract": OWNERSHIP_FINGERPRINT_CONTRACT,
+        "ownership_fingerprint": target_ownership_fingerprint(bundle.runtime),
         "volume_identities": sorted(set(volume_identities)),
         "k9_mode": bundle.k9_mode,
         "phase": phase,
@@ -1116,6 +1228,8 @@ def write_attempt_receipt(
     }
     if previous and previous.get("product_sha") != release.product_sha:
         payload["resumed_from_product_sha"] = previous.get("product_sha")
+    if previous and previous.get("contract") != ATTEMPT_CONTRACT_V2:
+        payload["migrated_from_contract"] = previous.get("contract")
     _atomic_json(ATTEMPT_RECEIPT, payload)
     return payload
 
@@ -1134,22 +1248,43 @@ def validate_owned_attempt(
     runner: Runner,
     release: ReleaseIdentity,
     handoff: str,
-    bundle: EnvironmentBundle,
     inventory: TargetInventory,
-    expected_volumes: Sequence[str],
+    preserved_runtime: Mapping[str, str],
+    expected_k9_mode: str,
 ) -> Mapping[str, Any]:
     receipt = inventory.attempt_receipt
     if not inventory.attempt_receipt_valid or not isinstance(receipt, dict):
         _ambiguous_state("The incomplete deployment receipt is absent or malformed.")
+    expected_volumes = canonical_volume_identities(release)
     if (
         receipt.get("project") != release.project
         or receipt.get("platform") != release.platform
         or receipt.get("port") != release.port
-        or receipt.get("k9_mode") != bundle.k9_mode
-        or receipt.get("runtime_env_fingerprint") != runtime_env_fingerprint(bundle.runtime)
+        or receipt.get("k9_mode") != expected_k9_mode
         or sorted(receipt.get("volume_identities", ())) != sorted(expected_volumes)
         or {volume.name for volume in inventory.volumes} - set(expected_volumes)
     ):
+        _ambiguous_state("The incomplete deployment receipt no longer matches target ownership.")
+    if receipt.get("contract") == ATTEMPT_CONTRACT_V1:
+        historical_contract = _historical_env_contract(
+            runner,
+            str(receipt["handoff_commit"]),
+        )
+        legacy_runtime = _legacy_runtime_for_receipt(
+            preserved_runtime,
+            historical_contract,
+        )
+        legacy_runtime["POC_K9_SCHEDULER_ENABLED"] = (
+            "true" if receipt.get("k9_mode") == "REQUIRED" else "false"
+        )
+        fingerprint_matches = receipt.get(
+            "runtime_env_fingerprint",
+        ) == legacy_runtime_env_fingerprint_v1(legacy_runtime)
+    else:
+        fingerprint_matches = receipt.get(
+            "ownership_fingerprint",
+        ) == target_ownership_fingerprint(preserved_runtime)
+    if not fingerprint_matches:
         _ambiguous_state("The incomplete deployment receipt no longer matches target ownership.")
     for ancestor, descendant in (
         (str(receipt["product_sha"]), release.product_sha),
@@ -1850,17 +1985,19 @@ def deploy(
             flush=True,
         )
 
-        previous_attempt: Mapping[str, Any] | None = None
+        previous_attempt = preparation.previous_attempt
         if bundle.target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
-            previous_attempt = validate_owned_attempt(
-                runner,
-                release,
-                source["handoff_commit"],
-                bundle,
-                preparation.inventory,
+            if not isinstance(previous_attempt, Mapping):
+                _ambiguous_state(
+                    "The incomplete deployment was not ownership-validated before reconciliation."
+                )
+            if sorted(previous_attempt.get("volume_identities", ())) != sorted(
                 volume_identities,
-            )
-            runner.note("Validate exact owned incomplete deployment receipt for idempotent resume")
+            ):
+                _ambiguous_state(
+                    "The current Compose volume contract differs from the proven target ownership."
+                )
+            runner.note("Retain proven owned incomplete receipt for idempotent resume")
         elif bundle.target_state is (
             TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION
         ):
@@ -2123,7 +2260,11 @@ def prepare_operational_bundle(
         if state is TargetState.FRESH_CLEAN
         else state
     )
-    return reconcile_environment(release, target_state=read_only_state)
+    return reconcile_environment(
+        release,
+        target_state=read_only_state,
+        persist_runtime=False,
+    )
 
 
 def fail(error: PrepError) -> NoReturn:

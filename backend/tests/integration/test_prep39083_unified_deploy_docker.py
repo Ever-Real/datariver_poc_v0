@@ -445,6 +445,14 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
         assert deploy.classify_target_state(retry_inventory) is (
             deploy.TargetState.EXISTING_OWNED_INCOMPLETE
         )
+        previous_attempt = deploy.validate_owned_attempt(
+            runner,
+            release,
+            product,
+            retry_inventory,
+            deploy.read_env_file(runtime, private=True, label=".env.prep.runtime"),
+            "DEFERRED",
+        )
         retry_bundle = deploy.reconcile_environment(
             release,
             operator_path=operator,
@@ -460,6 +468,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
             source,
             retry_inventory,
             before_39080,
+            previous_attempt,
         )
         deploy.deploy(release, retry_bundle, retry_preparation)
         assert accepted.is_file()
@@ -476,4 +485,248 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     finally:
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release, env_file)
+            runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)
+
+
+@pytest.mark.skipif(
+    not _FULL_ENABLED,
+    reason="explicit full PREP39083 cross-release Docker integration is required",
+)
+def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = f"datariver-prep39083-cross-{uuid4().hex[:10]}"
+    port = int(_free_port())
+    runner = deploy.Runner()
+    current_handoff = runner.output(["git", "rev-parse", "HEAD"])
+    timeout_change = runner.output(
+        [
+            "git",
+            "log",
+            "-S",
+            '"POC_LLM_TIMEOUT_MS": "120000"',
+            "--format=%H",
+            "-1",
+            "--",
+            "deploy/prep39083/env-contract.json",
+        ]
+    )
+    previous_handoff = runner.output(["git", "rev-parse", f"{timeout_change}^"])
+    historical_contract = json.loads(
+        runner.output(
+            [
+                "git",
+                "show",
+                f"{previous_handoff}:deploy/prep39083/env-contract.json",
+            ]
+        )
+    )
+    assert historical_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "15000"
+    current_contract_path = ROOT / "deploy/prep39083/env-contract.json"
+    current_contract = json.loads(current_contract_path.read_text())
+    assert current_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "120000"
+    historical_contract_path = tmp_path / "env-contract.previous.json"
+    historical_contract_path.write_text(json.dumps(historical_contract), encoding="utf-8")
+
+    release_a = deploy.ReleaseIdentity(
+        previous_handoff,
+        "a" * 40,
+        "linux/amd64",
+        port,
+        project,
+    )
+    release_b = deploy.ReleaseIdentity(
+        current_handoff,
+        "b" * 40,
+        "linux/amd64",
+        port,
+        project,
+    )
+    operator = tmp_path / ".env.prep"
+    optional = tmp_path / ".env.prep.optional"
+    runtime = tmp_path / ".env.prep.runtime"
+    accepted = tmp_path / "accepted.json"
+    attempt = tmp_path / "deploy-attempt.json"
+    smoke_failure = tmp_path / "smoke-failure.json"
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "ENV_CONTRACT", historical_contract_path)
+    _private_env(operator, _portable_operator_values(f"http://127.0.0.1:{port}"))
+    bundle_a = deploy.reconcile_environment(
+        release_a,
+        operator_path=operator,
+        optional_path=optional,
+        runtime_path=runtime,
+        random_token=lambda count: "x" * count,
+    )
+    bundle_a = _effective(bundle_a, project)
+    effective_a = dict(bundle_a.effective)
+    effective_a.update(
+        {
+            "POC_PORT": str(port),
+            "POC_PUBLIC_ORIGIN": f"http://127.0.0.1:{port}",
+        }
+    )
+    bundle_a = replace(bundle_a, effective=effective_a)
+    source_a = {"handoff_commit": previous_handoff}
+    before_39080 = deploy.snapshot_39080(runner)
+    inventory_a = deploy.inspect_target_inventory(
+        runner,
+        release_a,
+        runtime_path=runtime,
+        accepted_marker_path=accepted,
+        attempt_receipt_path=attempt,
+    )
+    preparation_a = deploy.DeploymentPreparation(
+        runner,
+        source_a,
+        inventory_a,
+        before_39080,
+    )
+    monkeypatch.setattr(
+        deploy,
+        "run_provider_preflight",
+        lambda _runner, _prefix: {"status": "PASS", "k9_studio": "DEFERRED"},
+    )
+    smoke_attempts = 0
+
+    def controlled_smoke(*_arguments: object, **_keywords: object) -> None:
+        nonlocal smoke_attempts
+        smoke_attempts += 1
+        if smoke_attempts == 1:
+            raise deploy.PrepError(
+                "RUNTIME_SMOKE",
+                "PREP_SMOKE_GENERAL_PROVIDER_FAILED",
+                "Intentional cross-release smoke failure.",
+                "Retry the same command.",
+            )
+
+    monkeypatch.setattr(deploy, "run_smoke", controlled_smoke)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "admin")
+    passwords = iter(
+        (
+            "correct horse battery staple",
+            "correct horse battery staple",
+            "correct horse battery staple",
+        )
+    )
+    monkeypatch.setattr(deploy.getpass, "getpass", lambda _prompt="": next(passwords))
+    cleanup_bundle = bundle_a
+    try:
+        with pytest.raises(deploy.PrepError):
+            deploy.deploy(release_a, bundle_a, preparation_a)
+        v2_receipt = deploy._attempt_receipt(attempt)
+        assert v2_receipt is not None
+        legacy_receipt = dict(v2_receipt)
+        legacy_receipt["contract"] = deploy.ATTEMPT_CONTRACT_V1
+        legacy_receipt["runtime_env_fingerprint"] = deploy.legacy_runtime_env_fingerprint_v1(
+            bundle_a.runtime
+        )
+        legacy_receipt.pop("ownership_fingerprint_contract")
+        legacy_receipt.pop("ownership_fingerprint")
+        deploy._atomic_json(attempt, legacy_receipt)
+
+        # Reproduce the actual observed PREP state: the prior release receipt remains,
+        # while a failed descendant deploy already wrote its new tracked FIXED values.
+        already_updated_runtime = deploy.read_env_file(
+            runtime,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        already_updated_runtime.update(
+            {str(key): str(value) for key, value in current_contract["ownership"]["FIXED"].items()}
+        )
+        already_updated_runtime.update(
+            {
+                "POC_IMAGE_TAG": release_b.product_sha,
+                "POC_SOURCE_COMMIT": release_b.product_sha,
+                "PREP_RELEASE_PRODUCT_SHA": release_b.product_sha,
+                "PREP_RELEASE_EVIDENCE_SHA": release_b.evidence_sha,
+            }
+        )
+        deploy._atomic_private_env(runtime, already_updated_runtime)
+        preserved_secrets = {
+            key: already_updated_runtime[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS
+        }
+
+        monkeypatch.setattr(deploy, "ENV_CONTRACT", current_contract_path)
+        inventory_b = deploy.inspect_target_inventory(
+            runner,
+            release_b,
+            runtime_path=runtime,
+            accepted_marker_path=accepted,
+            attempt_receipt_path=attempt,
+        )
+        assert deploy.classify_target_state(inventory_b) is (
+            deploy.TargetState.EXISTING_OWNED_INCOMPLETE
+        )
+        previous_attempt = deploy.validate_owned_attempt(
+            runner,
+            release_b,
+            current_handoff,
+            inventory_b,
+            already_updated_runtime,
+            "DEFERRED",
+        )
+        bundle_b = deploy.reconcile_environment(
+            release_b,
+            operator_path=operator,
+            optional_path=optional,
+            runtime_path=runtime,
+            target_state=deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+            random_token=lambda _count: pytest.fail("descendant resume must reuse secrets"),
+        )
+        effective_b = dict(bundle_b.effective)
+        for key in (
+            "POC_PLATFORM",
+            "POC_SHARED_NETWORK",
+            "POC_POSTGRES_HOST_PORT",
+            "POC_NEO4J_HTTP_PORT",
+            "POC_REDIS_PORT",
+            "POC_PORT",
+            "POC_PUBLIC_ORIGIN",
+        ):
+            effective_b[key] = bundle_a.effective[key]
+        bundle_b = replace(bundle_b, effective=effective_b)
+        cleanup_bundle = bundle_b
+        preparation_b = deploy.DeploymentPreparation(
+            runner,
+            {"handoff_commit": current_handoff},
+            inventory_b,
+            before_39080,
+            previous_attempt,
+        )
+        deploy.deploy(release_b, bundle_b, preparation_b)
+
+        final_receipt = deploy._attempt_receipt(attempt)
+        assert final_receipt is not None
+        assert final_receipt["contract"] == deploy.ATTEMPT_CONTRACT_V2
+        assert final_receipt["phase"] == "ACCEPTED"
+        assert final_receipt["migrated_from_contract"] == deploy.ATTEMPT_CONTRACT_V1
+        assert final_receipt["resumed_from_product_sha"] == release_a.product_sha
+        final_runtime = deploy.read_env_file(
+            runtime,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        assert final_runtime["POC_LLM_TIMEOUT_MS"] == "120000"
+        assert {
+            key: final_runtime[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS
+        } == preserved_secrets
+        assert smoke_attempts == 2
+        with deploy.private_effective_environment(bundle_b.effective) as env_file:
+            inspected = deploy.inspect_bootstrap(
+                runner,
+                deploy.compose_prefix(release_b, env_file),
+            )
+        assert inspected["administrator_record_count"] == 1
+        assert inspected["user_record_count"] == 2
+        assert [item["name"] for item in inspected["services"]] == ["MCP"]
+    finally:
+        with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
+            prefix = deploy.compose_prefix(release_b, env_file)
             runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)
