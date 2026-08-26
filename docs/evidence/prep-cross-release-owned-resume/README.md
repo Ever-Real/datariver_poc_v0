@@ -57,7 +57,7 @@ smoke-failure retry and the fresh/residual/running/stopped/ambiguous state matri
 
 The OCI is `linux/amd64`, carries revision
 `749f568f4ea0dcddd3e837e76d83fe784985bb5b`, and has image ID
-`sha256:5bddd356aab7fc0ff90334db3b1bd5ec445dac890e08b8bef5a59ddec4e251d1`.
+`sha256:b95c48ba161ced4def7d2c39ffbdb0fd2c1c4c01287c60e6dbab0dd90d9df9d1`.
 
 ## Source gates
 
@@ -88,4 +88,3 @@ cleanup is required.
 Actual PREP deployment: **NOT EXECUTED by the DEV Agent**.
 
 Actual OPS deployment: **NOT EXECUTED by the DEV Agent**.
-
