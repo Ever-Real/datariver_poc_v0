@@ -1,0 +1,87 @@
+{
+  "contract": "DATARIVER_PREP_CROSS_RELEASE_OWNED_RESUME_EVIDENCE_V1",
+  "recorded_at": "2026-08-26T10:14:09Z",
+  "base": {
+    "product_sha": "2dc2b56a0a056bfa6cd6e6985c42fb1418be5b99",
+    "evidence_sha": "8f2baf297557b332e9732a01ee20b23f7f0c29e5",
+    "handoff_sha": "a2f824e5ff8a6186565e58b767e2c01d7f9ee552"
+  },
+  "product_sha": "749f568f4ea0dcddd3e837e76d83fe784985bb5b",
+  "root_cause": {
+    "old_fingerprint_included_release_fixed_values": true,
+    "new_fixed_values_written_before_old_receipt_validation": true,
+    "operator_environment_drift": false
+  },
+  "ownership_v2": {
+    "contract": "DATARIVER_PREP39083_TARGET_OWNERSHIP_V2",
+    "generated_secret_keys": [
+      "NEO4J_PASSWORD",
+      "POC_MCP_SERVICE_TOKEN",
+      "POC_POSTGRES_PASSWORD"
+    ],
+    "release_fixed_values_in_fingerprint": false,
+    "separate_fail_closed_fields": [
+      "project",
+      "platform",
+      "port",
+      "k9_mode",
+      "canonical_volume_identities",
+      "product_ancestry",
+      "handoff_ancestry"
+    ]
+  },
+  "mutation_order": [
+    "READ_PRESERVED_RUNTIME",
+    "INSPECT_RECEIPT_AND_VOLUMES",
+    "PROVE_OWNERSHIP",
+    "PROVE_SOURCE_ANCESTRY",
+    "RECONCILE_DESCENDANT_FIXED_CONFIG",
+    "WRITE_RUNTIME_ATOMICALLY",
+    "MIGRATE_RECEIPT_TO_V2",
+    "RESUME"
+  ],
+  "legacy_receipt": {
+    "v1_supported": true,
+    "historical_contract_source": "receipt handoff git object",
+    "supported_historical_contracts": [
+      "DATARIVER_PREP39083_ENV_V3",
+      "DATARIVER_PREP39083_ENV_V4"
+    ],
+    "already_updated_runtime_fixed_values_supported": true,
+    "manual_restore_required": false
+  },
+  "negative_fail_closed": {
+    "generated_secret_changed": "PASS",
+    "volume_identity_changed": "PASS",
+    "project_changed": "PASS",
+    "platform_changed": "PASS",
+    "port_changed": "PASS",
+    "invalid_ancestry": "PASS",
+    "malformed_receipt": "PASS",
+    "unauthorized_k9_mode_change": "PASS"
+  },
+  "verification": {
+    "prep_ownership_handoff": "60/60 PASS",
+    "exact_cross_release_docker": "1/1 PASS (112.39s)",
+    "same_release_smoke_failed_resume": "PASS",
+    "fresh_residual_running_stopped_ambiguous_matrix": "PASS",
+    "no_duplicate_administrator_user_or_mcp_identity": "PASS",
+    "generated_secret_regeneration": "NONE",
+    "persistent_volume_deletion": "NONE",
+    "node_product_server": "144/144 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "strict_mypy": "PASS (588 files)",
+    "static": "PASS",
+    "exact_oci_architecture": "linux/amd64",
+    "exact_oci_revision": "749f568f4ea0dcddd3e837e76d83fe784985bb5b",
+    "exact_oci_image_id": "sha256:5bddd356aab7fc0ff90334db3b1bd5ec445dac890e08b8bef5a59ddec4e251d1"
+  },
+  "router_semantics_changed": false,
+  "router_60_boundary_8_rerun": "NOT_REQUIRED",
+  "one_command": "./scripts/prep39083 deploy",
+  "existing_owned_smoke_failed_resume": "COMPATIBLE",
+  "operator_environment_change_required": false,
+  "manual_cleanup_required": false,
+  "actual_prep": "NOT_EXECUTED_BY_DEV_AGENT",
+  "actual_ops": "NOT_EXECUTED_BY_DEV_AGENT"
+}
