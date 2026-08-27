@@ -61,6 +61,7 @@ COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs
 COPY frontend/poc-change-history-scheduler.mjs ./poc-change-history-scheduler.mjs
 COPY frontend/poc-mcl-capture.mjs ./poc-mcl-capture.mjs
+COPY frontend/poc-mcl-discovery.mjs ./poc-mcl-discovery.mjs
 COPY frontend/poc-k9-managed-graphs.mjs ./poc-k9-managed-graphs.mjs
 COPY frontend/poc-k9-scheduler.mjs ./poc-k9-scheduler.mjs
 COPY frontend/poc-knowledge-k9-contracts.mjs ./poc-knowledge-k9-contracts.mjs
