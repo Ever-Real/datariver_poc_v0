@@ -5,6 +5,7 @@ import io
 import json
 import sys
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -48,6 +49,98 @@ def _load_dispatch_helper(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     dynamic_auth.quality_workspace_id = lambda: "00000000-0000-4000-8000-000000000001"
     monkeypatch.setitem(sys.modules, "datariver_quality_auth", auth)
     return _load_module("datariver_quality_dispatch")
+
+
+def _airflow_decorator_surface() -> tuple[
+    Callable[..., Callable[[Callable[..., object]], Callable[..., object]]],
+    Callable[..., Callable[[Callable[..., object]], Callable[..., object]]],
+    Callable[[], dict[str, str]],
+    list[dict[str, object]],
+]:
+    parsed_dags: list[dict[str, object]] = []
+
+    def dag(
+        **configuration: object,
+    ) -> Callable[[Callable[..., object]], Callable[..., object]]:
+        def decorate(function: Callable[..., object]) -> Callable[..., object]:
+            def parse() -> object:
+                function()
+                parsed_dags.append(configuration)
+                return object()
+
+            return parse
+
+        return decorate
+
+    def task(
+        **_configuration: object,
+    ) -> Callable[[Callable[..., object]], Callable[..., object]]:
+        def decorate(_function: Callable[..., object]) -> Callable[..., object]:
+            return lambda: object()
+
+        return decorate
+
+    def get_current_context() -> dict[str, str]:
+        return {"run_id": "scheduled__compatibility-test"}
+
+    return dag, task, get_current_context, parsed_dags
+
+
+def _install_quality_dispatch_helper_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    helper = ModuleType("datariver_quality_dispatch")
+    cast(Any, helper).dispatch_due_quality_runs = lambda *, call_id: {"call_id": call_id}
+    monkeypatch.setitem(sys.modules, "datariver_quality_dispatch", helper)
+
+
+def test_quality_dispatch_imports_and_parses_with_airflow_2_10_3_public_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dag, task, get_current_context, parsed_dags = _airflow_decorator_surface()
+    airflow = ModuleType("airflow")
+    airflow.__path__ = []
+    cast(Any, airflow).__version__ = "2.10.3"
+    decorators = ModuleType("airflow.decorators")
+    cast(Any, decorators).dag = dag
+    cast(Any, decorators).task = task
+    operators = ModuleType("airflow.operators")
+    operators.__path__ = []
+    python_operator = ModuleType("airflow.operators.python")
+    cast(Any, python_operator).get_current_context = get_current_context
+    monkeypatch.setitem(sys.modules, "airflow", airflow)
+    monkeypatch.delitem(sys.modules, "airflow.sdk", raising=False)
+    monkeypatch.setitem(sys.modules, "airflow.decorators", decorators)
+    monkeypatch.setitem(sys.modules, "airflow.operators", operators)
+    monkeypatch.setitem(sys.modules, "airflow.operators.python", python_operator)
+    _install_quality_dispatch_helper_stub(monkeypatch)
+
+    _load_module("quality_dispatch")
+
+    assert len(parsed_dags) == 1
+    assert parsed_dags[0]["dag_id"] == "datariver_quality_dispatch"
+    assert parsed_dags[0]["schedule"] is None
+
+
+def test_quality_dispatch_keeps_airflow_3_sdk_import_and_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dag, task, get_current_context, parsed_dags = _airflow_decorator_surface()
+    airflow = ModuleType("airflow")
+    airflow.__path__ = []
+    cast(Any, airflow).__version__ = "3.3.0"
+    sdk = ModuleType("airflow.sdk")
+    cast(Any, sdk).dag = dag
+    cast(Any, sdk).task = task
+    cast(Any, sdk).get_current_context = get_current_context
+    monkeypatch.setitem(sys.modules, "airflow", airflow)
+    monkeypatch.setitem(sys.modules, "airflow.sdk", sdk)
+    monkeypatch.delitem(sys.modules, "airflow.decorators", raising=False)
+    monkeypatch.delitem(sys.modules, "airflow.operators.python", raising=False)
+    _install_quality_dispatch_helper_stub(monkeypatch)
+
+    _load_module("quality_dispatch")
+
+    assert len(parsed_dags) == 1
+    assert parsed_dags[0]["dag_id"] == "datariver_quality_dispatch"
 
 
 def test_quality_auth_uses_only_the_dedicated_client_and_cache(
