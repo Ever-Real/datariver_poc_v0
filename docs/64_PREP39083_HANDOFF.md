@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  79efaf7523e96c8ae15690f6a9c1a1eca9ffc426
-Evidence 51cbf008bd980e68f3fc05fd125fb7f9cc5821d5
+Product  2a26dc43f1bac3242811c3803c80dc845884bc80
+Evidence b22ee182ec79795637e8f555f61b38d3d4e4667e
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
