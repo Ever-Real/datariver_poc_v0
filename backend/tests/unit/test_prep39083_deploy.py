@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts"
 MODULE_PATH = SCRIPTS / "prep39083_deploy.py"
+WILDCARD_BIND_HOST = "0.0.0.0"  # noqa: S104 - explicit contract test value
 
 
 def _load_module() -> ModuleType:
@@ -319,6 +320,77 @@ def test_proxy_is_injected_once_with_lowercase_and_required_no_proxy(tmp_path: P
     assert bundle.effective["POC_RUNTIME_NO_PROXY"] == ""
 
 
+def test_child_environment_ignores_polluted_parent_product_and_compose_values() -> None:
+    polluted = {
+        "PATH": "/approved/bin",
+        "HOME": "/approved/home",
+        "DOCKER_HOST": "unix:///approved/docker.sock",
+        "POC_IMAGE_TAG": "old-product",
+        "POC_SOURCE_COMMIT": "old-source",
+        "PREP_RELEASE_PRODUCT_SHA": "old-release",
+        "POC_BIND_HOST": "127.0.0.1",
+        "POC_STATE_BIND_HOST": WILDCARD_BIND_HOST,
+        "POC_PORT": "39999",
+        "POC_PLATFORM": "linux/arm64",
+        "DATAHUB_GMS_URL": "http://wrong.invalid",
+        "DATAHUB_GMS_TOKEN": "wrong-token",
+        "LLM_CHAT_URL": "http://wrong-chat.invalid",
+        "LLM_EMBEDDING_URL": "http://wrong-embedding.invalid",
+        "LLM_RERANKER_URL": "http://wrong-reranker.invalid",
+        "POC_MCL_KAFKA_BROKERS": "wrong-broker:9092",
+        "AIRFLOW_URL": "http://wrong-airflow.invalid",
+        "MINIO_URL": "http://wrong-minio.invalid",
+        "S3_BUCKET_EXPORTS": "wrong-bucket",
+        "GRAFANA_EMBED_BASE_URL": "http://wrong-grafana.invalid",
+        "POSTGRES_PASSWORD": "wrong-postgres-secret",
+        "NEO4J_AUTH": "wrong-neo4j-secret",
+        "REDIS_URL": "redis://wrong.invalid",
+        "COMPOSE_PROJECT_NAME": "wrong-project",
+        "COMPOSE_FILE": "/wrong/compose.yaml",
+        "COMPOSE_ENV_FILES": "/wrong/environment",
+        "DOCKER_DEFAULT_PLATFORM": "linux/arm64",
+    }
+    canonical = {
+        "POC_IMAGE_TAG": "a" * 40,
+        "POC_SOURCE_COMMIT": "a" * 40,
+        "PREP_RELEASE_PRODUCT_SHA": "a" * 40,
+        "POC_BIND_HOST": WILDCARD_BIND_HOST,
+        "POC_STATE_BIND_HOST": "127.0.0.1",
+        "POC_PORT": "39083",
+        "POC_PLATFORM": "linux/amd64",
+        "DATAHUB_GMS_URL": "http://right.invalid",
+        "DATAHUB_GMS_TOKEN": "right-token",
+        "LLM_CHAT_URL": "http://right-chat.invalid",
+        "LLM_EMBEDDING_URL": "http://right-embedding.invalid",
+        "LLM_RERANKER_URL": "http://right-reranker.invalid",
+        "POC_MCL_KAFKA_BROKERS": "right-broker:9092",
+        "COMPOSE_PROJECT_NAME": "datariver-prep39083",
+    }
+
+    child = deploy.child_environment(canonical, parent=polluted)
+
+    assert {key: child[key] for key in canonical} == canonical
+    assert child["PATH"] == polluted["PATH"]
+    assert child["HOME"] == polluted["HOME"]
+    assert child["DOCKER_HOST"] == polluted["DOCKER_HOST"]
+    assert "COMPOSE_FILE" not in child
+    assert "COMPOSE_ENV_FILES" not in child
+    assert "DOCKER_DEFAULT_PLATFORM" not in child
+    assert (
+        not {
+            "AIRFLOW_URL",
+            "MINIO_URL",
+            "S3_BUCKET_EXPORTS",
+            "GRAFANA_EMBED_BASE_URL",
+            "POSTGRES_PASSWORD",
+            "NEO4J_AUTH",
+            "REDIS_URL",
+        }
+        & child.keys()
+    )
+    assert deploy.Runner(environment={}).environment == {}
+
+
 def test_runtime_proxy_is_explicit_and_has_its_own_no_proxy_contract(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     values = _operator_values() | {
@@ -353,6 +425,92 @@ def test_image_reference_is_resolved_without_shell_state() -> None:
         deploy.resolve_web_image({"services": {"web": {"image": ""}}})
     assert captured.value.code == "PREP_WEB_IMAGE_REF_EMPTY"
     assert "IMAGE_REF" in captured.value.action
+
+
+def _resolved_release_compose() -> tuple[dict[str, object], dict[str, str]]:
+    effective = {
+        "POC_NODE_IMAGE": "node:22.19.0-bookworm-slim",
+        "HTTP_PROXY": "",
+        "HTTPS_PROXY": "",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "POC_BIND_HOST": WILDCARD_BIND_HOST,
+        "POC_STATE_BIND_HOST": "127.0.0.1",
+        "POC_POSTGRES_HOST_PORT": "25432",
+        "POC_NEO4J_HTTP_PORT": "27475",
+        "POC_REDIS_PORT": "26379",
+        "DATAHUB_GMS_URL": "http://right.invalid",
+        "DATAHUB_GMS_TOKEN": "right-token",
+    }
+
+    def port(host: str, target: int, published: str) -> dict[str, object]:
+        return {"host_ip": host, "target": target, "published": published}
+
+    config: dict[str, object] = {
+        "name": "datariver-prep39083",
+        "services": {
+            "web": {
+                "image": f"datariver-poc:{'a' * 40}",
+                "platform": "linux/amd64",
+                "build": {
+                    "args": {
+                        "POC_SOURCE_COMMIT": "a" * 40,
+                        "NODE_IMAGE": effective["POC_NODE_IMAGE"],
+                        "HTTP_PROXY": "",
+                        "HTTPS_PROXY": "",
+                        "NO_PROXY": effective["NO_PROXY"],
+                    }
+                },
+                "ports": [port(WILDCARD_BIND_HOST, 8080, "39083")],
+                "environment": {
+                    "DATAHUB_GMS_URL": effective["DATAHUB_GMS_URL"],
+                    "DATAHUB_GMS_TOKEN": effective["DATAHUB_GMS_TOKEN"],
+                },
+            },
+            "pgvector": {"ports": [port("127.0.0.1", 5432, "25432")]},
+            "neo4j": {"ports": [port("127.0.0.1", 7474, "27475")]},
+            "redis": {"ports": [port("127.0.0.1", 6379, "26379")]},
+        },
+    }
+    return config, effective
+
+
+def test_resolved_compose_release_contract_is_exact_and_sanitized() -> None:
+    config, effective = _resolved_release_compose()
+    deploy.validate_compose_release_contract(config, _release(), effective)
+
+    services = cast(dict[str, object], config["services"])
+    web = cast(dict[str, object], services["web"])
+    environment = cast(dict[str, str], web["environment"])
+    environment["DATAHUB_GMS_TOKEN"] = "ambient-stale-token"
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_compose_release_contract(config, _release(), effective)
+    assert captured.value.code == "PREP_COMPOSE_ENVIRONMENT_DRIFT"
+    assert "DATAHUB" not in captured.value.reason
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("name",), "wrong-project"),
+        (("services", "web", "image"), "datariver-poc:old"),
+        (("services", "web", "platform"), "linux/arm64"),
+        (("services", "web", "ports", 0, "host_ip"), "127.0.0.1"),
+        (("services", "pgvector", "ports", 0, "host_ip"), WILDCARD_BIND_HOST),
+    ),
+)
+def test_resolved_compose_release_contract_rejects_identity_and_binding_drift(
+    path: tuple[object, ...],
+    value: str,
+) -> None:
+    config, effective = _resolved_release_compose()
+    current: object = config
+    for key in path[:-1]:
+        current = current[key]  # type: ignore[index]
+    current[path[-1]] = value  # type: ignore[index]
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_compose_release_contract(config, _release(), effective)
+    assert captured.value.code == "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH"
 
 
 def _web_image_document(
@@ -1204,8 +1362,53 @@ def test_deploy_wrapper_preserves_bounded_inventory_smoke_classification(
             k9_mode="DEFERRED",
         )
 
-    assert captured.value.step == "RUNTIME_SMOKE"
+    assert captured.value.step == "AUTHENTICATED_SMOKE"
     assert captured.value.code == classification
+
+
+@pytest.mark.parametrize(
+    ("classification", "step"),
+    (
+        ("PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED", "K9_INITIAL_REFRESH"),
+        ("PREP_SMOKE_SEMANTIC_INDEX_NOT_READY", "K9_INITIAL_REFRESH"),
+        ("PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED", "MCL_INITIAL_CAPTURE"),
+        ("PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED", "MCL_INITIAL_CAPTURE"),
+        ("PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED", "AUTHENTICATED_SMOKE"),
+    ),
+)
+def test_deploy_wrapper_projects_precise_post_preflight_smoke_stage(
+    classification: str,
+    step: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps({"classification": classification}),
+                encoding="utf-8",
+            )
+            raise deploy.CommandFailure(
+                ["node"],
+                subprocess.CompletedProcess(["node"], 2, "", ""),
+            )
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            k9_mode="REQUIRED",
+        )
+    assert captured.value.code == classification
+    assert captured.value.step == step
 
 
 def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
@@ -1323,8 +1526,11 @@ def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
         ("STATE_SERVICES", "PREP_STATE_SERVICES_FAILED"),
         ("SCHEMA", "PREP_SCHEMA_INITIALIZATION_FAILED"),
         ("BOOTSTRAP", "PREP_BOOTSTRAP_RECONCILIATION_FAILED"),
+        ("K9_INITIAL_REFRESH", "PREP_K9_INITIAL_REFRESH_FAILED"),
         ("WEB_START", "PREP_WEB_START_FAILED"),
-        ("AUTHENTICATED_SMOKE", "PREP_ACCEPTANCE_RECEIPT_WRITE_FAILED"),
+        ("MCL_INITIAL_CAPTURE", "PREP_MCL_INITIAL_CAPTURE_FAILED"),
+        ("AUTHENTICATED_SMOKE", "PREP_AUTHENTICATED_SMOKE_FAILED"),
+        ("ACCEPTED_RECEIPT", "PREP_ACCEPTANCE_RECEIPT_WRITE_FAILED"),
     ),
 )
 def test_known_post_preflight_gates_replace_generic_deployment_failures(

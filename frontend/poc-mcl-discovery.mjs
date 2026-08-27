@@ -8,6 +8,13 @@ import { createProviderTransport, joinProviderUrl } from './poc-provider-transpo
 const { Kafka, logLevel } = KafkaJs
 const VERSIONED_MCL_TOPIC = /(?:^|[._-])MetadataChangeLog_Versioned_v1$/u
 const DISCOVERY_TIMEOUT_MS = 60_000
+const KAFKA_CONNECTION_TIMEOUT_MS = 10_000
+const KAFKA_REQUEST_TIMEOUT_MS = 30_000
+const KAFKA_DISCOVERY_RETRY = Object.freeze({
+  initialRetryTime: 300,
+  maxRetryTime: 5_000,
+  retries: 2,
+})
 const KAFKA_SASL_MECHANISMS = new Set(['plain', 'scram-sha-256', 'scram-sha-512'])
 
 function required(value, name) {
@@ -239,6 +246,9 @@ export async function discoverPocMclSource({
       kafkaClient = kafka ?? createKafka({
         ...connection,
         clientId: environment.POC_MCL_KAFKA_CLIENT_ID?.trim() || 'datariver-prep39083-mcl-v1',
+        connectionTimeout: KAFKA_CONNECTION_TIMEOUT_MS,
+        requestTimeout: KAFKA_REQUEST_TIMEOUT_MS,
+        retry: KAFKA_DISCOVERY_RETRY,
         logLevel: logLevel.NOTHING,
       })
     } catch (error) {

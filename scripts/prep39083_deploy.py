@@ -68,6 +68,46 @@ SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES = frozenset(
         "PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED",
     },
 )
+HOST_SUBPROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "XDG_RUNTIME_DIR",
+    }
+)
+SUPPORTED_K9_SMOKE_FAILURE_CODES = frozenset(
+    {
+        "PREP_SMOKE_K9_NOT_READY",
+        "PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED",
+        "PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED",
+        "PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED",
+        "PREP_SMOKE_K9_PROMOTION_FAILED",
+        "PREP_SMOKE_K9_REFRESH_FAILED",
+        "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY",
+    }
+)
+SUPPORTED_MCL_SMOKE_FAILURE_CODES = frozenset(
+    {
+        "PREP_SMOKE_MCL_SOURCE_FAILED",
+        "PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED",
+        "PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED",
+        "PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED",
+    }
+)
 
 
 class PrepError(RuntimeError):
@@ -98,7 +138,7 @@ class CommandFailure(RuntimeError):
 
 class Runner:
     def __init__(self, *, environment: Mapping[str, str] | None = None) -> None:
-        self.environment = dict(environment or os.environ)
+        self.environment = dict(os.environ if environment is None else environment)
         self.step = 0
 
     def note(self, message: str) -> None:
@@ -797,6 +837,7 @@ def reconcile_environment(
     effective.update(runtime)
     for key in operator_optional:
         effective.setdefault(key, "")
+    effective["POC_MCL_KAFKA_SSL"] = effective.get("POC_MCL_KAFKA_SSL", "").strip() or "false"
     no_proxy = merge_no_proxy(
         effective.get("NO_PROXY", ""),
         tuple(str(value) for value in contract.get("required_no_proxy", ())),
@@ -883,10 +924,16 @@ def private_effective_environment(values: Mapping[str, str]) -> Iterator[Path]:
             path.unlink()
 
 
-def child_environment(values: Mapping[str, str]) -> dict[str, str]:
-    environment = dict(os.environ)
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"):
-        environment[key] = values.get(key, "")
+def child_environment(
+    values: Mapping[str, str],
+    *,
+    parent: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    inherited = os.environ if parent is None else parent
+    environment = {
+        key: inherited[key] for key in HOST_SUBPROCESS_ENVIRONMENT_KEYS if key in inherited
+    }
+    environment.update({str(key): str(value) for key, value in values.items()})
     return environment
 
 
@@ -915,6 +962,117 @@ def resolve_web_image(config: Mapping[str, Any]) -> str:
             "Restore release.json and canonical Compose; no IMAGE_REF shell variable is used.",
         )
     return image.strip()
+
+
+def _compose_service(config: Mapping[str, Any], service: str) -> Mapping[str, Any]:
+    services = config.get("services")
+    item = services.get(service) if isinstance(services, dict) else None
+    if not isinstance(item, dict):
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH",
+            f"Compose omitted the canonical {service} service contract.",
+            "Restore the tracked Compose and release environment contracts.",
+        )
+    return item
+
+
+def _compose_port_binding(
+    config: Mapping[str, Any],
+    service: str,
+    target: int,
+) -> Mapping[str, Any]:
+    ports = _compose_service(config, service).get("ports")
+    matches = (
+        [item for item in ports if isinstance(item, dict) and item.get("target") == target]
+        if isinstance(ports, list)
+        else []
+    )
+    if len(matches) != 1:
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH",
+            f"Compose {service} has no unique canonical host-port binding.",
+            "Restore the tracked Compose and release environment contracts.",
+        )
+    return matches[0]
+
+
+def validate_compose_release_contract(
+    config: Mapping[str, Any],
+    release: ReleaseIdentity,
+    effective: Mapping[str, str],
+) -> None:
+    expected_image = f"datariver-poc:{release.product_sha}"
+    web = _compose_service(config, "web")
+    build = web.get("build")
+    build_args = build.get("args") if isinstance(build, dict) else None
+    expected_build_args = {
+        "POC_SOURCE_COMMIT": release.product_sha,
+        "NODE_IMAGE": effective.get("POC_NODE_IMAGE", ""),
+        "HTTP_PROXY": effective.get("HTTP_PROXY", ""),
+        "HTTPS_PROXY": effective.get("HTTPS_PROXY", ""),
+        "NO_PROXY": effective.get("NO_PROXY", ""),
+    }
+    if (
+        config.get("name") != release.project
+        or resolve_web_image(config) != expected_image
+        or web.get("platform") != release.platform
+        or not isinstance(build_args, dict)
+        or any(str(build_args.get(key, "")) != value for key, value in expected_build_args.items())
+    ):
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH",
+            "Compose project, Product image, platform, or build identity differs "
+            "from release.json.",
+            "Use the tracked environment files; parent-shell Product values are not supported.",
+        )
+
+    expected_ports = (
+        ("web", 8080, effective.get("POC_BIND_HOST", ""), str(release.port)),
+        (
+            "pgvector",
+            5432,
+            effective.get("POC_STATE_BIND_HOST", ""),
+            effective.get("POC_POSTGRES_HOST_PORT", ""),
+        ),
+        (
+            "neo4j",
+            7474,
+            effective.get("POC_STATE_BIND_HOST", ""),
+            effective.get("POC_NEO4J_HTTP_PORT", ""),
+        ),
+        (
+            "redis",
+            6379,
+            effective.get("POC_STATE_BIND_HOST", ""),
+            effective.get("POC_REDIS_PORT", ""),
+        ),
+    )
+    for service, target, host, published in expected_ports:
+        binding = _compose_port_binding(config, service, target)
+        if binding.get("host_ip") != host or str(binding.get("published", "")) != published:
+            raise PrepError(
+                "COMPOSE_CONFIG",
+                "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH",
+                f"Compose {service} host binding differs from the tracked PREP contract.",
+                "Restore the tracked fixed port and bind-host values; do not use shell overrides.",
+            )
+
+    web_environment = _service_environment(config, "web")
+    mismatched_keys = sorted(
+        key
+        for key, expected in effective.items()
+        if key in web_environment and web_environment[key] != expected
+    )
+    if mismatched_keys:
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_ENVIRONMENT_DRIFT",
+            "Compose Product/provider environment differs from the canonical effective contract.",
+            "Remove no files; rerun from tracked source because shell overrides are ignored.",
+        )
 
 
 def _service_environment(config: Mapping[str, Any], service: str) -> Mapping[str, str]:
@@ -2186,8 +2344,11 @@ def run_smoke(
             except PrepError:
                 failure = {}
             code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
-            if code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES and not re.fullmatch(
-                r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code
+            if (
+                code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES
+                and code not in SUPPORTED_K9_SMOKE_FAILURE_CODES
+                and code not in SUPPORTED_MCL_SMOKE_FAILURE_CODES
+                and not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code)
             ):
                 code = "PREP_SMOKE_UNKNOWN_FAILED"
             if (
@@ -2201,8 +2362,15 @@ def run_smoke(
                 else "Correct the classified provider/readiness gate and rerun the same deploy "
                 "command; do not reset persistent state."
             )
+            smoke_step = (
+                "K9_INITIAL_REFRESH"
+                if "_K9_" in code or code == "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY"
+                else "MCL_INITIAL_CAPTURE"
+                if "_MCL_" in code
+                else "AUTHENTICATED_SMOKE"
+            )
             raise PrepError(
-                "RUNTIME_SMOKE",
+                smoke_step,
                 code,
                 "Authenticated PREP smoke did not complete at its classified stage.",
                 action,
@@ -2261,6 +2429,7 @@ def deploy(
     with private_effective_environment(bundle.effective) as env_file:
         prefix = compose_prefix(release, env_file)
         config = compose_config(runner, prefix)
+        validate_compose_release_contract(config, release, bundle.effective)
         image = resolve_web_image(config)
         volume_identities = compose_volume_identities(config)
         runner.note("Build exact linux/amd64 Product image with bounded proxy configuration")
@@ -2328,6 +2497,7 @@ def deploy(
     with private_effective_environment(bundle.effective) as env_file:
         prefix = compose_prefix(release, env_file)
         config = compose_config(runner, prefix)
+        validate_compose_release_contract(config, release, bundle.effective)
         final_volumes = compose_volume_identities(config)
         if final_volumes != volume_identities:
             _ambiguous_state(
@@ -2427,7 +2597,12 @@ def deploy(
         runner.note("Run authenticated provider, managed-graph and GENERAL smoke")
         attempt = advance_attempt_phase(attempt, "SMOKE_RUNNING")
         try:
-            run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
+            with typed_deploy_gate(
+                "AUTHENTICATED_SMOKE",
+                "PREP_AUTHENTICATED_SMOKE_FAILED",
+                "Authenticated PREP smoke failed outside a more precise Product classification.",
+            ):
+                run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
         except PrepError:
             advance_attempt_phase(attempt, "SMOKE_FAILED")
             raise
@@ -2440,7 +2615,7 @@ def deploy(
                 "Stop and investigate; do not promote this PREP result.",
             )
         with typed_deploy_gate(
-            "AUTHENTICATED_SMOKE",
+            "ACCEPTED_RECEIPT",
             "PREP_ACCEPTANCE_RECEIPT_WRITE_FAILED",
             "Authenticated gates passed but accepted deployment evidence was not "
             "recorded atomically.",
@@ -2487,6 +2662,7 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     source = verify_source_identity(release)
     with private_effective_environment(bundle.effective) as env_file:
         config = compose_config(runner, compose_prefix(release, env_file))
+        validate_compose_release_contract(config, release, bundle.effective)
         prefix = compose_prefix(release, env_file)
         image = resolve_web_image(config)
         runner.note("Prepare or reuse the exact read-only doctor Product image")

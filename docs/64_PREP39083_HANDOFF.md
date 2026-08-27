@@ -69,6 +69,16 @@ handles a clean host, an accepted running or stopped stack, an exact-release rer
 provable failed first install. A failed smoke is resumed by the same command without deleting or
 resetting its owned state. It never runs `down -v`, deletes a volume or widens authorization.
 
+The interactive parent shell is not a Product configuration source. Child Git/Docker/Compose/Node
+commands inherit only the reviewed host execution keys (`PATH`, bounded user/temp/locale keys, and
+Docker engine/context/TLS configuration) plus the canonical effective environment rendered from
+the tracked contract, target-owned files, and `release.json`. Ambient `POC_*`, `DATAHUB_*`,
+`LLM_*`, `AIRFLOW_*`, `MINIO_*`, `S3_*`, `GRAFANA_*`, database, `COMPOSE_*`, and
+`DOCKER_DEFAULT_PLATFORM` values are ignored. Compose is invoked with an explicit project, file,
+and private env file. Before either doctor or deploy builds an image, the resolved project, exact
+Product tag/revision, linux/amd64 platform, Web/state port bindings, build arguments, and canonical
+provider environment are verified without printing their values.
+
 If no administrator exists, the same command prompts for username, hidden password and confirmation.
 If an administrator exists, it prompts only for that administrator's hidden smoke password. The
 password exists only in memory and one short-lived mode-0600 file and is never written to an env,
@@ -208,6 +218,12 @@ creation and the pinned Node/module launch are respectively
 `PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED`. Only a successfully launched child that emits no valid
 matrix contract is `PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID`; raw Docker/provider stderr is
 not printed.
+
+Kafka bootstrap TCP reachability alone is not readiness. MCL discovery uses bounded connection,
+request, and retry budgets. Failure while resolving cluster metadata after bootstrap—including an
+advertised broker address that PREP cannot reach—is typed as the Kafka cluster/metadata stage;
+topic, Registry, subject, schema, and provider-version failures remain separate. DataRiver neither
+rewrites DataHub `advertised.listeners` nor deploys another Kafka.
 
 ### Database credential mismatch
 

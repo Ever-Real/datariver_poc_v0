@@ -50,8 +50,12 @@ const environment = {
 
 test('discovers cluster, exact versioned MCL topic, internal Registry schema and source identity', async () => {
   const provider = transport()
+  let kafkaOptions
   const result = await discoverPocMclSource({
-    environment, providerTransport: provider, kafka: kafka(), clock: () => new Date('2026-08-27T00:00:00Z'),
+    environment,
+    providerTransport: provider,
+    createKafka(options) { kafkaOptions = options; return kafka() },
+    clock: () => new Date('2026-08-27T00:00:00Z'),
   })
   assert.equal(result.captureConfig.topic, 'MetadataChangeLog_Versioned_v1')
   assert.equal(result.captureConfig.providerVersion, '1.2.3')
@@ -60,6 +64,9 @@ test('discovers cluster, exact versioned MCL topic, internal Registry schema and
   assert.match(result.receipt.kafka_cluster_id_hash, /^[a-f0-9]{64}$/)
   assert.equal(JSON.stringify(result.receipt).includes('datahub-secret'), false)
   assert.equal(provider.requests.some((item) => item.authorization === 'Bearer datahub-secret'), true)
+  assert.equal(kafkaOptions.connectionTimeout, 10_000)
+  assert.equal(kafkaOptions.requestTimeout, 30_000)
+  assert.deepEqual(kafkaOptions.retry, { initialRetryTime: 300, maxRetryTime: 5_000, retries: 2 })
 })
 
 test('rejects missing or ambiguous supported versioned MCL topics', async () => {

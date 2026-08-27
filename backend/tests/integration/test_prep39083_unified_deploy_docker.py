@@ -19,6 +19,31 @@ SCRIPTS = ROOT / "scripts"
 MODULE_PATH = SCRIPTS / "prep39083_deploy.py"
 _ENABLED = os.getenv("DATARIVER_PREP39083_DOCKER_INTEGRATION") == "1"
 _FULL_ENABLED = os.getenv("DATARIVER_PREP39083_FULL_DOCKER_INTEGRATION") == "1"
+WILDCARD_BIND_HOST = "0.0.0.0"  # noqa: S104 - explicit polluted/canonical test value
+POLLUTED_PARENT_ENVIRONMENT = {
+    "POC_IMAGE_TAG": "0" * 40,
+    "POC_SOURCE_COMMIT": "0" * 40,
+    "PREP_RELEASE_PRODUCT_SHA": "0" * 40,
+    "POC_BIND_HOST": "127.0.0.1",
+    "POC_STATE_BIND_HOST": WILDCARD_BIND_HOST,
+    "POC_PORT": "39999",
+    "POC_PLATFORM": "linux/arm64",
+    "DATAHUB_GMS_URL": "http://wrong.invalid",
+    "DATAHUB_GMS_TOKEN": "wrong-token",
+    "LLM_CHAT_URL": "http://wrong-chat.invalid",
+    "LLM_EMBEDDING_URL": "http://wrong-embedding.invalid",
+    "LLM_RERANKER_URL": "http://wrong-reranker.invalid",
+    "POC_MCL_KAFKA_BROKERS": "wrong-broker:9092",
+    "COMPOSE_PROJECT_NAME": "wrong-project",
+    "COMPOSE_FILE": "/wrong/compose.yaml",
+    "COMPOSE_ENV_FILES": "/wrong/environment",
+    "DOCKER_DEFAULT_PLATFORM": "linux/arm64",
+}
+
+
+def _pollute_parent_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in POLLUTED_PARENT_ENVIRONMENT.items():
+        monkeypatch.setenv(key, value)
 
 
 def _load_module() -> ModuleType:
@@ -126,7 +151,9 @@ def _marker(path: Path, release: Any) -> None:
 )
 def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_state(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pollute_parent_environment(monkeypatch)
     project = f"datariver-prep39083-doctor-{uuid4().hex[:10]}"
     product = f"{uuid4().hex}{uuid4().hex[:8]}"
     release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", 39083, project)
@@ -144,12 +171,20 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
     )
     assert not runtime.exists()
     bundle = _effective(bundle, project)
+    bundle = replace(bundle, effective={**bundle.effective, "POC_PORT": "39083"})
     runner = deploy.Runner(environment=deploy.child_environment(bundle.effective))
+    assert runner.environment["POC_IMAGE_TAG"] == product
+    assert runner.environment["POC_BIND_HOST"] == WILDCARD_BIND_HOST
+    assert runner.environment["POC_STATE_BIND_HOST"] == "127.0.0.1"
+    assert "COMPOSE_FILE" not in runner.environment
+    assert "COMPOSE_ENV_FILES" not in runner.environment
+    assert "DOCKER_DEFAULT_PLATFORM" not in runner.environment
     image = f"datariver-poc:{product}"
     try:
         with deploy.private_effective_environment(bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release, env_file)
             config = deploy.compose_config(runner, prefix)
+            deploy.validate_compose_release_contract(config, release, bundle.effective)
             assert deploy.resolve_web_image(config) == image
             assert runner.run(["docker", "image", "inspect", image], check=False).returncode != 0
             assert (
@@ -200,6 +235,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pollute_parent_environment(monkeypatch)
     project = f"datariver-prep39083-it-{uuid4().hex[:10]}"
     assert project.startswith("datariver-prep39083-it-")
     release = deploy.ReleaseIdentity("a" * 40, "b" * 40, "linux/amd64", 39083, project)
@@ -210,7 +246,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
     attempt_path = tmp_path / "deploy-attempt.json"
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
     _private_env(operator, _operator_values())
-    runner = deploy.Runner()
+    runner = deploy.Runner(environment=deploy.child_environment({}))
 
     fresh = deploy.inspect_target_inventory(
         runner,
@@ -228,6 +264,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
         random_token=lambda count: "o" * count,
     )
     old_bundle = _effective(old_bundle, project)
+    runner.environment = deploy.child_environment(old_bundle.effective)
     cleanup_bundle = old_bundle
     try:
         with deploy.private_effective_environment(old_bundle.effective) as env_file:
@@ -254,6 +291,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
             random_token=lambda _count: pytest.fail("inspection must not generate secrets"),
         )
         inspection = _effective(inspection, project)
+        runner.environment = deploy.child_environment(inspection.effective)
         assert (
             deploy.prove_failed_install_recoverable(
                 runner,
@@ -273,6 +311,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
             random_token=lambda count: "n" * count,
         )
         recovered = _effective(recovered, project)
+        runner.environment = deploy.child_environment(recovered.effective)
         cleanup_bundle = recovered
         assert stat.S_IMODE(runtime.stat().st_mode) == 0o600
         with deploy.private_effective_environment(recovered.effective) as env_file:
@@ -399,6 +438,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
             random_token=lambda _count: pytest.fail("preserved secret must be reused"),
         )
         inspection_with_secret = _effective(inspection_with_secret, project)
+        runner.environment = deploy.child_environment(inspection_with_secret.effective)
         with pytest.raises(deploy.PrepError) as captured:
             deploy.prove_failed_install_recoverable(
                 runner,
@@ -408,6 +448,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
             )
         assert captured.value.code == "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY"
     finally:
+        runner.environment = deploy.child_environment(cleanup_bundle.effective)
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             cleanup_prefix = deploy.compose_prefix(release, env_file)
             runner.run([*cleanup_prefix, "down", "--volumes", "--remove-orphans"], check=False)
@@ -421,9 +462,10 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pollute_parent_environment(monkeypatch)
     project = f"datariver-prep39083-retry-{uuid4().hex[:10]}"
     port = int(_free_port())
-    runner = deploy.Runner()
+    runner = deploy.Runner(environment=deploy.child_environment({}))
     product = runner.output(["git", "rev-parse", "HEAD"])
     release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", port, project)
     operator = tmp_path / ".env.prep"
@@ -458,6 +500,16 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
         }
     )
     bundle = replace(bundle, effective=effective)
+    runner.environment = deploy.child_environment(bundle.effective)
+    assert runner.environment["POC_IMAGE_TAG"] == product
+    assert runner.environment["POC_BIND_HOST"] == WILDCARD_BIND_HOST
+    assert runner.environment["POC_STATE_BIND_HOST"] == "127.0.0.1"
+    assert runner.environment["POC_PORT"] == str(port)
+    assert runner.environment["DATAHUB_GMS_URL"] == "http://127.0.0.1:9"
+    assert runner.environment["LLM_CHAT_URL"] == "http://127.0.0.1:9"
+    assert "COMPOSE_FILE" not in runner.environment
+    assert "COMPOSE_ENV_FILES" not in runner.environment
+    assert "DOCKER_DEFAULT_PLATFORM" not in runner.environment
     source = {"handoff_commit": product}
     before_39080 = deploy.snapshot_39080(runner)
     inventory = deploy.inspect_target_inventory(
@@ -468,6 +520,55 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
         attempt_receipt_path=attempt,
     )
     preparation = deploy.DeploymentPreparation(runner, source, inventory, before_39080)
+
+    monkeypatch.setattr(deploy, "verify_source_identity", lambda _release: source)
+    monkeypatch.setattr(deploy, "require_prep_platform", lambda _runner: None)
+    with pytest.raises(deploy.PrepError):
+        deploy.doctor(release, bundle)
+    assert not accepted.exists() and not attempt.exists()
+    assert not runtime_root.exists() or list(runtime_root.iterdir()) == []
+    assert (
+        runner.run(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--quiet",
+            ],
+            check=False,
+        ).stdout.strip()
+        == ""
+    )
+
+    def failed_provider_preflight(*_arguments: object, **_keywords: object) -> dict[str, str]:
+        raise deploy.PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED",
+            "Intentional isolated provider failure.",
+            "Correct the provider and retry.",
+        )
+
+    monkeypatch.setattr(deploy, "run_provider_preflight", failed_provider_preflight)
+    with pytest.raises(deploy.PrepError) as provider_failure:
+        deploy.deploy(release, bundle, preparation)
+    assert provider_failure.value.code == "PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED"
+    assert not accepted.exists() and not attempt.exists()
+    assert (
+        runner.run(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--quiet",
+            ],
+            check=False,
+        ).stdout.strip()
+        == ""
+    )
     monkeypatch.setattr(
         deploy,
         "run_provider_preflight",
@@ -534,6 +635,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
             random_token=lambda _count: pytest.fail("retry must reuse generated secrets"),
         )
         retry_bundle = replace(retry_bundle, effective=effective)
+        runner.environment = deploy.child_environment(retry_bundle.effective)
         cleanup_bundle = retry_bundle
         retry_preparation = deploy.DeploymentPreparation(
             runner,
@@ -555,6 +657,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
         assert inspected["user_record_count"] == 3
         assert [item["name"] for item in inspected["services"]] == ["K9", "MCP"]
     finally:
+        runner.environment = deploy.child_environment(cleanup_bundle.effective)
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release, env_file)
             runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)
@@ -812,9 +915,10 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pollute_parent_environment(monkeypatch)
     project = f"datariver-prep39083-accepted-{uuid4().hex[:10]}"
     port = int(_free_port())
-    runner = deploy.Runner()
+    runner = deploy.Runner(environment=deploy.child_environment({}))
     current_handoff = runner.output(["git", "rev-parse", "HEAD"])
     historical_handoff = "749f568f4ea0dcddd3e837e76d83fe784985bb5b"
     assert (
@@ -845,7 +949,9 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
     historical_contract["ownership"]["FIXED"].update(
         {
             "POC_BIND_HOST": "127.0.0.1",
-            "POC_SERVER_HOST": "127.0.0.1",
+            # The historical host publish was loopback-only. The current
+            # canonical Compose always keeps the container listener internal.
+            "POC_SERVER_HOST": WILDCARD_BIND_HOST,
             "POC_K9_SCHEDULER_ENABLED": "false",
             "POC_CHANGE_HISTORY_SCHEDULER_ENABLED": "false",
         }
@@ -896,6 +1002,7 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
         }
     )
     bundle_a = replace(bundle_a, effective=effective_a)
+    runner.environment = deploy.child_environment(bundle_a.effective)
     before_39080 = deploy.snapshot_39080(runner)
     inventory_a = deploy.inspect_target_inventory(
         runner,
@@ -1011,6 +1118,7 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
         effective_b["POC_PUBLIC_ORIGIN"] = values["POC_PUBLIC_ORIGIN"]
         effective_b["POC_INTRANET_HTTP_ALLOWED_CIDRS"] = values["POC_INTRANET_HTTP_ALLOWED_CIDRS"]
         bundle_b = replace(bundle_b, effective=effective_b)
+        runner.environment = deploy.child_environment(bundle_b.effective)
         cleanup_bundle = bundle_b
         assert bundle_b.k9_mode == "REQUIRED"
         deploy.deploy(
@@ -1066,6 +1174,7 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
         assert "down -v" not in source
         assert '"volume", "rm"' not in source
     finally:
+        runner.environment = deploy.child_environment(cleanup_bundle.effective)
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release_b, env_file)
             runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)

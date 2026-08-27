@@ -79,6 +79,11 @@ completed generation. No PREP setting disables this contract.
    match, before running its disposable collect-all container. This diagnostic image/cache action
    never starts or mutates Product state services; deploy continues to rebuild and inspect the
    exact image before its fail-closed provider gate.
+   Both paths discard ambient application and Compose variables from the interactive shell. The
+   tracked environment contract and target-owned env files exclusively define Product, provider,
+   image, platform, project, bind, and port values; only reviewed host/Docker connectivity keys are
+   inherited. The fully resolved Compose identity and provider projection are checked before the
+   image gate.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git
