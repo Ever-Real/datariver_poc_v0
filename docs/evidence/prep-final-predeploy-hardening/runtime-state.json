@@ -1,0 +1,82 @@
+{
+  "contract": "DATARIVER_PREP_FINAL_PREDEPLOY_HARDENING_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T07:38:41Z",
+  "product_sha": "6021f591d2e47ade387b40d6174d896795126f12",
+  "main_unchanged": "2876508145cbed410ae343623a2e3bedcac823cf",
+  "actual_prep_executed": false,
+  "doctor": {
+    "mode": "COLLECT_ALL_READ_ONLY",
+    "stages": [
+      "WEB_INTRANET",
+      "DATAHUB",
+      "QUALITY_READ",
+      "CHAT",
+      "EMBEDDING",
+      "RERANKER",
+      "MCL_DISCOVERY",
+      "AIRFLOW",
+      "MINIO"
+    ],
+    "statuses": [
+      "READY",
+      "DEFERRED",
+      "FAILED",
+      "BLOCKED_BY_DEPENDENCY"
+    ],
+    "persistent_mutation": false,
+    "deploy_preflight_fail_closed": true
+  },
+  "mcl_catch_up": {
+    "per_capture_bounded": true,
+    "single_owner_lock": true,
+    "yield_between_batches": true,
+    "checkpoint_reset": false,
+    "retention_gap_fail_closed": true,
+    "states": [
+      "CONTIGUOUS_CAPTURE_RECORDED",
+      "CAPTURE_CATCHING_UP",
+      "CAPTURE_CAUGHT_UP",
+      "HISTORY_GAP_BLOCKED"
+    ]
+  },
+  "historical_accepted_upgrade": {
+    "old_k9_mode": "DEFERRED",
+    "target_k9_mode": "REQUIRED",
+    "old_web_bind": "127.0.0.1",
+    "target_web_bind": "0.0.0.0",
+    "old_mcl_checkpoint": "ABSENT",
+    "target_mcl": "ENABLED",
+    "generated_secrets_preserved": true,
+    "volume_identities_preserved": true,
+    "durable_rows_preserved": true,
+    "k9_policy_count": 2,
+    "duplicate_bootstrap": false,
+    "volume_deletion": false,
+    "result": "PASS"
+  },
+  "verification": {
+    "prep_unit_handoff": "85/85 PASS",
+    "provider_mcl_k9_state_focused": "85/85 PASS",
+    "prep_smoke": "25/25 PASS",
+    "node_product": "166/166 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "historical_accepted_upgrade_docker": "1/1 PASS",
+    "smoke_failure_resume_docker": "1/1 PASS",
+    "isolated_state_matrix_docker": "1/1 PASS",
+    "python_full": "3955 passed / 119 skipped / 55 known baseline failures",
+    "ruff_lint": "PASS",
+    "changed_python_format": "PASS",
+    "strict_mypy": "577 files PASS",
+    "static": "PASS",
+    "frontend_builds": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "6021f591d2e47ade387b40d6174d896795126f12",
+    "image_id": "sha256:a333002f0fb49852b2d5bfd50ceea062f41dd9c3644768ab486ca12b6af62079",
+    "runtime_adapters": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
