@@ -1,4 +1,4 @@
-/* global AbortSignal, Buffer, process */
+/* global AbortSignal, Buffer, URL, process */
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,9 +9,9 @@ import { parseLlmProviderTimeoutMs } from './poc-llm-timeout.mjs'
 
 const providerTimeoutMs = 60_000
 
-function required(environment, name) {
+function required(environment, name, stage = name) {
   const value = environment[name]?.trim()
-  if (!value) throw classified(name, 'CONFIG', `${name} is not configured.`)
+  if (!value) throw classified(stage, 'CONFIG', `${name} is not configured.`)
   return value
 }
 
@@ -27,6 +27,31 @@ function statusKind(status) {
   return [401, 403].includes(status) ? 'AUTH' : 'HTTP'
 }
 
+function providerUrl(stage, baseUrl, path) {
+  try {
+    const joined = joinProviderUrl(baseUrl, path)
+    const parsed = new URL(joined)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('invalid provider URL')
+    return parsed.toString()
+  } catch {
+    throw classified(stage, 'CONFIG', `${stage} provider URL configuration is invalid.`)
+  }
+}
+
+function preservesKnownClassification(error) {
+  return (typeof error?.classification === 'string' && error.classification.startsWith('PREP_PREFLIGHT_'))
+    || (typeof error?.code === 'string' && error.code.startsWith('PREP_MCL_DISCOVERY_'))
+}
+
+async function knownStage(stage, operation) {
+  try {
+    return await operation()
+  } catch (error) {
+    if (preservesKnownClassification(error)) throw error
+    throw classified(stage, 'UNEXPECTED', `${stage} provider preflight failed unexpectedly.`)
+  }
+}
+
 async function response(providerTransport, stage, url, options, timeoutMs = providerTimeoutMs) {
   let result
   try {
@@ -34,6 +59,7 @@ async function response(providerTransport, stage, url, options, timeoutMs = prov
       ...options, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (error) {
+    if (preservesKnownClassification(error)) throw error
     throw classified(stage, error?.name === 'TimeoutError' ? 'TIMEOUT' : 'CONNECTIVITY', `${stage} request failed.`)
   }
   if (!result.ok) throw classified(stage, statusKind(result.status), `${stage} request was rejected.`, result.status)
@@ -41,9 +67,13 @@ async function response(providerTransport, stage, url, options, timeoutMs = prov
 }
 
 async function graphql(providerTransport, environment, stage, query) {
-  const result = await response(providerTransport, stage, joinProviderUrl(required(environment, 'DATAHUB_GMS_URL'), '/api/graphql'), {
+  const result = await response(providerTransport, stage, providerUrl(
+    stage,
+    required(environment, 'DATAHUB_GMS_URL', stage),
+    '/api/graphql',
+  ), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${required(environment, 'DATAHUB_GMS_TOKEN')}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${required(environment, 'DATAHUB_GMS_TOKEN', stage)}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
   })
   const body = await result.json().catch(() => null)
@@ -55,6 +85,9 @@ async function datahubPreflight(providerTransport, environment) {
   const catalog = await graphql(providerTransport, environment, 'DATAHUB',
     'query DataRiverPrepPreflight { search(input: { type: DATASET, query: "*", start: 0, count: 1 }) { start count total } }')
   if (!catalog.search) throw classified('DATAHUB', 'CONTRACT', 'DataHub bounded Dataset read returned an invalid contract.')
+}
+
+async function qualityReadPreflight(providerTransport, environment) {
   const assertions = await graphql(providerTransport, environment, 'QUALITY_READ',
     'query DataRiverQualityReadPreflight { search(input: { type: ASSERTION, query: "*", start: 0, count: 1 }) { start count total } }')
   if (!assertions.search || !Number.isSafeInteger(assertions.search.total) || assertions.search.total < 0) {
@@ -63,16 +96,25 @@ async function datahubPreflight(providerTransport, environment) {
   return { assertion_count: assertions.search.total }
 }
 
-function llmStage(environment, prefix) {
+function llmStage(environment, prefix, stage) {
   return {
-    url: required(environment, `${prefix}_URL`),
-    model: required(environment, `${prefix}_MODEL`),
-    token: required(environment, `${prefix}_TOKEN`),
+    url: required(environment, `${prefix}_URL`, stage),
+    model: required(environment, `${prefix}_MODEL`, stage),
+    token: required(environment, `${prefix}_TOKEN`, stage),
   }
 }
 
 async function llmPost(providerTransport, name, provider, endpoint, body, timeoutMs = providerTimeoutMs) {
-  const result = await response(providerTransport, name, llmEndpoint(provider, endpoint), {
+  let url
+  try {
+    url = llmEndpoint(provider, endpoint)
+    const parsed = new URL(url)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('invalid provider URL')
+    url = parsed.toString()
+  } catch {
+    throw classified(name, 'CONFIG', `${name} provider URL configuration is invalid.`)
+  }
+  const result = await response(providerTransport, name, url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${provider.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -80,18 +122,30 @@ async function llmPost(providerTransport, name, provider, endpoint, body, timeou
   return result.json().catch(() => null)
 }
 
-async function llmPreflights(providerTransport, environment) {
-  const chat = llmStage(environment, 'LLM_CHAT')
+async function chatPreflight(providerTransport, environment) {
+  const chat = llmStage(environment, 'LLM_CHAT', 'CHAT')
+  let timeoutMs
+  try {
+    timeoutMs = parseLlmProviderTimeoutMs(environment.POC_LLM_TIMEOUT_MS)
+  } catch {
+    throw classified('CHAT', 'CONFIG', 'The Chat provider timeout configuration is invalid.')
+  }
   const chatBody = await llmPost(providerTransport, 'CHAT', chat, '/chat/completions', {
     model: chat.model, messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 1, temperature: 0,
-  }, parseLlmProviderTimeoutMs(environment.POC_LLM_TIMEOUT_MS))
+  }, timeoutMs)
   if (!Array.isArray(chatBody?.choices)) throw classified('CHAT', 'CONTRACT', 'Chat returned no choices.')
-  const embedding = llmStage(environment, 'LLM_EMBEDDING')
+}
+
+async function embeddingPreflight(providerTransport, environment) {
+  const embedding = llmStage(environment, 'LLM_EMBEDDING', 'EMBEDDING')
   const embeddingBody = await llmPost(providerTransport, 'EMBEDDING', embedding, '/embeddings', {
     model: embedding.model, input: ['DataRiver PREP provider preflight'],
   })
   if (!Array.isArray(embeddingBody?.data)) throw classified('EMBEDDING', 'CONTRACT', 'Embedding returned no vectors.')
-  const reranker = llmStage(environment, 'LLM_RERANKER')
+}
+
+async function rerankerPreflight(providerTransport, environment) {
+  const reranker = llmStage(environment, 'LLM_RERANKER', 'RERANKER')
   const rerankerBody = await llmPost(providerTransport, 'RERANKER', reranker, '/rerank', {
     model: reranker.model, query: 'DataRiver PREP provider preflight', documents: ['DataRiver PREP provider preflight'], top_n: 1,
   })
@@ -105,11 +159,13 @@ async function airflowPreflight(providerTransport, environment) {
   if (!url && !username && !password) return 'DEFERRED'
   if (!url || !username || !password) throw classified('AIRFLOW', 'CONFIG', 'Airflow URL and credentials must be configured together.')
   const request = async (path, options = {}) => {
+    const endpoint = providerUrl('AIRFLOW', url, path)
     try {
-      return await providerTransport.fetch(joinProviderUrl(url, path), {
+      return await providerTransport.fetch(endpoint, {
         ...options, redirect: 'error', signal: AbortSignal.timeout(providerTimeoutMs),
       })
-    } catch {
+    } catch (error) {
+      if (preservesKnownClassification(error)) throw error
       throw classified('AIRFLOW', 'CONNECTIVITY', 'Airflow quality dispatch request failed.')
     }
   }
@@ -141,7 +197,7 @@ async function airflowPreflight(providerTransport, environment) {
 async function minioPreflight(providerTransport, environment) {
   const url = environment.MINIO_URL?.trim()
   if (!url) return 'DEFERRED'
-  await response(providerTransport, 'MINIO', joinProviderUrl(url, '/minio/health/ready'), {})
+  await response(providerTransport, 'MINIO', providerUrl('MINIO', url, '/minio/health/ready'), {})
   return 'READY'
 }
 
@@ -156,7 +212,10 @@ function intranetPreflight(environment) {
     if (error?.code === 'POC_PUBLIC_ORIGIN_NOT_APPROVED') {
       throw classified('WEB_INTRANET', 'ORIGIN_NOT_APPROVED', 'The HTTP origin is outside approved intranet ranges.')
     }
-    throw classified('WEB_INTRANET', 'ORIGIN_MALFORMED', 'The intranet public origin is malformed.')
+    if (error?.code === 'POC_PUBLIC_ORIGIN_MALFORMED') {
+      throw classified('WEB_INTRANET', 'ORIGIN_MALFORMED', 'The intranet public origin is malformed.')
+    }
+    throw error
   }
   if (environment.POC_BIND_HOST?.trim() !== '0.0.0.0') {
     throw classified('WEB_INTRANET', 'BIND', 'PREP web must publish on the intranet bind address.')
@@ -171,6 +230,7 @@ export async function runProviderPreflight({
   environment = process.env,
   providerTransport,
   discoverMcl = discoverPocMclSource,
+  operations = {},
 } = {}) {
   const started = Date.now()
   let transport
@@ -180,14 +240,29 @@ export async function runProviderPreflight({
     throw classified('RUNTIME_NETWORK', 'CONFIG', 'Runtime provider network configuration is invalid.')
   }
   const ownsTransport = !providerTransport
+  let primaryError
+  let cleanupError
+  let preflightResult
   try {
-    const publicOrigin = intranetPreflight(environment)
-    const datahub = await datahubPreflight(transport, environment)
-    await llmPreflights(transport, environment)
-    const mcl = await discoverMcl({ environment, providerTransport: transport })
-    const airflow = await airflowPreflight(transport, environment)
-    const minio = await minioPreflight(transport, environment)
-    return {
+    const publicOrigin = await knownStage('WEB_INTRANET', operations.webIntranet
+      ?? (() => intranetPreflight(environment)))
+    await knownStage('DATAHUB', operations.datahub
+      ?? (() => datahubPreflight(transport, environment)))
+    const datahub = await knownStage('QUALITY_READ', operations.qualityRead
+      ?? (() => qualityReadPreflight(transport, environment)))
+    await knownStage('CHAT', operations.chat
+      ?? (() => chatPreflight(transport, environment)))
+    await knownStage('EMBEDDING', operations.embedding
+      ?? (() => embeddingPreflight(transport, environment)))
+    await knownStage('RERANKER', operations.reranker
+      ?? (() => rerankerPreflight(transport, environment)))
+    const mcl = await knownStage('MCL_DISCOVERY', operations.mclDiscovery
+      ?? (() => discoverMcl({ environment, providerTransport: transport })))
+    const airflow = await knownStage('AIRFLOW', operations.airflow
+      ?? (() => airflowPreflight(transport, environment)))
+    const minio = await knownStage('MINIO', operations.minio
+      ?? (() => minioPreflight(transport, environment)))
+    preflightResult = {
       contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2', status: 'PASS',
       web_intranet: 'READY', public_origin: publicOrigin,
       datahub: 'READY', chat: 'READY', embedding: 'READY', reranker: 'READY',
@@ -196,23 +271,39 @@ export async function runProviderPreflight({
       gx_quality_execution: airflow === 'READY' ? 'READY' : 'DEFERRED',
       airflow, minio, elapsed_ms: Date.now() - started,
     }
+  } catch (error) {
+    primaryError = error
   } finally {
-    if (ownsTransport) await transport.close()
+    if (ownsTransport) {
+      try {
+        await transport.close()
+      } catch {
+        if (!primaryError) {
+          cleanupError = classified('RUNTIME_NETWORK', 'UNEXPECTED', 'Runtime provider transport cleanup failed unexpectedly.')
+        }
+      }
+    }
   }
+  if (primaryError) throw primaryError
+  if (cleanupError) throw cleanupError
+  return preflightResult
+}
+
+export function providerPreflightFailure(error) {
+  const mcl = typeof error?.code === 'string' && error.code.startsWith('PREP_MCL_DISCOVERY_')
+  return Object.freeze({
+    contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2', status: 'FAILED',
+    stage: mcl ? 'MCL_DISCOVERY' : error?.stage || 'INTERNAL',
+    classification: mcl ? error.code : error?.classification || 'PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED',
+    status_class: Number.isInteger(error?.status) ? `${Math.floor(error.status / 100)}xx` : null,
+  })
 }
 
 async function main() {
   try {
     process.stdout.write(`${JSON.stringify(await runProviderPreflight())}\n`)
   } catch (error) {
-    const classification = error?.code?.startsWith('PREP_MCL_DISCOVERY_')
-      ? error.code : error?.classification || 'PREP_PREFLIGHT_UNKNOWN_FAILED'
-    process.stderr.write(`${JSON.stringify({
-      contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2', status: 'FAILED',
-      stage: error?.code?.startsWith('PREP_MCL_DISCOVERY_') ? 'MCL_DISCOVERY' : error?.stage || 'UNKNOWN',
-      classification,
-      status_class: Number.isInteger(error?.status) ? `${Math.floor(error.status / 100)}xx` : null,
-    })}\n`)
+    process.stderr.write(`${JSON.stringify(providerPreflightFailure(error))}\n`)
     process.exitCode = 2
   }
 }

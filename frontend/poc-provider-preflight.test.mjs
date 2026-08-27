@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { runProviderPreflight } from './poc-provider-preflight.mjs'
+import { providerPreflightFailure, runProviderPreflight } from './poc-provider-preflight.mjs'
 
 const mclDiscovery = async () => ({
   receipt: {
@@ -140,4 +140,95 @@ test('preflight reuses existing Airflow quality dispatch and optional MinIO with
     assert.equal(result.gx_quality_execution, 'READY')
     assert.equal(result.minio, 'READY')
   } finally { await subject.close() }
+})
+
+test('every known provider preflight stage owns unexpected exceptions', async (context) => {
+  const successful = {
+    webIntranet: async () => 'http://10.20.30.40:39083',
+    datahub: async () => undefined,
+    qualityRead: async () => ({ assertion_count: 0 }),
+    chat: async () => undefined,
+    embedding: async () => undefined,
+    reranker: async () => undefined,
+    mclDiscovery: async () => mclDiscovery(),
+    airflow: async () => 'DEFERRED',
+    minio: async () => 'DEFERRED',
+  }
+  const stages = new Map([
+    ['webIntranet', 'WEB_INTRANET'],
+    ['datahub', 'DATAHUB'],
+    ['qualityRead', 'QUALITY_READ'],
+    ['chat', 'CHAT'],
+    ['embedding', 'EMBEDDING'],
+    ['reranker', 'RERANKER'],
+    ['mclDiscovery', 'MCL_DISCOVERY'],
+    ['airflow', 'AIRFLOW'],
+    ['minio', 'MINIO'],
+  ])
+  for (const [operation, stage] of stages) {
+    await context.test(stage, async () => {
+      const operations = { ...successful, [operation]: async () => { throw new TypeError('injected') } }
+      await assert.rejects(
+        runProviderPreflight({ environment: {}, providerTransport: {}, operations }),
+        (error) => error.stage === stage
+          && error.classification === `PREP_PREFLIGHT_${stage}_UNEXPECTED_FAILED`,
+      )
+    })
+  }
+})
+
+test('known stages preserve existing bounded classifications exactly', async () => {
+  const typed = Object.assign(new Error('typed'), {
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_CONTRACT_FAILED', status: 422,
+  })
+  await assert.rejects(
+    runProviderPreflight({
+      environment: {}, providerTransport: {},
+      operations: { webIntranet: async () => 'origin', datahub: async () => { throw typed } },
+    }),
+    (error) => error === typed,
+  )
+})
+
+test('malformed provider URL and Chat timeout are deterministic CONFIG failures', async () => {
+  const malformed = await fixture({ environment: { DATAHUB_GMS_URL: 'not a provider URL' } })
+  try {
+    await assert.rejects(malformed.run(), { classification: 'PREP_PREFLIGHT_DATAHUB_CONFIG_FAILED' })
+  } finally { await malformed.close() }
+
+  const timeout = await fixture({ environment: { POC_LLM_TIMEOUT_MS: 'invalid' } })
+  try {
+    await assert.rejects(timeout.run(), { classification: 'PREP_PREFLIGHT_CHAT_CONFIG_FAILED' })
+  } finally { await timeout.close() }
+})
+
+test('sanitized failure envelope preserves stage, classification and safe status class only', () => {
+  const error = Object.assign(new Error('body with sensitive details'), {
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_AUTH_FAILED', status: 401,
+    url: 'https://token@example.test/private', responseBody: { secret: 'value' },
+  })
+  assert.deepEqual(providerPreflightFailure(error), {
+    contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2', status: 'FAILED',
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_AUTH_FAILED', status_class: '4xx',
+  })
+  assert.deepEqual(providerPreflightFailure(new Error('programmer error')), {
+    contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2', status: 'FAILED',
+    stage: 'INTERNAL', classification: 'PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED', status_class: null,
+  })
+})
+
+test('MCL discovery classifications survive the provider stage and output envelope unchanged', async () => {
+  const typed = Object.assign(new Error('typed'), { code: 'PREP_MCL_DISCOVERY_KAFKA_ADMIN_FAILED' })
+  await assert.rejects(
+    runProviderPreflight({
+      environment: {}, providerTransport: {},
+      operations: {
+        webIntranet: async () => 'origin', datahub: async () => undefined,
+        qualityRead: async () => ({ assertion_count: 0 }), chat: async () => undefined,
+        embedding: async () => undefined, reranker: async () => undefined,
+        mclDiscovery: async () => { throw typed },
+      },
+    }),
+    (error) => error === typed && providerPreflightFailure(error).classification === typed.code,
+  )
 })

@@ -794,6 +794,54 @@ def test_deploy_wrapper_preserves_typed_intranet_preflight_diagnostics(
 
 
 @pytest.mark.parametrize(
+    ("classification", "stage"),
+    (
+        ("PREP_PREFLIGHT_DATAHUB_UNEXPECTED_FAILED", "DATAHUB"),
+        ("PREP_PREFLIGHT_QUALITY_READ_UNEXPECTED_FAILED", "QUALITY_READ"),
+        ("PREP_PREFLIGHT_CHAT_UNEXPECTED_FAILED", "CHAT"),
+        ("PREP_PREFLIGHT_EMBEDDING_UNEXPECTED_FAILED", "EMBEDDING"),
+        ("PREP_PREFLIGHT_RERANKER_UNEXPECTED_FAILED", "RERANKER"),
+        ("PREP_PREFLIGHT_AIRFLOW_UNEXPECTED_FAILED", "AIRFLOW"),
+        ("PREP_PREFLIGHT_MINIO_UNEXPECTED_FAILED", "MINIO"),
+        ("PREP_MCL_DISCOVERY_KAFKA_ADMIN_FAILED", "MCL_DISCOVERY"),
+    ),
+)
+def test_deploy_wrapper_preserves_sanitized_provider_stage_classification(
+    classification: str,
+    stage: str,
+) -> None:
+    class FailedPreflightRunner:
+        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
+            completed = subprocess.CompletedProcess(
+                list(arguments),
+                2,
+                "",
+                json.dumps({"classification": classification, "stage": stage}),
+            )
+            raise deploy.CommandFailure(list(arguments), completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+
+    assert captured.value.code == classification
+    assert stage in captured.value.reason
+
+
+def test_deploy_wrapper_uses_internal_not_unknown_for_malformed_failure_envelope() -> None:
+    class FailedPreflightRunner:
+        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
+            completed = subprocess.CompletedProcess(
+                list(arguments), 2, "", json.dumps({"classification": "untrusted"})
+            )
+            raise deploy.CommandFailure(list(arguments), completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+
+    assert captured.value.code == "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"
+
+
+@pytest.mark.parametrize(
     "classification",
     sorted(deploy.SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES),
 )

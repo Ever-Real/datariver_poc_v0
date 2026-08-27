@@ -1697,12 +1697,12 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
             failure = _parse_json_line(f"{error.stdout}\n{error.stderr}")
         except ValueError:
             failure = {}
-        code = str(failure.get("classification", "PREP_PREFLIGHT_UNKNOWN_FAILED"))
+        code = str(failure.get("classification", "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"))
         if not (
             re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", code)
             or re.fullmatch(r"PREP_MCL_DISCOVERY_[A-Z0-9_]+_FAILED", code)
         ):
-            code = "PREP_PREFLIGHT_UNKNOWN_FAILED"
+            code = "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"
         stage = str(failure.get("stage", "PROVIDER"))
         if not re.fullmatch(r"[A-Z0-9_]{1,32}", stage):
             stage = "PROVIDER"
@@ -1719,11 +1719,15 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
                 "Correct POC_PUBLIC_ORIGIN to one exact credential-free literal-IP origin, "
                 "then rerun the same deploy command."
             ),
-        }.get(
-            code,
-            "Correct only the named provider URL, credential, proxy, NO_PROXY or CA setting, "
-            "then rerun the same deploy command.",
-        )
+        }.get(code)
+        if action is None:
+            action = (
+                "Preserve PREP state and inspect the sanitized stage classification before "
+                "rerunning the same deploy command."
+                if "_UNEXPECTED_" in code
+                else "Correct only the named provider configuration, then rerun the same "
+                "deploy command."
+            )
         raise PrepError(
             "PROVIDER_PREFLIGHT",
             code,

@@ -94,3 +94,88 @@ test('uses explicitly configured external Registry only when GMS internal discov
   })
   assert.equal(JSON.stringify(result.receipt).includes('registry-secret'), false)
 })
+
+test('strictly validates Kafka broker, SSL and reviewed SASL configuration before construction', async () => {
+  const invalid = [
+    { POC_MCL_KAFKA_BROKERS: 'https://kafka.internal:9092' },
+    { POC_MCL_KAFKA_BROKERS: 'kafka.internal' },
+    { POC_MCL_KAFKA_BROKERS: 'kafka.internal:9092,' },
+    { POC_MCL_KAFKA_SSL: 'yes' },
+    {
+      POC_MCL_KAFKA_SASL_MECHANISM: 'oauthbearer',
+      POC_MCL_KAFKA_SASL_USERNAME: 'user',
+      POC_MCL_KAFKA_SASL_PASSWORD: 'secret',
+    },
+  ]
+  for (const overrides of invalid) {
+    await assert.rejects(
+      discoverPocMclSource({ environment: { ...environment, ...overrides }, providerTransport: transport(), kafka: kafka() }),
+      { code: 'PREP_MCL_DISCOVERY_CONFIG_FAILED' },
+    )
+  }
+})
+
+test('classifies malformed external Registry URLs as configuration rather than connectivity', async () => {
+  await assert.rejects(
+    discoverPocMclSource({
+      environment: { ...environment, POC_MCL_SCHEMA_REGISTRY_URL: 'not a registry URL' },
+      providerTransport: transport({ internal: false }), kafka: kafka(),
+    }),
+    { code: 'PREP_MCL_DISCOVERY_REGISTRY_CONFIG_FAILED' },
+  )
+})
+
+test('types Kafka client and admin construction failures before connect', async () => {
+  await assert.rejects(
+    discoverPocMclSource({
+      environment, providerTransport: transport(),
+      createKafka: () => { throw new TypeError('constructor failed') },
+    }),
+    { code: 'PREP_MCL_DISCOVERY_KAFKA_CLIENT_FAILED' },
+  )
+  await assert.rejects(
+    discoverPocMclSource({
+      environment, providerTransport: transport(),
+      kafka: { admin() { throw new TypeError('admin failed') } },
+    }),
+    { code: 'PREP_MCL_DISCOVERY_KAFKA_ADMIN_FAILED' },
+  )
+})
+
+test('types Kafka connect, cluster and topic discovery independently', async () => {
+  const failingKafka = (method) => ({
+    admin() {
+      return {
+        async connect() { if (method === 'connect') throw new Error('failed') },
+        async disconnect() {},
+        async describeCluster() { if (method === 'cluster') throw new Error('failed'); return { clusterId: 'cluster' } },
+        async listTopics() { if (method === 'topics') throw new Error('failed'); return ['MetadataChangeLog_Versioned_v1'] },
+      }
+    },
+  })
+  const expected = new Map([
+    ['connect', 'PREP_MCL_DISCOVERY_KAFKA_CONNECTIVITY_FAILED'],
+    ['cluster', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED'],
+    ['topics', 'PREP_MCL_DISCOVERY_TOPIC_CONNECTIVITY_FAILED'],
+  ])
+  for (const [method, code] of expected) {
+    await assert.rejects(
+      discoverPocMclSource({ environment, providerTransport: transport(), kafka: failingKafka(method) }),
+      { code },
+    )
+  }
+})
+
+test('cleanup failures do not overwrite an earlier typed discovery failure', async () => {
+  const subject = kafka([])
+  const originalAdmin = subject.admin
+  subject.admin = () => {
+    const admin = originalAdmin()
+    admin.disconnect = async () => { throw new Error('cleanup failed') }
+    return admin
+  }
+  await assert.rejects(
+    discoverPocMclSource({ environment, providerTransport: transport(), kafka: subject }),
+    { code: 'PREP_MCL_DISCOVERY_TOPIC_NOT_FOUND_FAILED' },
+  )
+})
