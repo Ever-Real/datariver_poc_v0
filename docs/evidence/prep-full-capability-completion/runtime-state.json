@@ -57,7 +57,7 @@
     "ui": "90 files / 663 tests PASS",
     "mcl_provider_auth_focused": "30/30 PASS",
     "prep_smoke": "20/20 PASS",
-    "prep_deploy_handoff_network": "67/67 PASS",
+    "prep_deploy_handoff_network": "68/68 PASS",
     "k9_bootstrap_scheduler": "29/29 PASS",
     "provider_contract": "24/24 PASS",
     "isolated_docker_state_matrix": "1/1 PASS (202.96s)",

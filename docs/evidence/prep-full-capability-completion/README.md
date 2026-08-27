@@ -30,7 +30,7 @@ Recorded at `2026-08-27T03:05:17Z` for Product
 - UI: `90 files / 663 tests PASS`.
 - MCL discovery/capture, provider preflight and local-auth focused suite: `30/30 PASS`.
 - PREP authenticated smoke suite: `20/20 PASS`.
-- PREP deployment/handoff/network suite: `67/67 PASS`.
+- PREP deployment/handoff/network suite: `68/68 PASS`.
 - K9/bootstrap/change-history scheduler focused suite: `29/29 PASS`.
 - Exact DataHub Assertion detail/read projection: `24/24 provider-contract tests PASS`.
 - Isolated Docker fresh/residual/running/stopped/ambiguous state matrix: `1/1 PASS` in `202.96s`;
