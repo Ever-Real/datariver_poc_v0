@@ -52,6 +52,7 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     contract = (DEPLOYMENT / "env-contract.json").read_text(encoding="utf-8")
 
     assert "POC_PUBLIC_ORIGIN=" in prep
+    assert "POC_INTRANET_HTTP_ALLOWED_CIDRS=" in prep
     assert "HTTP_PROXY=" in prep
     assert "HTTPS_PROXY=" in prep
     assert "NO_PROXY=" in prep
@@ -73,6 +74,7 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert '"POC_PLATFORM": "linux/amd64"' in contract
     assert '"POC_SHARED_NETWORK": "datariver-prep39083-services"' in contract
     assert "COMPOSE_PROJECT_NAME=datariver-ops39083" in ops
+    assert "POC_INTRANET_HTTP_ALLOWED_CIDRS=" in ops
     assert "POC_SHARED_NETWORK=datariver-ops39083-services" in ops
     for document in (prep, optional, ops, contract):
         assert "POC_PORT=39080" not in document
@@ -90,8 +92,26 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert '"GENERATED"' in contract
     assert '"FIXED"' in contract
     contract_value = json.loads(contract)
+    assert "POC_INTRANET_HTTP_ALLOWED_CIDRS" in contract_value["ownership"]["OPTIONAL"]
+    assert contract_value["ownership"]["FIXED"]["POC_BIND_HOST"] == "0.0.0.0"  # noqa: S104
+    assert contract_value["ownership"]["FIXED"]["POC_STATE_BIND_HOST"] == "127.0.0.1"
     assert contract_value["ownership"]["FIXED"]["POC_K9_SCHEDULER_ENABLED"] == "true"
     assert contract_value["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "120000"
+
+
+def test_compose_exposes_only_web_and_host_health_remains_loopback() -> None:
+    compose = (ROOT / "deploy" / "poc" / "docker-compose.poc.yaml").read_text(
+        encoding="utf-8",
+    )
+    deployer = (ROOT / "scripts" / "prep39083_deploy.py").read_text(encoding="utf-8")
+
+    assert "${POC_BIND_HOST:-127.0.0.1}:${POC_PORT:-39080}:8080" in compose
+    assert compose.count("${POC_STATE_BIND_HOST:-127.0.0.1}:") == 3
+    assert "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_NEO4J_HTTP_PORT" in compose
+    assert "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_POSTGRES_HOST_PORT" in compose
+    assert "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_REDIS_PORT" in compose
+    assert 'f"http://127.0.0.1:{release.port}/healthz"' in deployer
+    assert '"--noproxy",\n                    "*"' in deployer
 
 
 def test_ops_override_removes_build_and_forbids_pull() -> None:
@@ -189,6 +209,8 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "Only one materializer" in cycle
     assert "./scripts/prep39083 deploy" in cycle
     assert "ownership fingerprint covers only the generated" in prep
+    assert "POC_INTRANET_HTTP_ALLOWED_CIDRS" in prep
+    assert "Windows Firewall" in prep and "netsh" in prep
     assert "before reconciling or writing" in prep
     assert "legacy V1 receipt" in prep
     assert "ownership-only V2" in cycle

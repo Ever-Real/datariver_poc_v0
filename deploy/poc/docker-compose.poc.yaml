@@ -20,6 +20,7 @@ services:
       # the Node server to listen on every interface inside this container.
       POC_SERVER_HOST: 0.0.0.0
       POC_PUBLIC_ORIGIN: ${POC_PUBLIC_ORIGIN:?POC_PUBLIC_ORIGIN is required}
+      POC_INTRANET_HTTP_ALLOWED_CIDRS: ${POC_INTRANET_HTTP_ALLOWED_CIDRS:-}
       # Build/toolchain HTTP_PROXY values are intentionally not inherited by Product runtime.
       # Provider routing is explicit and implemented by the shared pinned Node transport.
       POC_RUNTIME_HTTP_PROXY: ${POC_RUNTIME_HTTP_PROXY:-}

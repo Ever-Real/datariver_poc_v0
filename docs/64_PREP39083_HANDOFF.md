@@ -117,11 +117,21 @@ Airflow and MinIO stay optional external integrations.
 
 ## Intranet HTTP boundary
 
-PREP/OPS intentionally support `http://<private-IP>:39083`. Compose publishes only the web service
+PREP/OPS intentionally support `http://<intranet-IP>:39083`. Compose publishes only the web service
 on `0.0.0.0:39083`; PostgreSQL, Neo4j and Redis host ports remain bound to `127.0.0.1`. HTTP origins
-are accepted only for loopback or literal RFC1918/IPv6-ULA addresses. Public IPs and hostnames still
-require HTTPS. This intranet transport choice does not relax login, session, CSRF, workspace, or
-asset authorization.
+must use a literal IP. Literal loopback, RFC1918 and IPv6-ULA addresses are accepted by default. If
+the reviewed company intranet uses another address range, set the operator-owned
+`POC_INTRANET_HTTP_ALLOWED_CIDRS` to one or more exact comma-separated IPv4/IPv6 CIDRs. Blank adds
+no range; a single PREP host can be bounded with `/32` (or `/128` for IPv6). Malformed, wildcard,
+unbounded, unspecified and multicast ranges fail closed. The browser Origin must still match
+`POC_PUBLIC_ORIGIN` exactly, so this setting does not relax login, session, CSRF, workspace, or
+asset authorization. HTTPS behavior is unchanged.
+
+DataRiver publishes `0.0.0.0:39083` inside Docker/WSL only. Under WSL2 default NAT, company-LAN
+access may additionally require an operator-reviewed Windows port-forwarding rule and Windows
+Firewall rule. Windows 11 mirrored WSL networking can provide direct LAN connectivity subject to
+Hyper-V and Windows Firewall policy. `./scripts/prep39083 deploy` never changes Windows Firewall,
+Hyper-V policy or `netsh`; those host controls remain outside Product deployment authority.
 
 ## Corporate proxy contract
 

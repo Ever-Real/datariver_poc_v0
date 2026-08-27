@@ -145,7 +145,10 @@ def _base_attempt_receipt(runtime: dict[str, str]) -> dict[str, object]:
 def test_operator_environment_is_preserved_and_generated_secrets_are_stable(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     runtime = tmp_path / ".env.prep.runtime"
-    original = _write_private_env(operator, _operator_values())
+    original = _write_private_env(
+        operator,
+        _operator_values() | {"POC_INTRANET_HTTP_ALLOWED_CIDRS": "100.64.0.0/10"},
+    )
     generated = iter(("postgres-secret", "neo4j-secret", "mcp-secret"))
 
     first = deploy.reconcile_environment(
@@ -168,9 +171,43 @@ def test_operator_environment_is_preserved_and_generated_secrets_are_stable(tmp_
     assert first.runtime["NEO4J_PASSWORD"] == "neo4j-secret"
     assert first.runtime["POC_MCP_SERVICE_TOKEN"] == "mcp-secret"
     assert second.runtime == first.runtime
+    assert first.effective["POC_INTRANET_HTTP_ALLOWED_CIDRS"] == "100.64.0.0/10"
     assert stat.S_IMODE(runtime.stat().st_mode) == 0o600
     assert first.effective["POC_IMAGE_TAG"] == "a" * 40
     assert first.effective["POC_SOURCE_COMMIT"] == "a" * 40
+
+
+def test_accepted_target_adds_operator_intranet_cidr_without_state_or_secret_reset(
+    tmp_path: Path,
+) -> None:
+    operator = tmp_path / ".env.prep"
+    runtime = tmp_path / ".env.prep.runtime"
+    _write_private_env(operator, _operator_values())
+    first = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=runtime,
+        random_token=lambda count: "x" * count,
+    )
+    preserved = {
+        key: first.runtime[key]
+        for key in ("POC_POSTGRES_PASSWORD", "NEO4J_PASSWORD", "POC_MCP_SERVICE_TOKEN")
+    }
+    _write_private_env(
+        operator,
+        _operator_values() | {"POC_INTRANET_HTTP_ALLOWED_CIDRS": "100.64.0.0/10"},
+    )
+    upgraded = deploy.reconcile_environment(
+        _release(),
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=runtime,
+        target_state=deploy.TargetState.EXISTING_ACCEPTED_RUNNING,
+        random_token=lambda _count: pytest.fail("accepted upgrade must not regenerate secrets"),
+    )
+    assert {key: upgraded.runtime[key] for key in preserved} == preserved
+    assert upgraded.effective["POC_INTRANET_HTTP_ALLOWED_CIDRS"] == "100.64.0.0/10"
 
 
 def test_legacy_generated_secret_is_migrated_without_overwriting_operator_file(
@@ -712,6 +749,48 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
         'phase="PREPARED"',
     )
     assert 'advance_attempt_phase(attempt, "SMOKE_FAILED")' in source
+
+
+@pytest.mark.parametrize(
+    ("classification", "action_fragment"),
+    (
+        (
+            "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_MALFORMED_FAILED",
+            "POC_PUBLIC_ORIGIN",
+        ),
+        (
+            "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_NOT_APPROVED_FAILED",
+            "POC_INTRANET_HTTP_ALLOWED_CIDRS",
+        ),
+        (
+            "PREP_PREFLIGHT_WEB_INTRANET_CIDR_CONFIG_FAILED",
+            "POC_INTRANET_HTTP_ALLOWED_CIDRS",
+        ),
+    ),
+)
+def test_deploy_wrapper_preserves_typed_intranet_preflight_diagnostics(
+    classification: str,
+    action_fragment: str,
+) -> None:
+    class FailedPreflightRunner:
+        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
+            completed = subprocess.CompletedProcess(
+                list(arguments),
+                2,
+                "",
+                json.dumps(
+                    {
+                        "classification": classification,
+                        "stage": "WEB_INTRANET",
+                    }
+                ),
+            )
+            raise deploy.CommandFailure(list(arguments), completed)
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+    assert captured.value.code == classification
+    assert action_fragment in captured.value.action
 
 
 @pytest.mark.parametrize(

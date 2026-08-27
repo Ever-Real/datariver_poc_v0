@@ -7,7 +7,9 @@ Accepted.
 ## Decision
 
 PREP exposes only DataRiver web on `0.0.0.0:39083`. PostgreSQL, Neo4j and Redis stay loopback-only.
-Literal private IPv4 and IPv6 ULA origins may deliberately use HTTP on the intranet; public HTTP is
+Literal loopback, RFC1918 and IPv6 ULA origins may deliberately use HTTP on the intranet. A reviewed
+operator CIDR allowlist may additionally admit a non-RFC1918 company range without creating a
+hostname, wildcard or public/unbounded HTTP exception. Unapproved public HTTP is
 rejected and authentication/authorization remain unchanged.
 
 The two default managed graphs use the Product-owned `K9_POLICIES` pins as their built-in policy

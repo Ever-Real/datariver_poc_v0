@@ -20,7 +20,7 @@ const config = Object.freeze({
   lockSeconds: 30,
 })
 
-async function authFixture() {
+async function authFixture(authConfig = config) {
   const stateStore = createPocStateStore()
   const passwordHash = await hashPocPassword('correct horse battery staple', {
     salt: Buffer.from('0123456789abcdef'),
@@ -38,7 +38,7 @@ async function authFixture() {
   let entropy = 1
   const authenticator = createPocLocalAuthenticator({
     stateStore,
-    config,
+    config: authConfig,
     now: () => new Date(currentTime),
     randomBytes: () => Buffer.alloc(32, entropy++),
     allowInMemoryStoreForTests: true,
@@ -135,6 +135,7 @@ test('requires an exact configured Origin and derives Secure cookies only from H
   const https = loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'https://poc.example.test' })
   assert.equal(https.secureCookie, true)
   for (const origin of [
+    'http://127.0.0.1:39083',
     'http://10.20.30.40:39083',
     'http://172.20.30.40:39083',
     'http://192.168.10.40:39083',
@@ -146,10 +147,90 @@ test('requires an exact configured Origin and derives Secure cookies only from H
   }
   assert.throws(
     () => loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'http://poc.example.test' }),
-    /HTTP only for a loopback or private intranet IP/,
+    (error) => error.code === 'POC_PUBLIC_ORIGIN_MALFORMED',
   )
   assert.throws(
     () => loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083' }),
-    /private intranet IP/,
+    (error) => error.code === 'POC_PUBLIC_ORIGIN_NOT_APPROVED',
   )
+})
+
+test('allows only explicit bounded CIDRs beyond default intranet address ranges', () => {
+  const exact = loadPocLocalAuthConfig({
+    POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '203.0.113.10/32',
+  })
+  assert.equal(exact.publicOrigin, 'http://203.0.113.10:39083')
+
+  const corporate = loadPocLocalAuthConfig({
+    POC_PUBLIC_ORIGIN: 'http://100.64.17.9:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '198.51.100.0/24, 100.64.0.0/10',
+  })
+  assert.equal(corporate.publicOrigin, 'http://100.64.17.9:39083')
+
+  const ipv6 = loadPocLocalAuthConfig({
+    POC_PUBLIC_ORIGIN: 'http://[2001:db8:abcd::17]:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '2001:db8:abcd::/48',
+  })
+  assert.equal(ipv6.publicOrigin, 'http://[2001:db8:abcd::17]:39083')
+
+  assert.throws(
+    () => loadPocLocalAuthConfig({
+      POC_PUBLIC_ORIGIN: 'http://203.0.114.10:39083',
+      POC_INTRANET_HTTP_ALLOWED_CIDRS: '203.0.113.0/24',
+    }),
+    (error) => error.code === 'POC_PUBLIC_ORIGIN_NOT_APPROVED',
+  )
+})
+
+test('keeps exact Origin enforcement for an approved non-RFC1918 HTTP address', async () => {
+  const approvedConfig = loadPocLocalAuthConfig({
+    POC_PUBLIC_ORIGIN: 'http://100.64.17.9:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '100.64.0.0/10',
+  })
+  const { authenticator } = await authFixture(approvedConfig)
+  assert.doesNotThrow(() => authenticator.assertOrigin({
+    headers: { origin: approvedConfig.publicOrigin },
+  }))
+  for (const origin of ['http://100.64.17.10:39083', 'https://100.64.17.9:39083', undefined]) {
+    assert.throws(
+      () => authenticator.assertOrigin({ headers: { ...(origin ? { origin } : {}) } }),
+      (error) => error.statusCode === 403,
+    )
+  }
+})
+
+test('rejects malformed or unsafe CIDR configuration and unsafe HTTP hosts', () => {
+  for (const cidrs of [
+    '*', '203.0.113.0', '203.0.113.0/33', '2001:db8::/129',
+    '0.0.0.0/0', '1.0.0.0/1', '::/0', '2000::/3',
+    '224.0.0.0/4', 'ff00::/8', '203.0.113.0/24,',
+  ]) {
+    assert.throws(
+      () => loadPocLocalAuthConfig({
+        POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083',
+        POC_INTRANET_HTTP_ALLOWED_CIDRS: cidrs,
+      }),
+      (error) => error.code === 'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+    )
+  }
+  for (const origin of [
+    'http://localhost:39083',
+    'http://0.0.0.0:39083',
+    'http://224.0.0.1:39083',
+    'http://[::]:39083',
+    'http://[ff02::1]:39083',
+    'http://user:password@203.0.113.10:39083',
+    'http://203.0.113.10:39083/path',
+    'http://203.0.113.10:39083?query=1',
+    'http://203.0.113.10:39083#fragment',
+  ]) {
+    assert.throws(
+      () => loadPocLocalAuthConfig({
+        POC_PUBLIC_ORIGIN: origin,
+        POC_INTRANET_HTTP_ALLOWED_CIDRS: '203.0.113.0/24',
+      }),
+      (error) => error.code === 'POC_PUBLIC_ORIGIN_MALFORMED',
+    )
+  }
 })

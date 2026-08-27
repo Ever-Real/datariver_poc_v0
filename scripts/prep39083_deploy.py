@@ -1706,12 +1706,29 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
         stage = str(failure.get("stage", "PROVIDER"))
         if not re.fullmatch(r"[A-Z0-9_]{1,32}", stage):
             stage = "PROVIDER"
+        action = {
+            "PREP_PREFLIGHT_WEB_INTRANET_CIDR_CONFIG_FAILED": (
+                "Correct only POC_INTRANET_HTTP_ALLOWED_CIDRS in .env.prep, then rerun "
+                "the same deploy command."
+            ),
+            "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_NOT_APPROVED_FAILED": (
+                "Approve the exact company intranet range in "
+                "POC_INTRANET_HTTP_ALLOWED_CIDRS, then rerun the same deploy command."
+            ),
+            "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_MALFORMED_FAILED": (
+                "Correct POC_PUBLIC_ORIGIN to one exact credential-free literal-IP origin, "
+                "then rerun the same deploy command."
+            ),
+        }.get(
+            code,
+            "Correct only the named provider URL, credential, proxy, NO_PROXY or CA setting, "
+            "then rerun the same deploy command.",
+        )
         raise PrepError(
             "PROVIDER_PREFLIGHT",
             code,
             f"Read-only {stage} provider preflight failed before persistent Product mutation.",
-            "Correct only the named provider URL, credential, proxy, NO_PROXY or CA setting, "
-            "then rerun the same deploy command.",
+            action,
         ) from error
     except ValueError as error:
         raise PrepError(

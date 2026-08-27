@@ -93,10 +93,39 @@ test('preflight uses the shared bounded Chat timeout classification', async () =
   } finally { await subject.close() }
 })
 
-test('preflight rejects public HTTP origins while allowing private intranet HTTP', async () => {
+test('preflight distinguishes unapproved HTTP origin, malformed origin, and invalid CIDR', async () => {
   const subject = await fixture({ environment: { POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083' } })
   try {
-    await assert.rejects(subject.run(), { classification: 'PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_FAILED' })
+    await assert.rejects(subject.run(), {
+      classification: 'PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_NOT_APPROVED_FAILED',
+    })
+  } finally { await subject.close() }
+
+  const malformed = await fixture({ environment: { POC_PUBLIC_ORIGIN: 'http://poc.example.test:39083' } })
+  try {
+    await assert.rejects(malformed.run(), {
+      classification: 'PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_MALFORMED_FAILED',
+    })
+  } finally { await malformed.close() }
+
+  const invalidCidr = await fixture({ environment: {
+    POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '0.0.0.0/0',
+  } })
+  try {
+    await assert.rejects(invalidCidr.run(), {
+      classification: 'PREP_PREFLIGHT_WEB_INTRANET_CIDR_CONFIG_FAILED',
+    })
+  } finally { await invalidCidr.close() }
+})
+
+test('preflight accepts an operator-approved non-RFC1918 intranet range', async () => {
+  const subject = await fixture({ environment: {
+    POC_PUBLIC_ORIGIN: 'http://100.64.17.9:39083',
+    POC_INTRANET_HTTP_ALLOWED_CIDRS: '100.64.0.0/10',
+  } })
+  try {
+    assert.equal((await subject.run()).web_intranet, 'READY')
   } finally { await subject.close() }
 })
 

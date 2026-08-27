@@ -149,8 +149,14 @@ function intranetPreflight(environment) {
   let auth
   try {
     auth = loadPocLocalAuthConfig(environment)
-  } catch {
-    throw classified('WEB_INTRANET', 'ORIGIN', 'The intranet public origin is invalid.')
+  } catch (error) {
+    if (error?.code === 'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID') {
+      throw classified('WEB_INTRANET', 'CIDR_CONFIG', 'The intranet CIDR configuration is invalid.')
+    }
+    if (error?.code === 'POC_PUBLIC_ORIGIN_NOT_APPROVED') {
+      throw classified('WEB_INTRANET', 'ORIGIN_NOT_APPROVED', 'The HTTP origin is outside approved intranet ranges.')
+    }
+    throw classified('WEB_INTRANET', 'ORIGIN_MALFORMED', 'The intranet public origin is malformed.')
   }
   if (environment.POC_BIND_HOST?.trim() !== '0.0.0.0') {
     throw classified('WEB_INTRANET', 'BIND', 'PREP web must publish on the intranet bind address.')

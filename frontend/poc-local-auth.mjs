@@ -1,6 +1,6 @@
 /* global Buffer, URL */
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto'
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 import process from 'node:process'
 import { argon2id, argon2Verify } from 'hash-wasm'
 
@@ -20,6 +20,10 @@ function authError(statusCode, code, message) {
   return Object.assign(new Error(message), { statusCode, code })
 }
 
+function authConfigError(code, message) {
+  return Object.assign(new Error(message), { code })
+}
+
 function boundedInteger(value, name, fallback, minimum, maximum) {
   const raw = value === undefined || value === null || value === '' ? String(fallback) : String(value).trim()
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer.`)
@@ -30,42 +34,137 @@ function boundedInteger(value, name, fallback, minimum, maximum) {
   return parsed
 }
 
-function isLoopbackHostname(hostname) {
+function normalizedIpLiteral(hostname) {
   const normalized = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (normalized === 'localhost' || normalized.endsWith('.localhost')) return true
-  if (isIP(normalized) === 4) return normalized.startsWith('127.')
-  return normalized === '::1'
+  return { address: normalized, family: isIP(normalized) }
 }
 
-function isPrivateIntranetAddress(hostname) {
-  const normalized = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (isIP(normalized) === 4) {
-    const [first, second] = normalized.split('.').map(Number)
+function isLoopbackAddress(address, family) {
+  if (family === 4) return address.startsWith('127.')
+  return family === 6 && address === '::1'
+}
+
+function isPrivateIntranetAddress(address, family) {
+  if (family === 4) {
+    const [first, second] = address.split('.').map(Number)
     return first === 10
       || (first === 172 && second >= 16 && second <= 31)
       || (first === 192 && second === 168)
   }
-  if (isIP(normalized) === 6) {
-    const firstHextet = Number.parseInt(normalized.split(':', 1)[0] || '0', 16)
+  if (family === 6) {
+    const firstHextet = Number.parseInt(address.split(':', 1)[0] || '0', 16)
     return (firstHextet & 0xfe00) === 0xfc00
   }
   return false
 }
 
+function isUnspecifiedOrMulticast(address, family) {
+  if (family === 4) {
+    const first = Number(address.split('.', 1)[0])
+    return address === '0.0.0.0' || (first >= 224 && first <= 239)
+  }
+  return family === 6 && (address === '::' || address.startsWith('ff'))
+}
+
+function approvedIntranetCidrs(rawValue) {
+  const raw = rawValue?.trim() || ''
+  if (!raw) return []
+  if (raw.length > 4096) {
+    throw authConfigError(
+      'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+      'POC_INTRANET_HTTP_ALLOWED_CIDRS exceeds its bounded contract.',
+    )
+  }
+  const values = raw.split(',')
+  if (values.length > 64 || values.some((value) => !value.trim())) {
+    throw authConfigError(
+      'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+      'POC_INTRANET_HTTP_ALLOWED_CIDRS must contain one to 64 comma-separated CIDRs.',
+    )
+  }
+  return values.map((value) => {
+    const candidate = value.trim()
+    const separator = candidate.lastIndexOf('/')
+    if (separator <= 0 || separator === candidate.length - 1 || candidate.includes('*')) {
+      throw authConfigError(
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS contains an invalid CIDR.',
+      )
+    }
+    const address = candidate.slice(0, separator)
+    const prefixValue = candidate.slice(separator + 1)
+    const family = isIP(address)
+    const maximum = family === 4 ? 32 : family === 6 ? 128 : -1
+    const minimum = family === 4 ? 8 : family === 6 ? 16 : Number.POSITIVE_INFINITY
+    if (!/^\d{1,3}$/.test(prefixValue)) {
+      throw authConfigError(
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS contains an invalid prefix.',
+      )
+    }
+    const prefix = Number(prefixValue)
+    if (maximum < 0 || prefix < minimum || prefix > maximum
+      || isUnspecifiedOrMulticast(address, family)) {
+      throw authConfigError(
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS contains an unsafe or invalid CIDR.',
+      )
+    }
+    const blockList = new BlockList()
+    try {
+      blockList.addSubnet(address, prefix, family === 4 ? 'ipv4' : 'ipv6')
+    } catch {
+      throw authConfigError(
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS_INVALID',
+        'POC_INTRANET_HTTP_ALLOWED_CIDRS contains an invalid CIDR.',
+      )
+    }
+    return { blockList, family }
+  })
+}
+
+function isApprovedHttpOriginAddress(address, family, approvedCidrs) {
+  if (isLoopbackAddress(address, family) || isPrivateIntranetAddress(address, family)) return true
+  const type = family === 4 ? 'ipv4' : 'ipv6'
+  return approvedCidrs.some((item) => item.family === family && item.blockList.check(address, type))
+}
+
 export function loadPocLocalAuthConfig(environment = process.env) {
   const rawOrigin = environment.POC_PUBLIC_ORIGIN?.trim()
   if (!rawOrigin) throw new Error('POC_PUBLIC_ORIGIN is required for local authentication.')
-  const originUrl = new URL(rawOrigin)
+  const approvedCidrs = approvedIntranetCidrs(environment.POC_INTRANET_HTTP_ALLOWED_CIDRS)
+  let originUrl
+  try {
+    originUrl = new URL(rawOrigin)
+  } catch {
+    throw authConfigError(
+      'POC_PUBLIC_ORIGIN_MALFORMED',
+      'POC_PUBLIC_ORIGIN must be one exact credential-free HTTP(S) origin.',
+    )
+  }
   if (!['http:', 'https:'].includes(originUrl.protocol)
     || originUrl.username || originUrl.password
     || originUrl.pathname !== '/' || originUrl.search || originUrl.hash
     || originUrl.origin !== rawOrigin) {
-    throw new Error('POC_PUBLIC_ORIGIN must be one exact credential-free HTTP(S) origin.')
+    throw authConfigError(
+      'POC_PUBLIC_ORIGIN_MALFORMED',
+      'POC_PUBLIC_ORIGIN must be one exact credential-free HTTP(S) origin.',
+    )
   }
-  if (originUrl.protocol === 'http:'
-    && !isLoopbackHostname(originUrl.hostname)
-    && !isPrivateIntranetAddress(originUrl.hostname)) {
-    throw new Error('POC_PUBLIC_ORIGIN may use HTTP only for a loopback or private intranet IP address.')
+  if (originUrl.protocol === 'http:') {
+    const { address, family } = normalizedIpLiteral(originUrl.hostname)
+    if (!family || isUnspecifiedOrMulticast(address, family)) {
+      throw authConfigError(
+        'POC_PUBLIC_ORIGIN_MALFORMED',
+        'POC_PUBLIC_ORIGIN HTTP mode requires one safe literal IP address.',
+      )
+    }
+    if (!isApprovedHttpOriginAddress(address, family, approvedCidrs)) {
+      throw authConfigError(
+        'POC_PUBLIC_ORIGIN_NOT_APPROVED',
+        'POC_PUBLIC_ORIGIN HTTP address is outside the approved intranet ranges.',
+      )
+    }
   }
   return Object.freeze({
     publicOrigin: originUrl.origin,
