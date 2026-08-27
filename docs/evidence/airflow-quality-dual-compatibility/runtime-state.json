@@ -1,0 +1,40 @@
+{
+  "contract": "DATARIVER_AIRFLOW_QUALITY_DUAL_COMPATIBILITY_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T10:17:46Z",
+  "product_sha": "10f2a1fc8436aa8c8e35f2c8a1e0dc8dcf7b0ad8",
+  "main_unchanged": "997224da6616f21b34d4efb5fa2e9fd45d106bde",
+  "actual_prep_executed": false,
+  "helper_runtime_semantics_changed": false,
+  "auth_runtime_semantics_changed": false,
+  "airflow": {
+    "2.10.3": {
+      "image_digest": "sha256:a297f7672778ba65d4d95cd1fee0213133ae8d8dd176fe9a697af918f945368f",
+      "dag_ids": [
+        "datariver_quality_dispatch"
+      ],
+      "import_error_count": 0,
+      "result": "PASS"
+    },
+    "3.3.0": {
+      "image_digest": "sha256:96e99f25815f533b298a4d53f283adf5c84c27334ea16ef232777cb800bddf10",
+      "dag_ids": [
+        "datariver_quality_dispatch"
+      ],
+      "import_error_count": 0,
+      "result": "PASS"
+    }
+  },
+  "verification": {
+    "focused": "9/9 PASS",
+    "three_file_compile": "PASS",
+    "ruff": "PASS",
+    "mypy": "PASS",
+    "static": "PASS",
+    "python_full": "3979 passed / 120 skipped / 55 known baseline failures"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "10f2a1fc8436aa8c8e35f2c8a1e0dc8dcf7b0ad8",
+    "image_id": "sha256:694c17dd1a27c3d8609a583ad9e919b0af1a1e04df64164046997b7d971cb795"
+  }
+}
