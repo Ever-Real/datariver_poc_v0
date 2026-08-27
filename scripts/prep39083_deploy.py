@@ -1299,32 +1299,84 @@ def validate_owned_attempt(
     return receipt
 
 
-def inspect_web_image(runner: Runner, image: str, product_sha: str) -> None:
+def _image_code(doctor: bool, suffix: str) -> str:
+    return f"PREP_DOCTOR_IMAGE_{suffix}" if doctor else f"PREP_WEB_IMAGE_{suffix}"
+
+
+def _read_web_image(
+    runner: Runner,
+    image: str,
+    *,
+    doctor: bool,
+) -> Mapping[str, Any] | None:
+    completed = runner.run(["docker", "image", "inspect", image], check=False)
+    if completed.returncode != 0:
+        return None
     try:
-        inspected = json.loads(runner.output(["docker", "image", "inspect", image]))[0]
-    except (CommandFailure, json.JSONDecodeError, IndexError) as error:
+        document = json.loads(completed.stdout)
+        inspected = document[0]
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError) as error:
         raise PrepError(
             "IMAGE_IDENTITY",
-            "PREP_WEB_IMAGE_MISSING",
-            "The exact built web image cannot be inspected.",
-            "Rerun ./scripts/prep39083 deploy; the image reference is resolved automatically.",
+            _image_code(doctor, "MISSING"),
+            "Docker returned no bounded exact-image inspection contract.",
+            "Preserve PREP state and rerun doctor from the exact tracked source.",
         ) from error
-    labels = inspected.get("Config", {}).get("Labels") or {}
+    if not isinstance(inspected, dict):
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "MISSING"),
+            "Docker returned no bounded exact-image inspection contract.",
+            "Preserve PREP state and rerun doctor from the exact tracked source.",
+        )
+    return inspected
+
+
+def inspect_web_image(
+    inspected: Mapping[str, Any],
+    image: str,
+    product_sha: str,
+    *,
+    doctor: bool,
+) -> None:
+    repo_tags = inspected.get("RepoTags")
+    if not isinstance(repo_tags, list) or image not in repo_tags:
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "IDENTITY_MISMATCH"),
+            "Docker inspection did not bind the exact requested Product image tag.",
+            "Restore the exact tracked Compose image identity before retrying.",
+        )
+    config = inspected.get("Config")
+    if not isinstance(config, dict):
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "MISSING"),
+            "Docker returned no bounded exact-image configuration contract.",
+            "Preserve PREP state and rerun the same command from tracked source.",
+        )
+    labels = config.get("Labels") or {}
+    if not isinstance(labels, dict):
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "MISSING"),
+            "Docker returned no bounded exact-image label contract.",
+            "Preserve PREP state and rerun the same command from tracked source.",
+        )
     if inspected.get("Os") != "linux" or inspected.get("Architecture") != "amd64":
         raise PrepError(
             "IMAGE_IDENTITY",
-            "PREP_WEB_IMAGE_PLATFORM_MISMATCH",
+            _image_code(doctor, "PLATFORM_MISMATCH"),
             "The built web image is not linux/amd64.",
             "Use the approved native amd64 PREP Docker engine.",
         )
     if labels.get("org.opencontainers.image.revision") != product_sha:
         raise PrepError(
             "IMAGE_IDENTITY",
-            "PREP_WEB_IMAGE_REVISION_MISMATCH",
+            _image_code(doctor, "REVISION_MISMATCH"),
             "The built web OCI revision does not equal the tracked Product SHA.",
-            "Remove only the incorrect unaccepted image tag and rerun deploy.",
+            "Preserve PREP state and rebuild only the exact tracked Product image.",
         )
-    config = inspected.get("Config", {})
     serialized = json.dumps({"Env": config.get("Env"), "Labels": labels}, sort_keys=True)
     if re.search(r"https?://[^\s\"']+@", serialized):
         raise PrepError(
@@ -1333,6 +1385,49 @@ def inspect_web_image(runner: Runner, image: str, product_sha: str) -> None:
             "The final image configuration appears to contain a credential-bearing proxy URL.",
             "Stop promotion and correct the Docker build proxy boundary.",
         )
+
+
+def prepare_exact_web_image(
+    runner: Runner,
+    prefix: Sequence[str],
+    image: str,
+    product_sha: str,
+    *,
+    doctor: bool,
+) -> str:
+    expected_image = f"datariver-poc:{product_sha}"
+    if image != expected_image:
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "IDENTITY_MISMATCH"),
+            "Compose did not resolve the exact Product-tagged web image identity.",
+            "Restore release.json and the canonical Compose image contract.",
+        )
+
+    inspected = _read_web_image(runner, image, doctor=True) if doctor else None
+    if inspected is not None:
+        inspect_web_image(inspected, image, product_sha, doctor=True)
+        return "REUSED"
+
+    try:
+        runner.run([*prefix, "build", "--pull=false", "web"])
+    except CommandFailure as error:
+        raise PrepError(
+            "IMAGE_BUILD",
+            _image_code(doctor, "BUILD_FAILED"),
+            "The exact linux/amd64 Product image build did not complete.",
+            "Correct the bounded build/toolchain failure and rerun the same command.",
+        ) from error
+    inspected = _read_web_image(runner, image, doctor=doctor)
+    if inspected is None:
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "MISSING"),
+            "The exact Product image is absent after its canonical build completed.",
+            "Preserve PREP state and inspect the local Docker builder before retrying.",
+        )
+    inspect_web_image(inspected, image, product_sha, doctor=doctor)
+    return "BUILT"
 
 
 def snapshot_39080(runner: Runner) -> tuple[str, ...]:
@@ -1764,15 +1859,84 @@ DOCTOR_PREFLIGHT_STAGES = (
 )
 
 
-def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
+def doctor_container_prefix(
+    image: str,
+    env_file: Path,
+    effective: Mapping[str, str],
+) -> list[str]:
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/amd64",
+        "--env-file",
+        os.fspath(env_file),
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+    ]
+    ca_source = effective.get("POC_RUNTIME_CA_BIND_SOURCE", "")
+    ca_target = effective.get("POC_RUNTIME_CA_CONTAINER_FILE", "")
+    if ca_source and ca_source != "/dev/null" and ca_target:
+        command.extend(
+            [
+                "--mount",
+                f"type=bind,source={ca_source},target={ca_target},readonly",
+            ]
+        )
+    command.extend(["--env", f"POC_RUNTIME_CA_CERT_FILE={ca_target}", image])
+    return command
+
+
+def collect_provider_preflight(
+    runner: Runner,
+    image: str,
+    env_file: Path,
+    effective: Mapping[str, str],
+) -> dict[str, Any]:
+    child_prefix = doctor_container_prefix(image, env_file, effective)
+    container_probe = runner.run([*child_prefix, "/usr/bin/true"], check=False)
+    if container_probe.returncode != 0:
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED",
+            "Docker could not create the ephemeral doctor Product container.",
+            "Inspect only Docker image and container policy, then rerun doctor.",
+        )
+    node_probe = runner.run([*child_prefix, "node", "--version"], check=False)
+    if node_probe.returncode != 0:
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED",
+            "The pinned Node runtime could not start in the ephemeral doctor container.",
+            "Restore the exact Product image and rerun doctor.",
+        )
+    module_probe = runner.run(
+        [
+            *child_prefix,
+            "node",
+            "--input-type=module",
+            "--eval",
+            "await import('./poc-provider-preflight.mjs')",
+        ],
+        check=False,
+    )
+    if module_probe.returncode != 0:
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED",
+            "The pinned Node runtime or provider-preflight module could not start in the "
+            "ephemeral doctor container.",
+            "Restore the exact Product image and rerun doctor.",
+        )
     completed = runner.run(
         [
-            *prefix,
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            "web",
+            *child_prefix,
             "node",
             "poc-provider-preflight.mjs",
             "--collect-all",
@@ -1784,7 +1948,7 @@ def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[st
     except ValueError as error:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID",
             "Collect-all provider doctor returned no structured matrix.",
             "Restore the exact Product image and rerun doctor.",
         ) from error
@@ -1797,7 +1961,7 @@ def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[st
     ):
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID",
             "Collect-all provider doctor returned an invalid matrix contract.",
             "Restore the exact Product image and rerun doctor.",
         )
@@ -1811,7 +1975,7 @@ def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[st
         }:
             raise PrepError(
                 "PROVIDER_PREFLIGHT",
-                "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+                "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID",
                 "Collect-all provider doctor returned an invalid stage result.",
                 "Restore the exact Product image and rerun doctor.",
             )
@@ -1825,14 +1989,15 @@ def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[st
         ):
             raise PrepError(
                 "PROVIDER_PREFLIGHT",
-                "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+                "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID",
                 "Collect-all provider doctor returned an unbounded failure code.",
                 "Restore the exact Product image and rerun doctor.",
             )
-    if completed.returncode == 0 and result["status"] != "PASS":
+    expected_returncode = 0 if result["status"] == "PASS" else 2
+    if completed.returncode != expected_returncode:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID",
             "Collect-all provider doctor process status conflicts with its matrix.",
             "Restore the exact Product image and rerun doctor.",
         )
@@ -2099,8 +2264,13 @@ def deploy(
         image = resolve_web_image(config)
         volume_identities = compose_volume_identities(config)
         runner.note("Build exact linux/amd64 Product image with bounded proxy configuration")
-        runner.run([*prefix, "build", "--pull=false", "web"])
-        inspect_web_image(runner, image, release.product_sha)
+        prepare_exact_web_image(
+            runner,
+            prefix,
+            image,
+            release.product_sha,
+            doctor=False,
+        )
         runner.note("Run read-only external provider preflight before persistent mutation")
         preflight = run_provider_preflight(runner, prefix)
         print(
@@ -2319,12 +2489,27 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         config = compose_config(runner, compose_prefix(release, env_file))
         prefix = compose_prefix(release, env_file)
         image = resolve_web_image(config)
-        preflight = collect_provider_preflight(runner, prefix)
+        runner.note("Prepare or reuse the exact read-only doctor Product image")
+        image_preparation = prepare_exact_web_image(
+            runner,
+            prefix,
+            image,
+            release.product_sha,
+            doctor=True,
+        )
+        runner.note("Run collect-all provider diagnostics in an ephemeral Product container")
+        preflight = collect_provider_preflight(
+            runner,
+            image,
+            env_file,
+            bundle.effective,
+        )
     print(f"PREP39083 DOCTOR {preflight['status']}")
     print(f"- Product: {release.product_sha}")
     print(f"- Evidence: {release.evidence_sha}")
     print(f"- Handoff: {source['handoff_commit']}")
     print(f"- Image: {image}")
+    print(f"- Image preparation: {image_preparation}")
     print(f"- Environment warnings: {len(bundle.warnings)}")
     stages = preflight["stages"]
     for stage in DOCTOR_PREFLIGHT_STAGES:
@@ -2335,9 +2520,7 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         elif entry["status"] == "BLOCKED_BY_DEPENDENCY":
             suffix = f" / {entry.get('dependency', 'DEPENDENCY')}"
         print(f"- {stage}: {entry['status']}{suffix}")
-    quality_execution = (
-        "READY" if stages["AIRFLOW"]["status"] == "READY" else "DEFERRED"
-    )
+    quality_execution = "READY" if stages["AIRFLOW"]["status"] == "READY" else "DEFERRED"
     print(f"- QUALITY_EXECUTION: {quality_execution}")
     if preflight["status"] != "PASS":
         failed = next(

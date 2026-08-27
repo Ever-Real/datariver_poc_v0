@@ -191,6 +191,24 @@ possible. Doctor exits nonzero when a required stage failed but never writes Pro
 checkpoints, receipts, secrets, or accepted markers. Deploy remains fail-closed before its first
 persistent mutation.
 
+Doctor does not assume that the candidate image already exists. It resolves only
+`datariver-poc:<Product SHA>` from the canonical Compose contract. If that exact tag is absent,
+doctor builds it with the same Dockerfile, linux/amd64 platform, Product revision argument and
+bounded build-proxy inputs used by deploy. If present, doctor reuses it only after the exact tag,
+platform and OCI revision pass inspection. Image build/cache is diagnostic preparation; doctor
+does not start PostgreSQL, Neo4j, Redis or the persistent Web service and does not write Product
+state. The collect-all check runs the verified image directly in hardened disposable `docker run
+--rm` containers, avoiding Compose project volume creation.
+
+Image preparation failures are separately typed as `PREP_DOCTOR_IMAGE_BUILD_FAILED`,
+`PREP_DOCTOR_IMAGE_MISSING`, `PREP_DOCTOR_IMAGE_IDENTITY_MISMATCH`,
+`PREP_DOCTOR_IMAGE_PLATFORM_MISMATCH` or `PREP_DOCTOR_IMAGE_REVISION_MISMATCH`. Ephemeral container
+creation and the pinned Node/module launch are respectively
+`PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED` and
+`PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED`. Only a successfully launched child that emits no valid
+matrix contract is `PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID`; raw Docker/provider stderr is
+not printed.
+
 ### Database credential mismatch
 
 `PREP_LOCAL_DB_CREDENTIAL_MISMATCH` means the Compose web credential does not authenticate to the

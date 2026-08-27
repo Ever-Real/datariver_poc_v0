@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -353,6 +353,167 @@ def test_image_reference_is_resolved_without_shell_state() -> None:
         deploy.resolve_web_image({"services": {"web": {"image": ""}}})
     assert captured.value.code == "PREP_WEB_IMAGE_REF_EMPTY"
     assert "IMAGE_REF" in captured.value.action
+
+
+def _web_image_document(
+    *,
+    product_sha: str = "a" * 40,
+    architecture: str = "amd64",
+) -> dict[str, object]:
+    image = f"datariver-poc:{'a' * 40}"
+    return {
+        "Id": "sha256:bounded-test-image",
+        "Os": "linux",
+        "Architecture": architecture,
+        "RepoTags": [image],
+        "Config": {
+            "Env": ["POC_SERVER_PORT=8080"],
+            "Labels": {"org.opencontainers.image.revision": product_sha},
+        },
+    }
+
+
+class DoctorImageRunner:
+    def __init__(
+        self,
+        inspections: Sequence[dict[str, object] | None],
+        *,
+        build_fails: bool = False,
+    ) -> None:
+        self.inspections = list(inspections)
+        self.build_fails = build_fails
+        self.calls: list[list[str]] = []
+
+    def run(
+        self,
+        arguments: Sequence[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        values = list(arguments)
+        self.calls.append(values)
+        if values[:3] == ["docker", "image", "inspect"]:
+            inspection = self.inspections.pop(0)
+            return subprocess.CompletedProcess(
+                values,
+                0 if inspection is not None else 1,
+                json.dumps([inspection]) if inspection is not None else "",
+                "",
+            )
+        assert values[-3:] == ["build", "--pull=false", "web"]
+        completed = subprocess.CompletedProcess(values, 1 if self.build_fails else 0, "", "")
+        if check and completed.returncode:
+            raise deploy.CommandFailure(values, completed)
+        return completed
+
+
+def test_doctor_builds_exact_image_when_absent_and_reuses_valid_present_image() -> None:
+    image = f"datariver-poc:{'a' * 40}"
+    absent = DoctorImageRunner([None, _web_image_document()])
+    assert (
+        deploy.prepare_exact_web_image(
+            absent,
+            ["docker", "compose"],
+            image,
+            "a" * 40,
+            doctor=True,
+        )
+        == "BUILT"
+    )
+    assert ["docker", "compose", "build", "--pull=false", "web"] in absent.calls
+
+    present = DoctorImageRunner([_web_image_document()])
+    assert (
+        deploy.prepare_exact_web_image(
+            present,
+            ["docker", "compose"],
+            image,
+            "a" * 40,
+            doctor=True,
+        )
+        == "REUSED"
+    )
+    assert not any("build" in call for call in present.calls)
+
+    deploy_runner = DoctorImageRunner([_web_image_document()])
+    assert (
+        deploy.prepare_exact_web_image(
+            deploy_runner,
+            ["docker", "compose"],
+            image,
+            "a" * 40,
+            doctor=False,
+        )
+        == "BUILT"
+    )
+    assert deploy_runner.calls[0][-3:] == ["build", "--pull=false", "web"]
+
+
+@pytest.mark.parametrize(
+    ("document", "code"),
+    (
+        (
+            _web_image_document(product_sha="b" * 40),
+            "PREP_DOCTOR_IMAGE_REVISION_MISMATCH",
+        ),
+        (
+            _web_image_document(architecture="arm64"),
+            "PREP_DOCTOR_IMAGE_PLATFORM_MISMATCH",
+        ),
+    ),
+)
+def test_doctor_rejects_wrong_revision_or_platform(
+    document: dict[str, object],
+    code: str,
+) -> None:
+    runner = DoctorImageRunner([document])
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            runner,
+            ["docker", "compose"],
+            f"datariver-poc:{'a' * 40}",
+            "a" * 40,
+            doctor=True,
+        )
+    assert captured.value.code == code
+    assert not any("build" in call for call in runner.calls)
+
+
+def test_doctor_classifies_image_build_failure_and_post_build_absence() -> None:
+    image = f"datariver-poc:{'a' * 40}"
+    failed = DoctorImageRunner([None], build_fails=True)
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            failed,
+            ["docker", "compose"],
+            image,
+            "a" * 40,
+            doctor=True,
+        )
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_BUILD_FAILED"
+
+    missing = DoctorImageRunner([None, None])
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            missing,
+            ["docker", "compose"],
+            image,
+            "a" * 40,
+            doctor=True,
+        )
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_MISSING"
+
+    unexpected = DoctorImageRunner([])
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            unexpected,
+            ["docker", "compose"],
+            "datariver-poc:latest",
+            "a" * 40,
+            doctor=True,
+        )
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_IDENTITY_MISMATCH"
+    assert unexpected.calls == []
 
 
 def test_postgres_contract_matches_or_returns_classified_credential_failure() -> None:
@@ -868,6 +1029,61 @@ def _doctor_matrix(
     }
 
 
+class DoctorPreflightRunner:
+    def __init__(
+        self,
+        matrix: dict[str, object] | None,
+        *,
+        container_returncode: int = 0,
+        node_returncode: int = 0,
+        module_returncode: int = 0,
+        matrix_returncode: int | None = None,
+        matrix_output: str | None = None,
+    ) -> None:
+        self.matrix = matrix
+        self.container_returncode = container_returncode
+        self.node_returncode = node_returncode
+        self.module_returncode = module_returncode
+        self.matrix_returncode = matrix_returncode
+        self.matrix_output = matrix_output
+        self.calls: list[list[str]] = []
+
+    def run(
+        self,
+        arguments: Sequence[str],
+        **keywords: object,
+    ) -> subprocess.CompletedProcess[str]:
+        values = list(arguments)
+        self.calls.append(values)
+        assert keywords == {"check": False}
+        if values[-1] == "/usr/bin/true":
+            return subprocess.CompletedProcess(values, self.container_returncode, "", "")
+        if values[-2:] == ["node", "--version"]:
+            return subprocess.CompletedProcess(values, self.node_returncode, "", "")
+        if "--eval" in values:
+            return subprocess.CompletedProcess(values, self.module_returncode, "", "")
+        assert values[-1] == "--collect-all"
+        output = self.matrix_output
+        if output is None:
+            output = "" if self.matrix is None else json.dumps(self.matrix)
+        returncode = self.matrix_returncode
+        if returncode is None:
+            returncode = 2 if self.matrix and self.matrix.get("status") == "FAILED" else 0
+        return subprocess.CompletedProcess(values, returncode, output, "")
+
+
+def _collect_doctor(runner: DoctorPreflightRunner) -> dict[str, object]:
+    return cast(
+        dict[str, object],
+        deploy.collect_provider_preflight(
+            runner,
+            f"datariver-poc:{'a' * 40}",
+            Path("/private/doctor-effective.env"),
+            {},
+        ),
+    )
+
+
 def test_doctor_collect_all_parser_preserves_full_sanitized_matrix() -> None:
     matrix = _doctor_matrix(
         chat={
@@ -882,32 +1098,72 @@ def test_doctor_collect_all_parser_preserves_full_sanitized_matrix() -> None:
         quality={"status": "BLOCKED_BY_DEPENDENCY", "dependency": "DATAHUB"},
     )
 
-    class MatrixRunner:
-        def run(
-            self, arguments: Sequence[str], **keywords: object
-        ) -> subprocess.CompletedProcess[str]:
-            assert arguments[-1] == "--collect-all"
-            assert keywords == {"check": False}
-            return subprocess.CompletedProcess(list(arguments), 2, json.dumps(matrix), "")
-
-    result = deploy.collect_provider_preflight(MatrixRunner(), ["docker", "compose"])
+    result = _collect_doctor(DoctorPreflightRunner(matrix))
     assert result == matrix
-    assert result["stages"]["AIRFLOW"] == {"status": "DEFERRED"}
-    assert result["stages"]["MINIO"] == {"status": "DEFERRED"}
+    stages = cast(dict[str, object], result["stages"])
+    assert stages["AIRFLOW"] == {"status": "DEFERRED"}
+    assert stages["MINIO"] == {"status": "DEFERRED"}
 
 
 def test_doctor_collect_all_parser_rejects_unbounded_stage_classification() -> None:
     matrix = _doctor_matrix(chat={"status": "FAILED", "classification": "untrusted"})
 
-    class MatrixRunner:
-        def run(
-            self, arguments: Sequence[str], **_keywords: object
-        ) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(list(arguments), 2, json.dumps(matrix), "")
-
     with pytest.raises(deploy.PrepError) as captured:
-        deploy.collect_provider_preflight(MatrixRunner(), ["docker", "compose"])
-    assert captured.value.code == "PREP_PREFLIGHT_MATRIX_RESULT_INVALID"
+        _collect_doctor(DoctorPreflightRunner(matrix))
+    assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID"
+
+
+def test_doctor_classifies_container_and_node_module_start_failures() -> None:
+    matrix = _doctor_matrix()
+    with pytest.raises(deploy.PrepError) as captured:
+        _collect_doctor(DoctorPreflightRunner(matrix, container_returncode=125))
+    assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED"
+
+    for runner in (
+        DoctorPreflightRunner(matrix, node_returncode=127),
+        DoctorPreflightRunner(matrix, module_returncode=1),
+    ):
+        with pytest.raises(deploy.PrepError) as captured:
+            _collect_doctor(runner)
+        assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED"
+
+
+def test_doctor_uses_matrix_invalid_only_after_child_launches_successfully() -> None:
+    runner = DoctorPreflightRunner(None, matrix_returncode=1, matrix_output="not-json")
+    with pytest.raises(deploy.PrepError) as captured:
+        _collect_doctor(runner)
+    assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID"
+    assert any("--eval" in call for call in runner.calls)
+    assert runner.calls[-1][-1] == "--collect-all"
+
+
+def test_doctor_image_and_collect_all_commands_do_not_touch_product_state() -> None:
+    image_runner = DoctorImageRunner([None, _web_image_document()])
+    deploy.prepare_exact_web_image(
+        image_runner,
+        ["docker", "compose"],
+        f"datariver-poc:{'a' * 40}",
+        "a" * 40,
+        doctor=True,
+    )
+    preflight_runner = DoctorPreflightRunner(_doctor_matrix())
+    _collect_doctor(preflight_runner)
+    calls = [*image_runner.calls, *preflight_runner.calls]
+    serialized = "\n".join(" ".join(call) for call in calls)
+    for forbidden in (
+        " up ",
+        " exec ",
+        "pgvector",
+        "neo4j",
+        "redis",
+        "deploy-attempt.json",
+        "accepted.json",
+        "volume rm",
+    ):
+        assert forbidden not in f" {serialized} "
+    for call in preflight_runner.calls:
+        assert "--rm" in call
+        assert call[:2] == ["docker", "run"]
 
 
 @pytest.mark.parametrize(

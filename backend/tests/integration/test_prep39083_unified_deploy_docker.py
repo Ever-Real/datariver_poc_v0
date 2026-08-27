@@ -124,6 +124,78 @@ def _marker(path: Path, release: Any) -> None:
     not _ENABLED,
     reason="explicit isolated PREP39083 Docker integration is required",
 )
+def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_state(
+    tmp_path: Path,
+) -> None:
+    project = f"datariver-prep39083-doctor-{uuid4().hex[:10]}"
+    product = f"{uuid4().hex}{uuid4().hex[:8]}"
+    release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", 39083, project)
+    operator = tmp_path / ".env.prep"
+    runtime = tmp_path / ".env.prep.runtime"
+    _private_env(operator, _portable_operator_values("https://doctor.integration.invalid"))
+    bundle = deploy.reconcile_environment(
+        release,
+        operator_path=operator,
+        optional_path=tmp_path / ".env.prep.optional",
+        runtime_path=runtime,
+        target_state=deploy.TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION,
+        persist_runtime=False,
+        random_token=lambda _count: pytest.fail("doctor must not generate runtime secrets"),
+    )
+    assert not runtime.exists()
+    bundle = _effective(bundle, project)
+    runner = deploy.Runner(environment=deploy.child_environment(bundle.effective))
+    image = f"datariver-poc:{product}"
+    try:
+        with deploy.private_effective_environment(bundle.effective) as env_file:
+            prefix = deploy.compose_prefix(release, env_file)
+            config = deploy.compose_config(runner, prefix)
+            assert deploy.resolve_web_image(config) == image
+            assert runner.run(["docker", "image", "inspect", image], check=False).returncode != 0
+            assert (
+                deploy.prepare_exact_web_image(
+                    runner,
+                    prefix,
+                    image,
+                    product,
+                    doctor=True,
+                )
+                == "BUILT"
+            )
+            matrix = deploy.collect_provider_preflight(
+                runner,
+                image,
+                env_file,
+                bundle.effective,
+            )
+            assert matrix["contract"] == "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_MATRIX_V1"
+            assert set(matrix["stages"]) == set(deploy.DOCTOR_PREFLIGHT_STAGES)
+            assert runner.run([*prefix, "ps", "-q"], check=False).stdout.strip() == ""
+            assert (
+                runner.run(
+                    [
+                        "docker",
+                        "volume",
+                        "ls",
+                        "--filter",
+                        f"label=com.docker.compose.project={project}",
+                        "--quiet",
+                    ],
+                    check=False,
+                ).stdout.strip()
+                == ""
+            )
+    finally:
+        with deploy.private_effective_environment(bundle.effective) as env_file:
+            prefix = deploy.compose_prefix(release, env_file)
+            runner.run([*prefix, "down", "--remove-orphans"], check=False)
+        runner.run(["docker", "image", "rm", image], check=False)
+
+
+@pytest.mark.skipif(
+    not _ENABLED,
+    reason="explicit isolated PREP39083 Docker integration is required",
+)
 def test_unified_state_machine_and_non_destructive_failed_install_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

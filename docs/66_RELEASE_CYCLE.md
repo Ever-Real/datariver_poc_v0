@@ -75,6 +75,10 @@ completed generation. No PREP setting disables this contract.
    retained backlog to later daily boundaries. Read-only `doctor` collects all independent
    provider results in one matrix, while `deploy` still blocks before mutation on any required
    failure.
+   Doctor bootstraps only the missing exact Product OCI image, or reuses an exact platform/revision
+   match, before running its disposable collect-all container. This diagnostic image/cache action
+   never starts or mutates Product state services; deploy continues to rebuild and inspect the
+   exact image before its fail-closed provider gate.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git
