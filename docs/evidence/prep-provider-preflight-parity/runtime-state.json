@@ -1,0 +1,63 @@
+{
+  "contract": "DATARIVER_PREP_PROVIDER_PREFLIGHT_PARITY_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T11:16:15Z",
+  "product_sha": "79efaf7523e96c8ae15690f6a9c1a1eca9ffc426",
+  "main_unchanged": "dd200d40c75392879e0cabc0b5baf2179c85cf9b",
+  "actual_prep_executed": false,
+  "proven_root_cause": "DEPLOY_COMPOSE_RUN_OMITTED_HOST_CONTRACT_ENVIRONMENT",
+  "shared_execution": {
+    "runtime": "DIRECT_EXACT_IMAGE_DOCKER_RUN",
+    "doctor_mode": "COLLECT_ALL",
+    "deploy_mode": "FAIL_FAST",
+    "same_effective_environment": true,
+    "platform": "linux/amd64",
+    "read_only_root": true,
+    "non_root": true,
+    "capabilities_dropped": true,
+    "no_new_privileges": true,
+    "runtime_ca_bind": "OPTIONAL_READ_ONLY",
+    "product_volumes": 0,
+    "state_service_dependencies": 0
+  },
+  "stage_parity": {
+    "WEB_INTRANET": "PASS",
+    "DATAHUB": "PASS",
+    "QUALITY_READ": "PASS",
+    "CHAT": "PASS",
+    "EMBEDDING": "PASS",
+    "RERANKER": "PASS",
+    "MCL_DISCOVERY": "PASS",
+    "AIRFLOW": "PASS",
+    "MINIO": "PASS"
+  },
+  "zero_mutation": {
+    "containers": 0,
+    "volumes": 0,
+    "runtime_secret_file": false,
+    "attempt_receipt": false,
+    "accepted_marker": false,
+    "secret_regeneration": false
+  },
+  "verification": {
+    "prep_unit_handoff": "108/108 PASS",
+    "isolated_docker_state_suite": "5/5 PASS",
+    "polluted_shell_parity": "PASS",
+    "provider_failure_zero_mutation": "PASS",
+    "smoke_failure_same_command_resume": "PASS",
+    "historical_accepted_upgrade": "PASS",
+    "node_product": "167/167 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "lint_typecheck_build_static": "PASS",
+    "strict_mypy": "588 files plus deploy script PASS",
+    "secret_proxy_scan": "PASS",
+    "repository_ruff_format": "3 unrelated baseline drifts"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "79efaf7523e96c8ae15690f6a9c1a1eca9ffc426",
+    "image_id": "sha256:693b5831ac0b1b9a03a88ea65c6e0260a871a5e00cbd61a5e72e2124861810b3",
+    "provider_preflight_module": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
