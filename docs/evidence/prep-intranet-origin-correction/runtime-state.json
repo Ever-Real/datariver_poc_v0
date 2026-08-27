@@ -1,0 +1,48 @@
+{
+  "contract": "DATARIVER_PREP_INTRANET_ORIGIN_CORRECTION_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T05:04:23Z",
+  "base": {
+    "product_sha": "322e149a25c3643099e4503f9d8d94def7fa5266",
+    "evidence_sha": "07121ed3654476b94fded7f6682782e88df04288",
+    "handoff_sha": "f042d0d05ac8b57eacd9f9b113b42759b0ac570e"
+  },
+  "product_sha": "661e0a0c571c446ae9c147923a01474065592b2f",
+  "main_sha_unchanged": "f042d0d05ac8b57eacd9f9b113b42759b0ac570e",
+  "origin_policy": {
+    "http_literal_ip_required": true,
+    "default_ranges": ["LOOPBACK", "RFC1918", "IPV6_ULA"],
+    "operator_setting": "POC_INTRANET_HTTP_ALLOWED_CIDRS",
+    "operator_setting_ownership": "OPTIONAL",
+    "one_host_ipv4": "/32",
+    "one_host_ipv6": "/128",
+    "https_behavior_changed": false,
+    "exact_origin_changed": false
+  },
+  "exposure": {
+    "web": "0.0.0.0:39083",
+    "postgres": "127.0.0.1",
+    "neo4j": "127.0.0.1",
+    "redis": "127.0.0.1"
+  },
+  "diagnostics": [
+    "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_MALFORMED_FAILED",
+    "PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_NOT_APPROVED_FAILED",
+    "PREP_PREFLIGHT_WEB_INTRANET_CIDR_CONFIG_FAILED"
+  ],
+  "verification": {
+    "local_auth_provider_preflight": "15/15 PASS",
+    "prep_deploy_handoff": "67/67 PASS",
+    "node_product_server": "146/146 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "isolated_docker_state_matrix": "1/1 PASS (209.52s)",
+    "python_aggregate": "3937 passed / 118 skipped / 55 known baseline failures",
+    "lint_typecheck_build_static_compose": "PASS",
+    "exact_oci_architecture": "linux/amd64",
+    "exact_oci_revision": "661e0a0c571c446ae9c147923a01474065592b2f",
+    "exact_oci_image_id": "sha256:2a007791e69db77a703c546d087ed58261f2791139afa3fb35fff39285012ce1"
+  },
+  "accepted_state_reset": "NONE",
+  "one_command": "./scripts/prep39083 deploy",
+  "actual_prep": "NOT_EXECUTED_BY_DEV_AGENT",
+  "actual_ops": "NOT_EXECUTED_BY_DEV_AGENT"
+}
