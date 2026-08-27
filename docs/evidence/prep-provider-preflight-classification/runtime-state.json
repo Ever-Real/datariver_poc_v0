@@ -1,0 +1,35 @@
+{
+  "contract": "DATARIVER_PREP_PROVIDER_PREFLIGHT_CLASSIFICATION_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T06:40:34Z",
+  "product_sha": "c4d8284c347194c3cb0c30728b66c036c362cd67",
+  "main_unchanged": "2876508145cbed410ae343623a2e3bedcac823cf",
+  "actual_prep_executed": false,
+  "actual_prep_root_cause_proven": false,
+  "known_stages": [
+    "WEB_INTRANET",
+    "DATAHUB",
+    "QUALITY_READ",
+    "CHAT",
+    "EMBEDDING",
+    "RERANKER",
+    "MCL_DISCOVERY",
+    "AIRFLOW",
+    "MINIO"
+  ],
+  "known_stage_unknown_reachable": false,
+  "internal_fallback": "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED",
+  "provider_mcl_focused": "29/29 PASS",
+  "node_product": "160/160 PASS",
+  "ui": "663/663 PASS",
+  "prep_unit_handoff": "76/76 PASS",
+  "isolated_docker_state_matrix": "1/1 PASS",
+  "python_full": "3946 passed / 118 skipped / 55 known baseline failures",
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "c4d8284c347194c3cb0c30728b66c036c362cd67",
+    "image_id": "sha256:e696cc3192307693fb128dfefc4bcb68f060178a506b6fd1b40f37ea1f83cc67",
+    "runtime_adapters": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
