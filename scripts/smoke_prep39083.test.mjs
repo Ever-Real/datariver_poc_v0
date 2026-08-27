@@ -7,6 +7,13 @@ import { spawn } from 'node:child_process'
 import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
+const canonicalIntranetOrigin = 'http://17.20.30.40:39083'
+
+async function requestJson(request) {
+  const chunks = []
+  for await (const chunk of request) chunks.push(chunk)
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
 
 async function fixture(k9Mode, {
   chatStatus = 200,
@@ -15,26 +22,43 @@ async function fixture(k9Mode, {
   readinessTimeoutMs = '5000',
   managedItems = null,
   changeHistory = null,
+  canonicalOrigin = canonicalIntranetOrigin,
+  requestOrigin = canonicalIntranetOrigin,
+  password = 'non-secret-test-password',
 } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'prep39083-smoke-'))
   const passwordFile = join(directory, 'password')
   const output = join(directory, 'smoke.json')
   const failureOutput = join(directory, 'smoke-failure.json')
-  await writeFile(passwordFile, 'non-secret-test-password\n')
+  await writeFile(passwordFile, `${password}\n`)
   await chmod(passwordFile, 0o600)
   let managedRequests = 0
-  const server = createServer((request, response) => {
+  const observed = {
+    healthHosts: [], loginOrigins: [], logoutOrigins: [], chatOrigins: [],
+  }
+  const server = createServer(async (request, response) => {
     const json = (status, body, headers = {}) => {
       response.writeHead(status, { 'Content-Type': 'application/json', ...headers })
       response.end(JSON.stringify(body))
     }
     if (request.url === '/healthz') {
+      observed.healthHosts.push(request.headers.host)
       response.writeHead(200, { 'Content-Type': 'text/plain' })
       response.end('ok')
     } else if (request.url === '/auth/login') {
-      json(200, { status: 'PASS' }, { 'Set-Cookie': 'session=opaque; HttpOnly' })
+      observed.loginOrigins.push(request.headers.origin)
+      const body = await requestJson(request)
+      if (request.headers.origin !== canonicalOrigin) {
+        json(403, { code: 'ORIGIN_FORBIDDEN' })
+      } else if (body.username !== 'admin' || body.password !== 'non-secret-test-password') {
+        json(401, { code: 'AUTHENTICATION_FAILED' })
+      } else {
+        json(200, { status: 'PASS' }, { 'Set-Cookie': 'session=opaque; HttpOnly' })
+      }
     } else if (request.url === '/auth/logout') {
-      json(200, { status: 'PASS' })
+      observed.logoutOrigins.push(request.headers.origin)
+      if (request.headers.origin !== canonicalOrigin) json(403, { code: 'ORIGIN_FORBIDDEN' })
+      else json(200, { status: 'PASS' })
     } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1'
       || request.url === '/poc-api/datahub/catalog?limit=1') {
       if (catalogFailure) json(catalogFailure.status, catalogFailure.body)
@@ -48,9 +72,14 @@ async function fixture(k9Mode, {
     } else if (request.url?.startsWith('/api/v1/change-history/summary?')) {
       json(200, changeHistory || { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
     } else if (request.url === '/poc-api/llm/chat') {
-      json(chatStatus, chatStatus === 200
-        ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
-        : { code: chatFailureCode, error: 'provider failed with sensitive body' })
+      observed.chatOrigins.push(request.headers.origin)
+      if (request.headers.origin !== canonicalOrigin) {
+        json(403, { code: 'ORIGIN_FORBIDDEN' })
+      } else {
+        json(chatStatus, chatStatus === 200
+          ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
+          : { code: chatFailureCode, error: 'provider failed with sensitive body' })
+      }
     } else {
       json(404, { error: 'not found' })
     }
@@ -58,10 +87,13 @@ async function fixture(k9Mode, {
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
   assert(address && typeof address === 'object')
+  const transportOrigin = `http://127.0.0.1:${address.port}`
+  const smokeRequestOrigin = requestOrigin === 'TRANSPORT' ? transportOrigin : requestOrigin
   const completed = await new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [
       script,
-      '--origin', `http://127.0.0.1:${address.port}`,
+      '--origin', transportOrigin,
+      '--request-origin', smokeRequestOrigin,
       '--username', 'admin',
       '--password-file', passwordFile,
       '--k9-mode', k9Mode,
@@ -79,8 +111,37 @@ async function fixture(k9Mode, {
   const report = await readFile(output, 'utf8').then(JSON.parse).catch(() => null)
   const failure = await readFile(failureOutput, 'utf8').then(JSON.parse).catch(() => null)
   await rm(directory, { recursive: true, force: true })
-  return { completed, report, failure, managedRequests }
+  return { completed, report, failure, managedRequests, observed, transportOrigin }
 }
+
+test('PREP smoke separates loopback transport from the canonical intranet request Origin', async () => {
+  const result = await fixture('deferred')
+  assert.equal(result.completed.code, 0, result.completed.stderr)
+  assert.equal(result.report.origin, result.transportOrigin)
+  assert.equal(result.report.request_origin, canonicalIntranetOrigin)
+  assert.deepEqual(result.observed.loginOrigins, [canonicalIntranetOrigin])
+  assert.deepEqual(result.observed.chatOrigins, [canonicalIntranetOrigin])
+  assert.deepEqual(result.observed.logoutOrigins, [canonicalIntranetOrigin])
+  assert.ok(result.observed.healthHosts.every((host) => host?.startsWith('127.0.0.1:')))
+  assert.match(result.completed.stdout, /\[SMOKE 6\/6\].*PASS/u)
+})
+
+test('PREP smoke classifies canonical Origin rejection separately from authentication', async () => {
+  const result = await fixture('deferred', { requestOrigin: 'TRANSPORT' })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'ADMIN_LOGIN')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_ADMIN_ORIGIN_FAILED')
+  assert.equal(result.failure.status_class, '4xx')
+})
+
+test('PREP smoke retains ADMIN_AUTH only for wrong credentials at the canonical Origin', async () => {
+  const result = await fixture('deferred', { password: 'wrong-test-password' })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'ADMIN_LOGIN')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_ADMIN_AUTH_FAILED')
+  assert.equal(result.failure.status_class, '4xx')
+  assert.deepEqual(result.observed.loginOrigins, [canonicalIntranetOrigin])
+})
 
 test('PREP smoke accepts K9 deferred without requesting managed graph assets', async () => {
   const result = await fixture('deferred')

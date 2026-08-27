@@ -470,7 +470,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
     not _FULL_ENABLED,
     reason="explicit full PREP39083 failed-smoke Docker integration is required",
 )
-def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstrap(
+def test_current_v2_smoke_failed_resumes_across_descendant_without_duplicate_bootstrap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -478,8 +478,17 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     project = f"datariver-prep39083-retry-{uuid4().hex[:10]}"
     port = int(_free_port())
     runner = deploy.Runner(environment=deploy.child_environment({}))
-    product = runner.output(["git", "rev-parse", "HEAD"])
-    release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", port, project)
+    product_b = runner.output(["git", "rev-parse", "HEAD"])
+    product_a = runner.output(["git", "rev-parse", "HEAD^"])
+    assert (
+        runner.run(
+            ["git", "merge-base", "--is-ancestor", product_a, product_b],
+            check=False,
+        ).returncode
+        == 0
+    )
+    release_a = deploy.ReleaseIdentity(product_a, "a" * 40, "linux/amd64", port, project)
+    release_b = deploy.ReleaseIdentity(product_b, "b" * 40, "linux/amd64", port, project)
     operator = tmp_path / ".env.prep"
     optional = tmp_path / ".env.prep.optional"
     runtime = tmp_path / ".env.prep.runtime"
@@ -493,7 +502,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
     _private_env(operator, _portable_operator_values(f"http://127.0.0.1:{port}"))
     bundle = deploy.reconcile_environment(
-        release,
+        release_a,
         operator_path=operator,
         optional_path=optional,
         runtime_path=runtime,
@@ -513,7 +522,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     )
     bundle = replace(bundle, effective=effective)
     runner.environment = deploy.child_environment(bundle.effective)
-    assert runner.environment["POC_IMAGE_TAG"] == product
+    assert runner.environment["POC_IMAGE_TAG"] == product_a
     assert runner.environment["POC_BIND_HOST"] == WILDCARD_BIND_HOST
     assert runner.environment["POC_STATE_BIND_HOST"] == "127.0.0.1"
     assert runner.environment["POC_PORT"] == str(port)
@@ -522,21 +531,22 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     assert "COMPOSE_FILE" not in runner.environment
     assert "COMPOSE_ENV_FILES" not in runner.environment
     assert "DOCKER_DEFAULT_PLATFORM" not in runner.environment
-    source = {"handoff_commit": product}
+    source_a = {"handoff_commit": product_a}
+    source_b = {"handoff_commit": product_b}
     before_39080 = deploy.snapshot_39080(runner)
     inventory = deploy.inspect_target_inventory(
         runner,
-        release,
+        release_a,
         runtime_path=runtime,
         accepted_marker_path=accepted,
         attempt_receipt_path=attempt,
     )
-    preparation = deploy.DeploymentPreparation(runner, source, inventory, before_39080)
+    preparation = deploy.DeploymentPreparation(runner, source_a, inventory, before_39080)
 
-    monkeypatch.setattr(deploy, "verify_source_identity", lambda _release: source)
+    monkeypatch.setattr(deploy, "verify_source_identity", lambda _release: source_a)
     monkeypatch.setattr(deploy, "require_prep_platform", lambda _runner: None)
     with pytest.raises(deploy.PrepError):
-        deploy.doctor(release, bundle)
+        deploy.doctor(release_a, bundle)
     assert not accepted.exists() and not attempt.exists()
     assert not runtime_root.exists() or list(runtime_root.iterdir()) == []
     assert (
@@ -564,7 +574,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
 
     monkeypatch.setattr(deploy, "run_provider_preflight", failed_provider_preflight)
     with pytest.raises(deploy.PrepError) as provider_failure:
-        deploy.deploy(release, bundle, preparation)
+        deploy.deploy(release_a, bundle, preparation)
     assert provider_failure.value.code == "PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED"
     assert not accepted.exists() and not attempt.exists()
     assert (
@@ -615,14 +625,14 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     cleanup_bundle = bundle
     try:
         with pytest.raises(deploy.PrepError) as first_failure:
-            deploy.deploy(release, bundle, preparation)
+            deploy.deploy(release_a, bundle, preparation)
         assert first_failure.value.code == "PREP_SMOKE_GENERAL_PROVIDER_FAILED"
         assert not accepted.exists()
         assert deploy._attempt_receipt(attempt)["phase"] == "SMOKE_FAILED"
 
         retry_inventory = deploy.inspect_target_inventory(
             runner,
-            release,
+            release_b,
             runtime_path=runtime,
             accepted_marker_path=accepted,
             attempt_receipt_path=attempt,
@@ -632,38 +642,67 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
         )
         previous_attempt = deploy.validate_owned_attempt(
             runner,
-            release,
-            product,
+            release_b,
+            product_b,
             retry_inventory,
             deploy.read_env_file(runtime, private=True, label=".env.prep.runtime"),
             bundle.k9_mode,
         )
+        preserved_runtime = deploy.read_env_file(
+            runtime,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        preserved_secrets = {
+            key: preserved_runtime[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS
+        }
         retry_bundle = deploy.reconcile_environment(
-            release,
+            release_b,
             operator_path=operator,
             optional_path=optional,
             runtime_path=runtime,
             target_state=deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
             random_token=lambda _count: pytest.fail("retry must reuse generated secrets"),
         )
-        retry_bundle = replace(retry_bundle, effective=effective)
+        retry_effective = dict(retry_bundle.effective)
+        for key in (
+            "POC_PLATFORM",
+            "POC_SHARED_NETWORK",
+            "POC_POSTGRES_HOST_PORT",
+            "POC_NEO4J_HTTP_PORT",
+            "POC_REDIS_PORT",
+            "POC_PORT",
+            "POC_PUBLIC_ORIGIN",
+        ):
+            retry_effective[key] = effective[key]
+        retry_bundle = replace(retry_bundle, effective=retry_effective)
         runner.environment = deploy.child_environment(retry_bundle.effective)
         cleanup_bundle = retry_bundle
         retry_preparation = deploy.DeploymentPreparation(
             runner,
-            source,
+            source_b,
             retry_inventory,
             before_39080,
             previous_attempt,
         )
-        deploy.deploy(release, retry_bundle, retry_preparation)
+        deploy.deploy(release_b, retry_bundle, retry_preparation)
         assert accepted.is_file()
-        assert deploy._attempt_receipt(attempt)["phase"] == "ACCEPTED"
+        final_receipt = deploy._attempt_receipt(attempt)
+        assert final_receipt["phase"] == "ACCEPTED"
+        assert final_receipt["resumed_from_product_sha"] == product_a
+        final_runtime = deploy.read_env_file(
+            runtime,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        assert {
+            key: final_runtime[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS
+        } == preserved_secrets
         assert smoke_attempts == 2
         with deploy.private_effective_environment(retry_bundle.effective) as env_file:
             inspected = deploy.inspect_bootstrap(
                 runner,
-                deploy.compose_prefix(release, env_file),
+                deploy.compose_prefix(release_b, env_file),
             )
         assert inspected["administrator_record_count"] == 1
         assert inspected["user_record_count"] == 3
@@ -671,7 +710,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     finally:
         runner.environment = deploy.child_environment(cleanup_bundle.effective)
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
-            prefix = deploy.compose_prefix(release, env_file)
+            prefix = deploy.compose_prefix(release_b, env_file)
             runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)
 
 

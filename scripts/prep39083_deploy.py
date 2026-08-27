@@ -2332,6 +2332,7 @@ def run_smoke(
     username: str,
     password: str,
     *,
+    request_origin: str,
     k9_mode: str,
 ) -> None:
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
@@ -2348,6 +2349,8 @@ def run_smoke(
                     SMOKE_TOOL,
                     "--origin",
                     f"http://127.0.0.1:{release.port}",
+                    "--request-origin",
+                    request_origin,
                     "--username",
                     username,
                     "--password-file",
@@ -2381,12 +2384,18 @@ def run_smoke(
                 and code not in SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES
             ):
                 code = "PREP_SMOKE_UNKNOWN_FAILED"
-            action = (
-                "Rerun deploy with the correct existing administrator password."
-                if code == "PREP_SMOKE_ADMIN_AUTH_FAILED"
-                else "Correct the classified provider/readiness gate and rerun the same deploy "
-                "command; do not reset persistent state."
-            )
+            if code == "PREP_SMOKE_ADMIN_AUTH_FAILED":
+                action = "Rerun deploy with the correct existing administrator password."
+            elif code == "PREP_SMOKE_ADMIN_ORIGIN_FAILED":
+                action = (
+                    "Preserve PREP state and verify the smoke request uses the exact canonical "
+                    "POC_PUBLIC_ORIGIN before rerunning the same deploy command."
+                )
+            else:
+                action = (
+                    "Correct the classified provider/readiness gate and rerun the same deploy "
+                    "command; do not reset persistent state."
+                )
             smoke_step = (
                 "K9_INITIAL_REFRESH"
                 if "_K9_" in code or code == "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY"
@@ -2632,7 +2641,14 @@ def deploy(
                 "PREP_AUTHENTICATED_SMOKE_FAILED",
                 "Authenticated PREP smoke failed outside a more precise Product classification.",
             ):
-                run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
+                run_smoke(
+                    runner,
+                    release,
+                    username,
+                    password,
+                    request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
+                    k9_mode=bundle.k9_mode,
+                )
         except PrepError:
             advance_attempt_phase(attempt, "SMOKE_FAILED")
             raise
@@ -2776,7 +2792,14 @@ def smoke(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         inspected = inspect_bootstrap(runner, compose_prefix(release, env_file))
     username = _choose_existing_administrator(inspected)
     password = getpass.getpass(f"Password for {username} (smoke only): ")
-    run_smoke(runner, release, username, password, k9_mode=bundle.k9_mode)
+    run_smoke(
+        runner,
+        release,
+        username,
+        password,
+        request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
+        k9_mode=bundle.k9_mode,
+    )
     print("PREP39083 SMOKE PASS")
 
 

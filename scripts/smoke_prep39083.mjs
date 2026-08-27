@@ -30,6 +30,16 @@ function smokeFailure(stage, classification, message, status = null, diagnostic 
   })
 }
 
+function adminLoginClassification(body, status) {
+  if (body?.code === 'ORIGIN_FORBIDDEN' && status === 403) {
+    return 'PREP_SMOKE_ADMIN_ORIGIN_FAILED'
+  }
+  if (body?.code === 'AUTHENTICATION_FAILED' && status === 401) {
+    return 'PREP_SMOKE_ADMIN_AUTH_FAILED'
+  }
+  return 'PREP_SMOKE_ADMIN_LOGIN_FAILED'
+}
+
 async function privateSecret(path) {
   const metadata = await lstat(path)
   if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0 || metadata.size > 1026) {
@@ -64,7 +74,10 @@ async function responseJson(url, init, stage, classification) {
     const generalClassification = stage === 'GENERAL_PROVIDER'
       ? prepGeneralSmokeClassification(body?.code)
       : undefined
-    const failureClassification = generalClassification || inventoryClassification
+    const adminClassification = stage === 'ADMIN_LOGIN'
+      ? adminLoginClassification(body, response.status)
+      : undefined
+    const failureClassification = adminClassification || generalClassification || inventoryClassification
     throw smokeFailure(
       stage,
       failureClassification,
@@ -151,7 +164,8 @@ async function removeIfPresent(path) {
   })
 }
 
-const origin = argument('--origin', 'http://127.0.0.1:39083')
+const transportOrigin = argument('--origin', 'http://127.0.0.1:39083')
+const requestOrigin = argument('--request-origin')
 const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
@@ -163,20 +177,33 @@ const readinessTimeoutMs = boundedMilliseconds(
 
 async function main() {
   const started = processStarted
-  if (!username || !passwordFile || !output) {
-    throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', 'Required: --username, --password-file, and --output')
+  if (!requestOrigin || !username || !passwordFile || !output) {
+    throw smokeFailure(
+      'INPUT',
+      'PREP_SMOKE_INPUT_INVALID',
+      'Required: --request-origin, --username, --password-file, and --output',
+    )
   }
   if (!['REQUIRED', 'DEFERRED'].includes(k9Mode)) {
     throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', '--k9-mode must be required or deferred.')
   }
-  const parsedOrigin = new URL(origin)
-  if (!['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.pathname !== '/') {
-    throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', '--origin must be one HTTP(S) origin without a path.')
+  for (const [name, value] of [['--origin', transportOrigin], ['--request-origin', requestOrigin]]) {
+    let parsed
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', `${name} must be one exact HTTP(S) origin.`)
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)
+      || parsed.username || parsed.password || parsed.pathname !== '/'
+      || parsed.search || parsed.hash || parsed.origin !== value) {
+      throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', `${name} must be one exact HTTP(S) origin.`)
+    }
   }
 
   let health
   try {
-    health = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(10_000) })
+    health = await fetch(`${transportOrigin}/healthz`, { signal: AbortSignal.timeout(10_000) })
   } catch {
     throw smokeFailure('HEALTH', 'PREP_SMOKE_WEB_HEALTH_FAILED', 'Host web health request failed.')
   }
@@ -186,19 +213,26 @@ async function main() {
   progress('1/6', 'Host and Product health PASS')
 
   const password = await privateSecret(passwordFile)
-  const login = await responseJson(`${origin}/auth/login`, {
+  const login = await responseJson(`${transportOrigin}/auth/login`, {
     method: 'POST',
-    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    headers: { Origin: requestOrigin, 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   }, 'ADMIN_LOGIN', 'PREP_SMOKE_ADMIN_AUTH_FAILED')
   const cookie = login.response.headers.get('set-cookie')?.split(';', 1)[0]
-  if (!cookie) throw smokeFailure('ADMIN_LOGIN', 'PREP_SMOKE_ADMIN_AUTH_FAILED', 'Login returned no opaque session.')
+  if (!cookie) {
+    throw smokeFailure(
+      'ADMIN_LOGIN',
+      'PREP_SMOKE_ADMIN_LOGIN_CONTRACT_FAILED',
+      'Login returned no opaque session.',
+    )
+  }
   progress('2/6', 'Administrator login PASS')
 
   const report = {
     contract: 'DATARIVER_PREP39083_SMOKE_V1',
     generated_at: new Date().toISOString(),
-    origin,
+    origin: transportOrigin,
+    request_origin: requestOrigin,
     health: 'PASS',
     login: 'PASS',
     k9_mode: k9Mode,
@@ -213,7 +247,7 @@ async function main() {
   try {
     await retryReadiness(async () => {
       const currentInventory = await withHeartbeat(responseJson(
-        `${origin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`,
+        `${transportOrigin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`,
         { headers: { Cookie: cookie } },
         'DATAHUB',
         'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED',
@@ -223,7 +257,7 @@ async function main() {
           phase: 'RESPONSE_BUILD', terminal: true,
         })
       }
-      const catalog = await responseJson(`${origin}/poc-api/datahub/catalog?limit=1`, {
+      const catalog = await responseJson(`${transportOrigin}/poc-api/datahub/catalog?limit=1`, {
         headers: { Cookie: cookie },
       }, 'DATAHUB', 'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED')
       if (!catalog.body || typeof catalog.body !== 'object') {
@@ -235,7 +269,7 @@ async function main() {
 
     if (k9Mode === 'REQUIRED') {
       await retryReadiness(async () => {
-        const managed = await responseJson(`${origin}/poc-api/knowledge/managed-assets`, {
+        const managed = await responseJson(`${transportOrigin}/poc-api/knowledge/managed-assets`, {
           headers: { Cookie: cookie },
         }, 'K9', 'PREP_SMOKE_K9_NOT_READY')
         const items = Array.isArray(managed.body?.items) ? managed.body.items : []
@@ -283,7 +317,7 @@ async function main() {
     const weekStart = week.toISOString().slice(0, 10)
     await retryReadiness(async () => {
       const changeHistory = await responseJson(
-        `${origin}/api/v1/change-history/summary?week_start=${weekStart}`,
+        `${transportOrigin}/api/v1/change-history/summary?week_start=${weekStart}`,
         { headers: { Cookie: cookie } },
         'MCL_CHANGE_HISTORY',
         'PREP_SMOKE_MCL_SOURCE_FAILED',
@@ -322,9 +356,9 @@ async function main() {
     }, readinessTimeoutMs, '5/6 MCL')
     progress('5/6', 'MCL source and durable checkpoint contract PASS')
 
-    const chat = await withHeartbeat(responseJson(`${origin}/poc-api/llm/chat`, {
+    const chat = await withHeartbeat(responseJson(`${transportOrigin}/poc-api/llm/chat`, {
       method: 'POST',
-      headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+      headers: { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
     }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '6/6 GENERAL provider')
     if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0) {
@@ -333,9 +367,9 @@ async function main() {
     report.llm_general = 'PASS'
     progress('6/6', 'GENERAL provider and route PASS')
   } finally {
-    await fetch(`${origin}/auth/logout`, {
+    await fetch(`${transportOrigin}/auth/logout`, {
       method: 'POST',
-      headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+      headers: { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' },
       body: '{}',
       signal: AbortSignal.timeout(10_000),
     }).catch(() => undefined)

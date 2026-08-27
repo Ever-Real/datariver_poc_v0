@@ -1466,11 +1466,83 @@ def test_deploy_wrapper_preserves_bounded_inventory_smoke_classification(
             _release(),
             "admin",
             "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
         )
 
     assert captured.value.step == "AUTHENTICATED_SMOKE"
     assert captured.value.code == classification
+
+
+def test_smoke_uses_loopback_transport_and_canonical_request_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", runtime_root / "smoke-failure.json")
+
+    class CapturingSmokeRunner:
+        def __init__(self) -> None:
+            self.arguments: list[str] = []
+
+        def run(
+            self,
+            arguments: Sequence[str | os.PathLike[str]],
+            **_keywords: object,
+        ) -> subprocess.CompletedProcess[str]:
+            self.arguments = [os.fspath(value) for value in arguments]
+            return subprocess.CompletedProcess(self.arguments, 0, "", "")
+
+    runner = CapturingSmokeRunner()
+    canonical_origin = "http://17.20.30.40:39083"
+    deploy.run_smoke(
+        runner,
+        _release(),
+        "admin",
+        "bounded-test-password",
+        request_origin=canonical_origin,
+        k9_mode="REQUIRED",
+    )
+
+    assert runner.arguments[runner.arguments.index("--origin") + 1] == ("http://127.0.0.1:39083")
+    assert runner.arguments[runner.arguments.index("--request-origin") + 1] == canonical_origin
+
+
+def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    smoke_failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+
+    class FailingSmokeRunner:
+        def run(self, arguments: object, **_keywords: object) -> None:
+            del arguments
+            smoke_failure.write_text(
+                json.dumps({"classification": "PREP_SMOKE_ADMIN_ORIGIN_FAILED"}),
+                encoding="utf-8",
+            )
+            raise deploy.CommandFailure(
+                ["node"],
+                subprocess.CompletedProcess(["node"], 2, "", ""),
+            )
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            FailingSmokeRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
+            k9_mode="REQUIRED",
+        )
+
+    assert captured.value.code == "PREP_SMOKE_ADMIN_ORIGIN_FAILED"
+    assert "administrator password" not in captured.value.action
+    assert "canonical POC_PUBLIC_ORIGIN" in captured.value.action
 
 
 @pytest.mark.parametrize(
@@ -1512,6 +1584,7 @@ def test_deploy_wrapper_projects_precise_post_preflight_smoke_stage(
             _release(),
             "admin",
             "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
             k9_mode="REQUIRED",
         )
     assert captured.value.code == classification
@@ -1543,6 +1616,7 @@ def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
             _release(),
             "admin",
             "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
         )
 
@@ -1579,6 +1653,7 @@ def test_deploy_wrapper_preserves_bounded_general_provider_smoke_classification(
             _release(),
             "admin",
             "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
         )
 
@@ -1612,6 +1687,7 @@ def test_deploy_wrapper_rejects_untrusted_general_provider_classification(
             _release(),
             "admin",
             "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
         )
 

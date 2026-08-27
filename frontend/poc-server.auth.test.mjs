@@ -53,7 +53,7 @@ function accessDocument(users) {
   }
 }
 
-async function serverFixture() {
+async function serverFixture(canonicalOrigin = null) {
   const stateStore = createPocStateStore()
   const providerInventory = [
     { id: 'urn:table:a', external_urn: 'urn:table:a', name: 'table_a', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
@@ -125,12 +125,12 @@ async function serverFixture() {
   const address = server.address()
   assert.equal(typeof address, 'object')
   const origin = `http://127.0.0.1:${address.port}`
-  config.publicOrigin = origin
+  config.publicOrigin = canonicalOrigin ?? origin
   const close = async () => {
     server.closeAllConnections()
     await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
   }
-  const login = async (username, password, suppliedOrigin = origin) => {
+  const login = async (username, password, suppliedOrigin = config.publicOrigin) => {
     const response = await fetch(`${origin}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: suppliedOrigin },
@@ -143,12 +143,42 @@ async function serverFixture() {
     close,
     login,
     origin,
+    canonicalOrigin: config.publicOrigin,
     stateStore,
     users,
     setCurrentProviderInventory(value) { currentProviderInventory = value },
     setCurrentProviderError(value) { currentProviderError = value },
   }
 }
+
+test('separates loopback transport from canonical intranet Origin for authentication', async () => {
+  const fixture = await serverFixture('http://17.20.30.40:39083')
+  try {
+    const canonical = await fixture.login('first@example.com', 'first correct password')
+    assert.equal(canonical.response.status, 200)
+    assert.ok(canonical.cookie)
+
+    const wrongOrigin = await fixture.login(
+      'first@example.com',
+      'first correct password',
+      fixture.origin,
+    )
+    assert.equal(wrongOrigin.response.status, 403)
+    assert.equal((await wrongOrigin.response.json()).code, 'ORIGIN_FORBIDDEN')
+
+    const wrongPassword = await fixture.login('first@example.com', 'wrong password')
+    assert.equal(wrongPassword.response.status, 401)
+    assert.equal((await wrongPassword.response.json()).code, 'AUTHENTICATION_FAILED')
+
+    const logout = await fetch(`${fixture.origin}/auth/logout`, {
+      method: 'POST',
+      headers: { Cookie: canonical.cookie, Origin: fixture.canonicalOrigin },
+    })
+    assert.equal(logout.status, 200)
+  } finally {
+    await fixture.close()
+  }
+})
 
 test('binds concurrent browser sessions to current server-side access profiles', async () => {
   const fixture = await serverFixture()

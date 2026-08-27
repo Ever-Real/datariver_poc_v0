@@ -86,6 +86,9 @@ completed generation. No PREP setting disables this contract.
    image gate. Doctor collect-all and deploy fail-fast provider checks then share the same hardened
    direct `docker run --rm` executor and exact private effective env file; neither provider gate
    depends on the Web Compose service environment or creates Product volumes.
+   Authenticated smoke keeps host-health transport on loopback but projects the exact tracked
+   `POC_PUBLIC_ORIGIN` into every state-changing request `Origin` header; origin rejection and
+   administrator credential rejection remain separate bounded failure classes.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git

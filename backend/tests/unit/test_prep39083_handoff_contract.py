@@ -279,6 +279,9 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     assert "password }" in smoke
     assert "console.log(password" not in smoke
     assert "--k9-mode" in smoke
+    assert "--request-origin" in smoke
+    assert "requestOrigin" in smoke
+    assert "PREP_SMOKE_ADMIN_ORIGIN_FAILED" in smoke
     assert "k9Mode === 'REQUIRED'" in smoke
     assert "'DEFERRED'" in smoke
     assert "PREP_SMOKE_GENERAL_PROVIDER_FAILED" in smoke

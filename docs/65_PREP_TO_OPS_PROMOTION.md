@@ -92,8 +92,10 @@ services; `--no-build` remains mandatory defense in depth. Bootstrap an OPS-owne
 one does not already exist, using the bundled `poc-prep-bootstrap.mjs` through `docker compose run`
 with the OPS Compose environment and a short-lived mode-0600 password-file mount. Never recreate a
 raw `docker run` path with separately typed PostgreSQL variables. Run `smoke_prep39083.mjs` with an
-OPS-owned mode-0600 password file, then perform authenticated browser login, managed-graph/Cytoscape
-hard reload and representative GENERAL/VECTOR/GRAPH checks.
+OPS-owned mode-0600 password file. Keep the request transport on loopback, but pass the exact OPS
+`POC_PUBLIC_ORIGIN` as the smoke request origin for login, logout, and Chat CSRF validation. Then
+perform authenticated browser login, managed-graph/Cytoscape hard reload and representative
+GENERAL/VECTOR/GRAPH checks.
 
 ## 5. Persistence and rollback
 

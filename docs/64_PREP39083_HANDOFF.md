@@ -310,10 +310,14 @@ sanitized smoke classifications; a GENERAL route/evidence mismatch remains
 `PREP_SMOKE_GENERAL_ROUTE_FAILED`.
 
 Authenticated smoke emits stage progress and bounded heartbeats instead of hiding a long captured
-subprocess. Failures are classified as DataHub connectivity/auth, K9/semantic readiness, GENERAL
-provider/route, or administrator authentication. Sanitized failure metadata is stored in ignored
-`runtime/prep39083/smoke-failure.json`; it contains no URL, credential, token or response body and
-is superseded by the next successful smoke.
+subprocess. Host health always uses loopback transport at `http://127.0.0.1:39083`, while login,
+logout, and GENERAL Chat send the exact canonical `POC_PUBLIC_ORIGIN` as their HTTP `Origin` header.
+The loopback transport is never accepted as an alternate authentication origin. Login failures
+distinguish canonical-origin rejection (`PREP_SMOKE_ADMIN_ORIGIN_FAILED`) from actual credential
+rejection (`PREP_SMOKE_ADMIN_AUTH_FAILED`). Other failures are classified as DataHub
+connectivity/auth, K9/semantic readiness, or GENERAL provider/route. Sanitized failure metadata is
+stored in ignored `runtime/prep39083/smoke-failure.json`; it contains no URL, credential, token or
+response body and is superseded by the next successful smoke.
 
 ### Manual Compose inspection
 
