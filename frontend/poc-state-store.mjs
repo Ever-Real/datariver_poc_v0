@@ -530,7 +530,6 @@ export function createPocStateStore({ databasePool } = {}) {
   const memoryChatSessions = new Map()
   const memoryChatMessages = new Map()
   let pool = databasePool
-  let studioPool
   let redis
   let startingDatabase
   let startingRedis
@@ -553,15 +552,6 @@ export function createPocStateStore({ databasePool } = {}) {
         })
       }
       pool.on?.('error', () => undefined)
-      if (!studioPool && process.env.POC_K9_STUDIO_DATABASE_URL) {
-        studioPool = new Pool({
-          connectionString: process.env.POC_K9_STUDIO_DATABASE_URL.trim(),
-          max: 2,
-          idleTimeoutMillis: 30_000,
-          options: '-c default_transaction_read_only=on',
-        })
-        studioPool.on?.('error', () => undefined)
-      }
       await pool.query(`
         CREATE TABLE IF NOT EXISTS poc_state (
           scope text PRIMARY KEY,
@@ -2348,11 +2338,9 @@ export function createPocStateStore({ databasePool } = {}) {
     await Promise.allSettled([
       redis?.isOpen ? redis.quit() : undefined,
       pool && !databasePool ? pool.end() : undefined,
-      studioPool ? studioPool.end() : undefined,
     ])
     redis = undefined
     if (!databasePool) pool = undefined
-    studioPool = undefined
   }
 
   async function requireKnowledgeDatabase() {
@@ -2432,78 +2420,6 @@ export function createPocStateStore({ databasePool } = {}) {
       code: 'KNOWLEDGE_INGESTION_STALE', statusCode: 409,
     })
     return result.rows[0]
-  }
-
-  async function verifyK9StudioAuthority(authCtx, expectedPolicy) {
-    await startDatabase()
-    if (!studioPool) throw new Error('K9 Studio authority verification requires a configured POC_K9_STUDIO_DATABASE_URL connection')
-    const query = `
-      SELECT g.id AS graph_id, g.graph_type,
-             sr.id AS release_id, sr.release_no, sr.tbox_hash, sr.contract_hash,
-             sr.accepted_proposal_id AS sr_proposal_id, sr.accepted_proposal_hash AS sr_proposal_hash,
-             sr.source_contract_hash AS sr_source_hash, sr.mapping_contract_hash AS sr_mapping_hash,
-             sr.managed_graph_type AS sr_managed_type,
-             d.id AS draft_id,
-             d.accepted_proposal_id AS d_proposal_id, d.accepted_proposal_hash AS d_proposal_hash,
-             d.source_contract_hash AS d_source_hash, d.mapping_contract_hash AS d_mapping_hash,
-             d.managed_graph_type AS d_managed_type,
-             ov.id AS ontology_id, ov.status AS ov_status, ov.checksum AS ov_checksum
-      FROM knowledge.graphs g
-      JOIN knowledge.studio_releases sr
-        ON sr.workspace_id = g.workspace_id AND sr.graph_id = g.id AND g.active_studio_release_id = sr.id
-      JOIN knowledge.studio_drafts d
-        ON d.workspace_id = sr.workspace_id AND sr.source_draft_id = d.id
-        AND d.materialized_graph_id = g.id AND d.published_studio_release_id = sr.id
-      JOIN knowledge.ontology_versions ov
-        ON ov.workspace_id = sr.workspace_id AND ov.graph_id = g.id AND sr.ontology_version_id = ov.id
-        AND d.materialized_ontology_version_id = ov.id
-      WHERE g.workspace_id = $1
-        AND sr.managed_intent = $2
-        AND d.managed_intent = $2
-        AND g.status = 'PUBLISHED'
-        AND sr.state = 'ACTIVE'
-        AND d.state = 'PUBLISHED'
-        AND ov.status = 'PUBLISHED'
-    `
-    const studioClient = await studioPool.connect()
-    let transactionStarted = false
-    let rows
-    try {
-      await studioClient.query('BEGIN READ ONLY')
-      transactionStarted = true
-      const readOnly = await studioClient.query('SHOW transaction_read_only')
-      if (readOnly.rows[0]?.transaction_read_only !== 'on') {
-        throw new Error('K9 Studio authority connection is not read-only')
-      }
-      const authorityResult = await studioClient.query(query, [authCtx.workspaceId, expectedPolicy.managed_intent])
-      rows = authorityResult.rows
-      await studioClient.query('COMMIT')
-      transactionStarted = false
-    } catch (error) {
-      if (transactionStarted) await studioClient.query('ROLLBACK').catch(() => undefined)
-      throw error
-    } finally {
-      studioClient.release()
-    }
-    if (rows.length !== 1) throw new Error('Zero or duplicate canonical Studio publications for intent')
-    const row = rows[0]
-
-    if (row.graph_type !== expectedPolicy.name) throw new Error('Graph type drift')
-    if (row.sr_managed_type !== expectedPolicy.name || row.d_managed_type !== expectedPolicy.name) throw new Error('Managed graph type drift')
-    if (row.graph_id !== expectedPolicy.graph_id) throw new Error('Graph ID drift')
-    if (row.release_id !== expectedPolicy.studio_release_id) throw new Error('Release ID drift')
-    if (row.ontology_id !== expectedPolicy.ontology_version_id) throw new Error('Ontology ID drift')
-    if (row.release_no !== expectedPolicy.studio_release_no) throw new Error('Studio release number drift')
-
-    if (row.tbox_hash !== expectedPolicy.tbox_hash) throw new Error('T-box hash drift')
-    if (row.ov_checksum !== expectedPolicy.tbox_hash) throw new Error('Ontology checksum drift')
-    if (row.contract_hash !== expectedPolicy.contract_hash) throw new Error('Contract hash drift')
-
-    if (row.sr_proposal_hash !== expectedPolicy.proposal_hash || row.d_proposal_hash !== expectedPolicy.proposal_hash) throw new Error('Proposal hash drift')
-    if (row.sr_proposal_id !== expectedPolicy.accepted_proposal_id || row.d_proposal_id !== expectedPolicy.accepted_proposal_id) throw new Error('Proposal ID drift')
-
-    if (row.sr_source_hash !== expectedPolicy.source_hash || row.d_source_hash !== expectedPolicy.source_hash) throw new Error('Source hash drift')
-    if (row.sr_mapping_hash !== expectedPolicy.mapping_hash || row.d_mapping_hash !== expectedPolicy.mapping_hash) throw new Error('Mapping hash drift')
   }
 
   async function getK9Policy(graphId) {
@@ -3056,7 +2972,6 @@ export function createPocStateStore({ databasePool } = {}) {
     listKnowledgeIngestionJobs,
     insertKnowledgeIngestionJob,
     updateKnowledgeIngestionJob,
-    verifyK9StudioAuthority,
     getK9Policy,
     listK9ManagedGraphAssets,
     getK9ManagedGraphAsset,

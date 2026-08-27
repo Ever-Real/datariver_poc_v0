@@ -78,22 +78,20 @@ Git, log or Evidence.
 
 | File | Owner | Contents | Update behavior |
 |---|---|---|---|
-| `.env.prep` | PREP operator | public origin, build proxy, providers, optional runtime proxy/CA and Studio read-only URL | preserved |
+| `.env.prep` | PREP operator | private intranet origin, build/runtime network, DataHub/inference providers, and DataHub Kafka connectivity | preserved |
 | `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
-| `.env.prep.optional` | PREP operator | optional Airflow/MinIO, MCL and Grafana settings | absent is valid |
+| `.env.prep.optional` | PREP operator | optional existing Airflow/MinIO and Grafana settings | absent is valid |
 | `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
 | `release.json` | release handoff | accepted Product/Evidence/platform/port/project | updated by Git |
 
-`POC_K9_STUDIO_DATABASE_URL` remains operator-owned because it must name an approved external
-read-only Knowledge Studio connection. It is feature-dependent, not core-required. A configured
-URL derives `POC_K9_SCHEDULER_ENABLED=true`, requires the K9 Subject and DAILY managed-graph READY
-smoke, and preserves the existing managed-refresh contract. A blank URL derives `false`; core web,
-login, DataHub and Chat smoke continue and the summary reports `K9 Managed Refresh: DEFERRED —
-Studio DB not configured`. No URL or Studio state is fabricated.
+The two default K9 managed graphs are built-in Product policies. The deployer always bootstraps the
+distinct K9 service Subject, reconciles those exact policy pins in local PostgreSQL, performs the
+initial shared-snapshot refresh into local Neo4j, and requires both graphs plus the semantic index
+to be DAILY and READY. No unrelated Studio database or extra container is required.
 
 The local Workspace is the Product's canonical target-local Workspace. MCP remains a built-in
 adapter with a generated target-local token and deterministic Subject, so it adds no operator
-secret. When K9 is configured, K9 and MCP use distinct deterministic Subjects; each requested
+secret. K9 and MCP use distinct deterministic Subjects; each requested
 Subject is created-if-absent, verified-if-present and fails on drift.
 
 Optional integrations are enabled only when needed:
@@ -105,9 +103,25 @@ editor deploy/prep39083/.env.prep.optional
 ./scripts/prep39083 deploy
 ```
 
-MCL remains disabled by default. Airflow and MinIO are not needed by core boot or the managed-graph
-smoke; configure them only for Registration acceptance. DataHub and all three inference stages stay
-external and are never added to this Compose project.
+MCL Change History uses the Kafka cluster belonging to the configured DataHub. The operator supplies
+only the broker connectivity/auth/TLS values that cannot be learned through DataHub. The Product
+discovers the cluster ID, one exact versioned MCL topic, GMS-internal (preferred) or explicitly
+configured external Schema Registry, exact value subject, latest schema hash, DataHub version, and
+source identity. The sanitized discovery receipt and durable checkpoint are target-local. A new
+source begins at the earliest retained offset; an existing accepted checkpoint is never reset.
+
+Quality Read uses GX-produced DataHub Assertion definitions/results through GMS. A zero assertion
+count is a valid READY result. Quality Execution remains DEFERRED unless the existing external
+Airflow `datariver_quality_dispatch` path is configured; DataRiver never deploys a second GX.
+Airflow and MinIO stay optional external integrations.
+
+## Intranet HTTP boundary
+
+PREP/OPS intentionally support `http://<private-IP>:39083`. Compose publishes only the web service
+on `0.0.0.0:39083`; PostgreSQL, Neo4j and Redis host ports remain bound to `127.0.0.1`. HTTP origins
+are accepted only for loopback or literal RFC1918/IPv6-ULA addresses. Public IPs and hostnames still
+require HTTPS. This intranet transport choice does not relax login, session, CSRF, workspace, or
+asset authorization.
 
 ## Corporate proxy contract
 
@@ -214,9 +228,9 @@ container happens to be running:
 ## Provider preflight and smoke diagnostics
 
 The exact built image performs bounded DataHub, Chat, Embedding and Reranker requests before the
-attempt receipt and any Product-owned durable mutation. A configured Studio DB receives a read-only
-connection/`SELECT 1`; absent Studio configuration remains K9 DEFERRED. These checks use configured
-exact endpoints rather than assuming `/health` or `/models`.
+attempt receipt and any Product-owned durable mutation. It also performs a read-only DataHub
+Assertion query, MCL source discovery, and optional existing Airflow/MinIO readiness. These checks
+use configured exact endpoints rather than assuming `/health` or `/models`.
 
 The tracked Product and Chat preflight share the fixed `POC_LLM_TIMEOUT_MS=120000` per-call policy.
 It is derived from `env-contract.json`, not requested from the PREP operator. The authenticated

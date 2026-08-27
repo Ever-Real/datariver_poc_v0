@@ -649,12 +649,8 @@ def _feature_keys(features: Mapping[str, Any]) -> set[str]:
 
 
 def k9_mode_from_operator(operator: Mapping[str, str]) -> str:
-    studio_database_url = operator.get("POC_K9_STUDIO_DATABASE_URL", "").strip()
-    return (
-        "REQUIRED"
-        if studio_database_url and not studio_database_url.startswith(CHANGE_ME_PREFIX)
-        else "DEFERRED"
-    )
+    del operator
+    return "REQUIRED"
 
 
 def reconcile_environment(
@@ -668,7 +664,7 @@ def reconcile_environment(
     persist_runtime: bool = True,
 ) -> EnvironmentBundle:
     contract = _read_json(ENV_CONTRACT, "environment contract")
-    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V4":
+    if contract.get("contract") != "DATARIVER_PREP39083_ENV_V5":
         raise PrepError(
             "ENVIRONMENT",
             "PREP_ENV_CONTRACT_INVALID",
@@ -764,7 +760,7 @@ def reconcile_environment(
             warnings.append(f"legacy generated key remains in .env.prep: {key}")
 
     k9_mode = k9_mode_from_operator(operator)
-    k9_configured = k9_mode == "REQUIRED"
+    k9_configured = True
     for key, value in fixed.items():
         runtime[str(key)] = str(value)
     runtime["POC_K9_SCHEDULER_ENABLED"] = "true" if k9_configured else "false"
@@ -1153,6 +1149,7 @@ def _historical_env_contract(runner: Runner, handoff: str) -> dict[str, Any]:
     if not isinstance(contract, dict) or contract.get("contract") not in {
         "DATARIVER_PREP39083_ENV_V3",
         "DATARIVER_PREP39083_ENV_V4",
+        "DATARIVER_PREP39083_ENV_V5",
     }:
         _ambiguous_state(
             "The legacy attempt environment contract is outside the supported migration boundary."
@@ -1701,7 +1698,10 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
         except ValueError:
             failure = {}
         code = str(failure.get("classification", "PREP_PREFLIGHT_UNKNOWN_FAILED"))
-        if not re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", code):
+        if not (
+            re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", code)
+            or re.fullmatch(r"PREP_MCL_DISCOVERY_[A-Z0-9_]+_FAILED", code)
+        ):
             code = "PREP_PREFLIGHT_UNKNOWN_FAILED"
         stage = str(failure.get("stage", "PROVIDER"))
         if not re.fullmatch(r"[A-Z0-9_]{1,32}", stage):
@@ -1980,8 +1980,8 @@ def deploy(
         runner.note("Run read-only external provider preflight before persistent mutation")
         preflight = run_provider_preflight(runner, prefix)
         print(
-            "Provider preflight: DataHub/Chat/Embedding/Reranker PASS; "
-            f"K9 Studio {preflight.get('k9_studio', 'UNKNOWN')}",
+            "Provider preflight: DataHub/Chat/Embedding/Reranker/K9/MCL/GX read PASS; "
+            f"GX execution {preflight.get('gx_quality_execution', 'UNKNOWN')}",
             flush=True,
         )
 
@@ -2126,7 +2126,7 @@ def deploy(
     print("- Platform: linux/amd64")
     print("\nRuntime")
     print(f"- Initial state: {bundle.target_state.value}")
-    print("- Web: healthy")
+    print("- Web Intranet: READY")
     print(f"- Port: {release.port}")
     print("- PostgreSQL: healthy")
     print("- Neo4j: healthy")
@@ -2135,21 +2135,16 @@ def deploy(
     print("\nProviders")
     print("- DataHub: ready")
     print("- Chat: ready")
-    if bundle.k9_mode == "REQUIRED":
-        print("- Embedding/Reranker: configured; managed semantic index READY")
-        print("- K9 Managed Refresh: DAILY / READY")
-    else:
-        print("- Embedding/Reranker: configured")
-        print("- K9 Managed Refresh: DEFERRED — Studio DB not configured")
-    optional_provider_ready = bool(
-        bundle.effective.get("AIRFLOW_URL", "").strip()
-        and bundle.effective.get("MINIO_URL", "").strip()
-    )
-    print(f"- Airflow/MinIO: {'configured' if optional_provider_ready else 'not configured'}")
-    print("- MCL: disabled unless explicitly enabled in .env.prep.optional")
+    print("- Embedding/Reranker: READY; managed semantic index READY")
+    print("- K9 Built-in Graphs: DAILY / READY")
+    print("- MCL Change History: READY")
+    print("- GX Quality Read: READY")
+    print(f"- GX Quality Execution: {preflight.get('gx_quality_execution', 'DEFERRED')}")
+    print(f"- Airflow: {preflight.get('airflow', 'DEFERRED')}")
+    print(f"- MinIO: {preflight.get('minio', 'DEFERRED')}")
     print("\nAuthentication")
     print(f"- Admin: existing/created and smoke verified ({username})")
-    print(f"\nNext\n- Browser: http://127.0.0.1:{release.port}")
+    print(f"\nNext\n- Browser: {bundle.effective['POC_PUBLIC_ORIGIN']}")
 
 
 def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
@@ -2158,13 +2153,26 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     source = verify_source_identity(release)
     with private_effective_environment(bundle.effective) as env_file:
         config = compose_config(runner, compose_prefix(release, env_file))
+        prefix = compose_prefix(release, env_file)
         image = resolve_web_image(config)
+        preflight = run_provider_preflight(runner, prefix)
     print("PREP39083 DOCTOR PASS")
     print(f"- Product: {release.product_sha}")
     print(f"- Evidence: {release.evidence_sha}")
     print(f"- Handoff: {source['handoff_commit']}")
     print(f"- Image: {image}")
     print(f"- Environment warnings: {len(bundle.warnings)}")
+    print(f"- Web Intranet: {preflight.get('web_intranet', 'BLOCKED')}")
+    print(f"- DataHub: {preflight.get('datahub', 'BLOCKED')}")
+    print(f"- Chat: {preflight.get('chat', 'BLOCKED')}")
+    print(f"- Embedding: {preflight.get('embedding', 'BLOCKED')}")
+    print(f"- Reranker: {preflight.get('reranker', 'BLOCKED')}")
+    print(f"- K9 Built-in Graphs: {preflight.get('k9_built_in', 'BLOCKED')}")
+    print(f"- MCL Change History: {preflight.get('mcl_change_history', 'BLOCKED')}")
+    print(f"- GX Quality Read: {preflight.get('gx_quality_read', 'BLOCKED')}")
+    print(f"- GX Quality Execution: {preflight.get('gx_quality_execution', 'DEFERRED')}")
+    print(f"- Airflow: {preflight.get('airflow', 'DEFERRED')}")
+    print(f"- MinIO: {preflight.get('minio', 'DEFERRED')}")
 
 
 def status(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:

@@ -1,111 +1,114 @@
-/* global setTimeout */
+/* global Buffer, setTimeout */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { resolve } from 'node:path'
-import process from 'node:process'
-import { spawn } from 'node:child_process'
 import test from 'node:test'
 
-const script = resolve(import.meta.dirname, 'poc-provider-preflight.mjs')
+import { runProviderPreflight } from './poc-provider-preflight.mjs'
+
+const mclDiscovery = async () => ({
+  receipt: {
+    contract: 'DATARIVER_MCL_DISCOVERY_V1',
+    source_identity_hash: 'a'.repeat(64),
+    schema_contract_hash: 'b'.repeat(64),
+    registry_kind: 'DATAHUB_GMS_INTERNAL',
+  },
+})
 
 async function fixture({ chatStatus = 200, chatDelayMs = 0, environment = {} } = {}) {
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const json = (status, body) => {
       response.writeHead(status, { 'Content-Type': 'application/json' })
       response.end(JSON.stringify(body))
     }
-    if (request.url === '/api/graphql') json(200, { data: { search: { start: 0, count: 1, total: 1 } } })
-    else if (request.url === '/chat/completions') setTimeout(
-      () => json(chatStatus, chatStatus === 200 ? { choices: [{}] } : { error: 'denied' }),
-      chatDelayMs,
+    if (request.url === '/api/graphql') {
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const query = JSON.parse(Buffer.concat(chunks).toString('utf8')).query
+      json(200, { data: { search: { start: 0, count: query.includes('ASSERTION') ? 0 : 1, total: query.includes('ASSERTION') ? 0 : 1 } } })
+    } else if (request.url === '/chat/completions') setTimeout(
+      () => json(chatStatus, chatStatus === 200 ? { choices: [{}] } : { error: 'denied' }), chatDelayMs,
     )
     else if (request.url === '/embeddings') json(200, { data: [{ embedding: [0.1] }] })
     else if (request.url === '/rerank') json(200, { results: [{ index: 0, score: 1 }] })
+    else if (request.url === '/auth/token') json(200, { access_token: 'opaque-test-airflow-token' })
+    else if (request.url === '/api/v2/dags/datariver_quality_dispatch') json(200, { dag_id: 'datariver_quality_dispatch' })
+    else if (request.url === '/minio/health/ready') json(200, { status: 'ok' })
     else json(404, { error: 'not found' })
   })
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
   assert(address && typeof address === 'object')
   const base = `http://127.0.0.1:${address.port}`
-  const completed = await new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [script], {
-      env: {
-        PATH: process.env.PATH,
-        DATAHUB_GMS_URL: base,
-        DATAHUB_GMS_TOKEN: 'test-datahub-token',
-        LLM_CHAT_URL: base,
-        LLM_CHAT_MODEL: 'test-chat',
-        LLM_CHAT_TOKEN: 'test-chat-token',
-        LLM_EMBEDDING_URL: base,
-        LLM_EMBEDDING_MODEL: 'test-embedding',
-        LLM_EMBEDDING_TOKEN: 'test-embedding-token',
-        LLM_RERANKER_URL: base,
-        LLM_RERANKER_MODEL: 'test-reranker',
-        LLM_RERANKER_TOKEN: 'test-reranker-token',
-        POC_K9_STUDIO_DATABASE_URL: '',
-        ...environment,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk) => { stdout += chunk })
-    child.stderr.on('data', (chunk) => { stderr += chunk })
-    child.on('close', (code) => resolvePromise({ code, stdout, stderr }))
-  })
-  await new Promise((resolvePromise) => server.close(resolvePromise))
-  return completed
+  const values = {
+    POC_PUBLIC_ORIGIN: 'http://10.20.30.40:39083',
+    POC_BIND_HOST: '0.0.0.0', POC_STATE_BIND_HOST: '127.0.0.1',
+    DATAHUB_GMS_URL: base, DATAHUB_GMS_TOKEN: 'test-datahub-token',
+    LLM_CHAT_URL: base, LLM_CHAT_MODEL: 'test-chat', LLM_CHAT_TOKEN: 'test-chat-token',
+    LLM_EMBEDDING_URL: base, LLM_EMBEDDING_MODEL: 'test-embedding', LLM_EMBEDDING_TOKEN: 'test-embedding-token',
+    LLM_RERANKER_URL: base, LLM_RERANKER_MODEL: 'test-reranker', LLM_RERANKER_TOKEN: 'test-reranker-token',
+    ...environment,
+  }
+  if (values.AIRFLOW_URL === 'USE_FIXTURE') values.AIRFLOW_URL = base
+  if (values.MINIO_URL === 'USE_FIXTURE') values.MINIO_URL = base
+  return {
+    run: () => runProviderPreflight({ environment: values, discoverMcl: mclDiscovery }),
+    close: () => new Promise((resolvePromise) => server.close(resolvePromise)),
+  }
 }
 
-test('provider preflight uses each configured exact endpoint and leaves K9 deferred', async () => {
-  const completed = await fixture()
-  assert.equal(completed.code, 0, completed.stderr)
-  const result = JSON.parse(completed.stdout.trim())
-  assert.equal(result.status, 'PASS')
-  assert.equal(result.datahub, 'PASS')
-  assert.equal(result.chat, 'PASS')
-  assert.equal(result.embedding, 'PASS')
-  assert.equal(result.reranker, 'PASS')
-  assert.equal(result.k9_studio, 'DEFERRED')
+test('preflight proves intranet, DataHub Assertion read, built-in K9 and MCL without target counts', async () => {
+  const subject = await fixture()
+  try {
+    const result = await subject.run()
+    assert.equal(result.status, 'PASS')
+    assert.equal(result.web_intranet, 'READY')
+    assert.equal(result.k9_built_in, 'READY')
+    assert.equal(result.mcl_change_history, 'READY')
+    assert.equal(result.gx_quality_read, 'READY')
+    assert.equal(result.gx_assertion_count, 0)
+    assert.equal(result.gx_quality_execution, 'DEFERRED')
+  } finally { await subject.close() }
 })
 
-test('provider preflight classifies authentication without exposing response bodies', async () => {
-  const completed = await fixture({ chatStatus: 401 })
-  assert.equal(completed.code, 2)
-  const failure = JSON.parse(completed.stderr.trim())
-  assert.equal(failure.stage, 'CHAT')
-  assert.equal(failure.classification, 'PREP_PREFLIGHT_CHAT_AUTH_FAILED')
-  assert.equal(failure.status_class, '4xx')
-  assert.equal(completed.stderr.includes('test-chat-token'), false)
-  assert.equal(completed.stderr.includes('denied'), false)
+test('preflight classifies Chat authentication independently', async () => {
+  const subject = await fixture({ chatStatus: 401 })
+  try {
+    await assert.rejects(subject.run(), (error) => (
+      error.stage === 'CHAT' && error.classification === 'PREP_PREFLIGHT_CHAT_AUTH_FAILED'
+    ))
+  } finally { await subject.close() }
 })
 
-test('provider preflight keeps provider HTTP rejection distinct from connectivity', async () => {
-  const completed = await fixture({ chatStatus: 502 })
-  assert.equal(completed.code, 2)
-  const failure = JSON.parse(completed.stderr.trim())
-  assert.equal(failure.stage, 'CHAT')
-  assert.equal(failure.classification, 'PREP_PREFLIGHT_CHAT_HTTP_FAILED')
-  assert.equal(failure.status_class, '5xx')
-  assert.equal(completed.stderr.includes('denied'), false)
+test('preflight keeps provider HTTP rejection distinct from connectivity', async () => {
+  const subject = await fixture({ chatStatus: 502 })
+  try {
+    await assert.rejects(subject.run(), { classification: 'PREP_PREFLIGHT_CHAT_HTTP_FAILED' })
+  } finally { await subject.close() }
 })
 
-test('provider preflight uses the shared bounded Chat timeout classification', async () => {
-  const completed = await fixture({
-    chatDelayMs: 1_200,
-    environment: { POC_LLM_TIMEOUT_MS: '1000' },
-  })
-  assert.equal(completed.code, 2)
-  const failure = JSON.parse(completed.stderr.trim())
-  assert.equal(failure.stage, 'CHAT')
-  assert.equal(failure.classification, 'PREP_PREFLIGHT_CHAT_TIMEOUT_FAILED')
-  assert.equal(failure.status_class, null)
+test('preflight uses the shared bounded Chat timeout classification', async () => {
+  const subject = await fixture({ chatDelayMs: 1_200, environment: { POC_LLM_TIMEOUT_MS: '1000' } })
+  try {
+    await assert.rejects(subject.run(), { classification: 'PREP_PREFLIGHT_CHAT_TIMEOUT_FAILED' })
+  } finally { await subject.close() }
 })
 
-test('provider preflight classifies invalid runtime routing before any provider request', async () => {
-  const completed = await fixture({ environment: { POC_RUNTIME_HTTP_PROXY: 'not-a-url' } })
-  assert.equal(completed.code, 2)
-  const failure = JSON.parse(completed.stderr.trim())
-  assert.equal(failure.stage, 'RUNTIME_NETWORK')
-  assert.equal(failure.classification, 'PREP_PREFLIGHT_RUNTIME_NETWORK_CONFIG_FAILED')
+test('preflight rejects public HTTP origins while allowing private intranet HTTP', async () => {
+  const subject = await fixture({ environment: { POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083' } })
+  try {
+    await assert.rejects(subject.run(), { classification: 'PREP_PREFLIGHT_WEB_INTRANET_ORIGIN_FAILED' })
+  } finally { await subject.close() }
+})
+
+test('preflight reuses existing Airflow quality dispatch and optional MinIO without deploying providers', async () => {
+  const subject = await fixture({ environment: {
+    AIRFLOW_URL: 'USE_FIXTURE', AIRFLOW_USERNAME: 'quality-user', AIRFLOW_PASSWORD: 'quality-password',
+    MINIO_URL: 'USE_FIXTURE',
+  } })
+  try {
+    const result = await subject.run()
+    assert.equal(result.airflow, 'READY')
+    assert.equal(result.gx_quality_execution, 'READY')
+    assert.equal(result.minio, 'READY')
+  } finally { await subject.close() }
 })

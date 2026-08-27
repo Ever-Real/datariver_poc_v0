@@ -62,12 +62,12 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert "POC_POSTGRES_PASSWORD=" not in prep
     assert "NEO4J_PASSWORD=" not in prep
     assert "POC_MCP_SERVICE_TOKEN=" not in prep
-    assert "POC_MCL_KAFKA_BROKERS=" not in prep
+    assert "POC_MCL_KAFKA_BROKERS=" in prep
     assert "AIRFLOW_URL=" not in prep
     assert "MINIO_URL=" not in prep
     assert "AIRFLOW_URL=" in optional
     assert "MINIO_URL=" in optional
-    assert "POC_CHANGE_HISTORY_SCHEDULER_ENABLED=false" in optional
+    assert "POC_CHANGE_HISTORY_SCHEDULER_ENABLED" not in optional
     assert '"COMPOSE_PROJECT_NAME": "datariver-prep39083"' in contract
     assert '"POC_PORT": "39083"' in contract
     assert '"POC_PLATFORM": "linux/amd64"' in contract
@@ -83,14 +83,14 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert "LLM_CHAT_URL=" in prep
     assert "LLM_EMBEDDING_URL=" in prep
     assert "LLM_RERANKER_URL=" in prep
-    assert "POC_K9_STUDIO_DATABASE_URL=\n" in prep
-    assert "Blank = core boot succeeds" in prep
+    assert "POC_K9_STUDIO_DATABASE_URL" not in prep
+    assert "Topic, cluster identity" in prep
     assert '"CORE_REQUIRED"' in contract
     assert '"FEATURE_REQUIRED"' in contract
     assert '"GENERATED"' in contract
     assert '"FIXED"' in contract
     contract_value = json.loads(contract)
-    assert "POC_K9_SCHEDULER_ENABLED" not in contract_value["ownership"]["FIXED"]
+    assert contract_value["ownership"]["FIXED"]["POC_K9_SCHEDULER_ENABLED"] == "true"
     assert contract_value["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "120000"
 
 
@@ -117,7 +117,7 @@ def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
     assert "docker compose down" not in source
     assert "docker volume rm" not in source
     assert "deploy/poc/.env" not in source
-    assert '"config_schema_version": "PREP39083_ENV_V4"' in source
+    assert '"config_schema_version": "PREP39083_ENV_V5"' in source
 
 
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:

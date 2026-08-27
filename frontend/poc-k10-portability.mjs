@@ -56,12 +56,12 @@ export const K1_K9_PORTABILITY_MATRIX = Object.freeze([
   { id: 'k8.identity_config', phase: 'K8', state: 'Dedicated MCP Subject and Workspace references', classification: 'ENVIRONMENT_LOCAL_CONFIGURATION', recovery: 'Resolve target-local identities and recheck active membership.' },
   { id: 'k8.service_token', phase: 'K8', state: 'Dedicated MCP bearer credential', classification: 'ENVIRONMENT_LOCAL_SECRET', recovery: 'Provision or rotate outside the artifact bundle.' },
   { id: 'k9.migration_003', phase: 'K9', state: 'Numbered POC managed-graph migration 003', classification: 'PORTABLE_IMMUTABLE_ARTIFACT', recovery: 'Verify checksum and apply in order before policy reconciliation.' },
-  { id: 'k9.exact_pins', phase: 'K9', state: 'Exact Studio graph, ontology, release, T-Box, contract, proposal, source and mapping pins', classification: 'PORTABLE_IMMUTABLE_ARTIFACT', recovery: 'Reject drift before authoritative Studio read-back or materialization.' },
+  { id: 'k9.exact_pins', phase: 'K9', state: 'Exact Product-owned graph, ontology, release, T-Box, contract, proposal, source and mapping pins', classification: 'PORTABLE_IMMUTABLE_ARTIFACT', recovery: 'Reject local policy drift before materialization.' },
   { id: 'k9.policies_runs', phase: 'K9', state: 'Managed graph policies, active pointers, run receipts and scheduler boundary', classification: 'PERSISTENT_RUNTIME_STATE', recovery: 'Restore PostgreSQL, reconcile two policies and replay from the last durable boundary.' },
   { id: 'k9.source_snapshots', phase: 'K9', state: 'Bounded Lineage and Glossary source snapshots', classification: 'REGENERATED_FROM_CANONICAL_SOURCE', recovery: 'Collect again through the private authenticated Product seams.' },
   { id: 'k9.neo4j_namespaces', phase: 'K9', state: 'K9 active and staging Neo4j namespaces', classification: 'NON_PORTABLE_DISPOSABLE_STATE', recovery: 'Clean PREPARING/orphan namespaces and deterministically rebuild.' },
-  { id: 'k9.runtime_config', phase: 'K9', state: 'Scheduler enablement, time zone, System Subject, Workspace and Studio endpoint', classification: 'ENVIRONMENT_LOCAL_CONFIGURATION', recovery: 'Provision target-local references; scheduler remains disabled by default.' },
-  { id: 'k9.runtime_secrets', phase: 'K9', state: 'Studio database and Neo4j credentials', classification: 'ENVIRONMENT_LOCAL_SECRET', recovery: 'Provision target-local secret references and never place values in the manifest.' },
+  { id: 'k9.runtime_config', phase: 'K9', state: 'Scheduler, time zone, System Subject and Workspace', classification: 'ENVIRONMENT_LOCAL_CONFIGURATION', recovery: 'Reconcile the built-in DAILY policy and target-local identities.' },
+  { id: 'k9.runtime_secrets', phase: 'K9', state: 'Neo4j credential', classification: 'ENVIRONMENT_LOCAL_SECRET', recovery: 'Provision the target-local secret reference and never place values in the manifest.' },
 ])
 
 const REQUIRED_ARTIFACT_PATHS = Object.freeze([
@@ -81,7 +81,6 @@ const REQUIRED_ARTIFACT_PATHS = Object.freeze([
 
 const REQUIRED_SECRET_REFERENCES = Object.freeze([
   { key: 'POC_MCP_SERVICE_TOKEN', owner: 'K8 MCP service authentication', required_on: 'TARGET_WHEN_MCP_ENABLED' },
-  { key: 'POC_K9_STUDIO_DATABASE_URL', owner: 'K9 authoritative Studio read-only connection', required_on: 'TARGET_WHEN_K9_ENABLED' },
   { key: 'NEO4J_PASSWORD', owner: 'Derived graph adapter', required_on: 'TARGET_WHEN_K9_ENABLED' },
   { key: 'POC_POSTGRES_PASSWORD', owner: 'Persistent POC state adapter', required_on: 'TARGET' },
 ])
@@ -412,21 +411,10 @@ export async function validateTargetReferences(referenceDocument, { bundleRoot }
   return true
 }
 
-function comparablePin(policy) {
-  const keys = Object.keys(EXPECTED_K9_PINS[0])
-  return Object.fromEntries(keys.map((key) => [key, policy[key]]))
-}
-
-function createSimulationStateStore(manifest) {
+function createSimulationStateStore() {
   const policies = new Map()
   const runs = new Map()
-  const exactPins = new Map(manifest.managed_graph_pins.map((pin) => [pin.graph_id, pin]))
   return {
-    async verifyK9StudioAuthority(_authContext, policy) {
-      const expected = exactPins.get(policy.graph_id)
-      if (!expected || canonicalJson(comparablePin(policy)) !== canonicalJson(expected)) throw new Error('K9 Studio exact pin mismatch')
-      return true
-    },
     async ensureK9Policies(values) {
       for (const value of values) policies.set(value.graph_id, structuredClone(value))
     },
@@ -554,7 +542,7 @@ export async function simulateTargetRuntime({ bundleRoot, referencesPath, expect
   const migrationsApplied = await applySimulationMigrations(bundleRoot, manifest)
   const modulePath = join(bundleRoot, ARTIFACT_DIRECTORY, 'frontend/poc-k9-managed-graphs.mjs')
   const { createK9ManagedGraphs } = await import(`${pathToFileURL(modulePath).href}?k10=${Date.now()}`)
-  const stateStore = createSimulationStateStore(manifest)
+  const stateStore = createSimulationStateStore()
   const neo4j = createSimulationNeo4j()
   const k9 = createK9ManagedGraphs({ stateStore, neo4j, log: { info() {}, warn() {} } })
   const environment = references.environment

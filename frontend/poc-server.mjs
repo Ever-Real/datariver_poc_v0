@@ -1901,6 +1901,17 @@ query DataRiverPocAsset($urn: String!) {
         rowCount columnCount sizeInBytes timestampMillis
         partitionSpec { type partition }
       }
+      assertions(start: 0, count: 100) {
+        start count total
+        assertions {
+          urn
+          info { type source { type } }
+          runEvents(status: COMPLETE, limit: 1) {
+            total failed succeeded
+            runEvents { timestampMillis status result { type } }
+          }
+        }
+      }
     }
   }
 }`
@@ -4132,6 +4143,31 @@ function datahubProfileQuality(value, properties) {
   return quality
 }
 
+function datahubAssertionQuality(connection) {
+  if (!connection || !Number.isSafeInteger(connection.total) || connection.total < 0) return {}
+  const assertions = Array.isArray(connection.assertions) ? connection.assertions : []
+  const latest = assertions.flatMap((assertion) => (
+    Array.isArray(assertion?.runEvents?.runEvents)
+      ? assertion.runEvents.runEvents.map((run) => ({ assertion, run }))
+      : []
+  )).sort((left, right) => Number(right.run?.timestampMillis || 0) - Number(left.run?.timestampMillis || 0))[0]
+  return {
+    assertionTotal: connection.total,
+    assertionReturned: assertions.length,
+    assertionTruncated: assertions.length < connection.total,
+    assertionSourceTypes: [...new Set(assertions
+      .map((assertion) => assertion?.info?.source?.type)
+      .filter((value) => typeof value === 'string' && value.trim()))].sort(),
+    ...(latest ? {
+        latestAssertionStatus: latest.run.status || null,
+        latestAssertionResult: latest.run.result?.type || null,
+        latestAssertionObservedAt: Number.isFinite(latest.run.timestampMillis)
+          ? new Date(latest.run.timestampMillis).toISOString()
+          : null,
+      } : {}),
+  }
+}
+
 function detailedDatasetAsset(entity) {
   const asset = datasetAsset(entity)
   const fields = datahubSchemaFields(entity)
@@ -4155,7 +4191,10 @@ function detailedDatasetAsset(entity) {
     schema_fields_limit: fields.length,
     schema_fields_has_more: false,
     // DataHub remains authoritative: absent profile values stay absent.
-    quality: datahubProfileQuality(entity.latestFullTableProfile, entity.properties),
+    quality: {
+      ...datahubProfileQuality(entity.latestFullTableProfile, entity.properties),
+      ...datahubAssertionQuality(entity.assertions),
+    },
     projection_source_version: 'datahub-live-poc',
     source_version: 'datahub-live',
   }
@@ -10804,8 +10843,19 @@ export async function startPocServer({ stateStore } = {}) {
   const schedulerConfig = loadPocChangeHistorySchedulerConfig()
   let captureMcl
   if (schedulerConfig.enabled) {
+    const { discoverPocMclSource } = await import('./poc-mcl-discovery.mjs')
     const { createPocMclCapture } = await import('./poc-mcl-capture.mjs')
-    const capture = createPocMclCapture({ stateStore: pocStateStore })
+    const discovery = await discoverPocMclSource({ providerTransport })
+    for (const [name, value] of Object.entries({
+      POC_MCL_KAFKA_TOPIC: discovery.captureConfig.topic,
+      POC_MCL_SOURCE_IDENTITY_HASH: discovery.captureConfig.sourceIdentityHash,
+      POC_MCL_SCHEMA_CONTRACT_HASH: discovery.captureConfig.schemaContractHash,
+      POC_MCL_PROVIDER_NAME: discovery.captureConfig.providerName,
+      POC_MCL_PROVIDER_VERSION: discovery.captureConfig.providerVersion,
+      POC_MCL_SCHEMA_REGISTRY_URL: discovery.captureConfig.schemaRegistry.host,
+    })) process.env[name] = String(value)
+    await pocStateStore.write('mcl-discovery-v1', discovery.receipt)
+    const capture = createPocMclCapture({ config: discovery.captureConfig, stateStore: pocStateStore })
     captureMcl = () => capture.run()
   }
   const scheduler = createPocChangeHistoryScheduler({

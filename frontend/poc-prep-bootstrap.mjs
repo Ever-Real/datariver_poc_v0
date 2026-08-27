@@ -38,7 +38,6 @@ function serviceSpecification(environment) {
   if (k9Enabled) {
     const workspaceId = required(environment.POC_K9_WORKSPACE_ID, 'POC_K9_WORKSPACE_ID')
     const k9SubjectId = required(environment.POC_K9_SYSTEM_SUBJECT_ID, 'POC_K9_SYSTEM_SUBJECT_ID')
-    required(environment.POC_K9_STUDIO_DATABASE_URL, 'POC_K9_STUDIO_DATABASE_URL')
     if (workspaceId !== mcpWorkspaceId) {
       throw prepError('PREP_WORKSPACE_DRIFT', 'K9 and MCP must use the same canonical PREP Workspace.')
     }

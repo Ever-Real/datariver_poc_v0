@@ -183,7 +183,7 @@ async function main() {
   if (!health.ok || (await health.text()).trim() !== 'ok') {
     throw smokeFailure('HEALTH', 'PREP_SMOKE_WEB_HEALTH_FAILED', 'Host web health is not canonical ok.', health.status)
   }
-  progress('1/5', 'Host and Product health PASS')
+  progress('1/6', 'Host and Product health PASS')
 
   const password = await privateSecret(passwordFile)
   const login = await responseJson(`${origin}/auth/login`, {
@@ -193,7 +193,7 @@ async function main() {
   }, 'ADMIN_LOGIN', 'PREP_SMOKE_ADMIN_AUTH_FAILED')
   const cookie = login.response.headers.get('set-cookie')?.split(';', 1)[0]
   if (!cookie) throw smokeFailure('ADMIN_LOGIN', 'PREP_SMOKE_ADMIN_AUTH_FAILED', 'Login returned no opaque session.')
-  progress('2/5', 'Administrator login PASS')
+  progress('2/6', 'Administrator login PASS')
 
   const report = {
     contract: 'DATARIVER_PREP39083_SMOKE_V1',
@@ -207,6 +207,7 @@ async function main() {
     default_lineage: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     metadata_master: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     semantic_index: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
+    mcl_change_history: 'FAIL',
     llm_general: 'FAIL',
   }
   try {
@@ -216,7 +217,7 @@ async function main() {
         { headers: { Cookie: cookie } },
         'DATAHUB',
         'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED',
-      ), '3/5 DataHub current inventory')
+      ), '3/6 DataHub current inventory')
       if (!currentInventory.body || typeof currentInventory.body !== 'object') {
         throw smokeFailure('DATAHUB', 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED', 'Current DataHub inventory response is invalid.', null, {
           phase: 'RESPONSE_BUILD', terminal: true,
@@ -229,8 +230,8 @@ async function main() {
         throw smokeFailure('DATAHUB', 'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED', 'DataHub Catalog response is invalid.')
       }
       report.datahub = 'PASS'
-    }, readinessTimeoutMs, '3/5 DataHub')
-    progress('3/5', 'DataHub bounded read PASS')
+    }, readinessTimeoutMs, '3/6 DataHub')
+    progress('3/6', 'DataHub bounded read PASS')
 
     if (k9Mode === 'REQUIRED') {
       await retryReadiness(async () => {
@@ -252,22 +253,40 @@ async function main() {
         report.default_lineage = 'PASS'
         report.metadata_master = 'PASS'
         report.semantic_index = 'PASS'
-      }, readinessTimeoutMs, '4/5 K9')
-      progress('4/5', 'Managed graphs and semantic index PASS')
+      }, readinessTimeoutMs, '4/6 K9')
+      progress('4/6', 'Managed graphs and semantic index PASS')
     } else {
-      progress('4/5', 'K9 DEFERRED — Studio DB not configured')
+      progress('4/6', 'K9 DEFERRED')
     }
+
+    const week = new Date()
+    const day = (week.getUTCDay() + 6) % 7
+    week.setUTCDate(week.getUTCDate() - day)
+    const weekStart = week.toISOString().slice(0, 10)
+    await retryReadiness(async () => {
+      const changeHistory = await responseJson(
+        `${origin}/api/v1/change-history/summary?week_start=${weekStart}`,
+        { headers: { Cookie: cookie } },
+        'MCL_CHANGE_HISTORY',
+        'PREP_SMOKE_MCL_SOURCE_FAILED',
+      )
+      if (!['CAPTURE_PENDING', 'CONTIGUOUS_CAPTURE_RECORDED'].includes(changeHistory.body?.capture_state)) {
+        throw smokeFailure('MCL_CHANGE_HISTORY', 'PREP_SMOKE_MCL_SOURCE_FAILED', 'MCL source/checkpoint contract is not ready.')
+      }
+      report.mcl_change_history = 'PASS'
+    }, readinessTimeoutMs, '5/6 MCL')
+    progress('5/6', 'MCL source and durable checkpoint contract PASS')
 
     const chat = await withHeartbeat(responseJson(`${origin}/poc-api/llm/chat`, {
       method: 'POST',
       headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
-    }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '5/5 GENERAL provider')
+    }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '6/6 GENERAL provider')
     if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0) {
       throw smokeFailure('GENERAL_ROUTE', 'PREP_SMOKE_GENERAL_ROUTE_FAILED', 'Representative GENERAL route used internal retrieval or selected another route.')
     }
     report.llm_general = 'PASS'
-    progress('5/5', 'GENERAL provider and route PASS')
+    progress('6/6', 'GENERAL provider and route PASS')
   } finally {
     await fetch(`${origin}/auth/logout`, {
       method: 'POST',

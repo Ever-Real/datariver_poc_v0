@@ -43,6 +43,8 @@ async function fixture(k9Mode, {
         { graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
         { graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
       ] })
+    } else if (request.url?.startsWith('/api/v1/change-history/summary?')) {
+      json(200, { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
     } else if (request.url === '/poc-api/llm/chat') {
       json(chatStatus, chatStatus === 200
         ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
@@ -104,7 +106,7 @@ test('PREP smoke persists sanitized stage classification and emits progress', as
   assert.equal(result.failure.classification, 'PREP_SMOKE_GENERAL_PROVIDER_FAILED')
   assert.equal(result.failure.status_class, '5xx')
   assert.equal(typeof result.failure.elapsed_ms, 'number')
-  assert.match(result.completed.stdout, /\[SMOKE 1\/5\].*PASS/u)
+  assert.match(result.completed.stdout, /\[SMOKE 1\/6\].*PASS/u)
   assert.equal(result.completed.stderr.includes('sensitive body'), false)
 })
 

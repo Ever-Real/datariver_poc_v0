@@ -51,7 +51,9 @@ Ambiguous or durable unaccepted state stops without deleting a volume.
 | local secrets/derived topology | generated mode-0600 `.env.prep.runtime` |
 | optional integrations | optional mode-0600 `.env.prep.optional` |
 | PostgreSQL/pgvector and Neo4j | target-local persistent Compose volumes |
-| managed graph refresh | DAILY shared snapshot when Studio DB is configured; otherwise DEFERRED |
+| managed graph refresh | built-in DAILY shared snapshot, local PostgreSQL policies and local Neo4j projection |
+| Change History | configured DataHub Kafka, auto-discovered MCL/Registry/source identity, durable earliest-retained checkpoint |
+| Quality | DataHub Assertions read; existing Airflow/GX dispatch when configured |
 | semantic generation | DB-fenced exact binding/generation owner, heartbeat, wait/reuse |
 
 Multiple processes must share the same durable PostgreSQL store. Only one materializer owns an
@@ -66,8 +68,8 @@ completed generation. No PREP setting disables this contract.
 3. PREP deploy: native amd64, target-state classification, separate build/runtime proxy policy,
    exact Product image, read-only provider preflight, attempt receipt, isolated Compose, idempotent
    bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
-   Assets are strict only when the feature-dependent Studio DB authority is configured; otherwise
-   core boot reports K9 DEFERRED.
+   Assets and semantic index are strict built-in READY gates. MCL discovery/checkpoint readiness is
+   also required; optional Airflow/MinIO capabilities report DEFERRED without adding containers.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git

@@ -324,6 +324,21 @@ function providerHandler(request, response) {
             rowCount: 4200, columnCount: 2, sizeInBytes: 8192, timestampMillis: 1_700_000_000_000,
             partitionSpec: { type: 'FULL_TABLE', partition: 'FULL_TABLE_SNAPSHOT' },
           }],
+          assertions: {
+            start: 0, count: 1, total: 1,
+            assertions: [{
+              urn: 'urn:li:assertion:quality-provider-test',
+              info: { type: 'FRESHNESS', source: { type: 'GREAT_EXPECTATIONS' } },
+              runEvents: {
+                total: 1, failed: 0, succeeded: 1,
+                runEvents: [{
+                  timestampMillis: 1_725_000_000_000,
+                  status: 'COMPLETE',
+                  result: { type: 'SUCCESS' },
+                }],
+              },
+            }],
+          },
         } } })
       }
       if (payload.query.includes('DataRiverPocGlossaryAssignments')) {
@@ -682,11 +697,19 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.equal(detail.quality.rowCountSource, 'DATASET_PROFILE_FULL_TABLE')
   assert.equal(detail.quality.sizeInBytes, 16384)
   assert.equal(detail.quality.sizeInBytesSource, 'DATASET_PROPERTIES_ALLOWLIST')
+  assert.equal(detail.quality.assertionTotal, 1)
+  assert.equal(detail.quality.assertionReturned, 1)
+  assert.equal(detail.quality.assertionTruncated, false)
+  assert.deepEqual(detail.quality.assertionSourceTypes, ['GREAT_EXPECTATIONS'])
+  assert.equal(detail.quality.latestAssertionStatus, 'COMPLETE')
+  assert.equal(detail.quality.latestAssertionResult, 'SUCCESS')
+  assert.equal(detail.quality.latestAssertionObservedAt, '2024-08-30T06:40:00.000Z')
   assert.equal(detail.created_at, '2024-01-02T03:04:05.000Z')
   const detailQuery = [...requests].reverse().find((request) => (
     request.path === '/api/graphql' && request.body.includes('DataRiverPocAsset')
   ))
   assert.match(detailQuery.body, /datasetProfiles\(limit: 10\)/)
+  assert.match(detailQuery.body, /assertions\(start: 0, count: 100\)/)
   const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
   assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
   assert.equal(secondFieldPage.schema_fields_offset, 1)

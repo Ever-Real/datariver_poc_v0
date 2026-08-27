@@ -6,11 +6,9 @@ const MAX_TIMER_DELAY_MS = 2_147_000_000
 
 export function loadPocChangeHistorySchedulerConfig(environment = process.env) {
   const requested = parseBoolean(environment.POC_CHANGE_HISTORY_SCHEDULER_ENABLED, false)
-  const hasMclConfig = [
-    'POC_MCL_KAFKA_BROKERS', 'POC_MCL_KAFKA_CLIENT_ID', 'POC_MCL_KAFKA_GROUP_ID',
-    'POC_MCL_KAFKA_TOPIC', 'POC_MCL_SOURCE_IDENTITY_HASH', 'POC_MCL_SCHEMA_CONTRACT_HASH',
-    'POC_MCL_PROVIDER_NAME', 'POC_MCL_PROVIDER_VERSION', 'POC_MCL_SCHEMA_REGISTRY_URL',
-  ].every((name) => Boolean(environment[name]?.trim()))
+  // Topic, Registry subject/schema, provider version and source identity are
+  // discovered from the configured DataHub/Kafka source at runtime.
+  const hasMclConfig = Boolean(environment.POC_MCL_KAFKA_BROKERS?.trim())
   const timeZone = environment.POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE?.trim() || DEFAULT_TIME_ZONE
   validateTimeZone(timeZone)
   return Object.freeze({

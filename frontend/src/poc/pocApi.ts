@@ -1340,7 +1340,15 @@ function qualityList<T>(items: T[], url: URL) {
   }
 }
 
-function qualityAssetFromCatalog(asset: CatalogAsset) {
+function qualityAssetFromCatalog(asset: CatalogAsset & { quality?: Record<string, unknown> }) {
+  const quality = asset.quality && typeof asset.quality === 'object' ? asset.quality : {}
+  const assertionTotal = typeof quality.assertionTotal === 'number' ? quality.assertionTotal : 0
+  const latestObservedAt = typeof quality.latestAssertionObservedAt === 'string'
+    ? quality.latestAssertionObservedAt
+    : null
+  const latestResult = typeof quality.latestAssertionResult === 'string'
+    ? quality.latestAssertionResult
+    : null
   return {
     asset_id: asset.id,
     name: asset.name,
@@ -1349,11 +1357,11 @@ function qualityAssetFromCatalog(asset: CatalogAsset) {
     schema_name: asset.schema_name,
     classification: asset.classification,
     lifecycle: asset.lifecycle,
-    profile_readiness: 'UNAVAILABLE' as const,
-    profile_observed_at: null,
-    active_rule_set_count: 0,
-    latest_run_state: null,
-    latest_quality_outcome: null,
+    profile_readiness: assertionTotal > 0 ? 'READY' as const : 'UNAVAILABLE' as const,
+    profile_observed_at: latestObservedAt,
+    active_rule_set_count: assertionTotal,
+    latest_run_state: typeof quality.latestAssertionStatus === 'string' ? quality.latestAssertionStatus : null,
+    latest_quality_outcome: latestResult,
     latest_score_basis_points: null,
   }
 }

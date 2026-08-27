@@ -37,6 +37,21 @@ function isLoopbackHostname(hostname) {
   return normalized === '::1'
 }
 
+function isPrivateIntranetAddress(hostname) {
+  const normalized = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (isIP(normalized) === 4) {
+    const [first, second] = normalized.split('.').map(Number)
+    return first === 10
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+  }
+  if (isIP(normalized) === 6) {
+    const firstHextet = Number.parseInt(normalized.split(':', 1)[0] || '0', 16)
+    return (firstHextet & 0xfe00) === 0xfc00
+  }
+  return false
+}
+
 export function loadPocLocalAuthConfig(environment = process.env) {
   const rawOrigin = environment.POC_PUBLIC_ORIGIN?.trim()
   if (!rawOrigin) throw new Error('POC_PUBLIC_ORIGIN is required for local authentication.')
@@ -47,8 +62,10 @@ export function loadPocLocalAuthConfig(environment = process.env) {
     || originUrl.origin !== rawOrigin) {
     throw new Error('POC_PUBLIC_ORIGIN must be one exact credential-free HTTP(S) origin.')
   }
-  if (originUrl.protocol === 'http:' && !isLoopbackHostname(originUrl.hostname)) {
-    throw new Error('POC_PUBLIC_ORIGIN may use HTTP only for a loopback hostname or address.')
+  if (originUrl.protocol === 'http:'
+    && !isLoopbackHostname(originUrl.hostname)
+    && !isPrivateIntranetAddress(originUrl.hostname)) {
+    throw new Error('POC_PUBLIC_ORIGIN may use HTTP only for a loopback or private intranet IP address.')
   }
   return Object.freeze({
     publicOrigin: originUrl.origin,

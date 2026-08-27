@@ -1,5 +1,5 @@
 {
-  "contract": "DATARIVER_PREP39083_ENV_V4",
+  "contract": "DATARIVER_PREP39083_ENV_V5",
   "ownership": {
     "CORE_REQUIRED": [
       "POC_PUBLIC_ORIGIN",
@@ -14,16 +14,10 @@
       "LLM_EMBEDDING_TOKEN",
       "LLM_RERANKER_URL",
       "LLM_RERANKER_MODEL",
-      "LLM_RERANKER_TOKEN"
+      "LLM_RERANKER_TOKEN",
+      "POC_MCL_KAFKA_BROKERS"
     ],
-    "FEATURE_REQUIRED": {
-      "K9_MANAGED_REFRESH": {
-        "keys": ["POC_K9_STUDIO_DATABASE_URL"],
-        "activation": "NONEMPTY_ALL",
-        "derived_flag": "POC_K9_SCHEDULER_ENABLED",
-        "absent_status": "DEFERRED"
-      }
-    },
+    "FEATURE_REQUIRED": {},
     "OPTIONAL": [
       "HTTP_PROXY",
       "HTTPS_PROXY",
@@ -31,7 +25,14 @@
       "POC_RUNTIME_HTTP_PROXY",
       "POC_RUNTIME_HTTPS_PROXY",
       "POC_RUNTIME_NO_PROXY",
-      "RUNTIME_CA_CERT_FILE"
+      "RUNTIME_CA_CERT_FILE",
+      "POC_MCL_KAFKA_SSL",
+      "POC_MCL_KAFKA_SASL_MECHANISM",
+      "POC_MCL_KAFKA_SASL_USERNAME",
+      "POC_MCL_KAFKA_SASL_PASSWORD",
+      "POC_MCL_SCHEMA_REGISTRY_URL",
+      "POC_MCL_SCHEMA_REGISTRY_USERNAME",
+      "POC_MCL_SCHEMA_REGISTRY_PASSWORD"
     ],
     "GENERATED": {
       "POC_POSTGRES_PASSWORD": 32,
@@ -40,7 +41,7 @@
     },
     "FIXED": {
       "COMPOSE_PROJECT_NAME": "datariver-prep39083",
-      "POC_BIND_HOST": "127.0.0.1",
+      "POC_BIND_HOST": "0.0.0.0",
       "POC_PORT": "39083",
       "POC_SERVER_HOST": "0.0.0.0",
       "POC_PLATFORM": "linux/amd64",
@@ -72,9 +73,15 @@
       "POC_MCP_SUBJECT_ID": "prep39083-mcp-service",
       "POC_MCP_WORKSPACE_ID": "00000000-0000-4000-8000-000000000061",
       "POC_KNOWLEDGE_SOURCE_MANIFEST": "",
-      "POC_CHANGE_HISTORY_SCHEDULER_ENABLED": "false",
+      "POC_K9_SCHEDULER_ENABLED": "true",
+      "POC_CHANGE_HISTORY_SCHEDULER_ENABLED": "true",
       "POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE": "Asia/Seoul",
-      "POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME": "datariver:prep39083:change-history-scheduler:v1"
+      "POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME": "datariver:prep39083:change-history-scheduler:v1",
+      "POC_MCL_KAFKA_CLIENT_ID": "datariver-prep39083-mcl-v1",
+      "POC_MCL_KAFKA_GROUP_ID": "datariver-prep39083-mcl-capture-v1",
+      "POC_MCL_MAX_MESSAGES": "10000",
+      "POC_MCL_MAX_RECORD_BYTES": "1048576",
+      "POC_MCL_TIMEOUT_MS": "300000"
     }
   },
   "legacy_generated_keys": [

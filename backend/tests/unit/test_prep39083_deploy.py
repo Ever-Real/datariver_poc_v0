@@ -44,13 +44,11 @@ def _operator_values(*, k9_configured: bool = True) -> dict[str, str]:
     contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
     values = {
         key: {
-            "POC_PUBLIC_ORIGIN": "https://prep39083.example.test",
+            "POC_PUBLIC_ORIGIN": "http://10.20.30.40:39083",
         }.get(key, f"configured-{key.lower()}")
         for key in contract["ownership"]["CORE_REQUIRED"]
     } | {"HTTP_PROXY": "", "HTTPS_PROXY": "", "NO_PROXY": "corp.internal"}
-    values["POC_K9_STUDIO_DATABASE_URL"] = (
-        "postgres://readonly@studio.example.test/studio" if k9_configured else ""
-    )
+    del k9_configured
     return values
 
 
@@ -214,7 +212,7 @@ def test_required_external_keys_fail_with_names_only(tmp_path: Path) -> None:
     assert "CHANGE_ME_TOKEN" not in captured.value.reason
 
 
-def test_optional_mcl_profile_is_not_required(tmp_path: Path) -> None:
+def test_mcl_discovery_requires_only_operator_kafka_connectivity(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     _write_private_env(operator, _operator_values())
     bundle = deploy.reconcile_environment(
@@ -225,11 +223,13 @@ def test_optional_mcl_profile_is_not_required(tmp_path: Path) -> None:
         random_token=lambda count: "x" * count,
     )
     assert bundle.optional == {}
-    assert bundle.effective["POC_CHANGE_HISTORY_SCHEDULER_ENABLED"] == "false"
-    assert "POC_MCL_KAFKA_BROKERS" not in bundle.effective
+    assert bundle.effective["POC_CHANGE_HISTORY_SCHEDULER_ENABLED"] == "true"
+    assert bundle.effective["POC_MCL_KAFKA_BROKERS"].startswith("configured-")
+    assert not bundle.effective.get("POC_MCL_KAFKA_TOPIC")
+    assert not bundle.effective.get("POC_MCL_SOURCE_IDENTITY_HASH")
 
 
-def test_k9_studio_authority_is_feature_dependent_not_core_required(tmp_path: Path) -> None:
+def test_built_in_k9_is_required_without_an_external_studio_database(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     _write_private_env(operator, _operator_values(k9_configured=False))
     deferred = deploy.reconcile_environment(
@@ -239,8 +239,8 @@ def test_k9_studio_authority_is_feature_dependent_not_core_required(tmp_path: Pa
         runtime_path=tmp_path / ".env.prep.runtime",
         random_token=lambda count: "x" * count,
     )
-    assert deferred.k9_mode == "DEFERRED"
-    assert deferred.effective["POC_K9_SCHEDULER_ENABLED"] == "false"
+    assert deferred.k9_mode == "REQUIRED"
+    assert deferred.effective["POC_K9_SCHEDULER_ENABLED"] == "true"
 
     _write_private_env(operator, _operator_values(k9_configured=True))
     configured = deploy.reconcile_environment(
@@ -538,6 +538,7 @@ def test_legacy_v1_receipt_migrates_after_runtime_already_has_descendant_fixed_v
 ) -> None:
     current_contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
     historical_contract = json.loads(json.dumps(current_contract))
+    historical_contract["contract"] = "DATARIVER_PREP39083_ENV_V4"
     historical_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] = "15000"
     old_runtime = _runtime_values(fixed_timeout="15000")
     already_updated_runtime = _runtime_values(fixed_timeout="120000")

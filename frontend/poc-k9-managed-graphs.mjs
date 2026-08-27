@@ -448,9 +448,6 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     k9Policies[0].policy_hash = computeK9PolicyHash(k9Policies[0])
     k9Policies[1].policy_hash = computeK9PolicyHash(k9Policies[1])
 
-    await stateStore.verifyK9StudioAuthority(authCtx, k9Policies[0])
-    await stateStore.verifyK9StudioAuthority(authCtx, k9Policies[1])
-
     await stateStore.ensureK9Policies(k9Policies)
   }
 
@@ -504,8 +501,6 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       workspace_id: resolved.workspace_id
     })
     expectedPolicy.policy_hash = computeK9PolicyHash(expectedPolicy)
-
-    await stateStore.verifyK9StudioAuthority(authCtx, expectedPolicy)
 
     const runId = randomUUID()
     await stateStore.createK9PreparingRun({

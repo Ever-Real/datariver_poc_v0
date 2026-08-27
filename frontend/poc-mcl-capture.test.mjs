@@ -320,21 +320,26 @@ test('fails safe on malformed supported MCL and on DB failure without advancing 
   assert.equal(store.captures.length, 0)
 })
 
-test('persists fresh boundaries before consume and fails closed on retention, topology, or boundary failure', async () => {
+test('persists earliest retained fresh boundaries before consume and fails closed on retention, topology, or boundary failure', async () => {
+  const fixture = await framedMcl()
   const nonemptyStore = stateStoreDouble()
   const nonemptyKafka = kafkaDouble([
     { partition: 0, low: '0', high: '2', offset: '0' },
     { partition: 1, low: '0', high: '1', offset: '0' },
-  ], new Map())
+  ], new Map([
+    [0, [{ offset: '0', value: fixture.buffer }, { offset: '1', value: fixture.buffer }]],
+    [1, [{ offset: '0', value: fixture.buffer }]],
+  ]))
   const nonemptyResult = await createPocMclCapture({
     config: captureConfig(),
     stateStore: nonemptyStore,
     kafka: nonemptyKafka,
-    schemaRegistry: schemaRegistry(),
+    schemaRegistry: fixture.registry,
   }).run()
   assert.deepEqual([...nonemptyStore.checkpoints.entries()], [[0, 2], [1, 1]])
   assert.deepEqual(nonemptyResult.partitions.map((item) => item.nextOffset), [2, 1])
-  assert.equal(nonemptyKafka.state.consumerCreates, 0)
+  assert.equal(nonemptyKafka.state.consumerCreates, 1)
+  assert.equal(nonemptyResult.caughtUp, true)
 
   const emptyKafka = kafkaDouble(
     [{ partition: 0, low: '100', high: '100', offset: '100' }],
@@ -418,6 +423,30 @@ test('persists fresh boundaries before consume and fails closed on retention, to
   }).run(), /simulated durable boundary failure/)
   assert.equal(failedStore.checkpoints.size, 0)
   assert.equal(failedKafka.state.consumerCreates, 0)
+})
+
+test('backfills a new source from the earliest retained offset in bounded durable batches', async () => {
+  const fixture = await framedMcl()
+  const store = stateStoreDouble()
+  const messages = new Map([[0, [0, 1, 2].map((offset) => ({
+    offset: String(offset), value: fixture.buffer,
+  }))]])
+  const offsets = [{ partition: 0, low: '0', high: '3', offset: '0' }]
+  const first = await createPocMclCapture({
+    config: captureConfig({ maxMessages: 2 }), stateStore: store,
+    kafka: kafkaDouble(offsets, messages), schemaRegistry: fixture.registry,
+  }).run()
+  assert.equal(first.caughtUp, false)
+  assert.equal(first.partitions[0].nextOffset, 2)
+  assert.equal(store.checkpoints.get(0), 2)
+
+  const second = await createPocMclCapture({
+    config: captureConfig({ maxMessages: 2 }), stateStore: store,
+    kafka: kafkaDouble(offsets, messages), schemaRegistry: fixture.registry,
+  }).run()
+  assert.equal(second.caughtUp, true)
+  assert.equal(second.partitions[0].nextOffset, 3)
+  assert.equal(store.checkpoints.get(0), 3)
 })
 
 test('accepts only the exact DataHub GenericAspect JSON content type', () => {

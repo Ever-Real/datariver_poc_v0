@@ -13,7 +13,6 @@ export function loadPocK9SchedulerConfig(environment = process.env) {
   const requested = parseBoolean(environment.POC_K9_SCHEDULER_ENABLED, false)
   const systemSubjectId = environment.POC_K9_SYSTEM_SUBJECT_ID?.trim()
   const workspaceId = environment.POC_K9_WORKSPACE_ID?.trim()
-  const studioDatabaseUrl = environment.POC_K9_STUDIO_DATABASE_URL?.trim()
   const timeZone = environment.POC_K9_SCHEDULER_TIME_ZONE?.trim() || DEFAULT_TIME_ZONE
   const refreshMode = (environment.POC_K9_REFRESH_MODE?.trim().toUpperCase() || DEFAULT_REFRESH_MODE)
   const scheduleHour = boundedInteger(environment.POC_K9_SCHEDULE_HOUR, DEFAULT_SCHEDULE_HOUR, 0, 23, 'POC_K9_SCHEDULE_HOUR')
@@ -21,8 +20,8 @@ export function loadPocK9SchedulerConfig(environment = process.env) {
   const classificationCeiling = environment.POC_K9_CLASSIFICATION_CEILING?.trim().toUpperCase() || 'INTERNAL'
 
   if (requested) {
-    if (!systemSubjectId || !workspaceId || !studioDatabaseUrl) {
-      throw new Error('K9 scheduler is enabled but required K9 subject, workspace, or read-only Studio database configuration is missing')
+    if (!systemSubjectId || !workspaceId) {
+      throw new Error('K9 scheduler is enabled but required K9 subject or workspace configuration is missing')
     }
   }
 

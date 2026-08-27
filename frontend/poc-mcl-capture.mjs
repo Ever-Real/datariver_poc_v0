@@ -107,7 +107,18 @@ export function createPocMclCapture({
     sasl: normalizedConfig.kafkaSasl,
     logLevel: logLevel.NOTHING,
   })
-  const registry = schemaRegistry ?? new SchemaRegistry(normalizedConfig.schemaRegistry)
+  const registryOptions = normalizedConfig.schemaRegistry.bearerToken
+    ? {
+        ...normalizedConfig.schemaRegistry,
+        middlewares: [() => ({
+          request(request) {
+            return request.enhance({ headers: { Authorization: `Bearer ${normalizedConfig.schemaRegistry.bearerToken}` } })
+          },
+        })],
+      }
+    : normalizedConfig.schemaRegistry
+  delete registryOptions.bearerToken
+  const registry = schemaRegistry ?? new SchemaRegistry(registryOptions)
   return {
     run: () => runBoundedCapture({
       config: normalizedConfig,
@@ -245,7 +256,9 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       providerVersion: config.providerVersion,
       schemaContractHash: config.schemaContractHash,
       topicContract: config.topic,
-      partitions: watermarks.map(({ partition, high }) => ({ partition, boundary: high })),
+      // A new source begins at Kafka's earliest retained offset. Existing
+      // checkpoints are immutable here and are never reset by rediscovery.
+      partitions: watermarks.map(({ partition, low }) => ({ partition, boundary: low })),
     })
     if (!Array.isArray(checkpoints) || checkpoints.length !== watermarks.length) {
       throw new Error('The durable MCL capture boundary inventory is invalid.')
@@ -258,7 +271,7 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       throw new Error('The durable MCL capture boundary inventory is invalid.')
     }
     const targets = []
-    let boundedMessageCount = 0
+    let remainingBudget = config.maxMessages
     for (const { partition, low, high } of watermarks) {
       const resume = checkpointByPartition.get(partition)
       if (resume === undefined) throw new Error('The durable MCL capture boundary inventory is invalid.')
@@ -266,11 +279,12 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
         throw new Error('The durable checkpoint is behind Kafka retention; capture stopped with a history gap.')
       }
       if (resume > high) throw new Error('The durable checkpoint is ahead of the captured Kafka high watermark.')
-      boundedMessageCount += high - resume
-      if (boundedMessageCount > config.maxMessages) {
-        throw new Error('The captured Kafka window exceeds the configured message bound.')
-      }
-      targets.push({ partition, low, high, next: resume, processed: 0, ledgerEvents: 0 })
+      const targetHigh = Math.min(high, resume + remainingBudget)
+      remainingBudget -= targetHigh - resume
+      targets.push({
+        partition, low, high: targetHigh, sourceHigh: high, next: resume,
+        processed: 0, ledgerEvents: 0,
+      })
     }
     const pending = new Map(targets.filter((target) => target.next < target.high)
       .map((target) => [target.partition, target]))
@@ -357,10 +371,12 @@ function captureResult(topic, targets) {
   return {
     topic,
     bounded: true,
-    partitions: targets.map(({ partition, low, high, next, processed, ledgerEvents }) => ({
+    caughtUp: targets.every(({ next, sourceHigh }) => next === sourceHigh),
+    partitions: targets.map(({ partition, low, high, sourceHigh, next, processed, ledgerEvents }) => ({
       partition,
       lowWatermark: low,
       capturedHighWatermark: high,
+      sourceHighWatermark: sourceHigh,
       nextOffset: next,
       processedRecords: processed,
       ledgerEvents,
@@ -677,6 +693,12 @@ function validateCaptureConfig(config) {
     username: boundedString(config.schemaRegistry.auth?.username, 'schemaRegistry.auth.username', 1000),
     password: boundedSecret(config.schemaRegistry.auth?.password, 'schemaRegistry.auth.password'),
   }
+  const registryBearerToken = config.schemaRegistry.bearerToken === undefined
+    ? undefined
+    : boundedSecret(config.schemaRegistry.bearerToken, 'schemaRegistry.bearerToken')
+  if (registryAuth && registryBearerToken) {
+    throw new Error('Schema Registry Basic and Bearer authentication cannot both be configured.')
+  }
   return {
     brokers: config.brokers.map((broker) => boundedString(broker, 'broker', 1000)),
     clientId: boundedString(config.clientId, 'clientId', 255),
@@ -693,6 +715,7 @@ function validateCaptureConfig(config) {
     schemaRegistry: {
       host: boundedString(config.schemaRegistry.host, 'schemaRegistry.host', 2000),
       auth: registryAuth,
+      bearerToken: registryBearerToken,
     },
     maxMessages: positiveInteger(config.maxMessages, 'maxMessages'),
     maxRecordBytes: positiveInteger(config.maxRecordBytes, 'maxRecordBytes'),

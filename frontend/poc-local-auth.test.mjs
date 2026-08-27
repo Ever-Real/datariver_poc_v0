@@ -134,8 +134,22 @@ test('requires an exact configured Origin and derives Secure cookies only from H
   assert.doesNotMatch(authenticator.setCookie(login.token), /; Secure/)
   const https = loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'https://poc.example.test' })
   assert.equal(https.secureCookie, true)
+  for (const origin of [
+    'http://10.20.30.40:39083',
+    'http://172.20.30.40:39083',
+    'http://192.168.10.40:39083',
+    'http://[fd00::40]:39083',
+  ]) {
+    const intranet = loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: origin })
+    assert.equal(intranet.publicOrigin, origin)
+    assert.equal(intranet.secureCookie, false)
+  }
   assert.throws(
     () => loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'http://poc.example.test' }),
-    /HTTP only for a loopback/,
+    /HTTP only for a loopback or private intranet IP/,
+  )
+  assert.throws(
+    () => loadPocLocalAuthConfig({ POC_PUBLIC_ORIGIN: 'http://203.0.113.10:39083' }),
+    /private intranet IP/,
   )
 })

@@ -8,6 +8,8 @@ import yaml  # type: ignore[import-untyped]
 ROOT = Path(__file__).resolve().parents[3]
 POC_COMPOSE = ROOT / "deploy" / "poc" / "docker-compose.poc.yaml"
 AIRFLOW_COMPOSE = ROOT / "deploy" / "poc" / "docker-compose.airflow.yaml"
+PREP_ENV_CONTRACT = ROOT / "deploy" / "prep39083" / "env-contract.json"
+OPS_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.ops.example"
 RUN_POC = ROOT / "scripts" / "run_poc.sh"
 
 
@@ -37,6 +39,26 @@ def test_poc_web_publish_is_loopback_while_container_listener_remains_reachable(
     ]
 
 
+def test_prep_and_ops_publish_only_web_to_the_intranet() -> None:
+    compose = _document(POC_COMPOSE)
+    assert set(compose["services"]) == {"web", "pgvector", "neo4j", "redis"}
+
+    contract = _document(PREP_ENV_CONTRACT)
+    fixed = contract["ownership"]["FIXED"]
+    assert fixed["POC_BIND_HOST"] == "0.0.0.0"  # noqa: S104 - required intranet bind.
+    assert fixed["POC_PORT"] == "39083"
+    assert fixed["POC_STATE_BIND_HOST"] == "127.0.0.1"
+
+    ops = dict(
+        line.split("=", maxsplit=1)
+        for line in OPS_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    assert ops["POC_BIND_HOST"] == "0.0.0.0"  # noqa: S104 - required intranet bind.
+    assert ops["POC_PORT"] == "39083"
+    assert ops["POC_STATE_BIND_HOST"] == "127.0.0.1"
+
+
 def test_compose_injects_datahub_no_token_flag_with_closed_default() -> None:
     """Compose must inject POC_DATAHUB_ALLOW_NO_TOKEN with an explicit false default.
     This ensures the flag is env-file-controlled, not silently inherited from the shell,
@@ -52,13 +74,9 @@ def test_optional_airflow_uses_loopback_publish_and_shared_web_network() -> None
     airflow = compose["services"]["airflow"]
     environment = airflow["environment"]
 
-    assert airflow["ports"] == [
-        "${AIRFLOW_BIND_HOST:-127.0.0.1}:${AIRFLOW_PORT:-18888}:8080"
-    ]
+    assert airflow["ports"] == ["${AIRFLOW_BIND_HOST:-127.0.0.1}:${AIRFLOW_PORT:-18888}:8080"]
     assert airflow["networks"] == ["poc-services"]
-    assert environment["DATARIVER_API_BASE_URL"] == (
-        "${AIRFLOW_DATARIVER_URL:-http://web:8080}"
-    )
+    assert environment["DATARIVER_API_BASE_URL"] == ("${AIRFLOW_DATARIVER_URL:-http://web:8080}")
     assert "web" in environment["NO_PROXY"].split(",")
     assert "web" in environment["no_proxy"].split(",")
     assert compose["networks"]["poc-services"] == {
@@ -71,8 +89,7 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
     capture = tmp_path / "docker-commands.txt"
     executable = tmp_path / "docker"
     executable.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s|%s\\n' \"${POC_PORT-unset}\" \"$*\" >> \"${CAPTURE_PATH}\"\n",
+        '#!/usr/bin/env bash\nprintf \'%s|%s\\n\' "${POC_PORT-unset}" "$*" >> "${CAPTURE_PATH}"\n',
         encoding="utf-8",
     )
     executable.chmod(0o700)
