@@ -1,0 +1,55 @@
+{
+  "contract": "DATARIVER_PREP_DOCTOR_IMAGE_BOOTSTRAP_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T08:22:48Z",
+  "product_sha": "2fe96238a0bd9f40bfd26f78e45e6cd215f82637",
+  "main_unchanged": "d81da424862979a6261a0fee22003edc31125258",
+  "actual_prep_executed": false,
+  "proven_root_cause": "EXACT_PRODUCT_IMAGE_ABSENT_BEFORE_PROVIDER_MATRIX",
+  "doctor_image": {
+    "identity": "datariver-poc:<Product SHA>",
+    "absent": "CANONICAL_BUILD_THEN_INSPECT",
+    "present": "REUSE_ONLY_AFTER_EXACT_TAG_PLATFORM_REVISION_INSPECTION",
+    "platform": "linux/amd64",
+    "fallback_tag": false
+  },
+  "doctor_child": {
+    "runtime": "DISPOSABLE_EXACT_IMAGE_DOCKER_RUN",
+    "read_only_root": true,
+    "non_root": true,
+    "capabilities_dropped": true,
+    "no_new_privileges": true,
+    "matrix_invalid_requires_successful_child_launch": true
+  },
+  "persistent_mutation": {
+    "product_containers": 0,
+    "product_volumes": 0,
+    "runtime_secret": false,
+    "attempt_receipt": false,
+    "accepted_marker": false,
+    "postgresql_rows": 0,
+    "neo4j_nodes": 0,
+    "redis_state": 0
+  },
+  "verification": {
+    "prep_unit_handoff": "92/92 PASS",
+    "doctor_absent_image_docker": "1/1 PASS",
+    "smoke_failure_resume_docker": "1/1 PASS",
+    "historical_accepted_upgrade_docker": "1/1 PASS",
+    "node_product": "167/167 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "python_full": "3962 passed / 120 skipped / 55 known baseline failures",
+    "changed_python_ruff": "PASS",
+    "strict_mypy": "578 files PASS",
+    "static": "PASS",
+    "frontend_builds": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "2fe96238a0bd9f40bfd26f78e45e6cd215f82637",
+    "image_id": "sha256:d1eab70b6c0deb4a00544000bca1565d21b0e609ad47d1e958aadfb4412875cc",
+    "provider_preflight_module": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
