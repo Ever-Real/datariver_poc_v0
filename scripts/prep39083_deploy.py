@@ -1930,26 +1930,32 @@ def inspect_owned_partial_bootstrap(
     return result
 
 
-def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
+def run_provider_preflight(
+    runner: Runner,
+    image: str,
+    env_file: Path,
+    effective: Mapping[str, str],
+) -> dict[str, Any]:
+    completed = execute_provider_preflight_child(
+        runner,
+        image,
+        env_file,
+        effective,
+        collect_all=False,
+    )
     try:
-        completed = runner.run(
-            [
-                *prefix,
-                "run",
-                "--rm",
-                "--no-deps",
-                "-T",
-                "web",
-                "node",
-                "poc-provider-preflight.mjs",
-            ]
-        )
-        result = _parse_json_line(completed.stdout)
-    except CommandFailure as error:
-        try:
-            failure = _parse_json_line(f"{error.stdout}\n{error.stderr}")
-        except ValueError:
-            failure = {}
+        result = _parse_json_line(f"{completed.stdout}\n{completed.stderr}")
+    except ValueError as error:
+        if completed.returncode == 0:
+            raise PrepError(
+                "PROVIDER_PREFLIGHT",
+                "PREP_PREFLIGHT_RESULT_INVALID",
+                "Provider preflight returned no structured result.",
+                "Restore the exact Product image and rerun deploy.",
+            ) from error
+        result = {}
+    if completed.returncode != 0:
+        failure = result
         code = str(failure.get("classification", "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"))
         if not (
             re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", code)
@@ -1986,15 +1992,11 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
             code,
             f"Read-only {stage} provider preflight failed before persistent Product mutation.",
             action,
-        ) from error
-    except ValueError as error:
-        raise PrepError(
-            "PROVIDER_PREFLIGHT",
-            "PREP_PREFLIGHT_RESULT_INVALID",
-            "Provider preflight returned no structured result.",
-            "Restore the exact Product image and rerun deploy.",
-        ) from error
-    if result.get("status") != "PASS":
+        )
+    if (
+        result.get("contract") != "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2"
+        or result.get("status") != "PASS"
+    ):
         raise PrepError(
             "PROVIDER_PREFLIGHT",
             "PREP_PREFLIGHT_RESULT_INVALID",
@@ -2017,7 +2019,7 @@ DOCTOR_PREFLIGHT_STAGES = (
 )
 
 
-def doctor_container_prefix(
+def provider_preflight_container_prefix(
     image: str,
     env_file: Path,
     effective: Mapping[str, str],
@@ -2051,28 +2053,41 @@ def doctor_container_prefix(
     return command
 
 
-def collect_provider_preflight(
+def execute_provider_preflight_child(
     runner: Runner,
     image: str,
     env_file: Path,
     effective: Mapping[str, str],
-) -> dict[str, Any]:
-    child_prefix = doctor_container_prefix(image, env_file, effective)
+    *,
+    collect_all: bool,
+) -> subprocess.CompletedProcess[str]:
+    child_prefix = provider_preflight_container_prefix(image, env_file, effective)
+    mode = "doctor" if collect_all else "deploy"
+    container_code = (
+        "PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED"
+        if collect_all
+        else "PREP_PREFLIGHT_CONTAINER_START_FAILED"
+    )
+    node_code = (
+        "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED"
+        if collect_all
+        else "PREP_PREFLIGHT_NODE_START_FAILED"
+    )
     container_probe = runner.run([*child_prefix, "/usr/bin/true"], check=False)
     if container_probe.returncode != 0:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED",
-            "Docker could not create the ephemeral doctor Product container.",
-            "Inspect only Docker image and container policy, then rerun doctor.",
+            container_code,
+            f"Docker could not create the ephemeral {mode} Product container.",
+            f"Inspect only Docker image and container policy, then rerun {mode}.",
         )
     node_probe = runner.run([*child_prefix, "node", "--version"], check=False)
     if node_probe.returncode != 0:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED",
-            "The pinned Node runtime could not start in the ephemeral doctor container.",
-            "Restore the exact Product image and rerun doctor.",
+            node_code,
+            f"The pinned Node runtime could not start in the ephemeral {mode} container.",
+            f"Restore the exact Product image and rerun {mode}.",
         )
     module_probe = runner.run(
         [
@@ -2087,19 +2102,29 @@ def collect_provider_preflight(
     if module_probe.returncode != 0:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED",
+            node_code,
             "The pinned Node runtime or provider-preflight module could not start in the "
-            "ephemeral doctor container.",
-            "Restore the exact Product image and rerun doctor.",
+            f"ephemeral {mode} container.",
+            f"Restore the exact Product image and rerun {mode}.",
         )
-    completed = runner.run(
-        [
-            *child_prefix,
-            "node",
-            "poc-provider-preflight.mjs",
-            "--collect-all",
-        ],
-        check=False,
+    arguments = [*child_prefix, "node", "poc-provider-preflight.mjs"]
+    if collect_all:
+        arguments.append("--collect-all")
+    return runner.run(arguments, check=False)
+
+
+def collect_provider_preflight(
+    runner: Runner,
+    image: str,
+    env_file: Path,
+    effective: Mapping[str, str],
+) -> dict[str, Any]:
+    completed = execute_provider_preflight_child(
+        runner,
+        image,
+        env_file,
+        effective,
+        collect_all=True,
     )
     try:
         result = _parse_json_line(f"{completed.stdout}\n{completed.stderr}")
@@ -2441,7 +2466,12 @@ def deploy(
             doctor=False,
         )
         runner.note("Run read-only external provider preflight before persistent mutation")
-        preflight = run_provider_preflight(runner, prefix)
+        preflight = run_provider_preflight(
+            runner,
+            image,
+            env_file,
+            bundle.effective,
+        )
         print(
             "Provider preflight: DataHub/Chat/Embedding/Reranker/K9/MCL/GX read PASS; "
             f"GX execution {preflight.get('gx_quality_execution', 'UNKNOWN')}",

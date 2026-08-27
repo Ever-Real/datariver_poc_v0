@@ -159,6 +159,8 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
     release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", 39083, project)
     operator = tmp_path / ".env.prep"
     runtime = tmp_path / ".env.prep.runtime"
+    attempt = tmp_path / "deploy-attempt.json"
+    accepted = tmp_path / "accepted.json"
     _private_env(operator, _portable_operator_values("https://doctor.integration.invalid"))
     bundle = deploy.reconcile_environment(
         release,
@@ -205,6 +207,16 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
             )
             assert matrix["contract"] == "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_MATRIX_V1"
             assert set(matrix["stages"]) == set(deploy.DOCTOR_PREFLIGHT_STAGES)
+            assert matrix["stages"]["WEB_INTRANET"] == {"status": "READY"}
+            with pytest.raises(deploy.PrepError) as fail_fast:
+                deploy.run_provider_preflight(
+                    runner,
+                    image,
+                    env_file,
+                    bundle.effective,
+                )
+            assert fail_fast.value.code == "PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED"
+            assert not attempt.exists() and not accepted.exists() and not runtime.exists()
             assert runner.run([*prefix, "ps", "-q"], check=False).stdout.strip() == ""
             assert (
                 runner.run(
@@ -572,7 +584,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
     monkeypatch.setattr(
         deploy,
         "run_provider_preflight",
-        lambda _runner, _prefix: {
+        lambda _runner, _image, _env_file, _effective: {
             "status": "PASS",
             "k9_studio": "DEFERRED",
         },
@@ -701,8 +713,10 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
     current_contract_path = ROOT / "deploy/prep39083/env-contract.json"
     current_contract = json.loads(current_contract_path.read_text())
     assert current_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] == "120000"
-    historical_contract_path = tmp_path / "env-contract.previous.json"
-    historical_contract_path.write_text(json.dumps(historical_contract), encoding="utf-8")
+    setup_contract = json.loads(json.dumps(current_contract))
+    setup_contract["ownership"]["FIXED"]["POC_LLM_TIMEOUT_MS"] = "15000"
+    setup_contract_path = tmp_path / "env-contract.setup.json"
+    setup_contract_path.write_text(json.dumps(setup_contract), encoding="utf-8")
 
     release_a = deploy.ReleaseIdentity(
         previous_handoff,
@@ -729,7 +743,7 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
     monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
-    monkeypatch.setattr(deploy, "ENV_CONTRACT", historical_contract_path)
+    monkeypatch.setattr(deploy, "ENV_CONTRACT", setup_contract_path)
     _private_env(operator, _portable_operator_values(f"http://127.0.0.1:{port}"))
     bundle_a = deploy.reconcile_environment(
         release_a,
@@ -737,6 +751,18 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
         optional_path=optional,
         runtime_path=runtime,
         random_token=lambda count: "x" * count,
+    )
+    historical_runtime = dict(bundle_a.runtime)
+    historical_runtime["POC_K9_SCHEDULER_ENABLED"] = "false"
+    deploy._atomic_private_env(runtime, historical_runtime)
+    bundle_a = replace(
+        bundle_a,
+        runtime=historical_runtime,
+        effective={
+            **bundle_a.effective,
+            "POC_K9_SCHEDULER_ENABLED": "false",
+        },
+        k9_mode="DEFERRED",
     )
     bundle_a = _effective(bundle_a, project)
     effective_a = dict(bundle_a.effective)
@@ -765,7 +791,10 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
     monkeypatch.setattr(
         deploy,
         "run_provider_preflight",
-        lambda _runner, _prefix: {"status": "PASS", "k9_studio": "DEFERRED"},
+        lambda _runner, _image, _env_file, _effective: {
+            "status": "PASS",
+            "k9_studio": "DEFERRED",
+        },
     )
     smoke_attempts = 0
 
@@ -798,8 +827,13 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
         assert v2_receipt is not None
         legacy_receipt = dict(v2_receipt)
         legacy_receipt["contract"] = deploy.ATTEMPT_CONTRACT_V1
+        legacy_runtime = deploy._legacy_runtime_for_receipt(
+            bundle_a.runtime,
+            historical_contract,
+        )
+        legacy_runtime["POC_K9_SCHEDULER_ENABLED"] = "false"
         legacy_receipt["runtime_env_fingerprint"] = deploy.legacy_runtime_env_fingerprint_v1(
-            bundle_a.runtime
+            legacy_runtime
         )
         legacy_receipt.pop("ownership_fingerprint_contract")
         legacy_receipt.pop("ownership_fingerprint")
@@ -899,8 +933,8 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
                 deploy.compose_prefix(release_b, env_file),
             )
         assert inspected["administrator_record_count"] == 1
-        assert inspected["user_record_count"] == 2
-        assert [item["name"] for item in inspected["services"]] == ["MCP"]
+        assert inspected["user_record_count"] == 3
+        assert [item["name"] for item in inspected["services"]] == ["K9", "MCP"]
     finally:
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release_b, env_file)
@@ -1014,7 +1048,7 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
     monkeypatch.setattr(
         deploy,
         "run_provider_preflight",
-        lambda _runner, _prefix: {
+        lambda _runner, _image, _env_file, _effective: {
             "status": "PASS",
             "gx_quality_execution": "DEFERRED",
             "airflow": "DEFERRED",

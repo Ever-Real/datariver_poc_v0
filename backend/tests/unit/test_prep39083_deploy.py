@@ -1064,10 +1064,48 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert "ALTER ROLE" in source
     assert "inspect_postgres_durable_rows" in source
     assert "PREP_EXISTING_STATE_REQUIRES_OPERATOR_RECOVERY" in source
-    assert source.index("run_provider_preflight(runner, prefix)") < source.index(
+    assert source.index("preflight = run_provider_preflight(") < source.index(
         'phase="PREPARED"',
     )
+    provider_preflight_source = source[source.index("def run_provider_preflight(") :]
+    assert '"compose",\n            "run"' not in provider_preflight_source
     assert 'advance_attempt_phase(attempt, "SMOKE_FAILED")' in source
+
+
+class FailFastPreflightRunner:
+    def __init__(self, result: dict[str, object], *, returncode: int) -> None:
+        self.result = result
+        self.returncode = returncode
+        self.calls: list[list[str]] = []
+
+    def run(
+        self,
+        arguments: Sequence[str],
+        **keywords: object,
+    ) -> subprocess.CompletedProcess[str]:
+        values = list(arguments)
+        self.calls.append(values)
+        assert keywords == {"check": False}
+        if values[-1] == "/usr/bin/true":
+            return subprocess.CompletedProcess(values, 0, "", "")
+        if values[-2:] == ["node", "--version"]:
+            return subprocess.CompletedProcess(values, 0, "", "")
+        if "--eval" in values:
+            return subprocess.CompletedProcess(values, 0, "", "")
+        assert values[-2:] == ["node", "poc-provider-preflight.mjs"]
+        return subprocess.CompletedProcess(values, self.returncode, json.dumps(self.result), "")
+
+
+def _run_fail_fast(runner: FailFastPreflightRunner) -> dict[str, object]:
+    return cast(
+        dict[str, object],
+        deploy.run_provider_preflight(
+            runner,
+            f"datariver-poc:{'a' * 40}",
+            Path("/private/effective.env"),
+            {},
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1091,23 +1129,13 @@ def test_deploy_wrapper_preserves_typed_intranet_preflight_diagnostics(
     classification: str,
     action_fragment: str,
 ) -> None:
-    class FailedPreflightRunner:
-        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
-            completed = subprocess.CompletedProcess(
-                list(arguments),
-                2,
-                "",
-                json.dumps(
-                    {
-                        "classification": classification,
-                        "stage": "WEB_INTRANET",
-                    }
-                ),
-            )
-            raise deploy.CommandFailure(list(arguments), completed)
-
     with pytest.raises(deploy.PrepError) as captured:
-        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+        _run_fail_fast(
+            FailFastPreflightRunner(
+                {"classification": classification, "stage": "WEB_INTRANET"},
+                returncode=2,
+            )
+        )
     assert captured.value.code == classification
     assert action_fragment in captured.value.action
 
@@ -1129,33 +1157,26 @@ def test_deploy_wrapper_preserves_sanitized_provider_stage_classification(
     classification: str,
     stage: str,
 ) -> None:
-    class FailedPreflightRunner:
-        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
-            completed = subprocess.CompletedProcess(
-                list(arguments),
-                2,
-                "",
-                json.dumps({"classification": classification, "stage": stage}),
-            )
-            raise deploy.CommandFailure(list(arguments), completed)
-
     with pytest.raises(deploy.PrepError) as captured:
-        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+        _run_fail_fast(
+            FailFastPreflightRunner(
+                {"classification": classification, "stage": stage},
+                returncode=2,
+            )
+        )
 
     assert captured.value.code == classification
     assert stage in captured.value.reason
 
 
 def test_deploy_wrapper_uses_internal_not_unknown_for_malformed_failure_envelope() -> None:
-    class FailedPreflightRunner:
-        def run(self, arguments: Sequence[str], **_keywords: object) -> None:
-            completed = subprocess.CompletedProcess(
-                list(arguments), 2, "", json.dumps({"classification": "untrusted"})
-            )
-            raise deploy.CommandFailure(list(arguments), completed)
-
     with pytest.raises(deploy.PrepError) as captured:
-        deploy.run_provider_preflight(FailedPreflightRunner(), ["docker", "compose"])
+        _run_fail_fast(
+            FailFastPreflightRunner(
+                {"classification": "untrusted"},
+                returncode=2,
+            )
+        )
 
     assert captured.value.code == "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"
 
@@ -1322,6 +1343,92 @@ def test_doctor_image_and_collect_all_commands_do_not_touch_product_state() -> N
     for call in preflight_runner.calls:
         assert "--rm" in call
         assert call[:2] == ["docker", "run"]
+
+
+def test_doctor_and_deploy_provider_preflight_share_exact_hardened_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    polluted = {
+        "POC_BIND_HOST": "127.0.0.1",
+        "POC_STATE_BIND_HOST": WILDCARD_BIND_HOST,
+        "DATAHUB_GMS_TOKEN": "stale-datahub-token",
+        "LLM_CHAT_TOKEN": "stale-chat-token",
+        "POC_MCL_KAFKA_BROKERS": "stale-broker:9092",
+        "COMPOSE_PROJECT_NAME": "stale-project",
+        "COMPOSE_FILE": "/stale/compose.yaml",
+    }
+    for key, value in polluted.items():
+        monkeypatch.setenv(key, value)
+    effective = {
+        "POC_BIND_HOST": WILDCARD_BIND_HOST,
+        "POC_STATE_BIND_HOST": "127.0.0.1",
+        "POC_PUBLIC_ORIGIN": "http://10.20.30.40:39083",
+        "POC_INTRANET_HTTP_ALLOWED_CIDRS": "",
+        "DATAHUB_GMS_URL": "https://datahub.internal",
+        "DATAHUB_GMS_TOKEN": "canonical-datahub-token",
+        "LLM_CHAT_URL": "https://chat.internal",
+        "LLM_CHAT_MODEL": "chat-model",
+        "LLM_CHAT_TOKEN": "canonical-chat-token",
+        "LLM_EMBEDDING_URL": "https://embedding.internal",
+        "LLM_EMBEDDING_MODEL": "embedding-model",
+        "LLM_EMBEDDING_TOKEN": "canonical-embedding-token",
+        "LLM_RERANKER_URL": "https://reranker.internal",
+        "LLM_RERANKER_MODEL": "reranker-model",
+        "LLM_RERANKER_TOKEN": "canonical-reranker-token",
+        "POC_MCL_KAFKA_BROKERS": "kafka.internal:9092",
+        "POC_MCL_KAFKA_SASL_USERNAME": "canonical-kafka-user",
+        "POC_MCL_KAFKA_SASL_PASSWORD": "canonical-kafka-secret",
+        "AIRFLOW_URL": "https://airflow.internal",
+        "AIRFLOW_USERNAME": "canonical-airflow-user",
+        "AIRFLOW_PASSWORD": "canonical-airflow-secret",
+        "MINIO_URL": "https://minio.internal",
+        "POC_RUNTIME_CA_BIND_SOURCE": "",
+        "POC_RUNTIME_CA_CONTAINER_FILE": "",
+    }
+    image = f"datariver-poc:{'a' * 40}"
+    doctor_runner = DoctorPreflightRunner(_doctor_matrix())
+    deploy_runner = FailFastPreflightRunner(
+        {
+            "contract": "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2",
+            "status": "PASS",
+            "gx_quality_execution": "READY",
+        },
+        returncode=0,
+    )
+    with deploy.private_effective_environment(effective) as env_file:
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+        env_text = env_file.read_text(encoding="utf-8")
+        for key, value in effective.items():
+            assert f"{key}={value}\n" in env_text
+        matrix = deploy.collect_provider_preflight(
+            doctor_runner,
+            image,
+            env_file,
+            effective,
+        )
+        fail_fast = deploy.run_provider_preflight(
+            deploy_runner,
+            image,
+            env_file,
+            effective,
+        )
+
+    assert matrix["status"] == "PASS"
+    assert fail_fast["status"] == "PASS"
+    doctor_command = doctor_runner.calls[-1]
+    deploy_command = deploy_runner.calls[-1]
+    assert doctor_command[:-3] == deploy_command[:-2]
+    assert doctor_command[-3:] == ["node", "poc-provider-preflight.mjs", "--collect-all"]
+    assert deploy_command[-2:] == ["node", "poc-provider-preflight.mjs"]
+    assert doctor_command[:2] == deploy_command[:2] == ["docker", "run"]
+    assert "--rm" in doctor_command
+    assert "--read-only" in doctor_command
+    assert doctor_command[doctor_command.index("--user") + 1] == "1000:1000"
+    assert doctor_command[doctor_command.index("--cap-drop") + 1] == "ALL"
+    assert "no-new-privileges:true" in doctor_command
+    assert not any(value == "compose" for value in doctor_command + deploy_command)
+    assert not any(value in {"pgvector", "neo4j", "redis"} for value in doctor_command)
 
 
 @pytest.mark.parametrize(

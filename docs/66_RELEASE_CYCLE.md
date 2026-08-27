@@ -83,7 +83,9 @@ completed generation. No PREP setting disables this contract.
    tracked environment contract and target-owned env files exclusively define Product, provider,
    image, platform, project, bind, and port values; only reviewed host/Docker connectivity keys are
    inherited. The fully resolved Compose identity and provider projection are checked before the
-   image gate.
+   image gate. Doctor collect-all and deploy fail-fast provider checks then share the same hardened
+   direct `docker run --rm` executor and exact private effective env file; neither provider gate
+   depends on the Web Compose service environment or creates Product volumes.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git

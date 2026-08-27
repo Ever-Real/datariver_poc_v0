@@ -207,8 +207,11 @@ doctor builds it with the same Dockerfile, linux/amd64 platform, Product revisio
 bounded build-proxy inputs used by deploy. If present, doctor reuses it only after the exact tag,
 platform and OCI revision pass inspection. Image build/cache is diagnostic preparation; doctor
 does not start PostgreSQL, Neo4j, Redis or the persistent Web service and does not write Product
-state. The collect-all check runs the verified image directly in hardened disposable `docker run
---rm` containers, avoiding Compose project volume creation.
+state. Doctor collect-all and deploy fail-fast provider checks both run the verified image through
+one hardened disposable `docker run --rm` executor with the same mode-0600 canonical effective
+environment, linux/amd64 platform, non-root user, read-only root filesystem, dropped capabilities,
+no-new-privileges policy, and optional read-only runtime CA bind. Only the preflight mode differs.
+Neither path uses the Web Compose service or creates Compose volumes/state-service dependencies.
 
 Image preparation failures are separately typed as `PREP_DOCTOR_IMAGE_BUILD_FAILED`,
 `PREP_DOCTOR_IMAGE_MISSING`, `PREP_DOCTOR_IMAGE_IDENTITY_MISMATCH`,
