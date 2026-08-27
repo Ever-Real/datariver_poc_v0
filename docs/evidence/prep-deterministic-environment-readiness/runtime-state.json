@@ -1,0 +1,66 @@
+{
+  "contract": "DATARIVER_PREP_DETERMINISTIC_ENVIRONMENT_READINESS_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T09:10:02Z",
+  "product_sha": "6a56c4013d21a39bd81ca199c3a6835d9b7dffc7",
+  "main_unchanged": "aaeb0a7cc811da50ae4a7d364436699574f73b46",
+  "actual_prep_executed": false,
+  "proven_root_cause": "AMBIENT_SHELL_OVERRIDES_CANONICAL_COMPOSE_INTERPOLATION",
+  "environment": {
+    "parent_application_values_inherited": false,
+    "parent_compose_values_inherited": false,
+    "host_environment_allowlisted": true,
+    "canonical_effective_environment_explicit": true,
+    "compose_resolution_verified_before_build": true,
+    "sensitive_values_printed": false
+  },
+  "polluted_shell": {
+    "doctor": "PASS",
+    "fresh_deploy": "ACCEPTED",
+    "historical_accepted_upgrade": "ACCEPTED",
+    "smoke_failure_same_command_resume": "ACCEPTED",
+    "unknown_durable_state": "FAIL_CLOSED",
+    "product_state_deleted": false,
+    "generated_secret_regenerated": false
+  },
+  "mcl": {
+    "connection_timeout_ms": 10000,
+    "request_timeout_ms": 30000,
+    "retry_count": 2,
+    "advertised_broker_failure_typed": true,
+    "bounded_batches": true,
+    "background_catch_up": true,
+    "retention_gap_fail_closed": true
+  },
+  "post_preflight_stages": [
+    "TARGET_STATE",
+    "STATE_SERVICES",
+    "SCHEMA",
+    "BOOTSTRAP",
+    "K9_INITIAL_REFRESH",
+    "WEB_START",
+    "MCL_INITIAL_CAPTURE",
+    "AUTHENTICATED_SMOKE",
+    "ACCEPTED_RECEIPT"
+  ],
+  "verification": {
+    "prep_focused": "107/107 PASS",
+    "provider_mcl_focused": "62/62 PASS",
+    "isolated_docker": "4/4 PASS",
+    "node_product": "167/167 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "python_full": "3977 passed / 120 skipped / 55 known baseline failures",
+    "ruff": "PASS",
+    "strict_mypy": "580 files PASS",
+    "static": "PASS",
+    "frontend_builds": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "6a56c4013d21a39bd81ca199c3a6835d9b7dffc7",
+    "image_id": "sha256:96f2350aaa0902584064fb9cf1f257f48cf4a2e11074758add13510408f9c456",
+    "runtime_adapters": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
