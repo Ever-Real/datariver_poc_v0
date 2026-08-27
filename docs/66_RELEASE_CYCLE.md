@@ -70,6 +70,11 @@ completed generation. No PREP setting disables this contract.
    bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
    Assets and semantic index are strict built-in READY gates. MCL discovery/checkpoint readiness is
    also required; optional Airflow/MinIO capabilities report DEFERRED without adding containers.
+   Startup catch-up repeats bounded MCL batches under the existing single-owner lock until the
+   observed high watermark is reached; it never resets a checkpoint or defers an oversized
+   retained backlog to later daily boundaries. Read-only `doctor` collects all independent
+   provider results in one matrix, while `deploy` still blocks before mutation on any required
+   failure.
 
 Cross-release resume treats generated target secrets and canonical volume/topology identities as
 ownership, while tracked `FIXED` values remain descendant release configuration. Ownership and Git

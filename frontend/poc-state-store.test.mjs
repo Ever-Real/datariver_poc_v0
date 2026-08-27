@@ -560,6 +560,94 @@ test('fails closed before scheduler work when the stored receipt boundary is mal
   assert.equal(released, 1)
 })
 
+test('startup may recheck a completed boundary and incomplete catch-up never advances its receipt', async () => {
+  const stored = {
+    last_successful_schedule: '2026-08-13T15:00:00.000Z',
+    completed_at: '2026-08-13T15:01:00.000Z',
+    trigger: 'scheduled',
+  }
+  let receiptWrites = 0
+  let taskCalls = 0
+  const client = {
+    async query(sql) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      if (normalized.startsWith('SELECT pg_try_advisory_lock')) return { rows: [{ acquired: true }] }
+      if (normalized === 'SELECT value FROM poc_state WHERE scope = $1') return { rows: [{ value: stored }] }
+      if (normalized.startsWith('INSERT INTO poc_state')) { receiptWrites += 1; return { rows: [] } }
+      if (normalized.startsWith('SELECT pg_advisory_unlock')) return { rows: [{ pg_advisory_unlock: true }] }
+      throw new Error(`Unexpected scheduler SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  const store = createPocStateStore({
+    databasePool: {
+      async query() { return { rows: [] } },
+      async connect() { return client },
+    },
+  })
+  const command = {
+    lockName: 'scheduler-startup-test',
+    scheduledFor: stored.last_successful_schedule,
+    trigger: 'startup',
+  }
+  const incomplete = await store.runChangeHistoryScheduler(command, async () => {
+    taskCalls += 1
+    return { schedulerComplete: false }
+  })
+  assert.equal(incomplete.status, 'incomplete')
+  const replayed = await store.runChangeHistoryScheduler(command, async () => {
+    taskCalls += 1
+    return { schedulerComplete: true }
+  })
+  assert.equal(replayed.status, 'succeeded')
+  assert.equal(replayed.replayedSchedule, true)
+  assert.equal(taskCalls, 2)
+  assert.equal(receiptWrites, 0)
+})
+
+test('records only bounded sanitized MCL capture runtime states', async () => {
+  const store = createPocStateStore()
+  await store.writeChangeHistoryCaptureStatus({
+    state: 'CAPTURE_CATCHING_UP',
+    batchProcessedRecords: 17,
+    sourceIdentityHash: 'a'.repeat(64),
+    observedAt: '2026-08-14T01:02:03.000Z',
+  })
+  assert.deepEqual((await store.read('change-history-capture-status-v1')).value, {
+    contract: 'DATARIVER_CHANGE_HISTORY_CAPTURE_STATUS_V1',
+    state: 'CAPTURE_CATCHING_UP',
+    batch_processed_records: 17,
+    caught_up: false,
+    source_identity_hash: 'a'.repeat(64),
+    observed_at: '2026-08-14T01:02:03.000Z',
+  })
+  await assert.rejects(
+    store.writeChangeHistoryCaptureStatus({
+      state: 'UNBOUNDED', batchProcessedRecords: 1, sourceIdentityHash: 'a'.repeat(64),
+      observedAt: '2026-08-14T01:02:03.000Z',
+    }),
+    /capture status is invalid/,
+  )
+  await store.writeChangeHistoryRuntimeStatus({
+    state: 'DISCOVERY_FAILED',
+    classification: 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED',
+    observedAt: '2026-08-14T01:03:00.000Z',
+  })
+  assert.deepEqual((await store.read('change-history-runtime-status-v1')).value, {
+    contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
+    state: 'DISCOVERY_FAILED',
+    classification: 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED',
+    observed_at: '2026-08-14T01:03:00.000Z',
+  })
+  await assert.rejects(
+    store.writeChangeHistoryRuntimeStatus({
+      state: 'CAPTURE_FAILED', classification: 'untrusted',
+      observedAt: '2026-08-14T01:03:00.000Z',
+    }),
+    /runtime classification is invalid/,
+  )
+})
+
 test('atomically inserts, replays, fans out, and advances a partition checkpoint', async () => {
   const database = createDatabaseDouble()
   const store = createPocStateStore({ databasePool: database.pool })

@@ -109,6 +109,18 @@ discovers the cluster ID, one exact versioned MCL topic, GMS-internal (preferred
 configured external Schema Registry, exact value subject, latest schema hash, DataHub version, and
 source identity. The sanitized discovery receipt and durable checkpoint are target-local. A new
 source begins at the earliest retained offset; an existing accepted checkpoint is never reset.
+Each consume transaction remains bounded by `POC_MCL_MAX_MESSAGES`. At server startup the single
+advisory-lock owner repeats bounded batches, yielding between them, until it reaches the captured
+Kafka high watermark; a large retained backlog therefore continues in the background instead of
+waiting for the next daily boundary. Shutdown finishes the current bounded batch and starts no
+new one. A checkpoint behind Kafka retention is `HISTORY_GAP_BLOCKED` and is never advanced or
+silently skipped.
+
+Kafka bootstrap reachability does not prove that the cluster is usable: Kafka may advertise a
+broker DNS name or address that PREP cannot resolve or reach after the initial bootstrap
+connection. Doctor reports that as the typed Kafka connectivity/cluster stage. Correct the
+DataHub-owned advertised-listener/network route; DataRiver does not deploy a second Kafka and does
+not rewrite the remote Kafka configuration.
 
 Quality Read uses GX-produced DataHub Assertion definitions/results through GMS. A zero assertion
 count is a valid READY result. Quality Execution remains DEFERRED unless the existing external
@@ -168,6 +180,16 @@ The following are optional troubleshooting/operations commands, not normal deplo
 
 All Python execution goes through the wrapper's `uv run --frozen`; system Python package state is
 not part of the operator contract.
+
+`doctor` is read-only and collect-all. One invocation reports `WEB_INTRANET`, `DATAHUB`,
+`QUALITY_READ`, `CHAT`, `EMBEDDING`, `RERANKER`, `MCL_DISCOVERY`, `AIRFLOW`, and `MINIO` as
+`READY`, `DEFERRED`, `FAILED`, or `BLOCKED_BY_DEPENDENCY`, with only a bounded classification on a
+failure. Independent LLM, Kafka, Airflow, and MinIO checks continue after another stage fails.
+`QUALITY_READ` may be blocked by an unavailable DataHub transport; the MCL Kafka cluster/topic
+checks still run independently before DataHub provider-version or Registry dependencies where
+possible. Doctor exits nonzero when a required stage failed but never writes Product state,
+checkpoints, receipts, secrets, or accepted markers. Deploy remains fail-closed before its first
+persistent mutation.
 
 ### Database credential mismatch
 

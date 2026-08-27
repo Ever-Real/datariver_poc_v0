@@ -841,6 +841,75 @@ def test_deploy_wrapper_uses_internal_not_unknown_for_malformed_failure_envelope
     assert captured.value.code == "PREP_PREFLIGHT_INTERNAL_UNEXPECTED_FAILED"
 
 
+def _doctor_matrix(
+    *,
+    chat: dict[str, str] | None = None,
+    datahub: dict[str, str] | None = None,
+    quality: dict[str, str] | None = None,
+) -> dict[str, object]:
+    ready = {"status": "READY"}
+    stages: dict[str, object] = {stage: dict(ready) for stage in deploy.DOCTOR_PREFLIGHT_STAGES}
+    stages["AIRFLOW"] = {"status": "DEFERRED"}
+    stages["MINIO"] = {"status": "DEFERRED"}
+    if chat is not None:
+        stages["CHAT"] = chat
+    if datahub is not None:
+        stages["DATAHUB"] = datahub
+    if quality is not None:
+        stages["QUALITY_READ"] = quality
+    failed = any(
+        isinstance(entry, dict) and entry.get("status") in {"FAILED", "BLOCKED_BY_DEPENDENCY"}
+        for entry in stages.values()
+    )
+    return {
+        "contract": "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_MATRIX_V1",
+        "status": "FAILED" if failed else "PASS",
+        "stages": stages,
+    }
+
+
+def test_doctor_collect_all_parser_preserves_full_sanitized_matrix() -> None:
+    matrix = _doctor_matrix(
+        chat={
+            "status": "FAILED",
+            "classification": "PREP_PREFLIGHT_CHAT_AUTH_FAILED",
+            "status_class": "4xx",
+        },
+        datahub={
+            "status": "FAILED",
+            "classification": "PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED",
+        },
+        quality={"status": "BLOCKED_BY_DEPENDENCY", "dependency": "DATAHUB"},
+    )
+
+    class MatrixRunner:
+        def run(
+            self, arguments: Sequence[str], **keywords: object
+        ) -> subprocess.CompletedProcess[str]:
+            assert arguments[-1] == "--collect-all"
+            assert keywords == {"check": False}
+            return subprocess.CompletedProcess(list(arguments), 2, json.dumps(matrix), "")
+
+    result = deploy.collect_provider_preflight(MatrixRunner(), ["docker", "compose"])
+    assert result == matrix
+    assert result["stages"]["AIRFLOW"] == {"status": "DEFERRED"}
+    assert result["stages"]["MINIO"] == {"status": "DEFERRED"}
+
+
+def test_doctor_collect_all_parser_rejects_unbounded_stage_classification() -> None:
+    matrix = _doctor_matrix(chat={"status": "FAILED", "classification": "untrusted"})
+
+    class MatrixRunner:
+        def run(
+            self, arguments: Sequence[str], **_keywords: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(list(arguments), 2, json.dumps(matrix), "")
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.collect_provider_preflight(MatrixRunner(), ["docker", "compose"])
+    assert captured.value.code == "PREP_PREFLIGHT_MATRIX_RESULT_INVALID"
+
+
 @pytest.mark.parametrize(
     "classification",
     sorted(deploy.SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES),
@@ -989,6 +1058,46 @@ def test_uncaught_child_failure_is_sanitized_at_the_cli_boundary() -> None:
     assert "secrets and raw command " in source
     assert "output were suppressed" in source
     assert "except (EOFError, KeyboardInterrupt):" in source
+
+
+@pytest.mark.parametrize(
+    ("step", "code"),
+    (
+        ("TARGET_STATE", "PREP_TARGET_STATE_RECONCILIATION_FAILED"),
+        ("STATE_SERVICES", "PREP_STATE_SERVICES_FAILED"),
+        ("SCHEMA", "PREP_SCHEMA_INITIALIZATION_FAILED"),
+        ("BOOTSTRAP", "PREP_BOOTSTRAP_RECONCILIATION_FAILED"),
+        ("WEB_START", "PREP_WEB_START_FAILED"),
+        ("AUTHENTICATED_SMOKE", "PREP_ACCEPTANCE_RECEIPT_WRITE_FAILED"),
+    ),
+)
+def test_known_post_preflight_gates_replace_generic_deployment_failures(
+    step: str,
+    code: str,
+) -> None:
+    with pytest.raises(deploy.PrepError) as captured:
+        with deploy.typed_deploy_gate(step, code, "sanitized reason"):
+            raise OSError("private child detail")
+    assert captured.value.step == step
+    assert captured.value.code == code
+    assert "private child detail" not in captured.value.reason
+
+
+def test_known_post_preflight_gate_preserves_more_precise_product_classification() -> None:
+    precise = deploy.PrepError(
+        "K9_INITIAL_REFRESH",
+        "PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED",
+        "sanitized",
+        "retry",
+    )
+    with pytest.raises(deploy.PrepError) as captured:
+        with deploy.typed_deploy_gate(
+            "AUTHENTICATED_SMOKE",
+            "PREP_AUTHENTICATED_SMOKE_FAILED",
+            "fallback",
+        ):
+            raise precise
+    assert captured.value is precise
 
 
 def test_wrapper_uses_uv_and_never_sources_operator_environment() -> None:

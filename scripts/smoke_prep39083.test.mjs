@@ -13,6 +13,8 @@ async function fixture(k9Mode, {
   chatFailureCode = null,
   catalogFailure = null,
   readinessTimeoutMs = '5000',
+  managedItems = null,
+  changeHistory = null,
 } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'prep39083-smoke-'))
   const passwordFile = join(directory, 'password')
@@ -39,12 +41,12 @@ async function fixture(k9Mode, {
       else json(200, { items: [], meta: { refresh_state: 'CURRENT_OR_REFRESHING' } })
     } else if (request.url === '/poc-api/knowledge/managed-assets') {
       managedRequests += 1
-      json(200, { items: [
+      json(200, { items: managedItems || [
         { graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
         { graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
       ] })
     } else if (request.url?.startsWith('/api/v1/change-history/summary?')) {
-      json(200, { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
+      json(200, changeHistory || { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
     } else if (request.url === '/poc-api/llm/chat') {
       json(chatStatus, chatStatus === 200
         ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
@@ -97,6 +99,45 @@ test('PREP smoke retains strict managed graph gates when K9 is configured', asyn
   assert.equal(result.report.k9_mode, 'REQUIRED')
   assert.equal(result.report.managed_assets, 'PASS')
   assert.equal(result.report.semantic_index, 'PASS')
+})
+
+test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_NEO4J_PROJECTION_FAILED',
+      },
+      { graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY', semantic_index_status: 'PENDING' },
+    ],
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'K9_INITIAL_REFRESH')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED')
+  assert.ok(result.failure.elapsed_ms < 5_000)
+})
+
+test('PREP smoke distinguishes MCL runtime discovery, capture, and retention failures', async (context) => {
+  const cases = [
+    ['DISCOVERY_FAILED', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED', 'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED'],
+    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED', 'PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED'],
+    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED', 'PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED'],
+  ]
+  for (const [captureState, productCode, expected] of cases) {
+    await context.test(expected, async () => {
+      const result = await fixture('deferred', {
+        changeHistory: {
+          capture_state: captureState,
+          sync_status: captureState,
+          capture_failure_classification: productCode,
+        },
+      })
+      assert.equal(result.completed.code, 2)
+      assert.equal(result.failure.stage, 'MCL_INITIAL_CAPTURE')
+      assert.equal(result.failure.classification, expected)
+      assert.ok(result.failure.elapsed_ms < 5_000)
+    })
+  }
 })
 
 test('PREP smoke persists sanitized stage classification and emits progress', async () => {

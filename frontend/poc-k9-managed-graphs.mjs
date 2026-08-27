@@ -513,19 +513,21 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
 
     const existingPolicy = await stateStore.getK9Policy(expectedPolicy.graph_id)
     if (!existingPolicy) {
-      await stateStore.finalizeK9RunFailure(runId, 'Managed policy is missing. No publish allowed.')
-      return { runId, status: 'FAILURE', reason: 'Managed policy is missing. No publish allowed.', policy: expectedPolicy.name }
+      await stateStore.finalizeK9RunFailure(runId, 'K9_POLICY_PIN_DRIFT_FAILED: Managed policy is missing. No publish allowed.')
+      return { runId, status: 'FAILURE', reason: 'Managed policy is missing. No publish allowed.', failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name }
     }
     if (existingPolicy.policy_hash !== expectedPolicy.policy_hash) {
-      await stateStore.finalizeK9RunFailure(runId, 'Managed policy has drifted. No publish allowed.')
-      return { runId, status: 'FAILURE', reason: 'Managed policy has drifted. No publish allowed.', policy: expectedPolicy.name }
+      await stateStore.finalizeK9RunFailure(runId, 'K9_POLICY_PIN_DRIFT_FAILED: Managed policy has drifted. No publish allowed.')
+      return { runId, status: 'FAILURE', reason: 'Managed policy has drifted. No publish allowed.', failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name }
     }
 
     let failureReason = null
+    let failureCode = 'K9_DATAHUB_SOURCE_FAILED'
     let manifestHash, canonicalRelease, inputSnapshotHash
 
     try {
       const sourceData = await collectorFunc(authCtx)
+      failureCode = 'K9_POLICY_PIN_DRIFT_FAILED'
       const pin = sourceData.authority_pin
       validateAuthorityPin(pin)
       if (pin.subject_id !== resolved.subject_id) throw new Error('Authority pin subject_id mismatch')
@@ -604,6 +606,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         mappedData.edges,
       )
 
+      failureCode = 'K9_NEO4J_PROJECTION_FAILED'
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
@@ -704,13 +707,13 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     }
 
     if (failureReason) {
-      await stateStore.finalizeK9RunFailure(runId, failureReason)
+      await stateStore.finalizeK9RunFailure(runId, `${failureCode}: ${failureReason}`)
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       ).catch(function() {})
 
-      return { runId: runId, status: 'FAILURE', reason: failureReason, policy: expectedPolicy.name }
+      return { runId: runId, status: 'FAILURE', reason: failureReason, failureCode, policy: expectedPolicy.name }
     }
 
     try {
@@ -720,8 +723,8 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       ).catch(function() {})
-      await stateStore.finalizeK9RunFailure(runId, 'Canonical finalization failed: ' + e.message)
-      return { runId: runId, status: 'FAILURE', reason: 'Canonical PG commit failed: ' + e.message, policy: expectedPolicy.name }
+      await stateStore.finalizeK9RunFailure(runId, 'K9_PROMOTION_FAILED: Canonical finalization failed: ' + e.message)
+      return { runId: runId, status: 'FAILURE', reason: 'Canonical PG commit failed: ' + e.message, failureCode: 'K9_PROMOTION_FAILED', policy: expectedPolicy.name }
     }
 
     await cleanupOrphanStaging(expectedPolicy.graph_id, stagingNamespace).catch(function(e) {

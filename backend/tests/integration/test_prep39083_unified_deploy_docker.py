@@ -451,7 +451,7 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
             product,
             retry_inventory,
             deploy.read_env_file(runtime, private=True, label=".env.prep.runtime"),
-            "DEFERRED",
+            bundle.k9_mode,
         )
         retry_bundle = deploy.reconcile_environment(
             release,
@@ -480,8 +480,8 @@ def test_failed_smoke_resumes_with_same_deploy_command_without_duplicate_bootstr
                 deploy.compose_prefix(release, env_file),
             )
         assert inspected["administrator_record_count"] == 1
-        assert inspected["user_record_count"] == 2
-        assert [item["name"] for item in inspected["services"]] == ["MCP"]
+        assert inspected["user_record_count"] == 3
+        assert [item["name"] for item in inspected["services"]] == ["K9", "MCP"]
     finally:
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release, env_file)
@@ -726,6 +726,273 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
         assert inspected["administrator_record_count"] == 1
         assert inspected["user_record_count"] == 2
         assert [item["name"] for item in inspected["services"]] == ["MCP"]
+    finally:
+        with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
+            prefix = deploy.compose_prefix(release_b, env_file)
+            runner.run([*prefix, "down", "--volumes", "--remove-orphans"], check=False)
+
+
+@pytest.mark.skipif(
+    not _FULL_ENABLED,
+    reason="explicit full historical accepted-upgrade Docker integration is required",
+)
+def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = f"datariver-prep39083-accepted-{uuid4().hex[:10]}"
+    port = int(_free_port())
+    runner = deploy.Runner()
+    current_handoff = runner.output(["git", "rev-parse", "HEAD"])
+    historical_handoff = "749f568f4ea0dcddd3e837e76d83fe784985bb5b"
+    assert (
+        runner.run(
+            ["git", "merge-base", "--is-ancestor", historical_handoff, current_handoff],
+            check=False,
+        ).returncode
+        == 0
+    )
+    historical_source_contract = json.loads(
+        runner.output(["git", "show", f"{historical_handoff}:deploy/prep39083/env-contract.json"])
+    )
+    current_contract_path = ROOT / "deploy/prep39083/env-contract.json"
+    current_contract = json.loads(current_contract_path.read_text())
+    assert historical_source_contract["contract"] == "DATARIVER_PREP39083_ENV_V4"
+    assert historical_source_contract["ownership"]["FIXED"]["POC_BIND_HOST"] == "127.0.0.1"
+    assert (
+        historical_source_contract["ownership"]["FIXED"]["POC_CHANGE_HISTORY_SCHEDULER_ENABLED"]
+        == "false"
+    )
+    assert historical_source_contract["ownership"]["FIXED"].get("POC_K9_SCHEDULER_ENABLED") is None
+    assert current_contract["ownership"]["FIXED"]["POC_BIND_HOST"] == "0.0.0.0"  # noqa: S104
+    assert current_contract["ownership"]["FIXED"]["POC_CHANGE_HISTORY_SCHEDULER_ENABLED"] == "true"
+    assert current_contract["ownership"]["FIXED"]["POC_K9_SCHEDULER_ENABLED"] == "true"
+    # Current reconciliation reads the current V5 schema; this contract uses that
+    # schema with the exact historical topology values proven above.
+    historical_contract = json.loads(json.dumps(current_contract))
+    historical_contract["ownership"]["FIXED"].update(
+        {
+            "POC_BIND_HOST": "127.0.0.1",
+            "POC_SERVER_HOST": "127.0.0.1",
+            "POC_K9_SCHEDULER_ENABLED": "false",
+            "POC_CHANGE_HISTORY_SCHEDULER_ENABLED": "false",
+        }
+    )
+    historical_contract_path = tmp_path / "env-contract.historical-shape.json"
+    historical_contract_path.write_text(json.dumps(historical_contract), encoding="utf-8")
+
+    release_a = deploy.ReleaseIdentity(historical_handoff, "a" * 40, "linux/amd64", port, project)
+    release_b = deploy.ReleaseIdentity(current_handoff, "b" * 40, "linux/amd64", port, project)
+    operator = tmp_path / ".env.prep"
+    optional = tmp_path / ".env.prep.optional"
+    runtime = tmp_path / ".env.prep.runtime"
+    accepted = tmp_path / "accepted.json"
+    attempt = tmp_path / "deploy-attempt.json"
+    smoke_failure = tmp_path / "smoke-failure.json"
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "ENV_CONTRACT", historical_contract_path)
+    values = _portable_operator_values(f"http://127.0.0.1:{port}")
+    values["POC_MCL_KAFKA_BROKERS"] = "127.0.0.1:9"
+    _private_env(operator, values)
+
+    bundle_a = deploy.reconcile_environment(
+        release_a,
+        operator_path=operator,
+        optional_path=optional,
+        runtime_path=runtime,
+        random_token=lambda count: "h" * count,
+    )
+    historical_runtime = dict(bundle_a.runtime)
+    historical_runtime["POC_K9_SCHEDULER_ENABLED"] = "false"
+    deploy._atomic_private_env(runtime, historical_runtime)
+    bundle_a = replace(
+        bundle_a,
+        runtime=historical_runtime,
+        effective={**bundle_a.effective, "POC_K9_SCHEDULER_ENABLED": "false"},
+        k9_mode="DEFERRED",
+    )
+    bundle_a = _effective(bundle_a, project)
+    effective_a = dict(bundle_a.effective)
+    effective_a.update(
+        {
+            "POC_PORT": str(port),
+            "POC_PUBLIC_ORIGIN": f"http://127.0.0.1:{port}",
+        }
+    )
+    bundle_a = replace(bundle_a, effective=effective_a)
+    before_39080 = deploy.snapshot_39080(runner)
+    inventory_a = deploy.inspect_target_inventory(
+        runner,
+        release_a,
+        runtime_path=runtime,
+        accepted_marker_path=accepted,
+        attempt_receipt_path=attempt,
+    )
+    monkeypatch.setattr(
+        deploy,
+        "run_provider_preflight",
+        lambda _runner, _prefix: {
+            "status": "PASS",
+            "gx_quality_execution": "DEFERRED",
+            "airflow": "DEFERRED",
+            "minio": "DEFERRED",
+        },
+    )
+    monkeypatch.setattr(deploy, "run_smoke", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "admin")
+    passwords = iter(
+        (
+            "correct horse battery staple",
+            "correct horse battery staple",
+            "correct horse battery staple",
+        )
+    )
+    monkeypatch.setattr(deploy.getpass, "getpass", lambda _prompt="": next(passwords))
+    cleanup_bundle = bundle_a
+    try:
+        deploy.deploy(
+            release_a,
+            bundle_a,
+            deploy.DeploymentPreparation(
+                runner,
+                {"handoff_commit": historical_handoff},
+                inventory_a,
+                before_39080,
+            ),
+        )
+        assert bundle_a.k9_mode == "DEFERRED"
+        assert accepted.is_file() and attempt.is_file()
+        accepted_a = accepted.read_bytes()
+        attempt_a = deploy._attempt_receipt(attempt)
+        assert attempt_a is not None and attempt_a["phase"] == "ACCEPTED"
+        runtime_a = deploy.read_env_file(runtime, private=True, label=".env.prep.runtime")
+        secrets_a = {key: runtime_a[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS}
+        with deploy.private_effective_environment(bundle_a.effective) as env_file:
+            prefix_a = deploy.compose_prefix(release_a, env_file)
+            config_a = deploy.compose_config(runner, prefix_a)
+            volumes_a = deploy.compose_volume_identities(config_a)
+            runner.run(
+                [
+                    *deploy._postgres_local_command(
+                        prefix_a,
+                        bundle_a.effective["POC_POSTGRES_DB"],
+                        bundle_a.effective["POC_POSTGRES_USER"],
+                    ),
+                    "--command",
+                    "INSERT INTO poc_state(scope, value) VALUES "
+                    "('historical-accepted-durable', '{\"preserved\":true}'::jsonb) "
+                    "ON CONFLICT (scope) DO NOTHING;",
+                ]
+            )
+            checkpoint_count = runner.output(
+                [
+                    *deploy._postgres_local_command(
+                        prefix_a,
+                        bundle_a.effective["POC_POSTGRES_DB"],
+                        bundle_a.effective["POC_POSTGRES_USER"],
+                    ),
+                    "--tuples-only",
+                    "--no-align",
+                    "--command",
+                    "SELECT count(*) FROM poc_change_history_checkpoints;",
+                ]
+            )
+            assert checkpoint_count == "0"
+
+        monkeypatch.setattr(deploy, "ENV_CONTRACT", current_contract_path)
+        values["POC_PUBLIC_ORIGIN"] = f"http://100.64.17.9:{port}"
+        values["POC_INTRANET_HTTP_ALLOWED_CIDRS"] = "100.64.0.0/10"
+        _private_env(operator, values)
+        inventory_b = deploy.inspect_target_inventory(
+            runner,
+            release_b,
+            runtime_path=runtime,
+            accepted_marker_path=accepted,
+            attempt_receipt_path=attempt,
+        )
+        assert deploy.classify_target_state(inventory_b) in {
+            deploy.TargetState.EXISTING_ACCEPTED_RUNNING,
+            deploy.TargetState.EXISTING_ACCEPTED_STOPPED,
+        }
+        bundle_b = deploy.reconcile_environment(
+            release_b,
+            operator_path=operator,
+            optional_path=optional,
+            runtime_path=runtime,
+            target_state=deploy.classify_target_state(inventory_b),
+            random_token=lambda _count: pytest.fail("accepted upgrade must preserve secrets"),
+        )
+        effective_b = dict(bundle_b.effective)
+        for key in (
+            "POC_PLATFORM",
+            "POC_SHARED_NETWORK",
+            "POC_POSTGRES_HOST_PORT",
+            "POC_NEO4J_HTTP_PORT",
+            "POC_REDIS_PORT",
+            "POC_PORT",
+        ):
+            effective_b[key] = bundle_a.effective[key]
+        effective_b["POC_PUBLIC_ORIGIN"] = values["POC_PUBLIC_ORIGIN"]
+        effective_b["POC_INTRANET_HTTP_ALLOWED_CIDRS"] = values["POC_INTRANET_HTTP_ALLOWED_CIDRS"]
+        bundle_b = replace(bundle_b, effective=effective_b)
+        cleanup_bundle = bundle_b
+        assert bundle_b.k9_mode == "REQUIRED"
+        deploy.deploy(
+            release_b,
+            bundle_b,
+            deploy.DeploymentPreparation(
+                runner,
+                {"handoff_commit": current_handoff},
+                inventory_b,
+                before_39080,
+            ),
+        )
+        runtime_b = deploy.read_env_file(runtime, private=True, label=".env.prep.runtime")
+        assert {key: runtime_b[key] for key in deploy.TARGET_OWNERSHIP_SECRET_KEYS} == secrets_a
+        with deploy.private_effective_environment(bundle_b.effective) as env_file:
+            prefix_b = deploy.compose_prefix(release_b, env_file)
+            config_b = deploy.compose_config(runner, prefix_b)
+            assert deploy.compose_volume_identities(config_b) == volumes_a
+            preserved = runner.output(
+                [
+                    *deploy._postgres_local_command(
+                        prefix_b,
+                        bundle_b.effective["POC_POSTGRES_DB"],
+                        bundle_b.effective["POC_POSTGRES_USER"],
+                    ),
+                    "--tuples-only",
+                    "--no-align",
+                    "--command",
+                    "SELECT count(*) FROM poc_state WHERE scope = 'historical-accepted-durable';",
+                ]
+            )
+            policies = runner.output(
+                [
+                    *deploy._postgres_local_command(
+                        prefix_b,
+                        bundle_b.effective["POC_POSTGRES_DB"],
+                        bundle_b.effective["POC_POSTGRES_USER"],
+                    ),
+                    "--tuples-only",
+                    "--no-align",
+                    "--command",
+                    "SELECT count(*) FROM poc_k9_managed_graph_policies;",
+                ]
+            )
+            assert preserved == "1"
+            assert policies == "2"
+            inspected = deploy.inspect_bootstrap(runner, prefix_b)
+            assert [item["name"] for item in inspected["services"]] == ["K9", "MCP"]
+        assert accepted.is_file() and attempt.is_file()
+        assert accepted.read_bytes() != accepted_a
+        assert deploy._attempt_receipt(attempt)["phase"] == "ACCEPTED"
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        assert "down -v" not in source
+        assert '"volume", "rm"' not in source
     finally:
         with deploy.private_effective_environment(cleanup_bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release_b, env_file)

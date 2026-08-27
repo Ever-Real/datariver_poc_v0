@@ -241,6 +241,24 @@ async function main() {
         const items = Array.isArray(managed.body?.items) ? managed.body.items : []
         const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
         const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
+        const refreshFailure = [lineage, metadata]
+          .map((item) => item?.last_error_code)
+          .find((code) => typeof code === 'string' && code.startsWith('K9_'))
+        const refreshClassifications = {
+          K9_DATAHUB_SOURCE_FAILED: 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
+          K9_POLICY_PIN_DRIFT_FAILED: 'PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED',
+          K9_NEO4J_PROJECTION_FAILED: 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED',
+          K9_PROMOTION_FAILED: 'PREP_SMOKE_K9_PROMOTION_FAILED',
+        }
+        if (refreshFailure) {
+          throw smokeFailure(
+            'K9_INITIAL_REFRESH',
+            refreshClassifications[refreshFailure] || 'PREP_SMOKE_K9_REFRESH_FAILED',
+            'The initial managed-graph refresh failed at a classified stage.',
+            null,
+            { terminal: true },
+          )
+        }
         if (!lineage || !metadata || !String(lineage.status).startsWith('READY')
           || !String(metadata.status).startsWith('READY')
           || lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
@@ -270,7 +288,34 @@ async function main() {
         'MCL_CHANGE_HISTORY',
         'PREP_SMOKE_MCL_SOURCE_FAILED',
       )
-      if (!['CAPTURE_PENDING', 'CONTIGUOUS_CAPTURE_RECORDED'].includes(changeHistory.body?.capture_state)) {
+      if (changeHistory.body?.capture_state === 'DISCOVERY_FAILED') {
+        throw smokeFailure(
+          'MCL_INITIAL_CAPTURE',
+          'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED',
+          'MCL runtime discovery failed after read-only provider preflight.',
+          null,
+          { terminal: true },
+        )
+      }
+      if (changeHistory.body?.capture_state === 'CAPTURE_FAILED') {
+        const historyGap = changeHistory.body?.capture_failure_classification
+          === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED'
+        throw smokeFailure(
+          'MCL_INITIAL_CAPTURE',
+          historyGap
+            ? 'PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED'
+            : 'PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED',
+          'MCL runtime capture failed after read-only provider preflight.',
+          null,
+          { terminal: true },
+        )
+      }
+      if (![
+        'CAPTURE_PENDING',
+        'CONTIGUOUS_CAPTURE_RECORDED',
+        'CAPTURE_CATCHING_UP',
+        'CAPTURE_CAUGHT_UP',
+      ].includes(changeHistory.body?.capture_state)) {
         throw smokeFailure('MCL_CHANGE_HISTORY', 'PREP_SMOKE_MCL_SOURCE_FAILED', 'MCL source/checkpoint contract is not ready.')
       }
       report.mcl_change_history = 'PASS'

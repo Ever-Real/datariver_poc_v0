@@ -289,6 +289,119 @@ export async function runProviderPreflight({
   return preflightResult
 }
 
+const collectAllStageOperations = Object.freeze([
+  ['WEB_INTRANET', 'webIntranet'],
+  ['DATAHUB', 'datahub'],
+  ['QUALITY_READ', 'qualityRead'],
+  ['CHAT', 'chat'],
+  ['EMBEDDING', 'embedding'],
+  ['RERANKER', 'reranker'],
+  ['MCL_DISCOVERY', 'mclDiscovery'],
+  ['AIRFLOW', 'airflow'],
+  ['MINIO', 'minio'],
+])
+
+function matrixFailure(error) {
+  const failure = providerPreflightFailure(error)
+  return Object.freeze({
+    status: 'FAILED',
+    classification: failure.classification,
+    ...(failure.status_class === null ? {} : { status_class: failure.status_class }),
+  })
+}
+
+function datahubDependencyUnavailable(entry) {
+  if (entry?.status !== 'FAILED') return false
+  return /_(AUTH|CONFIG|CONNECTIVITY|TIMEOUT)_FAILED$/.test(entry.classification)
+}
+
+function mclBlockedByDatahub(error, datahub) {
+  return datahubDependencyUnavailable(datahub)
+    && /^PREP_MCL_DISCOVERY_PROVIDER_(CONNECTIVITY|CONTRACT|VERSION)_FAILED$/.test(error?.code || '')
+}
+
+/**
+ * Read-only diagnostic variant of the provider gate. Unlike deploy's fail-fast
+ * runProviderPreflight(), doctor executes every independent stage and returns a
+ * bounded, sanitized matrix. Provider bodies and discovery receipts are omitted.
+ */
+export async function collectProviderPreflight({
+  environment = process.env,
+  providerTransport,
+  discoverMcl = discoverPocMclSource,
+  operations = {},
+} = {}) {
+  let transport = providerTransport
+  let transportError
+  if (!transport) {
+    try {
+      transport = createProviderTransport(environment)
+    } catch {
+      transportError = classified('RUNTIME_NETWORK', 'CONFIG', 'Runtime provider network configuration is invalid.')
+      transport = Object.freeze({
+        async fetch() { throw new Error('Runtime provider transport is unavailable.') },
+        async close() {},
+      })
+    }
+  }
+  const ownsTransport = !providerTransport && Boolean(transport)
+  const entries = {}
+  const operationByName = {
+    webIntranet: () => intranetPreflight(environment),
+    datahub: () => datahubPreflight(transport, environment),
+    qualityRead: () => qualityReadPreflight(transport, environment),
+    chat: () => chatPreflight(transport, environment),
+    embedding: () => embeddingPreflight(transport, environment),
+    reranker: () => rerankerPreflight(transport, environment),
+    mclDiscovery: () => discoverMcl({ environment, providerTransport: transport }),
+    airflow: () => airflowPreflight(transport, environment),
+    minio: () => minioPreflight(transport, environment),
+  }
+  let internalFailure
+  try {
+    for (const [stage, name] of collectAllStageOperations) {
+      if (stage === 'QUALITY_READ' && datahubDependencyUnavailable(entries.DATAHUB)) {
+        entries[stage] = Object.freeze({ status: 'BLOCKED_BY_DEPENDENCY', dependency: 'DATAHUB' })
+        continue
+      }
+      if (transportError && !['WEB_INTRANET', 'MCL_DISCOVERY'].includes(stage)) {
+        entries[stage] = matrixFailure(classified(
+          stage, 'RUNTIME_NETWORK_CONFIG', `${stage} runtime network configuration is invalid.`,
+        ))
+        continue
+      }
+      try {
+        const result = await knownStage(stage, operations[name] ?? operationByName[name])
+        entries[stage] = Object.freeze({ status: result === 'DEFERRED' ? 'DEFERRED' : 'READY' })
+      } catch (error) {
+        if (stage === 'MCL_DISCOVERY' && mclBlockedByDatahub(error, entries.DATAHUB)) {
+          entries[stage] = Object.freeze({ status: 'BLOCKED_BY_DEPENDENCY', dependency: 'DATAHUB' })
+        } else {
+          entries[stage] = matrixFailure(error)
+        }
+      }
+    }
+  } finally {
+    if (ownsTransport) {
+      try {
+        await transport.close()
+      } catch {
+        internalFailure = 'PREP_PREFLIGHT_RUNTIME_NETWORK_CLEANUP_UNEXPECTED_FAILED'
+      }
+    }
+  }
+  const complete = collectAllStageOperations.every(([stage]) => entries[stage])
+  const failed = Object.values(entries).some((entry) => (
+    entry.status === 'FAILED' || entry.status === 'BLOCKED_BY_DEPENDENCY'
+  ))
+  return Object.freeze({
+    contract: 'DATARIVER_PREP39083_PROVIDER_PREFLIGHT_MATRIX_V1',
+    status: !complete || failed || internalFailure ? 'FAILED' : 'PASS',
+    stages: Object.freeze(entries),
+    ...(internalFailure ? { internal_classification: internalFailure } : {}),
+  })
+}
+
 export function providerPreflightFailure(error) {
   const mcl = typeof error?.code === 'string' && error.code.startsWith('PREP_MCL_DISCOVERY_')
   return Object.freeze({
@@ -300,6 +413,17 @@ export function providerPreflightFailure(error) {
 }
 
 async function main() {
+  if (process.argv.slice(2).includes('--collect-all')) {
+    try {
+      const matrix = await collectProviderPreflight()
+      process.stdout.write(`${JSON.stringify(matrix)}\n`)
+      if (matrix.status !== 'PASS') process.exitCode = 2
+    } catch (error) {
+      process.stderr.write(`${JSON.stringify(providerPreflightFailure(error))}\n`)
+      process.exitCode = 2
+    }
+    return
+  }
   try {
     process.stdout.write(`${JSON.stringify(await runProviderPreflight())}\n`)
   } catch (error) {

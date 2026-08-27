@@ -10,6 +10,14 @@ const { Pool } = pg
 
 const CHANGE_HISTORY_ACCESS_SCOPE = 'change-history-access-v1'
 const CHANGE_HISTORY_ACCESS_SCOPES = [CHANGE_HISTORY_ACCESS_SCOPE, 'core']
+const CHANGE_HISTORY_CAPTURE_STATUS_SCOPE = 'change-history-capture-status-v1'
+const CHANGE_HISTORY_RUNTIME_STATUS_SCOPE = 'change-history-runtime-status-v1'
+const CHANGE_HISTORY_CAPTURE_STATES = new Set([
+  'CONTIGUOUS_CAPTURE_RECORDED',
+  'CAPTURE_CATCHING_UP',
+  'CAPTURE_CAUGHT_UP',
+  'HISTORY_GAP_BLOCKED',
+])
 const PROTECTED_CORE_ACCESS_FIELDS = [
   'adminMemberships',
   'adminSystems',
@@ -1825,8 +1833,13 @@ export function createPocStateStore({ databasePool } = {}) {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
       const stateResult = await client.query(`
         SELECT scope, value, version FROM poc_state
-        WHERE scope IN ($1, $2, $3)
-      `, [...CHANGE_HISTORY_ACCESS_SCOPES, normalizedCatalogScope])
+        WHERE scope IN ($1, $2, $3, $4, $5)
+      `, [
+        ...CHANGE_HISTORY_ACCESS_SCOPES,
+        normalizedCatalogScope,
+        CHANGE_HISTORY_CAPTURE_STATUS_SCOPE,
+        CHANGE_HISTORY_RUNTIME_STATUS_SCOPE,
+      ])
       const eventResult = await client.query(`
         SELECT event_identity, event_hash, normalized_change_transaction_id,
           source_identity_hash, topic_contract, source_partition, source_offset,
@@ -1857,9 +1870,17 @@ export function createPocStateStore({ databasePool } = {}) {
       `)
       await client.query('COMMIT')
       const catalog = stateResult.rows.find((row) => row.scope === normalizedCatalogScope)
+      const captureStatus = stateResult.rows.find((row) => row.scope === CHANGE_HISTORY_CAPTURE_STATUS_SCOPE)
+      const runtimeStatus = stateResult.rows.find((row) => row.scope === CHANGE_HISTORY_RUNTIME_STATUS_SCOPE)
       return {
         ...changeHistoryAccessSnapshot(stateResult.rows),
         catalog: catalog ? { value: catalog.value, version: Number(catalog.version) } : { value: null, version: 0 },
+        captureStatus: captureStatus
+          ? { value: captureStatus.value, version: Number(captureStatus.version) }
+          : { value: null, version: 0 },
+        runtimeStatus: runtimeStatus
+          ? { value: runtimeStatus.value, version: Number(runtimeStatus.version) }
+          : { value: null, version: 0 },
         events: eventResult.rows,
         links: linkResult.rows,
         sources: sourceResult.rows,
@@ -1871,6 +1892,46 @@ export function createPocStateStore({ databasePool } = {}) {
     } finally {
       client.release()
     }
+  }
+
+  async function writeChangeHistoryCaptureStatus(command) {
+    if (!command || typeof command !== 'object' || !CHANGE_HISTORY_CAPTURE_STATES.has(command.state)) {
+      throw new Error('The POC change-history capture status is invalid.')
+    }
+    const batchProcessedRecords = requireNonnegativeInteger(
+      command.batchProcessedRecords,
+      'batchProcessedRecords',
+    )
+    const sourceIdentityHash = command.state === 'HISTORY_GAP_BLOCKED'
+      ? (command.sourceIdentityHash == null ? null : requireSha256(command.sourceIdentityHash, 'sourceIdentityHash'))
+      : requireSha256(command.sourceIdentityHash, 'sourceIdentityHash')
+    return write(CHANGE_HISTORY_CAPTURE_STATUS_SCOPE, {
+      contract: 'DATARIVER_CHANGE_HISTORY_CAPTURE_STATUS_V1',
+      state: command.state,
+      batch_processed_records: batchProcessedRecords,
+      caught_up: command.state === 'CAPTURE_CAUGHT_UP',
+      source_identity_hash: sourceIdentityHash,
+      observed_at: explicitSchedulerTimestamp(command.observedAt, 'observedAt'),
+    })
+  }
+
+  async function writeChangeHistoryRuntimeStatus(command) {
+    if (!command || typeof command !== 'object'
+      || !['READY', 'DISCOVERY_FAILED', 'CAPTURE_FAILED'].includes(command.state)) {
+      throw new Error('The POC change-history runtime status is invalid.')
+    }
+    const classification = command.state === 'READY'
+      ? null
+      : requireBoundedString(command.classification, 'classification', 160)
+    if (classification && !/^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(classification)) {
+      throw new Error('The POC change-history runtime classification is invalid.')
+    }
+    return write(CHANGE_HISTORY_RUNTIME_STATUS_SCOPE, {
+      contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
+      state: command.state,
+      classification,
+      observed_at: explicitSchedulerTimestamp(command.observedAt, 'observedAt'),
+    })
   }
 
   async function initializeChangeHistoryCaptureBoundaries(command) {
@@ -2278,7 +2339,7 @@ export function createPocStateStore({ databasePool } = {}) {
     }
     const lockName = requireBoundedString(command.lockName, 'lockName', 255)
     const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
-    const trigger = requireOneOf(command.trigger, 'trigger', ['scheduled', 'manual'])
+    const trigger = requireOneOf(command.trigger, 'trigger', ['scheduled', 'manual', 'startup'])
     await startDatabase()
     if (!pool) throw new Error('PostgreSQL is required for the POC change-history scheduler.')
     const client = await pool.connect()
@@ -2298,7 +2359,8 @@ export function createPocStateStore({ databasePool } = {}) {
           current.rows[0]?.value?.last_successful_schedule,
           'stored last_successful_schedule',
         )
-      if (lastSuccessfulSchedule === scheduledFor) {
+      const replayingSuccessfulBoundary = lastSuccessfulSchedule === scheduledFor
+      if (replayingSuccessfulBoundary && trigger !== 'startup') {
         return { status: 'already_completed', scheduledFor }
       }
       if (lastSuccessfulSchedule !== null
@@ -2306,7 +2368,13 @@ export function createPocStateStore({ databasePool } = {}) {
         return { status: 'stale', scheduledFor }
       }
       const result = await task()
+      if (result?.schedulerComplete === false) {
+        return { status: 'incomplete', scheduledFor, result }
+      }
       const completedAt = new Date().toISOString()
+      if (replayingSuccessfulBoundary) {
+        return { status: 'succeeded', scheduledFor, completedAt, result, replayedSchedule: true }
+      }
       const receipt = {
         version: 1,
         last_successful_schedule: scheduledFor,
@@ -2944,6 +3012,8 @@ export function createPocStateStore({ databasePool } = {}) {
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
     readChangeHistoryProjection,
+    writeChangeHistoryCaptureStatus,
+    writeChangeHistoryRuntimeStatus,
     readChangeHistoryAccess,
     writeChangeHistoryAccess,
     readLocalCredential,

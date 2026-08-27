@@ -1751,6 +1751,94 @@ def run_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, A
     return result
 
 
+DOCTOR_PREFLIGHT_STAGES = (
+    "WEB_INTRANET",
+    "DATAHUB",
+    "QUALITY_READ",
+    "CHAT",
+    "EMBEDDING",
+    "RERANKER",
+    "MCL_DISCOVERY",
+    "AIRFLOW",
+    "MINIO",
+)
+
+
+def collect_provider_preflight(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
+    completed = runner.run(
+        [
+            *prefix,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "web",
+            "node",
+            "poc-provider-preflight.mjs",
+            "--collect-all",
+        ],
+        check=False,
+    )
+    try:
+        result = _parse_json_line(f"{completed.stdout}\n{completed.stderr}")
+    except ValueError as error:
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "Collect-all provider doctor returned no structured matrix.",
+            "Restore the exact Product image and rerun doctor.",
+        ) from error
+    stages = result.get("stages")
+    if (
+        result.get("contract") != "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_MATRIX_V1"
+        or result.get("status") not in {"PASS", "FAILED"}
+        or not isinstance(stages, dict)
+        or set(stages) != set(DOCTOR_PREFLIGHT_STAGES)
+    ):
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "Collect-all provider doctor returned an invalid matrix contract.",
+            "Restore the exact Product image and rerun doctor.",
+        )
+    for stage in DOCTOR_PREFLIGHT_STAGES:
+        entry = stages[stage]
+        if not isinstance(entry, dict) or entry.get("status") not in {
+            "READY",
+            "DEFERRED",
+            "FAILED",
+            "BLOCKED_BY_DEPENDENCY",
+        }:
+            raise PrepError(
+                "PROVIDER_PREFLIGHT",
+                "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+                "Collect-all provider doctor returned an invalid stage result.",
+                "Restore the exact Product image and rerun doctor.",
+            )
+        classification = entry.get("classification")
+        if entry["status"] == "FAILED" and not (
+            isinstance(classification, str)
+            and (
+                re.fullmatch(r"PREP_PREFLIGHT_[A-Z0-9_]+_FAILED", classification)
+                or re.fullmatch(r"PREP_MCL_DISCOVERY_[A-Z0-9_]+_FAILED", classification)
+            )
+        ):
+            raise PrepError(
+                "PROVIDER_PREFLIGHT",
+                "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+                "Collect-all provider doctor returned an unbounded failure code.",
+                "Restore the exact Product image and rerun doctor.",
+            )
+    if completed.returncode == 0 and result["status"] != "PASS":
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            "PREP_PREFLIGHT_MATRIX_RESULT_INVALID",
+            "Collect-all provider doctor process status conflicts with its matrix.",
+            "Restore the exact Product image and rerun doctor.",
+        )
+    return result
+
+
 @contextmanager
 def private_password_file(password: str) -> Iterator[Path]:
     if len(password.encode("utf-8")) < 12 or "\n" in password or "\r" in password:
@@ -1978,6 +2066,21 @@ def write_accepted_marker(
     os.replace(temporary, ACCEPTED_MARKER)
 
 
+@contextmanager
+def typed_deploy_gate(
+    step: str,
+    code: str,
+    reason: str,
+    action: str = "Preserve PREP state, inspect doctor/logs, and rerun the same deploy command.",
+) -> Iterator[None]:
+    try:
+        yield
+    except PrepError:
+        raise
+    except (CommandFailure, OSError, ValueError) as error:
+        raise PrepError(step, code, reason, action) from error
+
+
 def deploy(
     release: ReleaseIdentity,
     bundle: EnvironmentBundle,
@@ -2007,39 +2110,48 @@ def deploy(
         )
 
         previous_attempt = preparation.previous_attempt
-        if bundle.target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
-            if not isinstance(previous_attempt, Mapping):
-                _ambiguous_state(
-                    "The incomplete deployment was not ownership-validated before reconciliation."
-                )
-            if sorted(previous_attempt.get("volume_identities", ())) != sorted(
-                volume_identities,
-            ):
-                _ambiguous_state(
-                    "The current Compose volume contract differs from the proven target ownership."
-                )
-            runner.note("Retain proven owned incomplete receipt for idempotent resume")
-        elif bundle.target_state is (
-            TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION
+        with typed_deploy_gate(
+            "TARGET_STATE",
+            "PREP_TARGET_STATE_RECONCILIATION_FAILED",
+            "The proven PREP target state could not be reconciled without mutation ambiguity.",
         ):
-            runner.note("Inspect legacy self-bootstrap state through canonical identity contracts")
-            runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
-            inspect_owned_partial_bootstrap(runner, prefix, bundle)
-            bundle = replace(
-                bundle,
-                target_state=TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL,
-            )
-            runner.note("Classify legacy state: LEGACY_SELF_BOOTSTRAPPED_PARTIAL")
-        elif bundle.target_state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
-            state = prove_failed_install_recoverable(
-                runner,
-                release,
-                bundle,
-                preparation.inventory,
-            )
-            runner.note(f"Prove residual target state: {state.value}")
-            bundle = reconcile_environment(release, target_state=state)
-            runner.environment = child_environment(bundle.effective)
+            if bundle.target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
+                if not isinstance(previous_attempt, Mapping):
+                    _ambiguous_state(
+                        "The incomplete deployment was not ownership-validated "
+                        "before reconciliation."
+                    )
+                if sorted(previous_attempt.get("volume_identities", ())) != sorted(
+                    volume_identities,
+                ):
+                    _ambiguous_state(
+                        "The current Compose volume contract differs from the proven "
+                        "target ownership."
+                    )
+                runner.note("Retain proven owned incomplete receipt for idempotent resume")
+            elif bundle.target_state is (
+                TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL_REQUIRES_INSPECTION
+            ):
+                runner.note(
+                    "Inspect legacy self-bootstrap state through canonical identity contracts"
+                )
+                runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
+                inspect_owned_partial_bootstrap(runner, prefix, bundle)
+                bundle = replace(
+                    bundle,
+                    target_state=TargetState.LEGACY_SELF_BOOTSTRAPPED_PARTIAL,
+                )
+                runner.note("Classify legacy state: LEGACY_SELF_BOOTSTRAPPED_PARTIAL")
+            elif bundle.target_state is TargetState.FAILED_FIRST_INSTALL_REQUIRES_INSPECTION:
+                state = prove_failed_install_recoverable(
+                    runner,
+                    release,
+                    bundle,
+                    preparation.inventory,
+                )
+                runner.note(f"Prove residual target state: {state.value}")
+                bundle = reconcile_environment(release, target_state=state)
+                runner.environment = child_environment(bundle.effective)
 
     # A proven residual recovery generates/persists its runtime secrets only after inspection,
     # so render the final Compose environment again before the attempt becomes mutation owner.
@@ -2051,14 +2163,19 @@ def deploy(
             _ambiguous_state(
                 "The final Compose persistent volume identity changed after preflight."
             )
-        attempt = write_attempt_receipt(
-            release,
-            source["handoff_commit"],
-            bundle,
-            final_volumes,
-            phase="PREPARED",
-            previous=previous_attempt,
-        )
+        with typed_deploy_gate(
+            "TARGET_STATE",
+            "PREP_ATTEMPT_RECEIPT_WRITE_FAILED",
+            "The owned deployment attempt could not be recorded atomically.",
+        ):
+            attempt = write_attempt_receipt(
+                release,
+                source["handoff_commit"],
+                bundle,
+                final_volumes,
+                phase="PREPARED",
+                previous=previous_attempt,
+            )
         if (
             bundle.target_state is TargetState.FAILED_FIRST_INSTALL_RECOVERABLE
             and "pgvector-data" in preparation.inventory.volume_names
@@ -2068,16 +2185,36 @@ def deploy(
             )
             reconcile_recoverable_postgres_credential(runner, prefix, bundle)
         runner.note("Start isolated PostgreSQL, Neo4j and Redis and wait for health")
-        runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
-        attempt = advance_attempt_phase(attempt, "STATE_SERVICES_READY")
+        with typed_deploy_gate(
+            "STATE_SERVICES",
+            "PREP_STATE_SERVICES_FAILED",
+            "PostgreSQL, Neo4j or Redis did not reach the bounded healthy state.",
+        ):
+            runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
+            attempt = advance_attempt_phase(attempt, "STATE_SERVICES_READY")
         runner.note("Apply idempotent state initialization and inspect target-local identities")
-        inspected = inspect_bootstrap(runner, prefix)
-        attempt = advance_attempt_phase(attempt, "SCHEMA_READY")
-        username, password = reconcile_bootstrap(runner, prefix, inspected)
-        attempt = advance_attempt_phase(attempt, "BOOTSTRAP_READY")
+        with typed_deploy_gate(
+            "SCHEMA",
+            "PREP_SCHEMA_INITIALIZATION_FAILED",
+            "Idempotent PostgreSQL schema initialization or inspection failed.",
+        ):
+            inspected = inspect_bootstrap(runner, prefix)
+            attempt = advance_attempt_phase(attempt, "SCHEMA_READY")
+        with typed_deploy_gate(
+            "BOOTSTRAP",
+            "PREP_BOOTSTRAP_RECONCILIATION_FAILED",
+            "Target-local administrator or service identity reconciliation failed.",
+        ):
+            username, password = reconcile_bootstrap(runner, prefix, inspected)
+            attempt = advance_attempt_phase(attempt, "BOOTSTRAP_READY")
         runner.note("Start exact Product web service and verify internal and host health")
-        runner.run([*prefix, "up", "-d", "--no-build", "--wait", "web"])
-        web_id = runner.output([*prefix, "ps", "-q", "web"])
+        with typed_deploy_gate(
+            "WEB_START",
+            "PREP_WEB_START_FAILED",
+            "The exact Product web service could not start under the Compose contract.",
+        ):
+            runner.run([*prefix, "up", "-d", "--no-build", "--wait", "web"])
+            web_id = runner.output([*prefix, "ps", "-q", "web"])
         if (
             not web_id
             or runner.output(
@@ -2132,13 +2269,19 @@ def deploy(
                 "The existing 39080 container set changed during deployment.",
                 "Stop and investigate; do not promote this PREP result.",
             )
-        write_accepted_marker(
-            release,
-            source["handoff_commit"],
-            target_state=bundle.target_state,
-            k9_mode=bundle.k9_mode,
-        )
-        advance_attempt_phase(attempt, "ACCEPTED")
+        with typed_deploy_gate(
+            "AUTHENTICATED_SMOKE",
+            "PREP_ACCEPTANCE_RECEIPT_WRITE_FAILED",
+            "Authenticated gates passed but accepted deployment evidence was not "
+            "recorded atomically.",
+        ):
+            write_accepted_marker(
+                release,
+                source["handoff_commit"],
+                target_state=bundle.target_state,
+                k9_mode=bundle.k9_mode,
+            )
+            advance_attempt_phase(attempt, "ACCEPTED")
     print("\nPREP39083 DEPLOYMENT READY")
     print("\nRelease")
     print(f"- Product: {release.product_sha}")
@@ -2176,24 +2319,41 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         config = compose_config(runner, compose_prefix(release, env_file))
         prefix = compose_prefix(release, env_file)
         image = resolve_web_image(config)
-        preflight = run_provider_preflight(runner, prefix)
-    print("PREP39083 DOCTOR PASS")
+        preflight = collect_provider_preflight(runner, prefix)
+    print(f"PREP39083 DOCTOR {preflight['status']}")
     print(f"- Product: {release.product_sha}")
     print(f"- Evidence: {release.evidence_sha}")
     print(f"- Handoff: {source['handoff_commit']}")
     print(f"- Image: {image}")
     print(f"- Environment warnings: {len(bundle.warnings)}")
-    print(f"- Web Intranet: {preflight.get('web_intranet', 'BLOCKED')}")
-    print(f"- DataHub: {preflight.get('datahub', 'BLOCKED')}")
-    print(f"- Chat: {preflight.get('chat', 'BLOCKED')}")
-    print(f"- Embedding: {preflight.get('embedding', 'BLOCKED')}")
-    print(f"- Reranker: {preflight.get('reranker', 'BLOCKED')}")
-    print(f"- K9 Built-in Graphs: {preflight.get('k9_built_in', 'BLOCKED')}")
-    print(f"- MCL Change History: {preflight.get('mcl_change_history', 'BLOCKED')}")
-    print(f"- GX Quality Read: {preflight.get('gx_quality_read', 'BLOCKED')}")
-    print(f"- GX Quality Execution: {preflight.get('gx_quality_execution', 'DEFERRED')}")
-    print(f"- Airflow: {preflight.get('airflow', 'DEFERRED')}")
-    print(f"- MinIO: {preflight.get('minio', 'DEFERRED')}")
+    stages = preflight["stages"]
+    for stage in DOCTOR_PREFLIGHT_STAGES:
+        entry = stages[stage]
+        suffix = ""
+        if entry["status"] == "FAILED":
+            suffix = f" / {entry['classification']}"
+        elif entry["status"] == "BLOCKED_BY_DEPENDENCY":
+            suffix = f" / {entry.get('dependency', 'DEPENDENCY')}"
+        print(f"- {stage}: {entry['status']}{suffix}")
+    quality_execution = (
+        "READY" if stages["AIRFLOW"]["status"] == "READY" else "DEFERRED"
+    )
+    print(f"- QUALITY_EXECUTION: {quality_execution}")
+    if preflight["status"] != "PASS":
+        failed = next(
+            (
+                entry.get("classification")
+                for entry in stages.values()
+                if entry["status"] == "FAILED"
+            ),
+            "PREP_DOCTOR_PREFLIGHT_DEPENDENCY_BLOCKED",
+        )
+        raise PrepError(
+            "PROVIDER_PREFLIGHT",
+            failed,
+            "Collect-all doctor found one or more unavailable required provider stages.",
+            "Correct only the typed failed stage, then rerun the same doctor command.",
+        )
 
 
 def status(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:

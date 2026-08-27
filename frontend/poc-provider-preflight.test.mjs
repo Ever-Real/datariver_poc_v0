@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { providerPreflightFailure, runProviderPreflight } from './poc-provider-preflight.mjs'
+import {
+  collectProviderPreflight,
+  providerPreflightFailure,
+  runProviderPreflight,
+} from './poc-provider-preflight.mjs'
 
 const mclDiscovery = async () => ({
   receipt: {
@@ -231,4 +235,128 @@ test('MCL discovery classifications survive the provider stage and output envelo
     }),
     (error) => error === typed && providerPreflightFailure(error).classification === typed.code,
   )
+})
+
+function collectAllOperations(overrides = {}) {
+  return {
+    webIntranet: async () => 'origin',
+    datahub: async () => undefined,
+    qualityRead: async () => ({ assertion_count: 0 }),
+    chat: async () => undefined,
+    embedding: async () => undefined,
+    reranker: async () => undefined,
+    mclDiscovery: async () => mclDiscovery(),
+    airflow: async () => 'DEFERRED',
+    minio: async () => 'DEFERRED',
+    ...overrides,
+  }
+}
+
+test('doctor collection reports every independent stage after typed failures', async () => {
+  const calls = []
+  const failed = (stage, classification) => Object.assign(new Error('sanitized'), { stage, classification })
+  const operations = collectAllOperations({
+    chat: async () => { calls.push('CHAT'); throw failed('CHAT', 'PREP_PREFLIGHT_CHAT_AUTH_FAILED') },
+    embedding: async () => { calls.push('EMBEDDING') },
+    reranker: async () => { calls.push('RERANKER') },
+    airflow: async () => { calls.push('AIRFLOW'); return 'READY' },
+    minio: async () => { calls.push('MINIO'); return 'DEFERRED' },
+  })
+  const matrix = await collectProviderPreflight({ environment: {}, providerTransport: {}, operations })
+  assert.equal(matrix.status, 'FAILED')
+  assert.deepEqual(matrix.stages.CHAT, {
+    status: 'FAILED', classification: 'PREP_PREFLIGHT_CHAT_AUTH_FAILED',
+  })
+  assert.equal(matrix.stages.EMBEDDING.status, 'READY')
+  assert.equal(matrix.stages.RERANKER.status, 'READY')
+  assert.equal(matrix.stages.AIRFLOW.status, 'READY')
+  assert.equal(matrix.stages.MINIO.status, 'DEFERRED')
+  assert.deepEqual(calls, ['CHAT', 'EMBEDDING', 'RERANKER', 'AIRFLOW', 'MINIO'])
+  assert.equal(JSON.stringify(matrix).includes('sanitized'), false)
+})
+
+test('doctor collection applies only explicit DataHub dependencies and still diagnoses Kafka', async () => {
+  const datahubFailure = Object.assign(new Error('unreachable'), {
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED',
+  })
+  const kafkaFailure = Object.assign(new Error('advertised broker unreachable'), {
+    code: 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED',
+  })
+  let qualityCalls = 0
+  let mclCalls = 0
+  const matrix = await collectProviderPreflight({
+    environment: {}, providerTransport: {},
+    operations: collectAllOperations({
+      datahub: async () => { throw datahubFailure },
+      qualityRead: async () => { qualityCalls += 1 },
+      mclDiscovery: async () => { mclCalls += 1; throw kafkaFailure },
+    }),
+  })
+  assert.deepEqual(matrix.stages.QUALITY_READ, {
+    status: 'BLOCKED_BY_DEPENDENCY', dependency: 'DATAHUB',
+  })
+  assert.deepEqual(matrix.stages.MCL_DISCOVERY, {
+    status: 'FAILED', classification: kafkaFailure.code,
+  })
+  assert.equal(qualityCalls, 0)
+  assert.equal(mclCalls, 1)
+})
+
+test('doctor collection marks DataHub-dependent MCL provider checks as blocked', async () => {
+  const datahubFailure = Object.assign(new Error('unreachable'), {
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_CONNECTIVITY_FAILED',
+  })
+  const providerFailure = Object.assign(new Error('unreachable'), {
+    code: 'PREP_MCL_DISCOVERY_PROVIDER_CONNECTIVITY_FAILED',
+  })
+  const matrix = await collectProviderPreflight({
+    environment: {}, providerTransport: {},
+    operations: collectAllOperations({
+      datahub: async () => { throw datahubFailure },
+      mclDiscovery: async () => { throw providerFailure },
+    }),
+  })
+  assert.deepEqual(matrix.stages.MCL_DISCOVERY, {
+    status: 'BLOCKED_BY_DEPENDENCY', dependency: 'DATAHUB',
+  })
+})
+
+test('doctor collection continues DataHub-dependent reads after an HTTP response proves transport', async () => {
+  const datahubFailure = Object.assign(new Error('rejected'), {
+    stage: 'DATAHUB', classification: 'PREP_PREFLIGHT_DATAHUB_HTTP_FAILED', status: 500,
+  })
+  let qualityCalls = 0
+  let mclCalls = 0
+  const matrix = await collectProviderPreflight({
+    environment: {}, providerTransport: {},
+    operations: collectAllOperations({
+      datahub: async () => { throw datahubFailure },
+      qualityRead: async () => { qualityCalls += 1; return { assertion_count: 0 } },
+      mclDiscovery: async () => { mclCalls += 1; return mclDiscovery() },
+    }),
+  })
+  assert.equal(matrix.stages.DATAHUB.status, 'FAILED')
+  assert.equal(matrix.stages.QUALITY_READ.status, 'READY')
+  assert.equal(matrix.stages.MCL_DISCOVERY.status, 'READY')
+  assert.equal(qualityCalls, 1)
+  assert.equal(mclCalls, 1)
+})
+
+test('doctor collection still runs Kafka-owned MCL diagnostics when runtime provider transport config is invalid', async () => {
+  let mclCalls = 0
+  const kafkaFailure = Object.assign(new Error('cluster'), {
+    code: 'PREP_MCL_DISCOVERY_KAFKA_CONNECTIVITY_FAILED',
+  })
+  const matrix = await collectProviderPreflight({
+    environment: { POC_RUNTIME_HTTP_PROXY: 'not-a-url' },
+    operations: collectAllOperations({
+      mclDiscovery: async () => { mclCalls += 1; throw kafkaFailure },
+    }),
+  })
+  assert.equal(matrix.stages.DATAHUB.status, 'FAILED')
+  assert.equal(matrix.stages.DATAHUB.classification, 'PREP_PREFLIGHT_DATAHUB_RUNTIME_NETWORK_CONFIG_FAILED')
+  assert.deepEqual(matrix.stages.MCL_DISCOVERY, {
+    status: 'FAILED', classification: kafkaFailure.code,
+  })
+  assert.equal(mclCalls, 1)
 })

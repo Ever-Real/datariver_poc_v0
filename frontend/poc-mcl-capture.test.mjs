@@ -381,7 +381,8 @@ test('persists earliest retained fresh boundaries before consume and fails close
     stateStore: store,
     kafka: retainedKafka,
     schemaRegistry: schemaRegistry(),
-  }).run(), /behind Kafka retention/)
+  }).run(), (error) => error.code === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED'
+    && /behind Kafka retention/.test(error.message))
   assert.equal(store.checkpoints.get(0), 100)
   assert.equal(retainedKafka.state.consumerCreates, 0)
 

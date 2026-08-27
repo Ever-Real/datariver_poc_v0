@@ -1374,9 +1374,17 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
     offset: Number(checkpoint.first_exact_offset),
   })).sort((left, right) => left.partition - right.partition)
   const exactCapturedAt = effectiveRows.filter((row) => row.precision === 'EXACT_MCL').map((row) => row.event.captured_at)
+  const captureStatus = projection.captureStatus?.value
+  const runtimeCaptureState = captureStatus?.contract === 'DATARIVER_CHANGE_HISTORY_CAPTURE_STATUS_V1'
+    && captureStatus.source_identity_hash === source.source_identity_hash
+    && ['CONTIGUOUS_CAPTURE_RECORDED', 'CAPTURE_CATCHING_UP', 'CAPTURE_CAUGHT_UP', 'HISTORY_GAP_BLOCKED']
+      .includes(captureStatus.state)
+    ? captureStatus.state
+    : null
+  const captureState = runtimeCaptureState ?? (advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING')
   return {
-    capture_state: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
-    sync_status: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
+    capture_state: captureState,
+    sync_status: captureState,
     first_mcl_offsets: firstMclOffsets,
     last_successful_capture_at: advanced
       ? changeHistoryMinimumTimestamp(checkpoints.map((checkpoint) => checkpoint.last_captured_at))
@@ -1408,6 +1416,12 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     ? rawConfiguredHash.toLowerCase()
     : null
   const source = changeHistorySourceSummary(projection, rows, configuredHash)
+  const runtimeStatus = projection.runtimeStatus?.value
+  const runtimeFailure = runtimeStatus?.contract === 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1'
+    && ['DISCOVERY_FAILED', 'CAPTURE_FAILED'].includes(runtimeStatus.state)
+    && /^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(runtimeStatus.classification || '')
+    ? runtimeStatus
+    : null
   const occurred = rows.map((row) => row.event.source_occurred_at)
   const detected = rows.map((row) => row.event.detected_at)
   const captured = rows.map((row) => row.event.captured_at)
@@ -1423,8 +1437,9 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     precision_counts: precisionCounts,
     category_counts: categoryCounts,
     operation_counts: operationCounts,
-    capture_state: source.capture_state,
-    sync_status: source.sync_status,
+    capture_state: runtimeFailure?.state || source.capture_state,
+    sync_status: runtimeFailure?.state || source.sync_status,
+    capture_failure_classification: runtimeFailure?.classification || null,
     source_generation: projection.catalog.value.source_generation,
     source_observed_at: projection.catalog.value.observed_at,
     source_occurred_at: changeHistoryMaximumTimestamp(occurred),
@@ -7713,6 +7728,9 @@ function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQuali
     || semanticIndex.generation === sourceSnapshot.catalog_generation
   )
   const latestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
+  const storedFailureCode = latestResult === 'FAILURE'
+    ? /^((?:K9_)[A-Z0-9_]+):/.exec(row.latest_error_message || '')?.[1] || 'K9_REFRESH_FAILED'
+    : null
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
     : (latestResult === 'FAILURE' ? 'FAILED' : 'PENDING')
@@ -7764,7 +7782,7 @@ function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQuali
       : null,
     last_refresh: isoValue(row.latest_completed_at),
     last_result: latestResult,
-    last_error_code: latestResult === 'FAILURE' ? 'K9_REFRESH_FAILED' : null,
+    last_error_code: storedFailureCode,
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
     semantic_index_contract: semanticIndex?.contract || null,
     semantic_index_generation: semanticIndex?.generation || null,
@@ -10832,6 +10850,11 @@ export function resolvePocServerHost(environment = process.env) {
   return environment.POC_SERVER_HOST?.trim() || '127.0.0.1'
 }
 
+function mclRuntimeClassification(error, fallback) {
+  const candidate = typeof error?.code === 'string' ? error.code : ''
+  return /^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(candidate) ? candidate : fallback
+}
+
 export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
   const serverStateStore = stateStore ?? pocStateStore
@@ -10845,26 +10868,66 @@ export async function startPocServer({ stateStore } = {}) {
   if (schedulerConfig.enabled) {
     const { discoverPocMclSource } = await import('./poc-mcl-discovery.mjs')
     const { createPocMclCapture } = await import('./poc-mcl-capture.mjs')
-    const discovery = await discoverPocMclSource({ providerTransport })
-    for (const [name, value] of Object.entries({
-      POC_MCL_KAFKA_TOPIC: discovery.captureConfig.topic,
-      POC_MCL_SOURCE_IDENTITY_HASH: discovery.captureConfig.sourceIdentityHash,
-      POC_MCL_SCHEMA_CONTRACT_HASH: discovery.captureConfig.schemaContractHash,
-      POC_MCL_PROVIDER_NAME: discovery.captureConfig.providerName,
-      POC_MCL_PROVIDER_VERSION: discovery.captureConfig.providerVersion,
-      POC_MCL_SCHEMA_REGISTRY_URL: discovery.captureConfig.schemaRegistry.host,
-    })) process.env[name] = String(value)
-    await pocStateStore.write('mcl-discovery-v1', discovery.receipt)
-    const capture = createPocMclCapture({ config: discovery.captureConfig, stateStore: pocStateStore })
-    captureMcl = () => capture.run()
+    try {
+      const discovery = await discoverPocMclSource({ providerTransport })
+      for (const [name, value] of Object.entries({
+        POC_MCL_KAFKA_TOPIC: discovery.captureConfig.topic,
+        POC_MCL_SOURCE_IDENTITY_HASH: discovery.captureConfig.sourceIdentityHash,
+        POC_MCL_SCHEMA_CONTRACT_HASH: discovery.captureConfig.schemaContractHash,
+        POC_MCL_PROVIDER_NAME: discovery.captureConfig.providerName,
+        POC_MCL_PROVIDER_VERSION: discovery.captureConfig.providerVersion,
+        POC_MCL_SCHEMA_REGISTRY_URL: discovery.captureConfig.schemaRegistry.host,
+      })) process.env[name] = String(value)
+      await serverStateStore.write('mcl-discovery-v1', discovery.receipt)
+      await serverStateStore.writeChangeHistoryRuntimeStatus({
+        state: 'READY', observedAt: new Date().toISOString(),
+      })
+      const capture = createPocMclCapture({ config: discovery.captureConfig, stateStore: serverStateStore })
+      captureMcl = () => capture.run()
+    } catch (error) {
+      const classification = mclRuntimeClassification(
+        error,
+        'PREP_MCL_DISCOVERY_RUNTIME_UNEXPECTED_FAILED',
+      )
+      await serverStateStore.writeChangeHistoryRuntimeStatus({
+        state: 'DISCOVERY_FAILED', classification, observedAt: new Date().toISOString(),
+      })
+      captureMcl = async () => {
+        throw Object.assign(new Error('MCL runtime discovery is unavailable.'), { code: classification })
+      }
+    }
   }
   const scheduler = createPocChangeHistoryScheduler({
     config: schedulerConfig,
-    stateStore: pocStateStore,
+    stateStore: serverStateStore,
     captureMcl,
     reconcileCatalog: () => startDatahubInventoryRefresh({ signal: backgroundSignal }),
+    async onCaptureState(status) {
+      await serverStateStore.writeChangeHistoryCaptureStatus(status)
+      if (status.state === 'HISTORY_GAP_BLOCKED') {
+        await serverStateStore.writeChangeHistoryRuntimeStatus({
+          state: 'CAPTURE_FAILED',
+          classification: 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED',
+          observedAt: status.observedAt,
+        })
+      } else {
+        await serverStateStore.writeChangeHistoryRuntimeStatus({
+          state: 'READY', observedAt: status.observedAt,
+        })
+      }
+    },
     onError(error) {
-      process.stderr.write(`POC change-history scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
+      const classification = mclRuntimeClassification(
+        error,
+        'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED',
+      )
+      const state = classification.startsWith('PREP_MCL_DISCOVERY_')
+        ? 'DISCOVERY_FAILED'
+        : 'CAPTURE_FAILED'
+      void serverStateStore.writeChangeHistoryRuntimeStatus({
+        state, classification, observedAt: new Date().toISOString(),
+      }).catch(() => undefined)
+      process.stderr.write(`POC change-history scheduler: ${classification}\n`)
     },
   })
 

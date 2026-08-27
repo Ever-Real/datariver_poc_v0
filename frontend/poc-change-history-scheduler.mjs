@@ -29,6 +29,8 @@ export function createPocChangeHistoryScheduler({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onError = () => undefined,
+  onCaptureState = () => undefined,
+  yieldBetweenBatches = () => new Promise((resolve) => setTimeout(resolve, 0)),
 } = {}) {
   if (!stateStore || typeof stateStore.runChangeHistoryScheduler !== 'function') {
     throw new Error('The POC change-history scheduler state store is unavailable.')
@@ -41,14 +43,66 @@ export function createPocChangeHistoryScheduler({
   let stopped = false
   let activeRun
 
+  const recordCaptureState = async (state, capture, batchProcessedRecords = 0) => {
+    await onCaptureState({
+      state,
+      batchProcessedRecords,
+      observedAt: clock().toISOString(),
+      caughtUp: capture?.caughtUp === true,
+      sourceIdentityHash: capture?.sourceIdentityHash,
+    })
+  }
+
   const execute = async (scheduledFor, trigger) => stateStore.runChangeHistoryScheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
   }, async () => {
-    const capture = await captureMcl()
+    let capture
+    let schedulerComplete = true
+    while (true) {
+      try {
+        capture = await captureMcl()
+      } catch (error) {
+        if (error?.code === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED') {
+          await recordCaptureState('HISTORY_GAP_BLOCKED', {
+            sourceIdentityHash: error.sourceIdentityHash,
+          })
+        }
+        throw error
+      }
+      if (capture?.bounded !== true || typeof capture?.caughtUp !== 'boolean'
+        || !Array.isArray(capture?.partitions)) {
+        throw new Error('The bounded MCL capture returned an invalid catch-up contract.')
+      }
+      const batchProcessedRecords = capture.partitions.reduce((sum, partition) => {
+        const processed = Number(partition?.processedRecords)
+        if (!Number.isSafeInteger(processed) || processed < 0) {
+          throw new Error('The bounded MCL capture returned an invalid processed-record count.')
+        }
+        return sum + processed
+      }, 0)
+      await recordCaptureState('CONTIGUOUS_CAPTURE_RECORDED', capture, batchProcessedRecords)
+      if (capture.caughtUp) {
+        await recordCaptureState('CAPTURE_CAUGHT_UP', capture, batchProcessedRecords)
+        break
+      }
+      if (batchProcessedRecords === 0) {
+        throw new Error('The bounded MCL catch-up made no durable progress.')
+      }
+      await recordCaptureState('CAPTURE_CATCHING_UP', capture, batchProcessedRecords)
+      if (stopped) {
+        schedulerComplete = false
+        break
+      }
+      await yieldBetweenBatches()
+      if (stopped) {
+        schedulerComplete = false
+        break
+      }
+    }
     const catalog = await reconcileCatalog()
-    return { capture, catalog }
+    return { capture, catalog, schedulerComplete }
   })
 
   const trigger = (options = {}) => {
@@ -56,7 +110,9 @@ export function createPocChangeHistoryScheduler({
     const scheduledFor = options.scheduledFor === undefined
       ? currentScheduleBoundary(clock(), config.timeZone)
       : validScheduleBoundary(options.scheduledFor, config.timeZone)
-    const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
+    const triggerType = options.trigger === 'manual'
+      ? 'manual'
+      : options.trigger === 'startup' ? 'startup' : 'scheduled'
     if (!activeRun) {
       activeRun = execute(scheduledFor, triggerType).finally(() => { activeRun = undefined })
     }
@@ -85,7 +141,7 @@ export function createPocChangeHistoryScheduler({
     config,
     async start() {
       if (stopped || !config.enabled) return { status: 'disabled', reason: config.disabledReason }
-      void trigger({ trigger: 'scheduled' }).catch(onError)
+      void trigger({ trigger: 'startup' }).catch(onError)
       scheduleNext()
       return { status: 'started' }
     },

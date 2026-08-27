@@ -276,7 +276,13 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       const resume = checkpointByPartition.get(partition)
       if (resume === undefined) throw new Error('The durable MCL capture boundary inventory is invalid.')
       if (!Number.isSafeInteger(resume) || resume < low) {
-        throw new Error('The durable checkpoint is behind Kafka retention; capture stopped with a history gap.')
+        throw Object.assign(
+          new Error('The durable checkpoint is behind Kafka retention; capture stopped with a history gap.'),
+          {
+            code: 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED',
+            sourceIdentityHash: config.sourceIdentityHash,
+          },
+        )
       }
       if (resume > high) throw new Error('The durable checkpoint is ahead of the captured Kafka high watermark.')
       const targetHigh = Math.min(high, resume + remainingBudget)
@@ -288,7 +294,7 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
     }
     const pending = new Map(targets.filter((target) => target.next < target.high)
       .map((target) => [target.partition, target]))
-    if (pending.size === 0) return captureResult(config.topic, targets)
+    if (pending.size === 0) return captureResult(config, targets)
 
     consumer = kafka.consumer({
       groupId: config.groupId,
@@ -360,16 +366,17 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       clearTimeout(timer)
       await consumer.stop()
     }
-    return captureResult(config.topic, targets)
+    return captureResult(config, targets)
   } finally {
     if (consumerConnected) await consumer.disconnect()
     if (adminConnected) await admin.disconnect()
   }
 }
 
-function captureResult(topic, targets) {
+function captureResult(config, targets) {
   return {
-    topic,
+    topic: config.topic,
+    sourceIdentityHash: config.sourceIdentityHash,
     bounded: true,
     caughtUp: targets.every(({ next, sourceHigh }) => next === sourceHigh),
     partitions: targets.map(({ partition, low, high, sourceHigh, next, processed, ledgerEvents }) => ({

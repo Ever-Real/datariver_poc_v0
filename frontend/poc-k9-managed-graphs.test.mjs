@@ -103,6 +103,7 @@ test('K9 Managed Graphs - missing policy no-publish', async () => {
   const result = await k9.triggerLineagePublish(authCtx, collectorFunc)
 
   assert.equal(result.status, 'FAILURE')
+  assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
   assert.ok(result.reason.includes('Managed policy is missing. No publish allowed.'))
 })
 
@@ -116,6 +117,7 @@ test('K9 Managed Graphs - drift no-publish', async () => {
   const result = await k9.triggerLineagePublish(authCtx, collectorFunc)
 
   assert.equal(result.status, 'FAILURE')
+  assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
   assert.ok(result.reason.includes('Managed policy has drifted. No publish allowed.'))
 })
 
