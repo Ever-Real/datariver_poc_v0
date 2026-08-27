@@ -1,0 +1,52 @@
+{
+  "contract": "DATARIVER_PREP_SMOKE_CANONICAL_ORIGIN_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T12:07:40Z",
+  "product_sha": "2a26dc43f1bac3242811c3803c80dc845884bc80",
+  "main_unchanged": "2a521eee8d9eaef5bd5d3ae5fd8c946a119393db",
+  "actual_prep_executed": false,
+  "proven_root_cause": "SMOKE_LOOPBACK_TRANSPORT_REUSED_AS_CANONICAL_REQUEST_ORIGIN",
+  "origin_contract": {
+    "transport": "LOOPBACK",
+    "request_origin": "EXACT_POC_PUBLIC_ORIGIN",
+    "login": "CANONICAL_ORIGIN",
+    "logout": "CANONICAL_ORIGIN",
+    "general_chat": "CANONICAL_ORIGIN",
+    "product_origin_policy_changed": false,
+    "loopback_authentication_origin_added": false
+  },
+  "classification": {
+    "origin_forbidden_403": "PREP_SMOKE_ADMIN_ORIGIN_FAILED",
+    "authentication_failed_401": "PREP_SMOKE_ADMIN_AUTH_FAILED",
+    "missing_session": "PREP_SMOKE_ADMIN_LOGIN_CONTRACT_FAILED"
+  },
+  "resume": {
+    "previous_phase": "SMOKE_FAILED",
+    "descendant_resume": "PASS",
+    "final_phase": "ACCEPTED",
+    "generated_secrets_preserved": true,
+    "volumes_preserved": true,
+    "administrator_count": 1,
+    "duplicate_service_identities": 0,
+    "receipt_deleted": false
+  },
+  "verification": {
+    "smoke_contract": "28/28 PASS",
+    "product_authentication": "10/10 PASS",
+    "prep_unit_handoff": "110/110 PASS",
+    "isolated_docker_state_suite": "5/5 PASS",
+    "node_product": "168/168 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "lint_typecheck_build_static": "PASS",
+    "strict_mypy": "588 files plus deploy script PASS",
+    "secret_proxy_scan": "PASS",
+    "repository_ruff_format": "3 unrelated baseline drifts"
+  },
+  "oci": {
+    "platform": "linux/amd64",
+    "revision": "2a26dc43f1bac3242811c3803c80dc845884bc80",
+    "image_id": "sha256:b75b1af0c9b50323c56de07dec5bad935d3d1a5584dc39b923c97201c7e6dacf",
+    "provider_preflight_module": "PASS",
+    "secret_proxy_scan": "PASS"
+  },
+  "one_command": "./scripts/prep39083 deploy"
+}
