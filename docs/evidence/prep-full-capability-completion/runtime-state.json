@@ -1,0 +1,83 @@
+{
+  "contract": "DATARIVER_PREP_FULL_CAPABILITY_EVIDENCE_V1",
+  "recorded_at": "2026-08-27T03:05:17Z",
+  "base": {
+    "product_sha": "749f568f4ea0dcddd3e837e76d83fe784985bb5b",
+    "evidence_sha": "c71a18333fc05540ac9723983ec6997936c5c7d4",
+    "handoff_sha": "a36974981494d6a02bfa5e9168f33652d3acc650"
+  },
+  "product_sha": "322e149a25c3643099e4503f9d8d94def7fa5266",
+  "main_sha_unchanged": "a36974981494d6a02bfa5e9168f33652d3acc650",
+  "intranet": {
+    "web_host_bind": "0.0.0.0:39083",
+    "postgres_host_bind": "127.0.0.1",
+    "neo4j_host_bind": "127.0.0.1",
+    "redis_host_bind": "127.0.0.1",
+    "private_ip_http_origin": "SUPPORTED",
+    "public_http_origin": "REJECTED",
+    "authentication_authorization_changed": false
+  },
+  "k9": {
+    "mode": "BUILT_IN_REQUIRED",
+    "policy_authority": "PRODUCT_K9_POLICIES",
+    "policy_store": "LOCAL_POSTGRESQL",
+    "projection_store": "LOCAL_NEO4J",
+    "external_studio_database_required": false,
+    "initial_refresh_required_by_smoke": true,
+    "target_specific_counts": "NONE"
+  },
+  "mcl": {
+    "kafka_deployed_by_datariver": false,
+    "operator_supplies": [
+      "bootstrap_connectivity",
+      "optional_kafka_auth_tls",
+      "optional_external_registry_connectivity"
+    ],
+    "discovered": [
+      "cluster_identity",
+      "versioned_mcl_topic",
+      "schema_registry_kind",
+      "value_subject",
+      "schema_contract_hash",
+      "datahub_provider_version",
+      "source_identity_hash"
+    ],
+    "new_source_start": "EARLIEST_RETAINED_OFFSET",
+    "accepted_checkpoint_reset": "NEVER",
+    "receipt": "SANITIZED_TARGET_LOCAL"
+  },
+  "quality": {
+    "read_source": "DATAHUB_ASSERTIONS",
+    "zero_assertions_is_ready": true,
+    "execution_source": "EXISTING_AIRFLOW_GX_DISPATCH_WHEN_CONFIGURED",
+    "duplicate_gx_deployed": false
+  },
+  "verification": {
+    "node_product_server": "145/145 PASS",
+    "ui": "90 files / 663 tests PASS",
+    "mcl_provider_auth_focused": "30/30 PASS",
+    "prep_smoke": "20/20 PASS",
+    "prep_deploy_handoff_network": "67/67 PASS",
+    "k9_bootstrap_scheduler": "29/29 PASS",
+    "provider_contract": "24/24 PASS",
+    "isolated_docker_state_matrix": "1/1 PASS (202.96s)",
+    "eslint": "PASS",
+    "typecheck": "PASS",
+    "standard_build": "PASS",
+    "poc_build": "PASS",
+    "ruff": "PASS",
+    "strict_mypy": "PASS (587 files)",
+    "static": "PASS",
+    "compose": "PASS",
+    "secret_proxy_scan": "PASS",
+    "exact_oci_architecture": "linux/amd64",
+    "exact_oci_revision": "322e149a25c3643099e4503f9d8d94def7fa5266",
+    "exact_oci_image_id": "sha256:b3eff730023ef327b15d7e5b7a20e9319fce5384952dbd04e70797c7522510ee"
+  },
+  "one_command": "./scripts/prep39083 deploy",
+  "persistent_volume_deletion": "NONE",
+  "runtime_secret_regeneration": "NONE",
+  "router_semantics_changed": false,
+  "actual_prep": "NOT_EXECUTED_BY_DEV_AGENT",
+  "actual_ops": "NOT_EXECUTED_BY_DEV_AGENT"
+}
