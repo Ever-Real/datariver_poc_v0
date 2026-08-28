@@ -110,6 +110,12 @@ distinct K9 service Subject, reconciles those exact policy pins in local Postgre
 initial shared-snapshot refresh into local Neo4j, and requires both graphs plus the semantic index
 to be DAILY and READY. No unrelated Studio database or extra container is required.
 
+DataHub v1.6.0 does not expose a reliable global metadata-generation token on the Product's source
+APIs. K9 therefore requires two consecutive complete inventory/metadata/lineage fingerprints to
+match before semantic materialization or graph promotion. It performs at most three complete
+observations. Repeated drift is `K9_SOURCE_DRIFT_RETRY_EXHAUSTED`; the mixed candidate is never
+published and the prior LKG remains current.
+
 A terminal refresh failure finalizes every unfinished canonical managed-graph policy with a
 durable typed `K9_*` error instead of leaving it indefinitely `PENDING`. The active last-known-good
 generation and promoted Neo4j projection remain unchanged. The semantic index reports READY only
@@ -152,11 +158,14 @@ identity.
 ## Current hotfix evidence
 
 The current hotfix evidence is
+[`docs/evidence/prep-unknown-state-portability-correction/README.md`](evidence/prep-unknown-state-portability-correction/README.md).
+It records accepted-state provenance, Product-owned PostgreSQL integrity, non-current Dataset
+exclusion, the K9 source-consistency fence, focused/source gates, the exact Product artifact, and
+the preserved TEST accepted-state redeploy result. The target is a TEST PC, not Actual PREP; this
+Handoff does not claim Actual PREP or OPS execution.
+
+The preceding root-operator bootstrap evidence remains at
 [`docs/evidence/prep-root-operator-bootstrap-portability/README.md`](evidence/prep-root-operator-bootstrap-portability/README.md).
-It records the root-operated WSL `EACCES` reproduction, the bounded first-install-only bootstrap
-UID correction, focused and isolated Docker gates, and the exact promoted Product artifact. The
-target is a disposable TEST PC, not Actual PREP; this Handoff does not claim Actual PREP or OPS
-execution.
 
 The preceding release-contract evidence remains at
 [`docs/evidence/prep-exact-oci-artifact-promotion/README.md`](evidence/prep-exact-oci-artifact-promotion/README.md).
@@ -355,6 +364,18 @@ linux/amd64 platform, port 39083, K9 mode, canonical volume identities, and Prod
 remain separately fail-closed. Its phase advances through state services, schema, bootstrap, web
 and smoke. A matching unfinished receipt is `EXISTING_OWNED_INCOMPLETE`; the same command reruns
 idempotent gates and reuses the existing admin, service Subjects, credentials and volumes.
+
+Accepted running/stopped fast paths additionally require a matching durable `ACCEPTED` attempt,
+accepted marker, canonical physical volume set, target ownership fingerprint, and compatible
+Product/Handoff ancestry. Marker presence alone is never ownership proof. Foreign/copied/stale,
+partial, fingerprint-mismatched, or lineage-incompatible accepted state fails closed without
+fresh-install fallback.
+
+Before Product-owned PostgreSQL DDL, PREP fingerprints only the bounded `public.poc_*` tables,
+columns/types/defaults, constraints, indexes, triggers, functions and enum/domain types. Unrelated
+schemas, extensions, tables and rows are excluded. Only fresh, exact current, or one explicitly
+listed older migratable fingerprint proceeds; partial, malformed, receipt-mismatched or newer
+Product-owned state stops before mutation.
 
 For an unfinished deployment, the deployer reads the preserved runtime file and validates receipt
 ownership plus source ancestry before reconciling or writing the descendant release's tracked

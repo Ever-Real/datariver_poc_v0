@@ -102,6 +102,16 @@ ownership, while tracked `FIXED` values remain descendant release configuration.
 ancestry are proven before the new release writes its runtime configuration. Legacy V1 unfinished
 receipts migrate automatically to the ownership-only V2 contract; operators never delete or edit a
 receipt, runtime secret, container, database, or volume to apply a legitimate release update.
+Accepted-state reuse also requires marker/ACCEPTED-receipt agreement, exact owned volumes and a
+compatible Product/Handoff ancestry; marker presence alone is not trusted. Before Product DDL, the
+bounded `public.poc_*` schema surface is fingerprinted while non-owned database objects and row
+cardinality are ignored. Unknown, partial, receipt-mismatched or newer owned state fails before
+mutation.
+
+K9 uses a bounded stable-observation fence because the pinned DataHub source APIs have no reliable
+global generation primitive. Two consecutive complete inventory/metadata/lineage fingerprints
+must match. Repeated drift produces a typed terminal failure, does not promote semantic or graph
+staging state, and retains the prior LKG for convergence on a later stable cycle.
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.
