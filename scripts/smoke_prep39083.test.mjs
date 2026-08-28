@@ -179,6 +179,31 @@ test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
   assert.ok(result.failure.elapsed_ms < 5_000)
 })
 
+test('PREP smoke preserves bounded K9 source diagnostics without provider detail', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+        failure_stage: 'LINEAGE_COLLECTION', failure_detail_code: 'GRAPHQL',
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+        failure_stage: 'LINEAGE_COLLECTION', failure_detail_code: 'GRAPHQL',
+      },
+    ],
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED')
+  assert.deepEqual(result.failure.diagnostic, {
+    terminal: true,
+    product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'LINEAGE_COLLECTION',
+    failure_detail_code: 'GRAPHQL',
+  })
+})
+
 test('PREP smoke distinguishes MCL runtime discovery, capture, and retention failures', async (context) => {
   const cases = [
     ['DISCOVERY_FAILED', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED', 'DISCOVERY_KAFKA_CLUSTER', 'CLUSTER_ID_UNAVAILABLE', 'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED'],

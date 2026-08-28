@@ -9,6 +9,26 @@ const MAX_TIMER_DELAY_MS = 2_147_000_000
 const supportedRefreshModes = new Set(['DAILY', 'HOURLY', 'MANUAL', 'EVENT_DRIVEN'])
 const supportedClassificationCeilings = new Set(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
 const canonicalManagedIntents = Object.freeze(['metadata-lineage', 'data-glossary'])
+const supportedSourceFailureStages = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
+const supportedSourceFailureDetails = new Set([
+  'CONNECTIVITY',
+  'TIMEOUT',
+  'HTTP_4XX',
+  'HTTP_5XX',
+  'GRAPHQL',
+  'CONTRACT',
+  'EMPTY_SOURCE',
+  'INTERNAL_TRANSFORM',
+])
+const retryableSourceFailureDetails = new Set(['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'])
+const SOURCE_RETRY_DELAY_MS = 1_000
+const SOURCE_MAX_ATTEMPTS = 2
 const supportedK9FailureCodes = new Set([
   'K9_DATAHUB_SOURCE_FAILED',
   'K9_FAILURE_STATE_PERSISTENCE_FAILED',
@@ -35,6 +55,95 @@ async function k9RefreshStage(failureCode, action) {
   }
 }
 
+function errorChain(error) {
+  const chain = []
+  let current = error
+  while (current && typeof current === 'object' && chain.length < 4 && !chain.includes(current)) {
+    chain.push(current)
+    current = current.cause
+  }
+  return chain
+}
+
+function datahubSourceFailureDetail(error) {
+  const chain = errorChain(error)
+  const explicit = chain.find((item) => supportedSourceFailureDetails.has(item?.k9SourceFailureDetailCode))
+  if (explicit) return explicit.k9SourceFailureDetailCode
+  if (chain.some((item) => item?.name === 'TimeoutError')) return 'TIMEOUT'
+
+  const httpClass = chain.map((item) => (
+    item?.providerHttpClass || item?.inventoryDiagnostic?.provider_http_class
+  )).find((value) => value === '4xx' || value === '5xx')
+  if (httpClass) return httpClass === '4xx' ? 'HTTP_4XX' : 'HTTP_5XX'
+  const statusCode = chain.map((item) => Number(item?.statusCode))
+    .find((value) => Number.isInteger(value) && value >= 400 && value <= 599)
+  if (statusCode) return statusCode < 500 ? 'HTTP_4XX' : 'HTTP_5XX'
+
+  if (chain.some((item) => item?.providerFailureKind === 'GRAPHQL'
+    || String(item?.code || '').includes('GRAPHQL'))) return 'GRAPHQL'
+  if (chain.some((item) => ['RESPONSE_JSON', 'CONTRACT'].includes(item?.providerFailureKind)
+    || String(item?.code || '').includes('CONTRACT'))) return 'CONTRACT'
+  if (chain.some((item) => item?.providerFailureKind === 'TRANSPORT')) return 'CONNECTIVITY'
+  if (chain.some((item) => [
+    'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
+    'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
+  ].includes(item?.code))) return 'CONNECTIVITY'
+  return 'INTERNAL_TRANSFORM'
+}
+
+function sourceResultFailureDetail(failureStage, value) {
+  if (failureStage === 'INVENTORY') {
+    if (!Array.isArray(value)) return 'CONTRACT'
+    if (value.length === 0) return 'EMPTY_SOURCE'
+  } else if (failureStage === 'INVENTORY_PROJECTION') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'CONTRACT'
+  } else if (['LINEAGE_COLLECTION', 'METADATA_COLLECTION'].includes(failureStage)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'CONTRACT'
+  } else if (failureStage === 'RUNTIME_IDENTITY') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || typeof value.version !== 'string' || !value.version.trim() || value.version.length > 200
+      || (value.commit !== null && value.commit !== undefined
+        && (typeof value.commit !== 'string' || value.commit.length > 200))) return 'CONTRACT'
+  }
+  return null
+}
+
+async function datahubSourceStage(failureStage, action, sourceRetryWait) {
+  if (!supportedSourceFailureStages.has(failureStage)) throw new Error('The K9 source failure stage is invalid.')
+  for (let attempt = 1; attempt <= SOURCE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const value = await action()
+      const invalidDetail = sourceResultFailureDetail(failureStage, value)
+      if (invalidDetail) {
+        throw Object.assign(new Error('The K9 DataHub source result is invalid.'), {
+          k9SourceFailureDetailCode: invalidDetail,
+        })
+      }
+      return value
+    } catch (error) {
+      const failureDetailCode = datahubSourceFailureDetail(error)
+      if (attempt < SOURCE_MAX_ATTEMPTS && retryableSourceFailureDetails.has(failureDetailCode)) {
+        try {
+          await sourceRetryWait(SOURCE_RETRY_DELAY_MS, { failureStage, failureDetailCode, attempt })
+          continue
+        } catch {
+          // A retry clock failure cannot expose its exception or turn a
+          // bounded provider failure into an unclassified scheduler error.
+        }
+      }
+      throw Object.assign(new Error('K9_DATAHUB_SOURCE_FAILED'), {
+        k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
+        k9SourceDiagnostic: Object.freeze({ failureStage, failureDetailCode }),
+      })
+    }
+  }
+  throw new Error('The bounded K9 DataHub source retry was exhausted.')
+}
+
+async function defaultSourceRetryWait(delayMs) {
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs))
+}
+
 export function createPocK9RefreshTask({
   resolveAuthContext,
   currentInventory,
@@ -45,6 +154,7 @@ export function createPocK9RefreshTask({
   ensureSemanticIndex,
   buildSourceSnapshot,
   managedGraphs,
+  sourceRetryWait = defaultSourceRetryWait,
 } = {}) {
   const requiredFunctions = [
     resolveAuthContext,
@@ -58,6 +168,7 @@ export function createPocK9RefreshTask({
     managedGraphs?.recordRefreshFailure,
     managedGraphs?.triggerLineagePublish,
     managedGraphs?.triggerGlossaryPublish,
+    sourceRetryWait,
   ]
   if (requiredFunctions.some((value) => typeof value !== 'function')) {
     throw new Error('The POC K9 refresh task dependencies are incomplete.')
@@ -68,11 +179,23 @@ export function createPocK9RefreshTask({
     let glossary
     let unfinishedIntents = [...canonicalManagedIntents]
 
-    const failure = async (candidateCode) => {
+    const failure = async (candidateCode, candidateDiagnostic) => {
       let failureCode = boundedK9FailureCode(candidateCode)
+      const sourceDiagnostic = failureCode === 'K9_DATAHUB_SOURCE_FAILED'
+        && supportedSourceFailureStages.has(candidateDiagnostic?.failureStage)
+        && supportedSourceFailureDetails.has(candidateDiagnostic?.failureDetailCode)
+        ? {
+            failureStage: candidateDiagnostic.failureStage,
+            failureDetailCode: candidateDiagnostic.failureDetailCode,
+          }
+        : null
       try {
         if (unfinishedIntents.length) {
-          await managedGraphs.recordRefreshFailure(failureCode, unfinishedIntents)
+          if (sourceDiagnostic) {
+            await managedGraphs.recordRefreshFailure(failureCode, unfinishedIntents, sourceDiagnostic)
+          } else {
+            await managedGraphs.recordRefreshFailure(failureCode, unfinishedIntents)
+          }
         }
       } catch {
         failureCode = 'K9_FAILURE_STATE_PERSISTENCE_FAILED'
@@ -81,6 +204,7 @@ export function createPocK9RefreshTask({
         status: 'FAILURE',
         reason: failureCode,
         failureCode,
+        ...(sourceDiagnostic && failureCode === 'K9_DATAHUB_SOURCE_FAILED' ? sourceDiagnostic : {}),
         lineage,
         glossary,
       }
@@ -88,14 +212,28 @@ export function createPocK9RefreshTask({
 
     try {
       const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
-      const inventory = await k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', currentInventory)
-      const projection = await k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', inventoryProjection)
-      const [lineageSource, metadataSource, datahubIdentity, semanticIndex] = await Promise.all([
-        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', () => collectLineage(liveAuth.authorityPin, inventory)),
-        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', () => collectMetadata(liveAuth.authorityPin, inventory)),
-        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', runtimeIdentity),
-        k9RefreshStage('K9_SEMANTIC_INDEX_FAILED', () => ensureSemanticIndex(inventory, projection)),
+      const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
+      const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
+      const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+        datahubSourceStage(
+          'LINEAGE_COLLECTION',
+          () => collectLineage(liveAuth.authorityPin, inventory),
+          sourceRetryWait,
+        ),
+        datahubSourceStage(
+          'METADATA_COLLECTION',
+          () => collectMetadata(liveAuth.authorityPin, inventory),
+          sourceRetryWait,
+        ),
+        datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
       ])
+      // A failed source read must not promote a semantic generation that the
+      // managed graph LKG cannot reference. Promote only after every fixed
+      // DataHub source stage has completed successfully.
+      const semanticIndex = await k9RefreshStage(
+        'K9_SEMANTIC_INDEX_FAILED',
+        () => ensureSemanticIndex(inventory, projection),
+      )
       const sourceSnapshot = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => buildSourceSnapshot({
         inventoryProjection: projection,
         datahubIdentity,
@@ -132,7 +270,7 @@ export function createPocK9RefreshTask({
         glossary,
       }
     } catch (error) {
-      return await failure(error?.k9FailureCode)
+      return await failure(error?.k9FailureCode, error?.k9SourceDiagnostic)
     }
   }
 }

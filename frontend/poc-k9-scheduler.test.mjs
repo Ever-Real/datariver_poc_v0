@@ -36,6 +36,30 @@ function k9SchedulerDatabase(initialValue) {
   return { pool, readValue: () => value }
 }
 
+function k9RefreshFixture(overrides = {}) {
+  const { managedGraphs: managedGraphOverrides, ...dependencyOverrides } = overrides
+  const managedGraphs = {
+    recordRefreshFailure: mock.fn(async () => true),
+    triggerLineagePublish: mock.fn(async () => ({ status: 'SUCCESS' })),
+    triggerGlossaryPublish: mock.fn(async () => ({ status: 'SUCCESS' })),
+    ...managedGraphOverrides,
+  }
+  const dependencies = {
+    resolveAuthContext: mock.fn(async () => ({ authorityPin: { subject_id: 'k9' } })),
+    currentInventory: mock.fn(async () => [{ urn: 'urn:li:dataset:test' }]),
+    inventoryProjection: mock.fn(async () => ({ source_generation: 'a'.repeat(64) })),
+    collectLineage: mock.fn(async () => ({ nodes: [], edges: [] })),
+    collectMetadata: mock.fn(async () => ({ terms: [] })),
+    runtimeIdentity: mock.fn(async () => ({ version: '1.0.0' })),
+    ensureSemanticIndex: mock.fn(async () => ({ generation: 'a'.repeat(64), bindingHash: 'b'.repeat(64) })),
+    buildSourceSnapshot: mock.fn(() => ({ source_snapshot_id: 'c'.repeat(64) })),
+    sourceRetryWait: mock.fn(async () => undefined),
+    managedGraphs,
+    ...dependencyOverrides,
+  }
+  return { task: createPocK9RefreshTask(dependencies), dependencies, managedGraphs }
+}
+
 test('K9 Scheduler Config reads correctly', () => {
   const env = {
     POC_K9_SCHEDULER_ENABLED: 'true',
@@ -136,6 +160,173 @@ test('K9 Scheduler durably records a first failure without a successful boundary
   })
   assert.ok(Number.isFinite(Date.parse(receipt.last_attempt.completed_at)))
   assert.equal(JSON.stringify(receipt).includes('provider detail'), false)
+})
+
+test('K9 Scheduler durably records only bounded DataHub source diagnostics', async () => {
+  const database = k9SchedulerDatabase()
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const scheduledFor = '2026-08-24T17:00:00.000Z'
+
+  await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1', scheduledFor, trigger: 'scheduled',
+  }, async () => ({
+    status: 'FAILURE',
+    reason: 'private provider body with urn:li:dataset:secret',
+    failureCode: 'K9_DATAHUB_SOURCE_FAILED',
+    failureStage: 'LINEAGE_COLLECTION',
+    failureDetailCode: 'GRAPHQL',
+  }))
+
+  assert.deepEqual(database.readValue().last_attempt, {
+    status: 'FAILURE',
+    reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'LINEAGE_COLLECTION',
+    failure_detail_code: 'GRAPHQL',
+    scheduled_for: scheduledFor,
+    completed_at: database.readValue().last_attempt.completed_at,
+    trigger: 'scheduled',
+  })
+  assert.equal(JSON.stringify(database.readValue()).includes('urn:li:'), false)
+  assert.equal(JSON.stringify(database.readValue()).includes('private provider body'), false)
+})
+
+test('K9 source inventory contract failure is terminal and preserves semantic and graph LKG', async () => {
+  const inventoryFailure = Object.assign(new Error('provider body must not persist'), {
+    code: 'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+  })
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({
+    currentInventory: mock.fn(async () => { throw inventoryFailure }),
+  })
+
+  const result = await task()
+
+  assert.deepEqual(result, {
+    status: 'FAILURE',
+    reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failureCode: 'K9_DATAHUB_SOURCE_FAILED',
+    failureStage: 'INVENTORY',
+    failureDetailCode: 'CONTRACT',
+    lineage: undefined,
+    glossary: undefined,
+  })
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
+    'K9_DATAHUB_SOURCE_FAILED',
+    ['metadata-lineage', 'data-glossary'],
+    { failureStage: 'INVENTORY', failureDetailCode: 'CONTRACT' },
+  ])
+  assert.equal(dependencies.currentInventory.mock.calls.length, 1)
+  assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 0)
+  assert.equal(JSON.stringify(result).includes('provider body'), false)
+})
+
+test('K9 source inventory projection failure has its own deterministic contract stage', async () => {
+  const { task, dependencies } = k9RefreshFixture({
+    inventoryProjection: mock.fn(async () => null),
+  })
+
+  const result = await task()
+
+  assert.equal(result.failureStage, 'INVENTORY_PROJECTION')
+  assert.equal(result.failureDetailCode, 'CONTRACT')
+  assert.equal(dependencies.inventoryProjection.mock.calls.length, 1)
+  assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
+})
+
+test('K9 source lineage GraphQL failure retains its exact non-retryable substage', async () => {
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({
+    collectLineage: mock.fn(async () => {
+      throw Object.assign(new Error('private GraphQL provider body'), { providerFailureKind: 'GRAPHQL' })
+    }),
+  })
+
+  const result = await task()
+
+  assert.equal(result.failureStage, 'LINEAGE_COLLECTION')
+  assert.equal(result.failureDetailCode, 'GRAPHQL')
+  assert.equal(dependencies.collectLineage.mock.calls.length, 1)
+  assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments[2], {
+    failureStage: 'LINEAGE_COLLECTION', failureDetailCode: 'GRAPHQL',
+  })
+})
+
+test('K9 source metadata GraphQL failure retains its exact non-retryable substage', async () => {
+  const { task, dependencies } = k9RefreshFixture({
+    collectMetadata: mock.fn(async () => {
+      throw Object.assign(new Error('private glossary provider body'), { providerFailureKind: 'GRAPHQL' })
+    }),
+  })
+
+  const result = await task()
+
+  assert.equal(result.failureStage, 'METADATA_COLLECTION')
+  assert.equal(result.failureDetailCode, 'GRAPHQL')
+  assert.equal(dependencies.collectMetadata.mock.calls.length, 1)
+  assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
+})
+
+test('K9 source runtime identity contract failure is deterministic and never retried', async () => {
+  const { task, dependencies } = k9RefreshFixture({
+    runtimeIdentity: mock.fn(async () => ({ commit: 'missing-version' })),
+  })
+
+  const result = await task()
+
+  assert.equal(result.failureStage, 'RUNTIME_IDENTITY')
+  assert.equal(result.failureDetailCode, 'CONTRACT')
+  assert.equal(dependencies.runtimeIdentity.mock.calls.length, 1)
+  assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
+})
+
+test('K9 source retries one transient HTTP 5xx and then publishes both managed graphs READY', async () => {
+  let attempts = 0
+  const currentInventory = mock.fn(async () => {
+    attempts += 1
+    if (attempts === 1) {
+      throw Object.assign(new Error('private transient provider body'), {
+        providerFailureKind: 'HTTP', providerHttpClass: '5xx',
+      })
+    }
+    return [{ urn: 'urn:li:dataset:test' }]
+  })
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({ currentInventory })
+
+  const result = await task()
+
+  assert.equal(result.status, 'SUCCESS')
+  assert.equal(currentInventory.mock.calls.length, 2)
+  assert.deepEqual(dependencies.sourceRetryWait.mock.calls[0].arguments, [
+    1_000,
+    { failureStage: 'INVENTORY', failureDetailCode: 'HTTP_5XX', attempt: 1 },
+  ])
+  assert.equal(managedGraphs.recordRefreshFailure.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 1)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 1)
+})
+
+test('K9 source successful refresh completes source reads before semantic promotion', async () => {
+  const order = []
+  const { task, managedGraphs } = k9RefreshFixture({
+    collectLineage: mock.fn(async () => { order.push('lineage'); return { nodes: [], edges: [] } }),
+    collectMetadata: mock.fn(async () => { order.push('metadata'); return { terms: [] } }),
+    runtimeIdentity: mock.fn(async () => { order.push('identity'); return { version: '1.0.0' } }),
+    ensureSemanticIndex: mock.fn(async () => {
+      order.push('semantic')
+      return { generation: 'a'.repeat(64), bindingHash: 'b'.repeat(64) }
+    }),
+  })
+
+  const result = await task()
+
+  assert.equal(result.status, 'SUCCESS')
+  assert.ok(order.indexOf('semantic') > order.indexOf('lineage'))
+  assert.ok(order.indexOf('semantic') > order.indexOf('metadata'))
+  assert.ok(order.indexOf('semantic') > order.indexOf('identity'))
+  assert.equal(managedGraphs.recordRefreshFailure.mock.calls.length, 0)
 })
 
 test('K9 refresh task finalizes both PENDING managed graphs when a shared pre-publish stage fails', async () => {

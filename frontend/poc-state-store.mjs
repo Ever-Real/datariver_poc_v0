@@ -33,6 +33,23 @@ const K9_REFRESH_FAILURE_CODES = new Set([
   'K9_SOURCE_SNAPSHOT_FAILED',
   'K9_SYSTEM_SUBJECT_FAILED',
 ])
+const K9_SOURCE_FAILURE_STAGES = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
+const K9_SOURCE_FAILURE_DETAILS = new Set([
+  'CONNECTIVITY',
+  'TIMEOUT',
+  'HTTP_4XX',
+  'HTTP_5XX',
+  'GRAPHQL',
+  'CONTRACT',
+  'EMPTY_SOURCE',
+  'INTERNAL_TRANSFORM',
+])
 const PROTECTED_CORE_ACCESS_FIELDS = [
   'adminMemberships',
   'adminSystems',
@@ -2700,7 +2717,7 @@ export function createPocStateStore({ databasePool } = {}) {
     }
   }
 
-  async function recordK9ManagedRefreshFailure(graphIdsValue, failureCodeValue) {
+  async function recordK9ManagedRefreshFailure(graphIdsValue, failureCodeValue, sourceDiagnosticValue = null) {
     if (!Array.isArray(graphIdsValue) || graphIdsValue.length < 1 || graphIdsValue.length > 2) {
       throw new Error('K9 managed refresh failure graphIds must contain one or two canonical graph IDs.')
     }
@@ -2713,7 +2730,23 @@ export function createPocStateStore({ databasePool } = {}) {
     if (!K9_REFRESH_FAILURE_CODES.has(failureCode)) {
       throw new Error('K9 managed refresh failureCode is invalid.')
     }
-    const errorMessage = `${failureCode}: Shared managed refresh failed at a classified stage.`
+    const sourceDiagnostic = failureCode === 'K9_DATAHUB_SOURCE_FAILED'
+      && K9_SOURCE_FAILURE_STAGES.has(sourceDiagnosticValue?.failureStage)
+      && K9_SOURCE_FAILURE_DETAILS.has(sourceDiagnosticValue?.failureDetailCode)
+      ? {
+          failureStage: sourceDiagnosticValue.failureStage,
+          failureDetailCode: sourceDiagnosticValue.failureDetailCode,
+        }
+      : null
+    if (failureCode === 'K9_DATAHUB_SOURCE_FAILED' && !sourceDiagnostic) {
+      throw new Error('K9 DataHub source failures require a bounded diagnostic.')
+    }
+    if (failureCode !== 'K9_DATAHUB_SOURCE_FAILED' && sourceDiagnosticValue != null) {
+      throw new Error('K9 source diagnostics are valid only for DataHub source failures.')
+    }
+    const errorMessage = sourceDiagnostic
+      ? `${failureCode}: failure_stage=${sourceDiagnostic.failureStage}; failure_detail_code=${sourceDiagnostic.failureDetailCode}.`
+      : `${failureCode}: Shared managed refresh failed at a classified stage.`
     await startDatabase()
     if (!pool) throw new Error('K9 managed refresh failures require PostgreSQL')
     const client = await pool.connect()
@@ -2821,6 +2854,14 @@ export function createPocStateStore({ databasePool } = {}) {
           && K9_REFRESH_FAILURE_CODES.has(result.failureCode)
           ? result.failureCode
           : 'K9_REFRESH_FAILED'
+        const sourceDiagnostic = failureCode === 'K9_DATAHUB_SOURCE_FAILED'
+          && K9_SOURCE_FAILURE_STAGES.has(result.failureStage)
+          && K9_SOURCE_FAILURE_DETAILS.has(result.failureDetailCode)
+          ? {
+              failure_stage: result.failureStage,
+              failure_detail_code: result.failureDetailCode,
+            }
+          : null
         const failureReceipt = {
           ...(current.rows[0]?.value || {}),
           version: 1,
@@ -2828,6 +2869,7 @@ export function createPocStateStore({ databasePool } = {}) {
           last_attempt: {
             status: 'FAILURE',
             reason: failureCode,
+            ...(sourceDiagnostic || {}),
             scheduled_for: scheduledFor,
             completed_at: completedAt,
             trigger,

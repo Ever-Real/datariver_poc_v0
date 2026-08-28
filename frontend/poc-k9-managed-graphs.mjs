@@ -1181,7 +1181,11 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     return collectAndPublish(authCtx, K9_POLICIES.DATA_GLOSSARY, collectGlossaryInventorySeam, mapGlossary)
   }
 
-  async function recordRefreshFailure(failureCode, managedIntents = ['metadata-lineage', 'data-glossary']) {
+  async function recordRefreshFailure(
+    failureCode,
+    managedIntents = ['metadata-lineage', 'data-glossary'],
+    sourceDiagnostic = null,
+  ) {
     if (typeof failureCode !== 'string' || failureCode.length > 96 || !/^K9_[A-Z0-9_]+$/.test(failureCode)) {
       throw new Error('The managed refresh failure code is invalid.')
     }
@@ -1198,7 +1202,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     if (typeof stateStore.recordK9ManagedRefreshFailure !== 'function') {
       throw new Error('The managed refresh failure state store is unavailable.')
     }
-    await stateStore.recordK9ManagedRefreshFailure(graphIds, failureCode)
+    await stateStore.recordK9ManagedRefreshFailure(graphIds, failureCode, sourceDiagnostic)
   }
 
   return {

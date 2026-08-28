@@ -1187,17 +1187,20 @@ test('records K9 shared-stage failures atomically without changing active releas
     },
   })
 
-  await store.recordK9ManagedRefreshFailure(graphIds, 'K9_SEMANTIC_INDEX_FAILED')
+  await store.recordK9ManagedRefreshFailure(graphIds, 'K9_DATAHUB_SOURCE_FAILED', {
+    failureStage: 'INVENTORY',
+    failureDetailCode: 'HTTP_5XX',
+  })
 
   assert.deepEqual(inserted, [
     {
       graphId: graphIds[0],
-      errorMessage: 'K9_SEMANTIC_INDEX_FAILED: Shared managed refresh failed at a classified stage.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=INVENTORY; failure_detail_code=HTTP_5XX.',
       activePointer: null,
     },
     {
       graphId: graphIds[1],
-      errorMessage: 'K9_SEMANTIC_INDEX_FAILED: Shared managed refresh failed at a classified stage.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=INVENTORY; failure_detail_code=HTTP_5XX.',
       activePointer: 'k9_stage_existing_lkg',
     },
   ])
@@ -1208,6 +1211,12 @@ test('records K9 shared-stage failures atomically without changing active releas
       && !sql.includes('UPDATE poc_k9_managed_graph_policies')
       && !sql.includes('DELETE')
   )))
+  await assert.rejects(() => store.recordK9ManagedRefreshFailure(
+    graphIds,
+    'K9_DATAHUB_SOURCE_FAILED',
+    { failureStage: 'PRIVATE_PROVIDER_BODY', failureDetailCode: 'GRAPHQL' },
+  ), /bounded diagnostic/)
+  assert.equal(inserted.length, 2)
 })
 
 test('CAS-replaces in-memory core state and rejects a stale retry without changing state', async () => {

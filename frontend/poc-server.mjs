@@ -2206,14 +2206,38 @@ let datahubRuntimeIdentityPromise
 async function datahubRuntimeIdentity() {
   if (!datahubRuntimeIdentityPromise) {
     datahubRuntimeIdentityPromise = (async () => {
-      const response = await providerFetch(joinProviderUrl(datahub.url, '/config'), {
-        headers: datahubHeaders(),
-      })
-      await requireOk(response, 'DataHub configuration')
-      const payload = await response.json()
+      if (!datahub) {
+        throw Object.assign(new Error('DataHub runtime identity is not configured.'), {
+          providerFailureKind: 'CONTRACT',
+        })
+      }
+      let response
+      try {
+        response = await providerFetch(joinProviderUrl(datahub.url, '/config'), {
+          headers: datahubHeaders(),
+        })
+      } catch (error) {
+        throw Object.assign(error, { providerFailureKind: error?.providerFailureKind || 'TRANSPORT' })
+      }
+      try {
+        await requireOk(response, 'DataHub configuration')
+      } catch (error) {
+        throw Object.assign(error, {
+          providerFailureKind: 'HTTP',
+          providerHttpClass: `${Math.floor(response.status / 100)}xx`,
+        })
+      }
+      let payload
+      try {
+        payload = await response.json()
+      } catch (error) {
+        throw Object.assign(error, { providerFailureKind: 'RESPONSE_JSON' })
+      }
       const release = payload?.versions?.['acryldata/datahub']
       if (typeof release?.version !== 'string' || !release.version.trim()) {
-        throw new Error('DataHub did not expose a canonical runtime version.')
+        throw Object.assign(new Error('DataHub did not expose a canonical runtime version.'), {
+          providerFailureKind: 'CONTRACT',
+        })
       }
       return Object.freeze({
         version: release.version.trim(),
@@ -7716,6 +7740,31 @@ const k9ClassificationToGrade = Object.freeze({
   CONFIDENTIAL: 'credential',
   RESTRICTED: 'restricted',
 })
+const k9SourceFailureStages = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
+const k9SourceFailureDetails = new Set([
+  'CONNECTIVITY',
+  'TIMEOUT',
+  'HTTP_4XX',
+  'HTTP_5XX',
+  'GRAPHQL',
+  'CONTRACT',
+  'EMPTY_SOURCE',
+  'INTERNAL_TRANSFORM',
+])
+
+function managedK9SourceDiagnostic(errorMessage) {
+  const matched = /^K9_DATAHUB_SOURCE_FAILED: failure_stage=([A-Z0-9_]+); failure_detail_code=([A-Z0-9_]+)\.$/
+    .exec(errorMessage || '')
+  return matched && k9SourceFailureStages.has(matched[1]) && k9SourceFailureDetails.has(matched[2])
+    ? { failure_stage: matched[1], failure_detail_code: matched[2] }
+    : null
+}
 
 function isoValue(value) {
   if (value instanceof Date) return value.toISOString()
@@ -7741,6 +7790,9 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
   const latestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
   const storedFailureCode = latestResult === 'FAILURE'
     ? /^((?:K9_)[A-Z0-9_]+):/.exec(row.latest_error_message || '')?.[1] || 'K9_REFRESH_FAILED'
+    : null
+  const sourceDiagnostic = storedFailureCode === 'K9_DATAHUB_SOURCE_FAILED'
+    ? managedK9SourceDiagnostic(row.latest_error_message)
     : null
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
@@ -7794,6 +7846,7 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
     last_refresh: isoValue(row.latest_completed_at),
     last_result: latestResult,
     last_error_code: storedFailureCode,
+    ...(sourceDiagnostic || {}),
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
     semantic_index_contract: semanticIndex?.contract || null,
     semantic_index_generation: semanticIndex?.generation || null,

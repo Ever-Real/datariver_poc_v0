@@ -14,6 +14,23 @@ const inventoryFailureClassifications = new Set([
   'PREP_DATAHUB_INVENTORY_NORMALIZATION_FAILED',
   'PREP_DATAHUB_INVENTORY_PROMOTION_FAILED',
 ])
+const k9SourceFailureStages = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
+const k9SourceFailureDetails = new Set([
+  'CONNECTIVITY',
+  'TIMEOUT',
+  'HTTP_4XX',
+  'HTTP_5XX',
+  'GRAPHQL',
+  'CONTRACT',
+  'EMPTY_SOURCE',
+  'INTERNAL_TRANSFORM',
+])
 
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
@@ -57,6 +74,17 @@ function mclFailureDiagnostic(body) {
     failure_stage: failureStage,
     failure_detail_code: failureDetailCode,
   }
+}
+
+function k9SourceFailureDiagnostic(asset) {
+  return asset?.last_error_code === 'K9_DATAHUB_SOURCE_FAILED'
+    && k9SourceFailureStages.has(asset?.failure_stage)
+    && k9SourceFailureDetails.has(asset?.failure_detail_code)
+    ? {
+        failure_stage: asset.failure_stage,
+        failure_detail_code: asset.failure_detail_code,
+      }
+    : null
 }
 
 async function privateSecret(path) {
@@ -294,9 +322,9 @@ async function main() {
         const items = Array.isArray(managed.body?.items) ? managed.body.items : []
         const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
         const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
-        const refreshFailure = [lineage, metadata]
-          .map((item) => item?.last_error_code)
-          .find((code) => typeof code === 'string' && code.startsWith('K9_'))
+        const refreshFailureAsset = [lineage, metadata]
+          .find((item) => typeof item?.last_error_code === 'string' && item.last_error_code.startsWith('K9_'))
+        const refreshFailure = refreshFailureAsset?.last_error_code
         const refreshClassifications = {
           K9_DATAHUB_SOURCE_FAILED: 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
           K9_POLICY_PIN_DRIFT_FAILED: 'PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED',
@@ -310,7 +338,11 @@ async function main() {
             refreshClassifications[refreshFailure] || 'PREP_SMOKE_K9_REFRESH_FAILED',
             'The initial managed-graph refresh failed at a classified stage.',
             null,
-            { terminal: true, product_error_code: refreshFailure },
+            {
+              terminal: true,
+              product_error_code: refreshFailure,
+              ...(k9SourceFailureDiagnostic(refreshFailureAsset) || {}),
+            },
           )
         }
         if (!lineage || !metadata || !String(lineage.status).startsWith('READY')
