@@ -85,6 +85,50 @@ test('binds graph and semantic projections to one deterministic DataHub source s
   }), /semantic index is not bound/)
 })
 
+test('managed K9 failure status preserves LKG and never exposes an unbound semantic index as READY', async () => {
+  const { managedK9AssetSummary } = await import('./poc-server.mjs?k9-failure-summary-contract')
+  const base = {
+    graph_id: '01a02d2a-f8a0-7658-b5da-890eccdccf44',
+    name: 'CATALOG_MIRROR',
+    classification: 'INTERNAL',
+    studio_release_id: '01a02d2a-f8ad-789f-acb0-7df3ea3d0ef0',
+    publication_version: 6,
+    schedule: '02:00 Asia/Seoul',
+    managed_intent: 'metadata-lineage',
+    latest_result: 'FAILURE',
+    latest_error_message: 'K9_SEMANTIC_INDEX_FAILED: Shared managed refresh failed at a classified stage.',
+    latest_completed_at: '2026-08-28T00:00:00.000Z',
+    created_at: '2026-08-27T00:00:00.000Z',
+    updated_at: '2026-08-28T00:00:00.000Z',
+  }
+  const semanticIndex = {
+    ready: true,
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+    bindingHash: 'b'.repeat(64),
+    generation: 'g'.repeat(64),
+  }
+
+  const withoutLkg = managedK9AssetSummary(base, semanticIndex, null)
+  assert.equal(withoutLkg.status, 'FAILED')
+  assert.equal(withoutLkg.last_error_code, 'K9_SEMANTIC_INDEX_FAILED')
+  assert.equal(withoutLkg.semantic_index_status, 'PENDING')
+  assert.equal(withoutLkg.active_release_id, null)
+
+  const withLkg = managedK9AssetSummary({
+    ...base,
+    active_release_pointer: 'k9_stage_existing_lkg',
+    active_manifest: {
+      source_snapshot: { catalog_generation: semanticIndex.generation },
+      node_count: 2,
+      edge_count: 1,
+    },
+  }, semanticIndex, null)
+  assert.equal(withLkg.status, 'READY_WITH_REFRESH_FAILURE')
+  assert.equal(withLkg.last_error_code, 'K9_SEMANTIC_INDEX_FAILED')
+  assert.equal(withLkg.semantic_index_status, 'READY')
+  assert.equal(withLkg.active_release_id, 'k9_stage_existing_lkg')
+})
+
 test('normalizes only controlled DataHub manual-metadata read-back fields', async () => {
   const { manualMetadataAspectComparableDocument } = await import('./poc-server.mjs?manual-metadata-readback-contract')
   const auditStamp = { actor: 'urn:li:corpuser:datahub', time: 1 }

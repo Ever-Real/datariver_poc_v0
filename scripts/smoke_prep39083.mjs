@@ -283,6 +283,7 @@ async function main() {
           K9_POLICY_PIN_DRIFT_FAILED: 'PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED',
           K9_NEO4J_PROJECTION_FAILED: 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED',
           K9_PROMOTION_FAILED: 'PREP_SMOKE_K9_PROMOTION_FAILED',
+          K9_SEMANTIC_INDEX_FAILED: 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY',
         }
         if (refreshFailure) {
           throw smokeFailure(
@@ -290,7 +291,7 @@ async function main() {
             refreshClassifications[refreshFailure] || 'PREP_SMOKE_K9_REFRESH_FAILED',
             'The initial managed-graph refresh failed at a classified stage.',
             null,
-            { terminal: true },
+            { terminal: true, product_error_code: refreshFailure },
           )
         }
         if (!lineage || !metadata || !String(lineage.status).startsWith('READY')

@@ -1126,6 +1126,66 @@ test('serializes PostgreSQL core and access writes before missing-row locks and 
   assert.equal(statements.at(-1).sql, 'ROLLBACK')
 })
 
+test('records K9 shared-stage failures atomically without changing active release pointers', async () => {
+  const graphIds = [
+    '01a02d2a-f8a0-7658-b5da-890eccdccf44',
+    '01a02d2a-f90d-74fe-bd96-aa596276cb87',
+  ]
+  const activePointers = new Map([
+    [graphIds[0], null],
+    [graphIds[1], 'k9_stage_existing_lkg'],
+  ])
+  const statements = []
+  const inserted = []
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      statements.push({ sql: normalized, parameters })
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(normalized)) return { rows: [] }
+      if (normalized.startsWith('INSERT INTO poc_k9_refresh_runs')) {
+        const graphId = parameters[1]
+        if (!activePointers.has(graphId)) return { rows: [] }
+        inserted.push({
+          graphId,
+          errorMessage: parameters[2],
+          activePointer: activePointers.get(graphId),
+        })
+        return { rows: [{ graph_id: graphId }] }
+      }
+      throw new Error(`Unexpected K9 failure SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  const store = createPocStateStore({
+    databasePool: {
+      async query() { return { rows: [] } },
+      async connect() { return client },
+    },
+  })
+
+  await store.recordK9ManagedRefreshFailure(graphIds, 'K9_SEMANTIC_INDEX_FAILED')
+
+  assert.deepEqual(inserted, [
+    {
+      graphId: graphIds[0],
+      errorMessage: 'K9_SEMANTIC_INDEX_FAILED: Shared managed refresh failed at a classified stage.',
+      activePointer: null,
+    },
+    {
+      graphId: graphIds[1],
+      errorMessage: 'K9_SEMANTIC_INDEX_FAILED: Shared managed refresh failed at a classified stage.',
+      activePointer: 'k9_stage_existing_lkg',
+    },
+  ])
+  assert.equal(statements[0].sql, 'BEGIN')
+  assert.equal(statements.at(-1).sql, 'COMMIT')
+  assert.ok(statements.filter(({ sql }) => sql.startsWith('INSERT INTO poc_k9_refresh_runs')).every(({ sql }) => (
+    sql.includes('policy.active_release_pointer')
+      && !sql.includes('UPDATE poc_k9_managed_graph_policies')
+      && !sql.includes('DELETE')
+  )))
+})
+
 test('CAS-replaces in-memory core state and rejects a stale retry without changing state', async () => {
   const store = createPocStateStore()
   assert.equal(await store.writeIfVersion('core', { sequence: 1 }, 0), 1)

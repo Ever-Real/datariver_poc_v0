@@ -1181,10 +1181,31 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     return collectAndPublish(authCtx, K9_POLICIES.DATA_GLOSSARY, collectGlossaryInventorySeam, mapGlossary)
   }
 
+  async function recordRefreshFailure(failureCode, managedIntents = ['metadata-lineage', 'data-glossary']) {
+    if (typeof failureCode !== 'string' || failureCode.length > 96 || !/^K9_[A-Z0-9_]+$/.test(failureCode)) {
+      throw new Error('The managed refresh failure code is invalid.')
+    }
+    if (!Array.isArray(managedIntents) || managedIntents.length < 1 || managedIntents.length > 2) {
+      throw new Error('The managed refresh failure policy set is invalid.')
+    }
+    const byIntent = new Map(Object.values(K9_POLICIES).map((policy) => [policy.managed_intent, policy.graph_id]))
+    const graphIds = []
+    for (const intent of managedIntents) {
+      const graphId = byIntent.get(intent)
+      if (!graphId || graphIds.includes(graphId)) throw new Error('The managed refresh failure policy is invalid.')
+      graphIds.push(graphId)
+    }
+    if (typeof stateStore.recordK9ManagedRefreshFailure !== 'function') {
+      throw new Error('The managed refresh failure state store is unavailable.')
+    }
+    await stateStore.recordK9ManagedRefreshFailure(graphIds, failureCode)
+  }
+
   return {
     bootstrapK9Policies: bootstrapK9Policies,
     triggerLineagePublish: triggerLineagePublish,
     triggerGlossaryPublish: triggerGlossaryPublish,
+    recordRefreshFailure: recordRefreshFailure,
     performRestartRecovery: performRestartRecovery,
     mapLineage: mapLineage,
     mapGlossary: mapGlossary

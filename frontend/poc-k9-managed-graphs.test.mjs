@@ -5,6 +5,7 @@ import {
   buildK9GlossaryScrollVariables,
   createK9ManagedGraphs,
   K9_GRAPH_ASSET_DEFINITIONS,
+  K9_POLICIES,
   projectionDiffMetrics,
 } from './poc-k9-managed-graphs.mjs'
 
@@ -36,6 +37,7 @@ function createBaseStateStore() {
     getK9OrphanRuns: mock.fn(async () => []),
     getK9PreparingRuns: mock.fn(async () => []),
     finalizeK9RunNoOp: mock.fn(async () => true),
+    recordK9ManagedRefreshFailure: mock.fn(async () => true),
     verifyK9StudioAuthority: mock.fn(async () => true)
   }
 }
@@ -119,6 +121,20 @@ test('K9 Managed Graphs - drift no-publish', async () => {
   assert.equal(result.status, 'FAILURE')
   assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
   assert.ok(result.reason.includes('Managed policy has drifted. No publish allowed.'))
+})
+
+test('K9 Managed Graphs records one typed terminal failure for each requested canonical policy', async () => {
+  const stateStore = createBaseStateStore()
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j: createBaseNeo4j() })
+
+  await k9.recordRefreshFailure('K9_SEMANTIC_INDEX_FAILED', ['metadata-lineage', 'data-glossary'])
+
+  const [graphIds, failureCode] = stateStore.recordK9ManagedRefreshFailure.mock.calls[0].arguments
+  assert.deepEqual(graphIds, [
+    K9_POLICIES.METADATA_LINEAGE.graph_id,
+    K9_POLICIES.DATA_GLOSSARY.graph_id,
+  ])
+  assert.equal(failureCode, 'K9_SEMANTIC_INDEX_FAILED')
 })
 
 test('K9 Managed Graphs - bootstrap creates authority, trigger requires it', async () => {

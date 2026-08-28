@@ -45,6 +45,7 @@ import {
   k9GraphAssetDefinition,
 } from './poc-k9-managed-graphs.mjs'
 import {
+  createPocK9RefreshTask,
   createPocK9Scheduler,
   loadPocK9SchedulerConfig,
   nextScheduleBoundary,
@@ -7711,7 +7712,7 @@ function isoValue(value) {
   return typeof value === 'string' ? value : null
 }
 
-function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQualityMetrics = false) {
+export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQualityMetrics = false) {
   const definition = k9GraphAssetDefinition(row.graph_id)
   if (!definition) throw knowledgeProjectionError(409, 'K9_ASSET_DEFINITION_MISSING', 'The managed graph Asset definition is missing.')
   const manifest = row.active_manifest && typeof row.active_manifest === 'object'
@@ -7723,7 +7724,7 @@ function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQuali
   const qualityMetrics = manifest.quality_metrics && typeof manifest.quality_metrics === 'object'
     ? manifest.quality_metrics
     : null
-  const semanticIndexMatchesSnapshot = semanticIndex?.ready && (
+  const semanticIndexMatchesSnapshot = Boolean(row.active_release_pointer) && semanticIndex?.ready && (
     !sourceSnapshot.catalog_generation
     || semanticIndex.generation === sourceSnapshot.catalog_generation
   )
@@ -11547,52 +11548,25 @@ export async function startPocServer({ stateStore } = {}) {
     }
   }
 
+  const triggerK9Refresh = createPocK9RefreshTask({
+    resolveAuthContext: resolveLiveK9AuthCtx,
+    currentInventory: currentDatahubInventory,
+    inventoryProjection: () => structuredClone(inventorySnapshot?.projection),
+    collectLineage: collectLineageInventorySeam,
+    collectMetadata: collectGlossaryInventorySeam,
+    runtimeIdentity: datahubRuntimeIdentity,
+    ensureSemanticIndex: (inventory, inventoryProjection) => ensureCatalogEmbeddingIndex(
+      serverBackgroundAbortController?.signal,
+      { inventory, inventoryProjection },
+    ),
+    buildSourceSnapshot: buildDatahubKnowledgeSourceSnapshot,
+    managedGraphs: k9,
+  })
+
   const k9Scheduler = createPocK9Scheduler({
     config: k9SchedulerConfig,
     stateStore: pocStateStore,
-    triggerK9Refresh: async () => {
-      let lr, gr
-      try {
-        const liveAuth = await resolveLiveK9AuthCtx()
-        // Both managed projections are one logical refresh. Acquire one exact,
-        // exhaustive DataHub snapshot so they cannot diverge across two slow
-        // provider scrolls and so a second scan cannot time out after Lineage
-        // has already completed.
-        const inventory = await currentDatahubInventory()
-        const inventoryProjection = structuredClone(inventorySnapshot?.projection)
-        const [lineageSource, metadataSource, datahubIdentity, semanticIndex] = await Promise.all([
-          collectLineageInventorySeam(liveAuth.authorityPin, inventory),
-          collectGlossaryInventorySeam(liveAuth.authorityPin, inventory),
-          datahubRuntimeIdentity(),
-          ensureCatalogEmbeddingIndex(serverBackgroundAbortController?.signal, {
-            inventory,
-            inventoryProjection,
-          }),
-        ])
-        const sourceSnapshot = buildDatahubKnowledgeSourceSnapshot({
-          inventoryProjection,
-          datahubIdentity,
-          lineageSource,
-          metadataSource,
-          semanticIndex,
-        })
-        lineageSource.source_snapshot = sourceSnapshot
-        metadataSource.source_snapshot = sourceSnapshot
-        lr = await k9.triggerLineagePublish(liveAuth, async () => lineageSource)
-        if (lr.status === 'FAILURE') return { status: 'FAILURE', reason: lr.reason, lineage: lr }
-        gr = await k9.triggerGlossaryPublish(liveAuth, async () => metadataSource)
-        if (gr.status === 'FAILURE') return { status: 'FAILURE', reason: gr.reason, lineage: lr, glossary: gr }
-        return {
-          status: 'SUCCESS',
-          source_snapshot: sourceSnapshot,
-          semantic_index: semanticIndex,
-          lineage: lr,
-          glossary: gr,
-        }
-      } catch (error) {
-        return { status: 'FAILURE', reason: error instanceof Error ? error.message : String(error), lineage: lr, glossary: gr }
-      }
-    },
+    triggerK9Refresh,
     onError(error) {
       process.stderr.write(`POC K9 scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
     }

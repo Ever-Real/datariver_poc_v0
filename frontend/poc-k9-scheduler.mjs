@@ -8,6 +8,134 @@ const DEFAULT_LOCK_NAME = 'datariver:poc:k9-scheduler:v1'
 const MAX_TIMER_DELAY_MS = 2_147_000_000
 const supportedRefreshModes = new Set(['DAILY', 'HOURLY', 'MANUAL', 'EVENT_DRIVEN'])
 const supportedClassificationCeilings = new Set(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
+const canonicalManagedIntents = Object.freeze(['metadata-lineage', 'data-glossary'])
+const supportedK9FailureCodes = new Set([
+  'K9_DATAHUB_SOURCE_FAILED',
+  'K9_FAILURE_STATE_PERSISTENCE_FAILED',
+  'K9_LINEAGE_REFRESH_FAILED',
+  'K9_METADATA_REFRESH_FAILED',
+  'K9_NEO4J_PROJECTION_FAILED',
+  'K9_POLICY_PIN_DRIFT_FAILED',
+  'K9_PROMOTION_FAILED',
+  'K9_REFRESH_FAILED',
+  'K9_SEMANTIC_INDEX_FAILED',
+  'K9_SOURCE_SNAPSHOT_FAILED',
+  'K9_SYSTEM_SUBJECT_FAILED',
+])
+
+function boundedK9FailureCode(value, fallback = 'K9_REFRESH_FAILED') {
+  return typeof value === 'string' && supportedK9FailureCodes.has(value) ? value : fallback
+}
+
+async function k9RefreshStage(failureCode, action) {
+  try {
+    return await action()
+  } catch {
+    throw Object.assign(new Error(failureCode), { k9FailureCode: failureCode })
+  }
+}
+
+export function createPocK9RefreshTask({
+  resolveAuthContext,
+  currentInventory,
+  inventoryProjection,
+  collectLineage,
+  collectMetadata,
+  runtimeIdentity,
+  ensureSemanticIndex,
+  buildSourceSnapshot,
+  managedGraphs,
+} = {}) {
+  const requiredFunctions = [
+    resolveAuthContext,
+    currentInventory,
+    inventoryProjection,
+    collectLineage,
+    collectMetadata,
+    runtimeIdentity,
+    ensureSemanticIndex,
+    buildSourceSnapshot,
+    managedGraphs?.recordRefreshFailure,
+    managedGraphs?.triggerLineagePublish,
+    managedGraphs?.triggerGlossaryPublish,
+  ]
+  if (requiredFunctions.some((value) => typeof value !== 'function')) {
+    throw new Error('The POC K9 refresh task dependencies are incomplete.')
+  }
+
+  return async function triggerK9Refresh() {
+    let lineage
+    let glossary
+    let unfinishedIntents = [...canonicalManagedIntents]
+
+    const failure = async (candidateCode) => {
+      let failureCode = boundedK9FailureCode(candidateCode)
+      try {
+        if (unfinishedIntents.length) {
+          await managedGraphs.recordRefreshFailure(failureCode, unfinishedIntents)
+        }
+      } catch {
+        failureCode = 'K9_FAILURE_STATE_PERSISTENCE_FAILED'
+      }
+      return {
+        status: 'FAILURE',
+        reason: failureCode,
+        failureCode,
+        lineage,
+        glossary,
+      }
+    }
+
+    try {
+      const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
+      const inventory = await k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', currentInventory)
+      const projection = await k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', inventoryProjection)
+      const [lineageSource, metadataSource, datahubIdentity, semanticIndex] = await Promise.all([
+        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', () => collectLineage(liveAuth.authorityPin, inventory)),
+        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', () => collectMetadata(liveAuth.authorityPin, inventory)),
+        k9RefreshStage('K9_DATAHUB_SOURCE_FAILED', runtimeIdentity),
+        k9RefreshStage('K9_SEMANTIC_INDEX_FAILED', () => ensureSemanticIndex(inventory, projection)),
+      ])
+      const sourceSnapshot = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => buildSourceSnapshot({
+        inventoryProjection: projection,
+        datahubIdentity,
+        lineageSource,
+        metadataSource,
+        semanticIndex,
+      }))
+      lineageSource.source_snapshot = sourceSnapshot
+      metadataSource.source_snapshot = sourceSnapshot
+
+      lineage = await k9RefreshStage('K9_LINEAGE_REFRESH_FAILED', () => (
+        managedGraphs.triggerLineagePublish(liveAuth, async () => lineageSource)
+      ))
+      if (lineage?.status === 'FAILURE') {
+        unfinishedIntents = ['data-glossary']
+        return await failure(lineage.failureCode)
+      }
+
+      unfinishedIntents = ['data-glossary']
+      glossary = await k9RefreshStage('K9_METADATA_REFRESH_FAILED', () => (
+        managedGraphs.triggerGlossaryPublish(liveAuth, async () => metadataSource)
+      ))
+      if (glossary?.status === 'FAILURE') {
+        // triggerGlossaryPublish already finalized its own durable run.
+        unfinishedIntents = []
+        return await failure(glossary.failureCode)
+      }
+
+      return {
+        status: 'SUCCESS',
+        source_snapshot: sourceSnapshot,
+        semantic_index: semanticIndex,
+        lineage,
+        glossary,
+      }
+    } catch (error) {
+      return await failure(error?.k9FailureCode)
+    }
+  }
+}
 
 export function loadPocK9SchedulerConfig(environment = process.env) {
   const requested = parseBoolean(environment.POC_K9_SCHEDULER_ENABLED, false)

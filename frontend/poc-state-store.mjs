@@ -1,5 +1,5 @@
 /* global AbortController, clearInterval, setInterval, structuredClone */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import process from 'node:process'
 import { TextEncoder } from 'node:util'
 import { URL } from 'node:url'
@@ -17,6 +17,19 @@ const CHANGE_HISTORY_CAPTURE_STATES = new Set([
   'CAPTURE_CATCHING_UP',
   'CAPTURE_CAUGHT_UP',
   'HISTORY_GAP_BLOCKED',
+])
+const K9_REFRESH_FAILURE_CODES = new Set([
+  'K9_DATAHUB_SOURCE_FAILED',
+  'K9_FAILURE_STATE_PERSISTENCE_FAILED',
+  'K9_LINEAGE_REFRESH_FAILED',
+  'K9_METADATA_REFRESH_FAILED',
+  'K9_NEO4J_PROJECTION_FAILED',
+  'K9_POLICY_PIN_DRIFT_FAILED',
+  'K9_PROMOTION_FAILED',
+  'K9_REFRESH_FAILED',
+  'K9_SEMANTIC_INDEX_FAILED',
+  'K9_SOURCE_SNAPSHOT_FAILED',
+  'K9_SYSTEM_SUBJECT_FAILED',
 ])
 const PROTECTED_CORE_ACCESS_FIELDS = [
   'adminMemberships',
@@ -2671,6 +2684,50 @@ export function createPocStateStore({ databasePool } = {}) {
     }
   }
 
+  async function recordK9ManagedRefreshFailure(graphIdsValue, failureCodeValue) {
+    if (!Array.isArray(graphIdsValue) || graphIdsValue.length < 1 || graphIdsValue.length > 2) {
+      throw new Error('K9 managed refresh failure graphIds must contain one or two canonical graph IDs.')
+    }
+    const graphIds = graphIdsValue.map((value) => requireBoundedString(value, 'graphId', 36))
+    if (new Set(graphIds).size !== graphIds.length
+      || graphIds.some((value) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value))) {
+      throw new Error('K9 managed refresh failure graphIds are invalid.')
+    }
+    const failureCode = requireBoundedString(failureCodeValue, 'failureCode', 96)
+    if (!K9_REFRESH_FAILURE_CODES.has(failureCode)) {
+      throw new Error('K9 managed refresh failureCode is invalid.')
+    }
+    const errorMessage = `${failureCode}: Shared managed refresh failed at a classified stage.`
+    await startDatabase()
+    if (!pool) throw new Error('K9 managed refresh failures require PostgreSQL')
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const graphId of graphIds) {
+        const inserted = await client.query(`
+          INSERT INTO poc_k9_refresh_runs (
+            run_id, graph_id, status, input_snapshot_hash, policy_hash,
+            started_at, completed_at, active_release_pointer, error_message
+          )
+          SELECT $1, policy.graph_id, 'FAILURE', NULL, policy.policy_hash,
+            clock_timestamp(), clock_timestamp(), policy.active_release_pointer, $3
+          FROM poc_k9_managed_graph_policies AS policy
+          WHERE policy.graph_id = $2
+          RETURNING graph_id
+        `, [randomUUID(), graphId, errorMessage])
+        if (inserted.rows.length !== 1 || inserted.rows[0].graph_id !== graphId) {
+          throw new Error('K9 managed refresh failure policy was not found.')
+        }
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async function executeK9Transaction(graphId, runId, manifest, canonicalRelease, activePointer, manifestHash, inputSnapshotHash, policyHash) {
     await startDatabase()
     if (!pool) throw new Error('K9 runs require PostgreSQL')
@@ -2744,13 +2801,17 @@ export function createPocStateStore({ databasePool } = {}) {
       const completedAt = new Date().toISOString()
 
       if (result && result.status === 'FAILURE') {
+        const failureCode = typeof result.failureCode === 'string'
+          && K9_REFRESH_FAILURE_CODES.has(result.failureCode)
+          ? result.failureCode
+          : 'K9_REFRESH_FAILED'
         const failureReceipt = {
           ...(current.rows[0]?.value || {}),
           version: 1,
           last_successful_schedule: lastSuccessfulSchedule,
           last_attempt: {
             status: 'FAILURE',
-            reason: 'K9_REFRESH_FAILED',
+            reason: failureCode,
             scheduled_for: scheduledFor,
             completed_at: completedAt,
             trigger,
@@ -3053,6 +3114,7 @@ export function createPocStateStore({ databasePool } = {}) {
     getLastK9Run,
     finalizeK9RunNoOp,
     finalizeK9RunFailure,
+    recordK9ManagedRefreshFailure,
     executeK9Transaction,
     runK9Scheduler,
     listChatSessions,

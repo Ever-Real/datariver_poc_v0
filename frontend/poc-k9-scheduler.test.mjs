@@ -1,6 +1,12 @@
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { createPocK9Scheduler, loadPocK9SchedulerConfig, currentScheduleBoundary, nextScheduleBoundary } from './poc-k9-scheduler.mjs'
+import {
+  createPocK9RefreshTask,
+  createPocK9Scheduler,
+  loadPocK9SchedulerConfig,
+  currentScheduleBoundary,
+  nextScheduleBoundary,
+} from './poc-k9-scheduler.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
 function k9SchedulerDatabase(initialValue) {
@@ -112,20 +118,63 @@ test('K9 Scheduler durably records a first failure without a successful boundary
     lockName: 'datariver:poc:k9-scheduler:v1',
     scheduledFor,
     trigger: 'scheduled',
-  }, async () => ({ status: 'FAILURE', reason: 'provider detail must not persist' }))
+  }, async () => ({
+    status: 'FAILURE',
+    reason: 'provider detail must not persist',
+    failureCode: 'K9_SEMANTIC_INDEX_FAILED',
+  }))
 
   const receipt = database.readValue()
   assert.equal(result.status, 'failed')
   assert.equal(receipt.last_successful_schedule, null)
   assert.deepEqual(receipt.last_attempt, {
     status: 'FAILURE',
-    reason: 'K9_REFRESH_FAILED',
+    reason: 'K9_SEMANTIC_INDEX_FAILED',
     scheduled_for: scheduledFor,
     completed_at: receipt.last_attempt.completed_at,
     trigger: 'scheduled',
   })
   assert.ok(Number.isFinite(Date.parse(receipt.last_attempt.completed_at)))
   assert.equal(JSON.stringify(receipt).includes('provider detail'), false)
+})
+
+test('K9 refresh task finalizes both PENDING managed graphs when a shared pre-publish stage fails', async () => {
+  const semanticFailure = Object.assign(new Error('private embedding provider detail'), {
+    code: 'PROVIDER_PRIVATE_ERROR',
+  })
+  const managedGraphs = {
+    recordRefreshFailure: mock.fn(async () => true),
+    triggerLineagePublish: mock.fn(),
+    triggerGlossaryPublish: mock.fn(),
+  }
+  const task = createPocK9RefreshTask({
+    resolveAuthContext: async () => ({ authorityPin: { subject_id: 'k9' } }),
+    currentInventory: async () => [{ urn: 'urn:li:dataset:test' }],
+    inventoryProjection: () => ({ generation: 9 }),
+    collectLineage: async () => ({ nodes: [], edges: [] }),
+    collectMetadata: async () => ({ terms: [] }),
+    runtimeIdentity: async () => ({ version: 'test' }),
+    ensureSemanticIndex: async () => { throw semanticFailure },
+    buildSourceSnapshot: () => { throw new Error('must not run after semantic failure') },
+    managedGraphs,
+  })
+
+  const result = await task()
+
+  assert.deepEqual(result, {
+    status: 'FAILURE',
+    reason: 'K9_SEMANTIC_INDEX_FAILED',
+    failureCode: 'K9_SEMANTIC_INDEX_FAILED',
+    lineage: undefined,
+    glossary: undefined,
+  })
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
+    'K9_SEMANTIC_INDEX_FAILED',
+    ['metadata-lineage', 'data-glossary'],
+  ])
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 0)
+  assert.equal(JSON.stringify(result).includes('private embedding provider detail'), false)
 })
 
 test('K9 Scheduler failure preserves and cannot advance the prior successful boundary', async () => {

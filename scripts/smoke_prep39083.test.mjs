@@ -166,7 +166,7 @@ test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
   const result = await fixture('required', {
     managedItems: [
       {
-        graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
         semantic_index_status: 'PENDING', last_error_code: 'K9_NEO4J_PROJECTION_FAILED',
       },
       { graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY', semantic_index_status: 'PENDING' },
@@ -175,6 +175,7 @@ test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
   assert.equal(result.completed.code, 2)
   assert.equal(result.failure.stage, 'K9_INITIAL_REFRESH')
   assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED')
+  assert.equal(result.failure.diagnostic.product_error_code, 'K9_NEO4J_PROJECTION_FAILED')
   assert.ok(result.failure.elapsed_ms < 5_000)
 })
 
