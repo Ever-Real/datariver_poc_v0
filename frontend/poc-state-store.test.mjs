@@ -631,12 +631,16 @@ test('records only bounded sanitized MCL capture runtime states', async () => {
   await store.writeChangeHistoryRuntimeStatus({
     state: 'DISCOVERY_FAILED',
     classification: 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED',
+    failureStage: 'DISCOVERY_KAFKA_CLUSTER',
+    failureDetailCode: 'CLUSTER_ID_UNAVAILABLE',
     observedAt: '2026-08-14T01:03:00.000Z',
   })
   assert.deepEqual((await store.read('change-history-runtime-status-v1')).value, {
     contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
     state: 'DISCOVERY_FAILED',
     classification: 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED',
+    failure_stage: 'DISCOVERY_KAFKA_CLUSTER',
+    failure_detail_code: 'CLUSTER_ID_UNAVAILABLE',
     observed_at: '2026-08-14T01:03:00.000Z',
   })
   await assert.rejects(
@@ -645,6 +649,26 @@ test('records only bounded sanitized MCL capture runtime states', async () => {
       observedAt: '2026-08-14T01:03:00.000Z',
     }),
     /runtime classification is invalid/,
+  )
+  await assert.rejects(
+    store.writeChangeHistoryRuntimeStatus({
+      state: 'CAPTURE_FAILED',
+      classification: 'PREP_MCL_CAPTURE_PROVIDER_CONTROLLED_FAILED',
+      failureStage: 'PROVIDER_CONTROLLED',
+      failureDetailCode: 'PROVIDER_CONTROLLED',
+      observedAt: '2026-08-14T01:03:00.000Z',
+    }),
+    /runtime classification is invalid/,
+  )
+  await assert.rejects(
+    store.writeChangeHistoryRuntimeStatus({
+      state: 'CAPTURE_FAILED',
+      classification: 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED',
+      failureStage: 'DURABLE_APPEND',
+      failureDetailCode: 'secret=value',
+      observedAt: '2026-08-14T01:03:00.000Z',
+    }),
+    /runtime failure detail code is invalid/,
   )
 })
 

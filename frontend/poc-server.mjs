@@ -38,7 +38,9 @@ import {
 import {
   createPocChangeHistoryScheduler,
   loadPocChangeHistorySchedulerConfig,
+  persistMclRuntimeFailure,
 } from './poc-change-history-scheduler.mjs'
+import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
 import {
   buildK9GlossaryScrollVariables,
   createK9ManagedGraphs,
@@ -1420,8 +1422,14 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
   const runtimeStatus = projection.runtimeStatus?.value
   const runtimeFailure = runtimeStatus?.contract === 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1'
     && ['DISCOVERY_FAILED', 'CAPTURE_FAILED'].includes(runtimeStatus.state)
-    && /^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(runtimeStatus.classification || '')
+    && isMclRuntimeClassification(runtimeStatus.classification)
     ? runtimeStatus
+    : null
+  const runtimeFailureStage = /^[A-Z][A-Z0-9_]{0,79}$/.test(runtimeFailure?.failure_stage || '')
+    ? runtimeFailure.failure_stage
+    : null
+  const runtimeFailureDetailCode = /^[A-Z][A-Z0-9_]{0,79}$/.test(runtimeFailure?.failure_detail_code || '')
+    ? runtimeFailure.failure_detail_code
     : null
   const occurred = rows.map((row) => row.event.source_occurred_at)
   const detected = rows.map((row) => row.event.detected_at)
@@ -1441,6 +1449,8 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     capture_state: runtimeFailure?.state || source.capture_state,
     sync_status: runtimeFailure?.state || source.sync_status,
     capture_failure_classification: runtimeFailure?.classification || null,
+    capture_failure_stage: runtimeFailureStage,
+    capture_failure_detail_code: runtimeFailureDetailCode,
     source_generation: projection.catalog.value.source_generation,
     source_observed_at: projection.catalog.value.observed_at,
     source_occurred_at: changeHistoryMaximumTimestamp(occurred),
@@ -10851,11 +10861,6 @@ export function resolvePocServerHost(environment = process.env) {
   return environment.POC_SERVER_HOST?.trim() || '127.0.0.1'
 }
 
-function mclRuntimeClassification(error, fallback) {
-  const candidate = typeof error?.code === 'string' ? error.code : ''
-  return /^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(candidate) ? candidate : fallback
-}
-
 export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
   const serverStateStore = stateStore ?? pocStateStore
@@ -10886,15 +10891,19 @@ export async function startPocServer({ stateStore } = {}) {
       const capture = createPocMclCapture({ config: discovery.captureConfig, stateStore: serverStateStore })
       captureMcl = () => capture.run()
     } catch (error) {
-      const classification = mclRuntimeClassification(
+      const diagnostic = await persistMclRuntimeFailure({
+        stateStore: serverStateStore,
         error,
-        'PREP_MCL_DISCOVERY_RUNTIME_UNEXPECTED_FAILED',
-      )
-      await serverStateStore.writeChangeHistoryRuntimeStatus({
-        state: 'DISCOVERY_FAILED', classification, observedAt: new Date().toISOString(),
+        fallbackClassification: 'PREP_MCL_DISCOVERY_RUNTIME_UNEXPECTED_FAILED',
+        fallbackStage: 'DISCOVERY_RUNTIME',
+        fallbackDetailCode: 'UNCLASSIFIED_DISCOVERY_ERROR',
       })
       captureMcl = async () => {
-        throw Object.assign(new Error('MCL runtime discovery is unavailable.'), { code: classification })
+        throw Object.assign(new Error('MCL runtime discovery is unavailable.'), {
+          code: diagnostic.classification,
+          mclStage: diagnostic.failureStage,
+          mclDetailCode: diagnostic.failureDetailCode,
+        })
       }
     }
   }
@@ -10909,6 +10918,8 @@ export async function startPocServer({ stateStore } = {}) {
         await serverStateStore.writeChangeHistoryRuntimeStatus({
           state: 'CAPTURE_FAILED',
           classification: 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED',
+          failureStage: 'RETENTION_CHECK',
+          failureDetailCode: 'CHECKPOINT_BEHIND_LOW_WATERMARK',
           observedAt: status.observedAt,
         })
       } else {
@@ -10917,18 +10928,16 @@ export async function startPocServer({ stateStore } = {}) {
         })
       }
     },
-    onError(error) {
-      const classification = mclRuntimeClassification(
-        error,
-        'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED',
-      )
-      const state = classification.startsWith('PREP_MCL_DISCOVERY_')
-        ? 'DISCOVERY_FAILED'
-        : 'CAPTURE_FAILED'
-      void serverStateStore.writeChangeHistoryRuntimeStatus({
-        state, classification, observedAt: new Date().toISOString(),
-      }).catch(() => undefined)
-      process.stderr.write(`POC change-history scheduler: ${classification}\n`)
+    async onError(error) {
+      try {
+        const diagnostic = await persistMclRuntimeFailure({
+          stateStore: serverStateStore,
+          error,
+        })
+        process.stderr.write(`POC change-history scheduler: ${diagnostic.classification}\n`)
+      } catch {
+        process.stderr.write('POC change-history scheduler: PREP_MCL_CAPTURE_DIAGNOSTIC_PERSIST_FAILED\n')
+      }
     },
   })
 

@@ -6,7 +6,10 @@ import {
   createPocChangeHistoryScheduler,
   currentScheduleBoundary,
   loadPocChangeHistorySchedulerConfig,
+  mclCaptureFailure,
+  mclRuntimeFailureDiagnostic,
   nextScheduleBoundary,
+  persistMclRuntimeFailure,
 } from './poc-change-history-scheduler.mjs'
 
 const enabledConfig = {
@@ -16,6 +19,66 @@ const enabledConfig = {
   timeZone: 'Asia/Seoul',
   lockName: 'scheduler-test',
 }
+
+test('reduces runtime exceptions to bounded typed MCL diagnostics without retaining secret text', async () => {
+  const original = new Error('broker password=do-not-persist schema={private}')
+  const failure = mclCaptureFailure(original, {
+    stage: 'DURABLE_APPEND',
+    detailCode: 'LEDGER_WRITE_REJECTED',
+  })
+  const diagnostic = mclRuntimeFailureDiagnostic(failure)
+  assert.deepEqual(diagnostic, {
+    classification: 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED',
+    failureStage: 'DURABLE_APPEND',
+    failureDetailCode: 'LEDGER_WRITE_REJECTED',
+  })
+  assert.equal(JSON.stringify(diagnostic).includes('do-not-persist'), false)
+  assert.equal(failure.cause, original)
+  assert.deepEqual(mclRuntimeFailureDiagnostic({
+    code: 'PREP_MCL_CAPTURE_PROVIDER_CONTROLLED_FAILED',
+    mclStage: 'PROVIDER_CONTROLLED',
+    mclDetailCode: 'PROVIDER_CONTROLLED',
+  }), {
+    classification: 'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED',
+    failureStage: 'SCHEDULER_RUNTIME',
+    failureDetailCode: 'UNCLASSIFIED_ERROR',
+  })
+})
+
+test('awaits and verifies the sanitized durable MCL failure-status write', async () => {
+  let releaseWrite
+  let settled = false
+  let written
+  const pending = persistMclRuntimeFailure({
+    stateStore: {
+      async writeChangeHistoryRuntimeStatus(command) {
+        written = command
+        await new Promise((resolve) => { releaseWrite = resolve })
+        return 11
+      },
+    },
+    error: new Error('token=must-not-be-persisted'),
+    observedAt: '2026-08-28T01:02:03.000Z',
+  }).finally(() => { settled = true })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(settled, false)
+  assert.deepEqual(written, {
+    state: 'CAPTURE_FAILED',
+    classification: 'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED',
+    failureStage: 'SCHEDULER_RUNTIME',
+    failureDetailCode: 'UNCLASSIFIED_ERROR',
+    observedAt: '2026-08-28T01:02:03.000Z',
+  })
+  assert.equal(JSON.stringify(written).includes('must-not-be-persisted'), false)
+  releaseWrite()
+  assert.deepEqual(await pending, {
+    classification: 'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED',
+    failureStage: 'SCHEDULER_RUNTIME',
+    failureDetailCode: 'UNCLASSIFIED_ERROR',
+    state: 'CAPTURE_FAILED',
+    version: 11,
+  })
+})
 
 test('keeps the existing server path inert when the scheduler is disabled or MCL config is missing', async () => {
   const disabled = loadPocChangeHistorySchedulerConfig({})

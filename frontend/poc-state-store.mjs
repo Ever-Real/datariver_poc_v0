@@ -6,6 +6,8 @@ import { URL } from 'node:url'
 import pg from 'pg'
 import { createClient } from 'redis'
 
+import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
+
 const { Pool } = pg
 
 const CHANGE_HISTORY_ACCESS_SCOPE = 'change-history-access-v1'
@@ -1936,13 +1938,27 @@ export function createPocStateStore({ databasePool } = {}) {
     const classification = command.state === 'READY'
       ? null
       : requireBoundedString(command.classification, 'classification', 160)
-    if (classification && !/^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/.test(classification)) {
+    if (classification && !isMclRuntimeClassification(classification)) {
       throw new Error('The POC change-history runtime classification is invalid.')
+    }
+    const failureStage = command.state === 'READY'
+      ? null
+      : requireBoundedString(command.failureStage, 'failureStage', 80)
+    const failureDetailCode = command.state === 'READY'
+      ? null
+      : requireBoundedString(command.failureDetailCode, 'failureDetailCode', 80)
+    if (failureStage && !/^[A-Z][A-Z0-9_]{0,79}$/.test(failureStage)) {
+      throw new Error('The POC change-history runtime failure stage is invalid.')
+    }
+    if (failureDetailCode && !/^[A-Z][A-Z0-9_]{0,79}$/.test(failureDetailCode)) {
+      throw new Error('The POC change-history runtime failure detail code is invalid.')
     }
     return write(CHANGE_HISTORY_RUNTIME_STATUS_SCOPE, {
       contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
       state: command.state,
       classification,
+      failure_stage: failureStage,
+      failure_detail_code: failureDetailCode,
       observed_at: explicitSchedulerTimestamp(command.observedAt, 'observedAt'),
     })
   }

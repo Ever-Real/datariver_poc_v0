@@ -315,7 +315,12 @@ test('fails safe on malformed supported MCL and on DB failure without advancing 
     schemaRegistry: valid.registry,
     clock: () => new Date('2026-08-14T01:00:00.000Z'),
   })
-  await assert.rejects(capture.run(), /simulated durable DB failure/)
+  await assert.rejects(capture.run(), (error) => (
+    error.code === 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED'
+    && error.mclStage === 'DURABLE_APPEND'
+    && error.mclDetailCode === 'LEDGER_WRITE_REJECTED'
+    && /simulated durable DB failure/.test(error.cause?.message || '')
+  ))
   assert.equal(store.checkpoints.get(0), 0)
   assert.equal(store.captures.length, 0)
 })
@@ -382,7 +387,8 @@ test('persists earliest retained fresh boundaries before consume and fails close
     kafka: retainedKafka,
     schemaRegistry: schemaRegistry(),
   }).run(), (error) => error.code === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED'
-    && /behind Kafka retention/.test(error.message))
+    && error.mclStage === 'RETENTION_CHECK'
+    && error.mclDetailCode === 'CHECKPOINT_BEHIND_LOW_WATERMARK')
   assert.equal(store.checkpoints.get(0), 100)
   assert.equal(retainedKafka.state.consumerCreates, 0)
 
@@ -395,7 +401,11 @@ test('persists earliest retained fresh boundaries before consume and fails close
     stateStore: store,
     kafka: changedKafka,
     schemaRegistry: schemaRegistry(),
-  }).run(), /partition topology change/)
+  }).run(), (error) => (
+    error.code === 'PREP_MCL_CAPTURE_BOUNDARY_PERSISTENCE_FAILED'
+    && error.mclStage === 'CAPTURE_BOUNDARY_PERSISTENCE'
+    && error.mclDetailCode === 'BOUNDARY_WRITE_REJECTED'
+  ))
   assert.equal(changedKafka.state.consumerCreates, 0)
 
   const missingStore = stateStoreDouble({ 0: 100, 1: 0 })
@@ -408,7 +418,11 @@ test('persists earliest retained fresh boundaries before consume and fails close
     stateStore: missingStore,
     kafka: missingKafka,
     schemaRegistry: schemaRegistry(),
-  }).run(), /partition topology change/)
+  }).run(), (error) => (
+    error.code === 'PREP_MCL_CAPTURE_BOUNDARY_PERSISTENCE_FAILED'
+    && error.mclStage === 'CAPTURE_BOUNDARY_PERSISTENCE'
+    && error.mclDetailCode === 'BOUNDARY_WRITE_REJECTED'
+  ))
   assert.equal(missingKafka.state.consumerCreates, 0)
 
   const failedStore = stateStoreDouble({}, { failBoundary: true })
@@ -421,7 +435,12 @@ test('persists earliest retained fresh boundaries before consume and fails close
     stateStore: failedStore,
     kafka: failedKafka,
     schemaRegistry: schemaRegistry(),
-  }).run(), /simulated durable boundary failure/)
+  }).run(), (error) => (
+    error.code === 'PREP_MCL_CAPTURE_BOUNDARY_PERSISTENCE_FAILED'
+    && error.mclStage === 'CAPTURE_BOUNDARY_PERSISTENCE'
+    && error.mclDetailCode === 'BOUNDARY_WRITE_REJECTED'
+    && /simulated durable boundary failure/.test(error.cause?.message || '')
+  ))
   assert.equal(failedStore.checkpoints.size, 0)
   assert.equal(failedKafka.state.consumerCreates, 0)
 })

@@ -181,22 +181,30 @@ test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
 
 test('PREP smoke distinguishes MCL runtime discovery, capture, and retention failures', async (context) => {
   const cases = [
-    ['DISCOVERY_FAILED', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED', 'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED'],
-    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_RUNTIME_UNEXPECTED_FAILED', 'PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED'],
-    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED', 'PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED'],
+    ['DISCOVERY_FAILED', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED', 'DISCOVERY_KAFKA_CLUSTER', 'CLUSTER_ID_UNAVAILABLE', 'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED'],
+    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED', 'DURABLE_APPEND', 'LEDGER_WRITE_REJECTED', 'PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED'],
+    ['CAPTURE_FAILED', 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED', 'RETENTION_CHECK', 'CHECKPOINT_BEHIND_LOW_WATERMARK', 'PREP_SMOKE_MCL_HISTORY_GAP_BLOCKED'],
   ]
-  for (const [captureState, productCode, expected] of cases) {
+  for (const [captureState, productCode, failureStage, failureDetailCode, expected] of cases) {
     await context.test(expected, async () => {
       const result = await fixture('deferred', {
         changeHistory: {
           capture_state: captureState,
           sync_status: captureState,
           capture_failure_classification: productCode,
+          capture_failure_stage: failureStage,
+          capture_failure_detail_code: failureDetailCode,
         },
       })
       assert.equal(result.completed.code, 2)
       assert.equal(result.failure.stage, 'MCL_INITIAL_CAPTURE')
       assert.equal(result.failure.classification, expected)
+      assert.deepEqual(result.failure.diagnostic, {
+        terminal: true,
+        product_classification: productCode,
+        failure_stage: failureStage,
+        failure_detail_code: failureDetailCode,
+      })
       assert.ok(result.failure.elapsed_ms < 5_000)
     })
   }

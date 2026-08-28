@@ -1,8 +1,42 @@
 /* global clearTimeout, process, setTimeout */
 
+import {
+  mclCaptureFailure,
+  mclRuntimeFailureDiagnostic,
+} from './poc-mcl-runtime-failure.mjs'
+
+export {
+  mclCaptureFailure,
+  mclRuntimeFailureDiagnostic,
+} from './poc-mcl-runtime-failure.mjs'
+
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_LOCK_NAME = 'datariver:poc:change-history-scheduler:v1'
 const MAX_TIMER_DELAY_MS = 2_147_000_000
+
+export async function persistMclRuntimeFailure({
+  stateStore,
+  error,
+  observedAt = new Date().toISOString(),
+  ...fallback
+} = {}) {
+  if (typeof stateStore?.writeChangeHistoryRuntimeStatus !== 'function') {
+    throw new Error('The durable MCL runtime status writer is unavailable.')
+  }
+  const diagnostic = mclRuntimeFailureDiagnostic(error, fallback)
+  const state = diagnostic.classification.startsWith('PREP_MCL_DISCOVERY_')
+    ? 'DISCOVERY_FAILED'
+    : 'CAPTURE_FAILED'
+  const version = await stateStore.writeChangeHistoryRuntimeStatus({
+    state,
+    ...diagnostic,
+    observedAt,
+  })
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new Error('The durable MCL runtime failure status was not verified.')
+  }
+  return { ...diagnostic, state, version }
+}
 
 export function loadPocChangeHistorySchedulerConfig(environment = process.env) {
   const requested = parseBoolean(environment.POC_CHANGE_HISTORY_SCHEDULER_ENABLED, false)
@@ -44,20 +78,23 @@ export function createPocChangeHistoryScheduler({
   let activeRun
 
   const recordCaptureState = async (state, capture, batchProcessedRecords = 0) => {
-    await onCaptureState({
-      state,
-      batchProcessedRecords,
-      observedAt: clock().toISOString(),
-      caughtUp: capture?.caughtUp === true,
-      sourceIdentityHash: capture?.sourceIdentityHash,
-    })
+    try {
+      await onCaptureState({
+        state,
+        batchProcessedRecords,
+        observedAt: clock().toISOString(),
+        caughtUp: capture?.caughtUp === true,
+        sourceIdentityHash: capture?.sourceIdentityHash,
+      })
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'CAPTURE_STATUS_PERSISTENCE',
+        detailCode: 'STATUS_WRITE_REJECTED',
+      })
+    }
   }
 
-  const execute = async (scheduledFor, trigger) => stateStore.runChangeHistoryScheduler({
-    lockName: config.lockName,
-    scheduledFor: scheduledFor.toISOString(),
-    trigger,
-  }, async () => {
+  const executeTask = async () => {
     let capture
     let schedulerComplete = true
     while (true) {
@@ -65,20 +102,34 @@ export function createPocChangeHistoryScheduler({
         capture = await captureMcl()
       } catch (error) {
         if (error?.code === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED') {
-          await recordCaptureState('HISTORY_GAP_BLOCKED', {
-            sourceIdentityHash: error.sourceIdentityHash,
-          })
+          try {
+            await recordCaptureState('HISTORY_GAP_BLOCKED', {
+              sourceIdentityHash: error.sourceIdentityHash,
+            })
+          } catch {
+            // Preserve the primary retention classification. The runtime failure
+            // writer remains the authoritative durable operator diagnostic.
+          }
         }
-        throw error
+        throw mclCaptureFailure(error, {
+          stage: 'CAPTURE_EXECUTION',
+          detailCode: 'UNCLASSIFIED_CAPTURE_ERROR',
+        })
       }
       if (capture?.bounded !== true || typeof capture?.caughtUp !== 'boolean'
         || !Array.isArray(capture?.partitions)) {
-        throw new Error('The bounded MCL capture returned an invalid catch-up contract.')
+        throw mclCaptureFailure(undefined, {
+          stage: 'CAPTURE_RESULT_VALIDATION',
+          detailCode: 'BOUNDED_RESULT_INVALID',
+        })
       }
       const batchProcessedRecords = capture.partitions.reduce((sum, partition) => {
         const processed = Number(partition?.processedRecords)
         if (!Number.isSafeInteger(processed) || processed < 0) {
-          throw new Error('The bounded MCL capture returned an invalid processed-record count.')
+          throw mclCaptureFailure(undefined, {
+            stage: 'CAPTURE_RESULT_VALIDATION',
+            detailCode: 'PROCESSED_RECORD_COUNT_INVALID',
+          })
         }
         return sum + processed
       }, 0)
@@ -88,7 +139,10 @@ export function createPocChangeHistoryScheduler({
         break
       }
       if (batchProcessedRecords === 0) {
-        throw new Error('The bounded MCL catch-up made no durable progress.')
+        throw mclCaptureFailure(undefined, {
+          stage: 'CAPTURE_PROGRESS_VALIDATION',
+          detailCode: 'NO_DURABLE_PROGRESS',
+        })
       }
       await recordCaptureState('CAPTURE_CATCHING_UP', capture, batchProcessedRecords)
       if (stopped) {
@@ -101,9 +155,32 @@ export function createPocChangeHistoryScheduler({
         break
       }
     }
-    const catalog = await reconcileCatalog()
+    let catalog
+    try {
+      catalog = await reconcileCatalog()
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'CATALOG_RECONCILIATION',
+        detailCode: 'CATALOG_REFRESH_REJECTED',
+      })
+    }
     return { capture, catalog, schedulerComplete }
-  })
+  }
+
+  const execute = async (scheduledFor, trigger) => {
+    try {
+      return await stateStore.runChangeHistoryScheduler({
+        lockName: config.lockName,
+        scheduledFor: scheduledFor.toISOString(),
+        trigger,
+      }, executeTask)
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'SCHEDULER_STATE',
+        detailCode: 'LOCK_OR_RECEIPT_REJECTED',
+      })
+    }
+  }
 
   const trigger = (options = {}) => {
     if (!config.enabled) return Promise.resolve({ status: 'disabled', reason: config.disabledReason })
@@ -130,7 +207,7 @@ export function createPocChangeHistoryScheduler({
         if (delay < next.getTime() - clock().getTime()) return scheduleNext()
         await trigger({ scheduledFor: next, trigger: 'scheduled' })
       } catch (error) {
-        onError(error)
+        await onError(error)
       } finally {
         scheduleNext()
       }

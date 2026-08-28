@@ -2323,6 +2323,68 @@ test('configured current source among two resolves operational status and preser
   }
 })
 
+test('change-history summary exposes only bounded durable MCL failure diagnostics', async () => {
+  const sourceHash = '9'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-runtime-failure-diagnostic')
+  const projection = makeChangeHistoryProjection({
+    sourceHashes: [sourceHash], configuredCheckpointHash: sourceHash,
+  })
+  projection.runtimeStatus = { version: 9, value: {
+    contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
+    state: 'CAPTURE_FAILED',
+    classification: 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED',
+    failure_stage: 'DURABLE_APPEND',
+    failure_detail_code: 'LEDGER_WRITE_REJECTED',
+    observed_at: '2026-08-28T01:02:03.000Z',
+  } }
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() {
+      return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
+    },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) {
+      assert.equal(scope, 'table-system-mappings-v1')
+      return { value: structuredClone(projection.mapping), version: 1 }
+    },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    process.env.POC_MCL_SOURCE_IDENTITY_HASH = sourceHash
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      const summary = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(summary.capture_state, 'CAPTURE_FAILED')
+      assert.equal(summary.capture_failure_classification, 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED')
+      assert.equal(summary.capture_failure_stage, 'DURABLE_APPEND')
+      assert.equal(summary.capture_failure_detail_code, 'LEDGER_WRITE_REJECTED')
+
+      delete projection.runtimeStatus.value.failure_stage
+      delete projection.runtimeStatus.value.failure_detail_code
+      const legacy = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(legacy.capture_state, 'CAPTURE_FAILED')
+      assert.equal(legacy.capture_failure_classification, 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED')
+      assert.equal(legacy.capture_failure_stage, null)
+      assert.equal(legacy.capture_failure_detail_code, null)
+
+      projection.runtimeStatus.value.failure_stage = 'secret=value'
+      projection.runtimeStatus.value.failure_detail_code = 'https://private.invalid/schema'
+      const sanitized = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(sanitized.capture_failure_stage, null)
+      assert.equal(sanitized.capture_failure_detail_code, null)
+      assert.equal(JSON.stringify(sanitized).includes('private.invalid'), false)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((error) => error ? reject(error) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
+
 test('missing or syntactically invalid configured source falls back to SOURCE_AMBIGUOUS with two stored sources', async () => {
   const sourceA = '9'.repeat(64)
   const sourceB = '8'.repeat(64)

@@ -40,6 +40,25 @@ function adminLoginClassification(body, status) {
   return 'PREP_SMOKE_ADMIN_LOGIN_FAILED'
 }
 
+function mclFailureDiagnostic(body) {
+  const productClassification = /^PREP_MCL_(DISCOVERY|CAPTURE)_[A-Z0-9_]+$/
+    .test(body?.capture_failure_classification || '')
+    ? body.capture_failure_classification
+    : null
+  const failureStage = /^[A-Z][A-Z0-9_]{0,79}$/.test(body?.capture_failure_stage || '')
+    ? body.capture_failure_stage
+    : null
+  const failureDetailCode = /^[A-Z][A-Z0-9_]{0,79}$/.test(body?.capture_failure_detail_code || '')
+    ? body.capture_failure_detail_code
+    : null
+  return {
+    terminal: true,
+    product_classification: productClassification,
+    failure_stage: failureStage,
+    failure_detail_code: failureDetailCode,
+  }
+}
+
 async function privateSecret(path) {
   const metadata = await lstat(path)
   if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0 || metadata.size > 1026) {
@@ -329,7 +348,7 @@ async function main() {
           'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED',
           'MCL runtime discovery failed after read-only provider preflight.',
           null,
-          { terminal: true },
+          mclFailureDiagnostic(changeHistory.body),
         )
       }
       if (changeHistory.body?.capture_state === 'CAPTURE_FAILED') {
@@ -342,7 +361,7 @@ async function main() {
             : 'PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED',
           'MCL runtime capture failed after read-only provider preflight.',
           null,
-          { terminal: true },
+          mclFailureDiagnostic(changeHistory.body),
         )
       }
       if (![

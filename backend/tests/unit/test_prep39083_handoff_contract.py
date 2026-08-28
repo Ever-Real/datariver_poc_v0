@@ -140,9 +140,10 @@ def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
     assert '"config_schema_version": "PREP39083_ENV_V5"' in source
 
 
-def test_product_image_contains_the_runtime_mcl_discovery_adapter() -> None:
+def test_product_image_contains_the_runtime_mcl_modules() -> None:
     dockerfile = (ROOT / "deploy" / "poc" / "Dockerfile.example").read_text(encoding="utf-8")
     assert "COPY frontend/poc-mcl-discovery.mjs ./poc-mcl-discovery.mjs" in dockerfile
+    assert "COPY frontend/poc-mcl-runtime-failure.mjs ./poc-mcl-runtime-failure.mjs" in dockerfile
 
 
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import { SchemaRegistry } from '@kafkajs/confluent-schema-registry'
 import SnappyCodec from 'kafkajs-snappy'
 import { createHash } from 'node:crypto'
 
+import { mclCaptureFailure } from './poc-mcl-runtime-failure.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
 const { CompressionCodecs, CompressionTypes, Kafka, logLevel } = KafkaJs
@@ -48,6 +49,13 @@ const STORAGE_CATEGORY_BY_ASPECT = {
   domains: 'DOMAIN',
   ownership: 'OWNERSHIP',
   status: 'LIFECYCLE',
+}
+async function captureStage(task, stage, detailCode) {
+  try {
+    return await task()
+  } catch (error) {
+    throw mclCaptureFailure(error, { stage, detailCode })
+  }
 }
 
 export function loadPocMclCaptureConfig(environment = process.env) {
@@ -227,64 +235,117 @@ function normalizeEntityLifecycle(record, assetUrn, detectedAt) {
 async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, clock }) {
   if (typeof stateStore?.initializeChangeHistoryCaptureBoundaries !== 'function'
     || typeof stateStore?.appendChangeHistoryCapture !== 'function') {
-    throw new Error('The durable POC change-history store is unavailable.')
+    throw mclCaptureFailure(undefined, {
+      stage: 'CAPTURE_INITIALIZATION', detailCode: 'DURABLE_STORE_UNAVAILABLE',
+    })
   }
-  const admin = kafka.admin()
+  let admin
+  try {
+    admin = kafka.admin()
+  } catch (error) {
+    throw mclCaptureFailure(error, {
+      stage: 'KAFKA_ADMIN_CONSTRUCTION', detailCode: 'ADMIN_CONSTRUCTION_REJECTED',
+    })
+  }
   let consumer
   let adminConnected = false
   let consumerConnected = false
-  try {
-    await admin.connect()
+  let primaryError
+  let cleanupFailure
+  let result
+  const executeCapture = async () => {
+    await captureStage(
+      () => admin.connect(),
+      'KAFKA_ADMIN_CONNECT',
+      'ADMIN_CONNECT_REJECTED',
+    )
     adminConnected = true
-    const offsets = await admin.fetchTopicOffsets(config.topic)
+    const offsets = await captureStage(
+      () => admin.fetchTopicOffsets(config.topic),
+      'KAFKA_WATERMARK_READ',
+      'TOPIC_OFFSETS_REJECTED',
+    )
     if (!Array.isArray(offsets) || offsets.length < 1) {
-      throw new Error('The configured MCL topic has no readable partition inventory.')
+      throw mclCaptureFailure(undefined, {
+        stage: 'KAFKA_WATERMARK_VALIDATION', detailCode: 'PARTITION_INVENTORY_EMPTY',
+      })
     }
-    const watermarks = offsets.map((offset) => {
-      const partition = nonnegativeInteger(offset.partition, 'partition')
-      const low = kafkaOffset(offset.low, 'low watermark')
-      const high = kafkaOffset(offset.high, 'high watermark')
-      if (high < low) throw new Error('The Kafka partition watermark range is invalid.')
-      return { partition, low, high }
-    }).sort((left, right) => left.partition - right.partition)
+    let watermarks
+    try {
+      watermarks = offsets.map((offset) => {
+        const partition = nonnegativeInteger(offset.partition, 'partition')
+        const low = kafkaOffset(offset.low, 'low watermark')
+        const high = kafkaOffset(offset.high, 'high watermark')
+        if (high < low) throw new Error('The Kafka partition watermark range is invalid.')
+        return { partition, low, high }
+      }).sort((left, right) => left.partition - right.partition)
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'KAFKA_WATERMARK_VALIDATION', detailCode: 'PARTITION_WATERMARK_INVALID',
+      })
+    }
     if (new Set(watermarks.map(({ partition }) => partition)).size !== watermarks.length) {
-      throw new Error('The configured MCL topic returned a duplicate partition inventory.')
+      throw mclCaptureFailure(undefined, {
+        stage: 'KAFKA_WATERMARK_VALIDATION', detailCode: 'PARTITION_INVENTORY_DUPLICATE',
+      })
     }
-    const checkpoints = await stateStore.initializeChangeHistoryCaptureBoundaries({
-      sourceIdentityHash: config.sourceIdentityHash,
-      providerName: config.providerName,
-      providerVersion: config.providerVersion,
-      schemaContractHash: config.schemaContractHash,
-      topicContract: config.topic,
-      // A new source begins at Kafka's earliest retained offset. Existing
-      // checkpoints are immutable here and are never reset by rediscovery.
-      partitions: watermarks.map(({ partition, low }) => ({ partition, boundary: low })),
-    })
+    const checkpoints = await captureStage(
+      () => stateStore.initializeChangeHistoryCaptureBoundaries({
+        sourceIdentityHash: config.sourceIdentityHash,
+        providerName: config.providerName,
+        providerVersion: config.providerVersion,
+        schemaContractHash: config.schemaContractHash,
+        topicContract: config.topic,
+        // A new source begins at Kafka's earliest retained offset. Existing
+        // checkpoints are immutable here and are never reset by rediscovery.
+        partitions: watermarks.map(({ partition, low }) => ({ partition, boundary: low })),
+      }),
+      'CAPTURE_BOUNDARY_PERSISTENCE',
+      'BOUNDARY_WRITE_REJECTED',
+    )
     if (!Array.isArray(checkpoints) || checkpoints.length !== watermarks.length) {
-      throw new Error('The durable MCL capture boundary inventory is invalid.')
+      throw mclCaptureFailure(undefined, {
+        stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_INVENTORY_INVALID',
+      })
     }
-    const checkpointByPartition = new Map(checkpoints.map((checkpoint) => [
-      nonnegativeInteger(checkpoint.partition, 'checkpoint partition'),
-      kafkaOffset(checkpoint.nextOffset, 'durable checkpoint'),
-    ]))
+    let checkpointByPartition
+    try {
+      checkpointByPartition = new Map(checkpoints.map((checkpoint) => [
+        nonnegativeInteger(checkpoint.partition, 'checkpoint partition'),
+        kafkaOffset(checkpoint.nextOffset, 'durable checkpoint'),
+      ]))
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_VALUE_INVALID',
+      })
+    }
     if (checkpointByPartition.size !== watermarks.length) {
-      throw new Error('The durable MCL capture boundary inventory is invalid.')
+      throw mclCaptureFailure(undefined, {
+        stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_PARTITION_DUPLICATE',
+      })
     }
     const targets = []
     let remainingBudget = config.maxMessages
     for (const { partition, low, high } of watermarks) {
       const resume = checkpointByPartition.get(partition)
-      if (resume === undefined) throw new Error('The durable MCL capture boundary inventory is invalid.')
+      if (resume === undefined) {
+        throw mclCaptureFailure(undefined, {
+          stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_PARTITION_MISSING',
+        })
+      }
       if (!Number.isSafeInteger(resume) || resume < low) {
         throw Object.assign(
-          new Error('The durable checkpoint is behind Kafka retention; capture stopped with a history gap.'),
-          {
-            code: 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED',
-            sourceIdentityHash: config.sourceIdentityHash,
-          },
+          mclCaptureFailure(undefined, {
+            stage: 'RETENTION_CHECK', detailCode: 'CHECKPOINT_BEHIND_LOW_WATERMARK',
+          }),
+          { sourceIdentityHash: config.sourceIdentityHash },
         )
       }
-      if (resume > high) throw new Error('The durable checkpoint is ahead of the captured Kafka high watermark.')
+      if (resume > high) {
+        throw mclCaptureFailure(undefined, {
+          stage: 'CHECKPOINT_VALIDATION', detailCode: 'CHECKPOINT_AHEAD_OF_HIGH_WATERMARK',
+        })
+      }
       const targetHigh = Math.min(high, resume + remainingBudget)
       remainingBudget -= targetHigh - resume
       targets.push({
@@ -296,15 +357,29 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       .map((target) => [target.partition, target]))
     if (pending.size === 0) return captureResult(config, targets)
 
-    consumer = kafka.consumer({
-      groupId: config.groupId,
-      allowAutoTopicCreation: false,
-      maxBytesPerPartition: config.maxRecordBytes,
-      maxBytes: Math.max(config.maxRecordBytes, config.maxRecordBytes * pending.size),
-    })
-    await consumer.connect()
+    try {
+      consumer = kafka.consumer({
+        groupId: config.groupId,
+        allowAutoTopicCreation: false,
+        maxBytesPerPartition: config.maxRecordBytes,
+        maxBytes: Math.max(config.maxRecordBytes, config.maxRecordBytes * pending.size),
+      })
+    } catch (error) {
+      throw mclCaptureFailure(error, {
+        stage: 'KAFKA_CONSUMER_CONSTRUCTION', detailCode: 'CONSUMER_CONSTRUCTION_REJECTED',
+      })
+    }
+    await captureStage(
+      () => consumer.connect(),
+      'KAFKA_CONSUMER_CONNECT',
+      'CONSUMER_CONNECT_REJECTED',
+    )
     consumerConnected = true
-    await consumer.subscribe({ topic: config.topic, fromBeginning: true })
+    await captureStage(
+      () => consumer.subscribe({ topic: config.topic, fromBeginning: true }),
+      'KAFKA_CONSUMER_SUBSCRIBE',
+      'CONSUMER_SUBSCRIBE_REJECTED',
+    )
 
     let resolveCompletion
     let rejectCompletion
@@ -313,64 +388,151 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       rejectCompletion = reject
     })
     const timer = setTimeout(() => {
-      rejectCompletion(new Error('The bounded MCL capture timed out before reaching its captured high watermark.'))
+      rejectCompletion(mclCaptureFailure(undefined, {
+        stage: 'CAPTURE_WAIT', detailCode: 'CAPTURE_HIGH_WATERMARK_TIMEOUT',
+      }))
     }, config.timeoutMs)
-    const removeGroupJoinListener = consumer.on(consumer.events.GROUP_JOIN, () => {
-      for (const target of pending.values()) {
-        consumer.seek({ topic: config.topic, partition: target.partition, offset: String(target.next) })
-      }
-    })
+    let removeGroupJoinListener
     try {
-      await consumer.run({
-        autoCommit: false,
-        partitionsConsumedConcurrently: pending.size,
-        eachMessage: async ({ partition, message }) => {
-          const target = pending.get(partition)
-          if (!target) return
-          try {
-            const offset = kafkaOffset(message.offset, 'message offset')
-            if (offset < target.next || offset >= target.high) return
-            if (offset !== target.next) throw new Error('The MCL partition has a non-contiguous offset gap.')
-            const decoded = await decodeConfluentMcl(message.value, schemaRegistry, config.maxRecordBytes)
-            const normalized = normalizeMclRecord(decoded, { detectedAt: clock().toISOString() })
-            const capture = await stateStore.appendChangeHistoryCapture({
-              sourceIdentityHash: config.sourceIdentityHash,
-              providerName: config.providerName,
-              providerVersion: config.providerVersion,
-              schemaContractHash: config.schemaContractHash,
-              topicContract: config.topic,
-              partition,
-              offset,
-              events: normalized.events.map(toPersistenceEvent),
-            })
-            if (capture.nextOffset !== offset + 1) {
-              throw new Error('The durable checkpoint did not advance to the expected offset.')
-            }
-            target.next = capture.nextOffset
-            target.processed += 1
-            target.ledgerEvents += capture.eventIdentities.length
-            if (target.next === target.high) {
-              pending.delete(partition)
-              consumer.pause([{ topic: config.topic, partitions: [partition] }])
-              if (pending.size === 0) resolveCompletion()
-            }
-          } catch (error) {
-            rejectCompletion(error)
-            throw error
+      removeGroupJoinListener = consumer.on(consumer.events.GROUP_JOIN, () => {
+        try {
+          for (const target of pending.values()) {
+            consumer.seek({ topic: config.topic, partition: target.partition, offset: String(target.next) })
           }
-        },
+        } catch (error) {
+          rejectCompletion(mclCaptureFailure(error, {
+            stage: 'KAFKA_CONSUMER_SEEK', detailCode: 'CONSUMER_SEEK_REJECTED',
+          }))
+        }
       })
+    } catch (error) {
+      clearTimeout(timer)
+      throw mclCaptureFailure(error, {
+        stage: 'KAFKA_CONSUMER_GROUP_LISTENER', detailCode: 'GROUP_LISTENER_REJECTED',
+      })
+    }
+    let innerCleanupFailure
+    try {
+      await captureStage(
+        () => consumer.run({
+          autoCommit: false,
+          partitionsConsumedConcurrently: pending.size,
+          eachMessage: async ({ partition, message }) => {
+            const target = pending.get(partition)
+            if (!target) return
+            try {
+              let offset
+              try {
+                offset = kafkaOffset(message.offset, 'message offset')
+                if (offset !== target.next && offset >= target.next && offset < target.high) {
+                  throw new Error('The MCL partition has a non-contiguous offset gap.')
+                }
+              } catch (error) {
+                throw mclCaptureFailure(error, {
+                  stage: 'MESSAGE_OFFSET_VALIDATION', detailCode: 'MESSAGE_OFFSET_INVALID',
+                })
+              }
+              if (offset < target.next || offset >= target.high) return
+              const decoded = await captureStage(
+                () => decodeConfluentMcl(message.value, schemaRegistry, config.maxRecordBytes),
+                'SCHEMA_DECODE',
+                'MCL_RECORD_DECODE_REJECTED',
+              )
+              const normalized = await captureStage(
+                () => normalizeMclRecord(decoded, { detectedAt: clock().toISOString() }),
+                'RECORD_NORMALIZATION',
+                'MCL_RECORD_NORMALIZATION_REJECTED',
+              )
+              const capture = await captureStage(
+                () => stateStore.appendChangeHistoryCapture({
+                  sourceIdentityHash: config.sourceIdentityHash,
+                  providerName: config.providerName,
+                  providerVersion: config.providerVersion,
+                  schemaContractHash: config.schemaContractHash,
+                  topicContract: config.topic,
+                  partition,
+                  offset,
+                  events: normalized.events.map(toPersistenceEvent),
+                }),
+                'DURABLE_APPEND',
+                'LEDGER_WRITE_REJECTED',
+              )
+              if (capture.nextOffset !== offset + 1 || !Array.isArray(capture.eventIdentities)) {
+                throw mclCaptureFailure(undefined, {
+                  stage: 'CHECKPOINT_VALIDATION', detailCode: 'CHECKPOINT_ADVANCE_INVALID',
+                })
+              }
+              target.next = capture.nextOffset
+              target.processed += 1
+              target.ledgerEvents += capture.eventIdentities.length
+              if (target.next === target.high) {
+                pending.delete(partition)
+                try {
+                  consumer.pause([{ topic: config.topic, partitions: [partition] }])
+                } catch (error) {
+                  throw mclCaptureFailure(error, {
+                    stage: 'KAFKA_CONSUMER_PAUSE', detailCode: 'CONSUMER_PAUSE_REJECTED',
+                  })
+                }
+                if (pending.size === 0) resolveCompletion()
+              }
+            } catch (error) {
+              rejectCompletion(error)
+              throw error
+            }
+          },
+        }),
+        'KAFKA_CONSUMER_RUN',
+        'CONSUMER_RUN_REJECTED',
+      )
       await completion
     } finally {
-      removeGroupJoinListener()
+      try {
+        removeGroupJoinListener()
+      } catch (error) {
+        innerCleanupFailure = mclCaptureFailure(error, {
+          stage: 'KAFKA_CONSUMER_CLEANUP', detailCode: 'GROUP_LISTENER_REMOVAL_REJECTED',
+        })
+      }
       clearTimeout(timer)
-      await consumer.stop()
+      try {
+        await consumer.stop()
+      } catch (error) {
+        innerCleanupFailure ||= mclCaptureFailure(error, {
+          stage: 'KAFKA_CONSUMER_CLEANUP', detailCode: 'CONSUMER_STOP_REJECTED',
+        })
+      }
     }
+    if (innerCleanupFailure) throw innerCleanupFailure
     return captureResult(config, targets)
-  } finally {
-    if (consumerConnected) await consumer.disconnect()
-    if (adminConnected) await admin.disconnect()
   }
+  try {
+    result = await executeCapture()
+  } catch (error) {
+    primaryError = error
+  } finally {
+    if (consumerConnected) {
+      try {
+        await consumer.disconnect()
+      } catch (error) {
+        cleanupFailure = mclCaptureFailure(error, {
+          stage: 'KAFKA_CONSUMER_CLEANUP', detailCode: 'CONSUMER_DISCONNECT_REJECTED',
+        })
+      }
+    }
+    if (adminConnected) {
+      try {
+        await admin.disconnect()
+      } catch (error) {
+        cleanupFailure ||= mclCaptureFailure(error, {
+          stage: 'KAFKA_ADMIN_CLEANUP', detailCode: 'ADMIN_DISCONNECT_REJECTED',
+        })
+      }
+    }
+  }
+  if (primaryError) throw primaryError
+  if (cleanupFailure) throw cleanupFailure
+  return result
 }
 
 function captureResult(config, targets) {
