@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -121,6 +122,9 @@ PRODUCTION_SOURCE_ROOTS = (
     ROOT / "infra" / "airflow" / "dags",
 )
 SOURCE_SUFFIXES = {".js", ".jsx", ".py", ".ts", ".tsx"}
+ACCEPTED_MIGRATION_CHECKSUM_MANIFEST = (
+    ROOT / "backend" / "alembic" / "accepted_migration_checksums.json"
+)
 
 
 def _yaml(path: Path) -> dict[str, Any]:
@@ -8250,6 +8254,60 @@ def verify_migration_fail_closed_integrity() -> None:
                 )
 
 
+def verify_accepted_migration_checksums() -> None:
+    manifest_path = ACCEPTED_MIGRATION_CHECKSUM_MANIFEST
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise AssertionError(
+            "accepted migration checksum manifest is missing or not a regular file"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise AssertionError("accepted migration checksum manifest schema is unsupported")
+    if manifest.get("algorithm") != "sha256":
+        raise AssertionError("accepted migration checksum manifest algorithm must be sha256")
+    accepted_through_revision = manifest.get("accepted_through_revision")
+    if not isinstance(accepted_through_revision, str) or not re.fullmatch(
+        r"[0-9a-f]{4,64}", accepted_through_revision
+    ):
+        raise AssertionError("accepted migration checksum manifest revision is invalid")
+    expected = manifest.get("files")
+    if not isinstance(expected, dict) or not expected:
+        raise AssertionError(
+            "accepted migration checksum manifest files must be a non-empty mapping"
+        )
+    if list(expected) != sorted(expected):
+        raise AssertionError("accepted migration checksum manifest files must be sorted")
+    if any(
+        not isinstance(filename, str)
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        for filename, digest in expected.items()
+    ):
+        raise AssertionError("accepted migration checksum manifest contains an invalid entry")
+
+    migration_root = ROOT / "backend" / "alembic" / "versions"
+    actual_paths = {
+        path.relative_to(migration_root).as_posix(): path
+        for path in migration_root.rglob("*.py")
+        if path.is_file() or path.is_symlink()
+    }
+    expected_names = set(expected)
+    actual_names = set(actual_paths)
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        unaccepted = sorted(actual_names - expected_names)
+        raise AssertionError(
+            f"accepted migration file inventory drifted: missing={missing}, unaccepted={unaccepted}"
+        )
+    for filename in sorted(expected):
+        path = actual_paths[filename]
+        if path.is_symlink() or not path.is_file():
+            raise AssertionError(f"accepted migration is not a regular file: {filename}")
+        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_digest != expected[filename]:
+            raise AssertionError(f"accepted migration checksum drifted: {filename}")
+
+
 def main() -> None:
     verify_compose()
     verify_datahub_mac_capacity_contract()
@@ -8278,6 +8336,7 @@ def main() -> None:
     verify_mac_level2_core_publication_contract()
     verify_domain_independent_knowledge_projection()
     verify_migration_fail_closed_integrity()
+    verify_accepted_migration_checksums()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
@@ -8285,7 +8344,7 @@ def main() -> None:
         "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
         "database roles, architecture, source integrity, tenant foreign keys, seed, "
-        "amd64 source readiness, migration fail-closed integrity, "
+        "amd64 source readiness, migration fail-closed integrity/checksums, "
         "domain-independent knowledge projection, documentation"
     )
 

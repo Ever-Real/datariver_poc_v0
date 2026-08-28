@@ -121,6 +121,10 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
   migration contract, Dockerfile drift, Vite chunk, browserless fallback, Timeline backfill,
   modular architecture, PREP/OPS acceptance.
 - Gate: G1/G2/G3/G4 모두 미승인. push/PREP/OPS mutation 없음.
+- POST-PREP: `MIGRATION_BASELINE_V2_AND_LEGACY_RETIREMENT` — PREP/OPS acceptance와 별도 승인
+  이후 cutover revision, supported historical revisions, fresh baseline, legacy retention 및
+  archive/removal 조건, checksum policy, oldest-supported upgrade, backup/rollback을 설계한다.
+  현재 PREP hotfix에서는 migration 삭제·재배치·baseline V2 구현을 하지 않는다.
 
 ## 승인 필요
 

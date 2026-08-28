@@ -70,6 +70,7 @@
 | 72 | [PREP39083 source build and acceptance](64_PREP39083_HANDOFF.md) | isolated 39083 Linux/amd64 source build, smoke, browser, acceptance and rollback commands | DEV-authored operator handoff; target gates open |
 | 73 | [PREP39083 to OPS image promotion](65_PREP_TO_OPS_PROMOTION.md) | exact tested-image export, checksum/manifest, no-build OPS import and rollback | DEV-authored operator handoff; target gates open |
 | 74 | [DEV → PREP39083 → OPS release cycle](66_RELEASE_CYCLE.md) | serial Product/Evidence, source, artifact and persistent-state authority | PREP handoff contract |
+| 75 | [Migration governance and accepted-history integrity](68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md) | immutable accepted revisions, checksum gate, bounded new-migration review and baseline-V2 backlog | Active fail-closed release contract |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
