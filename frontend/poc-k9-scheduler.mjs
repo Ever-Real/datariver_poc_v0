@@ -1,5 +1,7 @@
 /* global clearTimeout, process, setTimeout */
 
+import { K9_METADATA_FAILURE_DETAILS } from './poc-k9-metadata-collection.mjs'
+
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_REFRESH_MODE = 'DAILY'
 const DEFAULT_SCHEDULE_HOUR = 2
@@ -25,6 +27,7 @@ const supportedSourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_METADATA_FAILURE_DETAILS,
 ])
 const retryableSourceFailureDetails = new Set(['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'])
 const SOURCE_RETRY_DELAY_MS = 1_000

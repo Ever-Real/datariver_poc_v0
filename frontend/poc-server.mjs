@@ -53,6 +53,11 @@ import {
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
 import {
+  createK9MetadataCollector,
+  K9_METADATA_FAILURE_DETAILS,
+  normalizeDatahubTagReferences,
+} from './poc-k9-metadata-collection.mjs'
+import {
   createProviderTransport,
   joinProviderUrl,
   llmEndpoint,
@@ -2664,14 +2669,19 @@ function datasetIdentity(entity) {
 }
 
 function tagReferences(entity) {
-  return (entity.globalTags?.tags || []).flatMap((item) => {
-    const name = item.tag?.properties?.name || item.tag?.name
-    return name ? [{
-      urn: item.tag?.urn || null,
-      name,
-      description: item.tag?.properties?.description || '',
-    }] : []
-  })
+  return normalizeDatahubTagReferences(entity)
+}
+
+export function publicDatahubAsset(asset) {
+  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return asset
+  return {
+    ...asset,
+    tag_references: (asset.tag_references || []).map((reference) => ({
+      urn: reference.urn,
+      name: reference.name,
+      description: reference.description,
+    })),
+  }
 }
 
 function customPropertyReferences(properties) {
@@ -3636,7 +3646,7 @@ async function datahubCatalogSelection(searchParameters, principal, feature = 'c
       .filter((item) => !tableOnly || item.dataset_kind === 'TABLE')
       .filter((item) => !exactUrns.size || exactUrns.has(item.id))
       .filter((item) => assetMatches(item, searchParameters, fields))
-      .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
+      .map((item) => publicDatahubAsset({ ...item, matches: catalogMatchFragments(item, query, fields) }))
       .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
   } catch (error) {
     error.inventoryDiagnostic ||= boundedInventoryDiagnostic({
@@ -3799,7 +3809,7 @@ async function datahubTree(searchParameters, principal) {
         platform,
         database_name: databaseName,
         schema_name: schemaName,
-        asset,
+        asset: publicDatahubAsset(asset),
       }))
   } else {
     throw Object.assign(new Error('Unsupported DataHub hierarchy parent kind.'), { statusCode: 400 })
@@ -4262,13 +4272,13 @@ async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
   const fieldOffset = Math.max(0, Number.isInteger(requestedOffset) ? requestedOffset : 0)
   const fieldLimit = Math.min(100, Math.max(1, Number.isInteger(requestedLimit) ? requestedLimit : 100))
   const pageFields = fields.slice(fieldOffset, fieldOffset + fieldLimit)
-  return {
+  return publicDatahubAsset({
     ...asset,
     schema_fields: pageFields,
     schema_fields_offset: fieldOffset,
     schema_fields_limit: fieldLimit,
     schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
-  }
+  })
 }
 
 function knowledgeCatalogField(field) {
@@ -5206,7 +5216,7 @@ async function exactCatalogEvidence(question, limit = 3, principal) {
     const detail = await datahubAssetAll(asset.external_urn || asset.id)
     if (!canReadAsset(principal, detail, 'chat')) return null
     return {
-      ...detail,
+      ...publicDatahubAsset(detail),
       provider_description: detail.description,
       evidence_type: 'CATALOG_METADATA',
       extraction_method: 'DATAHUB_GMS_EXACT_ASSET',
@@ -5245,7 +5255,7 @@ async function rankedExactCatalogAssets(question, principal, feature = 'catalog'
   // identity fallback before considering semantic candidates.
   const inventory = await datahubInventory()
   for (const asset of principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory) {
-    candidates.set(asset.id, asset)
+    candidates.set(asset.id, publicDatahubAsset(asset))
   }
   ranked = rank([...candidates.values()])
   return ranked
@@ -5385,7 +5395,7 @@ async function datahubInventoryEvidence(question, principal) {
   }
   const listed = request.listRequested
     ? inventory.slice(0, request.requestedCount).map((asset) => ({
-        ...asset,
+        ...publicDatahubAsset(asset),
         provider_description: asset.description,
         description: catalogSummaryEvidence(asset),
         evidence_type: 'CATALOG_ASSET',
@@ -5604,7 +5614,7 @@ async function ensureCatalogEmbeddingIndex(
           sourceHash: item.sourceHash,
           sourceGeneration,
           contentText: item.contentText,
-          metadata: item.asset,
+          metadata: publicDatahubAsset(item.asset),
           embedding: vectors[index],
         })))
       }
@@ -5709,13 +5719,13 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
   scheduleCatalogEmbeddingRefresh()
   const visibleRanked = ranked.filter((candidate) => {
     const fallback = candidate.metadata && typeof candidate.metadata === 'object'
-      ? candidate.metadata
+      ? publicDatahubAsset(candidate.metadata)
       : { id: candidate.assetUrn, external_urn: candidate.assetUrn, name: candidate.assetUrn }
     return canReadAsset(principal, fallback, 'chat')
   }).slice(0, limit)
   return Promise.all(visibleRanked.map(async (candidate) => {
     const fallback = candidate.metadata && typeof candidate.metadata === 'object'
-      ? candidate.metadata
+      ? publicDatahubAsset(candidate.metadata)
       : { id: candidate.assetUrn, external_urn: candidate.assetUrn, name: candidate.assetUrn }
     if (summaryOnly) {
       return {
@@ -5732,7 +5742,7 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
       const detail = await datahubAssetAll(candidate.assetUrn)
       if (!canReadAsset(principal, detail, 'chat')) return null
       return {
-        ...detail,
+        ...publicDatahubAsset(detail),
         provider_description: detail.description,
         evidence_type: 'CATALOG_METADATA',
         extraction_method: 'DATAHUB_GMS_VECTOR_RESOLVED_DETAIL',
@@ -7756,6 +7766,7 @@ const k9SourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_METADATA_FAILURE_DETAILS,
 ])
 
 function managedK9SourceDiagnostic(errorMessage) {
@@ -11261,309 +11272,22 @@ export async function startPocServer({ stateStore } = {}) {
   }
 
   async function collectGlossaryInventorySeam(authorityPin, inventory) {
-    if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
-    const table_nodes = []
-    const column_nodes = []
-    const table_column_edges = []
-    const tags = new Map()
-    const domains = new Map()
-    const containers = new Map()
-    const platform_instances = new Map()
-    const table_tag_assignments = []
-    const column_tag_assignments = []
-    const table_domain_assignments = []
-    const table_container_assignments = []
-    const table_platform_instance_assignments = []
-    const metadataAssignmentSet = new Set()
-
-    const registerMetadataAssignment = (collection, sourceId, targetId) => {
-      const key = `${sourceId}->${targetId}`
-      if (metadataAssignmentSet.has(key)) return
-      metadataAssignmentSet.add(key)
-      collection.push({ source_id: sourceId, target_id: targetId })
-    }
-
-    const registerTag = (reference) => {
-      if (!reference?.urn || !reference?.name) return null
-      const existing = tags.get(reference.urn)
-      const value = {
-        urn: reference.urn,
-        name: reference.name,
-        description: reference.description || '',
-      }
-      if (existing && canonicalJson(existing) !== canonicalJson(value)) {
-        throw new Error('Conflicting DataHub Tag identity: ' + reference.urn)
-      }
-      tags.set(reference.urn, value)
-      return reference.urn
-    }
-
-    for (const item of inventory) {
-      const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
-      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
-      const tableId = `TABLE:${k9AssetUrn(item)}`
-      table_nodes.push({ id: tableId, classification, properties: k9MetadataProperties(item) })
-      for (const reference of item.tag_references || []) {
-        const tagId = registerTag(reference)
-        if (tagId) registerMetadataAssignment(table_tag_assignments, tableId, tagId)
-      }
-      if (item.domain_reference?.urn) {
-        domains.set(item.domain_reference.urn, item.domain_reference)
-        registerMetadataAssignment(table_domain_assignments, tableId, item.domain_reference.urn)
-      }
-      if (item.container_reference?.urn) {
-        containers.set(item.container_reference.urn, item.container_reference)
-        registerMetadataAssignment(table_container_assignments, tableId, item.container_reference.urn)
-      }
-      if (item.platform_instance_reference?.urn) {
-        platform_instances.set(item.platform_instance_reference.urn, item.platform_instance_reference)
-        registerMetadataAssignment(
-          table_platform_instance_assignments,
-          tableId,
-          item.platform_instance_reference.urn,
-        )
-      }
-      for (const field of datahubSchemaFields(item)) {
-        const columnId = `COLUMN:${k9AssetUrn(item)}:${field.fieldPath}`
-        column_nodes.push({ id: columnId, classification, properties: k9MetadataProperties(item, field) })
-        table_column_edges.push({ table_id: tableId, column_id: columnId })
-        for (const candidate of field.globalTags?.tags || []) {
-          const tag = candidate?.tag
-          const tagId = registerTag({
-            urn: tag?.urn,
-            name: tag?.properties?.name || tag?.name,
-            description: tag?.properties?.description || '',
-          })
-          if (tagId) registerMetadataAssignment(column_tag_assignments, columnId, tagId)
-        }
-      }
-    }
-    let nextScrollId = null
-    const seenScrollIds = new Set()
-    let fetchedTerms = 0
-    let pages = 0
-    const terms = []
-    const parent_nodes = []
-    const term_parent_edges = []
-    const node_parent_edges = []
-    const glossary_relationships = []
-    const table_assignments = []
-    const column_assignments = []
-    const termSet = new Set()
-    const nodeSet = new Set()
-    const assignmentSet = new Set()
-    const termParentEdgeSet = new Set()
-    const nodeParentEdgeSet = new Set()
-    const glossaryRelationshipSet = new Set()
-    const assignmentTotals = new Map()
-    const completeness_metadata = { fetched: 0, total: 0, per_assignment: {} }
-    let lastTotal = -1
-
-    const explicitOutgoingRelationships = async (entity) => {
-      const first = entity.outgoingRelationships
-      const total = Number(first?.total || 0)
-      if (!Number.isSafeInteger(total) || total < 0) throw new Error('Malformed glossary relationship total')
-      const relationships = [...(first?.relationships || [])]
-      let start = relationships.length
-      while (start < total) {
-        const data = await datahubRefreshGraphql(datahubEntityRelationshipsQuery, {
-          urn: entity.urn,
-          input: {
-            types: [], direction: 'OUTGOING', start, count: 100, includeSoftDelete: false,
-          },
-        }, serverBackgroundAbortController?.signal)
-        const page = data.entity?.relationships
-        if (!page || Number(page.total) !== total || Number(page.start) !== start) {
-          throw new Error('Glossary relationship pagination changed during collection')
-        }
-        const items = page.relationships || []
-        if (!items.length) throw new Error('Glossary relationship pagination ended before total')
-        relationships.push(...items)
-        start += items.length
-      }
-      if (relationships.length !== total) throw new Error('Glossary relationship completeness reconciliation failed')
-      return relationships
-    }
-
-    while (true) {
-      if (pages >= 10002) throw new Error('Exceeded glossary inventory page limit')
-      const data = await datahubRefreshGraphql(
-        datahubGlossaryQuery,
-        buildK9GlossaryScrollVariables(nextScrollId),
-        serverBackgroundAbortController?.signal,
-      )
-      pages++
-      const scroll = data.scrollAcrossEntities
-      if (!scroll || typeof scroll.total !== 'number') throw new Error('Malformed glossary response')
-      if (lastTotal !== -1 && scroll.total !== lastTotal) throw new Error('Truncation or mutation during glossary pagination')
-      lastTotal = scroll.total
-      const results = scroll.searchResults || []
-      if (results.length === 0 && fetchedTerms < scroll.total) throw new Error('Truncation or repeated cursor in glossary')
-      if (results.length === 0) break
-      for (const res of results) {
-        const entity = res.entity
-        if (entity.type === 'GLOSSARY_TERM') {
-          if (termSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
-          termSet.add(entity.urn)
-          const termInfo = entity.glossaryTermInfo || entity.properties || {}
-          terms.push({
-            urn: entity.urn,
-            name: termInfo.name || entity.properties?.name || '',
-            description: termInfo.description || entity.properties?.description || '',
-            term_source: termInfo.termSource || entity.properties?.termSource || null,
-            source_ref: termInfo.sourceRef || entity.properties?.sourceRef || null,
-            source_url: termInfo.sourceUrl || entity.properties?.sourceUrl || null,
-            custom_properties: customPropertyReferences(termInfo),
-            structured_properties: structuredPropertyReferences(entity.structuredProperties),
-            domain_reference: entity.domain?.domain?.urn ? {
-              urn: entity.domain.domain.urn,
-              name: entity.domain.domain.properties?.name || urnTail(entity.domain.domain.urn),
-              description: entity.domain.domain.properties?.description || '',
-            } : null,
-          })
-          const tableTotal = Number(entity.tableAssignments?.total)
-          const columnTotal = Number(entity.columnAssignments?.total)
-          if (!Number.isSafeInteger(tableTotal) || tableTotal < 0
-            || !Number.isSafeInteger(columnTotal) || columnTotal < 0) {
-            throw new Error('Malformed glossary assignment totals')
-          }
-          assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
-          for (const pn of entity.parentNodes?.nodes || []) {
-            const edgeKey = entity.urn + '->' + pn.urn
-            if (termParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical term-parent edge: ' + edgeKey)
-            termParentEdgeSet.add(edgeKey)
-            term_parent_edges.push({ term_urn: entity.urn, parent_urn: pn.urn })
-          }
-          for (const relationship of await explicitOutgoingRelationships(entity)) {
-            if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
-              || typeof relationship.entity?.urn !== 'string') continue
-            const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
-            if (glossaryRelationshipSet.has(relationKey)) continue
-            glossaryRelationshipSet.add(relationKey)
-            glossary_relationships.push({
-              source_urn: entity.urn,
-              target_urn: relationship.entity.urn,
-              source_type: entity.type,
-              target_type: relationship.entity.type,
-              relationship_type: relationship.type,
-            })
-          }
-        } else if (entity.type === 'GLOSSARY_NODE') {
-          if (nodeSet.has(entity.urn)) throw new Error('Duplicate canonical identity: ' + entity.urn)
-          nodeSet.add(entity.urn)
-          parent_nodes.push({
-            urn: entity.urn,
-            name: entity.properties?.name || '',
-            description: entity.properties?.description || '',
-            custom_properties: customPropertyReferences(entity.properties),
-            structured_properties: structuredPropertyReferences(entity.structuredProperties),
-          })
-          for (const pn of entity.parentNodes?.nodes || []) {
-            const edgeKey = entity.urn + '->' + pn.urn
-            if (nodeParentEdgeSet.has(edgeKey)) throw new Error('Duplicate canonical node-parent edge: ' + edgeKey)
-            nodeParentEdgeSet.add(edgeKey)
-            node_parent_edges.push({ child_urn: entity.urn, parent_urn: pn.urn })
-          }
-          for (const relationship of await explicitOutgoingRelationships(entity)) {
-            if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
-              || typeof relationship.entity?.urn !== 'string') continue
-            const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
-            if (glossaryRelationshipSet.has(relationKey)) continue
-            glossaryRelationshipSet.add(relationKey)
-            glossary_relationships.push({
-              source_urn: entity.urn,
-              target_urn: relationship.entity.urn,
-              source_type: entity.type,
-              target_type: relationship.entity.type,
-              relationship_type: relationship.type,
-            })
-          }
-        }
-      }
-      fetchedTerms += results.length
-      nextScrollId = scroll.nextScrollId || null
-      if (!nextScrollId && fetchedTerms < scroll.total) throw new Error('Missing scroll ID during glossary pagination')
-      if (nextScrollId) {
-        if (seenScrollIds.has(nextScrollId)) throw new Error('Repeated nonterminal scroll ID')
-        seenScrollIds.add(nextScrollId)
-      }
-      if (fetchedTerms >= scroll.total) {
-        if (nextScrollId) throw new Error('Nonterminal scroll ID at glossary completeness boundary')
-        break
-      }
-    }
-    completeness_metadata.fetched = fetchedTerms
-    completeness_metadata.total = lastTotal === -1 ? 0 : lastTotal
-    if (fetchedTerms !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Glossary completeness reconciliation failed')
-
-    const observedAssignmentTotals = new Map([...termSet].map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
-    const registerAssignment = (type, termUrn, item, field, classification) => {
-      if (!termSet.has(termUrn)) throw new Error('Inventory references an unknown glossary term: ' + termUrn)
-      observedAssignmentTotals.get(termUrn)[type] += 1
-      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) return
-      const assignId = type === 'TABLE'
-        ? 'TABLE:' + k9AssetUrn(item)
-        : 'COLUMN:' + k9AssetUrn(item) + ':' + field.fieldPath
-      const assignKey = assignId + '->' + termUrn
-      if (assignmentSet.has(assignKey)) throw new Error('Duplicate canonical assignment: ' + assignKey)
-      assignmentSet.add(assignKey)
-      const assignment = {
-        id: assignId,
-        term_urn: termUrn,
-        classification,
-        properties: k9MetadataProperties(item, field),
-      }
-      if (type === 'TABLE') table_assignments.push(assignment)
-      else column_assignments.push(assignment)
-    }
-
-    for (const item of inventory) {
-      const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
-      for (const term of item.glossary_terms || []) {
-        if (term?.urn) registerAssignment('TABLE', term.urn, item, null, classification)
-      }
-      for (const field of datahubSchemaFields(item)) {
-        for (const reference of field.glossaryTerms?.terms || []) {
-          if (reference.term?.urn) registerAssignment('COLUMN', reference.term.urn, item, field, classification)
-        }
-      }
-    }
-
-    for (const termUrn of termSet) {
-      const expected = assignmentTotals.get(termUrn)
-      const observed = observedAssignmentTotals.get(termUrn)
-      completeness_metadata.per_assignment[termUrn] = {
-        TABLE: { fetched: observed.TABLE, total: expected.TABLE },
-        COLUMN: { fetched: observed.COLUMN, total: expected.COLUMN },
-      }
-      if (observed.TABLE !== expected.TABLE || observed.COLUMN !== expected.COLUMN) {
-        throw new Error('Assignment completeness reconciliation failed for ' + termUrn)
-      }
-    }
-
-    return {
-      authority_pin: authorityPin,
-      completeness_metadata,
-      table_nodes,
-      column_nodes,
-      table_column_edges,
-      terms,
-      parent_nodes,
-      table_assignments,
-      column_assignments,
-      term_parent_edges,
-      node_parent_edges,
-      glossary_relationships,
-      tags: [...tags.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
-      domains: [...domains.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
-      containers: [...containers.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
-      platform_instances: [...platform_instances.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
-      table_tag_assignments,
-      column_tag_assignments,
-      table_domain_assignments,
-      table_container_assignments,
-      table_platform_instance_assignments,
-    }
+    const collectMetadata = createK9MetadataCollector({
+      refreshGraphql: datahubRefreshGraphql,
+      glossaryQuery: datahubGlossaryQuery,
+      relationshipsQuery: datahubEntityRelationshipsQuery,
+      buildScrollVariables: buildK9GlossaryScrollVariables,
+      schemaFields: datahubSchemaFields,
+      sourceClassification: k9SourceClassification,
+      assetUrn: k9AssetUrn,
+      metadataProperties: k9MetadataProperties,
+      customProperties: customPropertyReferences,
+      structuredProperties: structuredPropertyReferences,
+      tagNameSource: (reference) => reference?._k9_name_source,
+      urnTail,
+      signal: serverBackgroundAbortController?.signal,
+    })
+    return collectMetadata(authorityPin, inventory)
   }
 
   async function resolveLiveK9AuthCtx() {

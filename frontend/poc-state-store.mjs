@@ -7,6 +7,7 @@ import pg from 'pg'
 import { createClient } from 'redis'
 
 import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
+import { K9_METADATA_FAILURE_DETAILS } from './poc-k9-metadata-collection.mjs'
 
 const { Pool } = pg
 
@@ -49,6 +50,7 @@ const K9_SOURCE_FAILURE_DETAILS = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_METADATA_FAILURE_DETAILS,
 ])
 const PROTECTED_CORE_ACCESS_FIELDS = [
   'adminMemberships',

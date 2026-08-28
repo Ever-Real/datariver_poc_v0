@@ -65,6 +65,7 @@ COPY frontend/poc-mcl-discovery.mjs ./poc-mcl-discovery.mjs
 COPY frontend/poc-mcl-runtime-failure.mjs ./poc-mcl-runtime-failure.mjs
 COPY frontend/poc-k9-managed-graphs.mjs ./poc-k9-managed-graphs.mjs
 COPY frontend/poc-k9-scheduler.mjs ./poc-k9-scheduler.mjs
+COPY frontend/poc-k9-metadata-collection.mjs ./poc-k9-metadata-collection.mjs
 COPY frontend/poc-knowledge-k9-contracts.mjs ./poc-knowledge-k9-contracts.mjs
 COPY frontend/poc-assets/ ./poc-assets/
 

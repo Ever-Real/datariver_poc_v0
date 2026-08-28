@@ -243,7 +243,10 @@ function providerHandler(request, response) {
               browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'wafer_events' }] },
               domain: { domain: { urn: 'urn:li:domain:manufacturing' } },
               ownership: { owners: [{ owner: { urn: 'urn:li:corpuser:yield' } }] },
-              globalTags: { tags: [{ tag: { name: 'gold' } }, { tag: { name: 'credential' } }] },
+              globalTags: { tags: [
+                { tag: { urn: 'urn:li:tag:gold', name: 'gold' } },
+                { tag: { urn: 'urn:li:tag:credential', name: 'credential' } },
+              ] },
               glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:wafer', name: 'Wafer' } }] },
               schemaMetadata: { fields: [{ fieldPath: 'wafer_id' }] },
             } },
@@ -285,7 +288,7 @@ function providerHandler(request, response) {
           ] },
           domain: null,
           ownership: { owners: [] },
-          globalTags: { tags: [{ tag: { name: 'credential' } }] },
+          globalTags: { tags: [{ tag: { urn: 'urn:li:tag:credential', name: 'credential' } }] },
           glossaryTerms: { terms: [] },
           schemaMetadata: { fields: [
             {

@@ -140,7 +140,7 @@ test('managed K9 source failure exposes only bounded durable source diagnostics'
     schedule: '02:00 Asia/Seoul',
     managed_intent: 'metadata-lineage',
     latest_result: 'FAILURE',
-    latest_error_message: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=GRAPHQL.',
+    latest_error_message: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
     latest_completed_at: '2026-08-28T00:00:00.000Z',
     created_at: '2026-08-27T00:00:00.000Z',
     updated_at: '2026-08-28T00:00:00.000Z',
@@ -148,8 +148,29 @@ test('managed K9 source failure exposes only bounded durable source diagnostics'
 
   assert.equal(summary.last_error_code, 'K9_DATAHUB_SOURCE_FAILED')
   assert.equal(summary.failure_stage, 'METADATA_COLLECTION')
-  assert.equal(summary.failure_detail_code, 'GRAPHQL')
+  assert.equal(summary.failure_detail_code, 'TAG_IDENTITY_CONFLICT')
   assert.equal(JSON.stringify(summary).includes('urn:li:'), false)
+})
+
+test('public DataHub asset projection strips bounded internal K9 tag provenance', async () => {
+  const { publicDatahubAsset } = await import('./poc-server.mjs?k9-tag-provenance-boundary')
+  const asset = publicDatahubAsset({
+    id: 'bounded-test-asset',
+    tag_references: [{
+      urn: 'urn:li:tag:datariver_classification_internal',
+      name: 'CLASSIFICATION:INTERNAL',
+      description: 'Internal',
+      _k9_name_source: 'PROPERTIES',
+    }],
+  })
+
+  assert.deepEqual(asset.tag_references, [{
+    urn: 'urn:li:tag:datariver_classification_internal',
+    name: 'CLASSIFICATION:INTERNAL',
+    description: 'Internal',
+  }])
+  assert.equal(JSON.stringify(asset).includes('_k9_name_source'), false)
+  assert.equal(JSON.stringify(asset).includes('PROPERTIES'), false)
 })
 
 test('normalizes only controlled DataHub manual-metadata read-back fields', async () => {

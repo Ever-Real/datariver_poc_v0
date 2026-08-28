@@ -1188,19 +1188,19 @@ test('records K9 shared-stage failures atomically without changing active releas
   })
 
   await store.recordK9ManagedRefreshFailure(graphIds, 'K9_DATAHUB_SOURCE_FAILED', {
-    failureStage: 'INVENTORY',
-    failureDetailCode: 'HTTP_5XX',
+    failureStage: 'METADATA_COLLECTION',
+    failureDetailCode: 'TAG_IDENTITY_CONFLICT',
   })
 
   assert.deepEqual(inserted, [
     {
       graphId: graphIds[0],
-      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=INVENTORY; failure_detail_code=HTTP_5XX.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
       activePointer: null,
     },
     {
       graphId: graphIds[1],
-      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=INVENTORY; failure_detail_code=HTTP_5XX.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
       activePointer: 'k9_stage_existing_lkg',
     },
   ])

@@ -185,12 +185,12 @@ test('PREP smoke preserves bounded K9 source diagnostics without provider detail
       {
         graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
         semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
-        failure_stage: 'LINEAGE_COLLECTION', failure_detail_code: 'GRAPHQL',
+        failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'TAG_IDENTITY_CONFLICT',
       },
       {
         graph_type: 'METADATA_MASTER', status: 'FAILED', refresh_mode: 'DAILY',
         semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
-        failure_stage: 'LINEAGE_COLLECTION', failure_detail_code: 'GRAPHQL',
+        failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'TAG_IDENTITY_CONFLICT',
       },
     ],
   })
@@ -199,8 +199,8 @@ test('PREP smoke preserves bounded K9 source diagnostics without provider detail
   assert.deepEqual(result.failure.diagnostic, {
     terminal: true,
     product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
-    failure_stage: 'LINEAGE_COLLECTION',
-    failure_detail_code: 'GRAPHQL',
+    failure_stage: 'METADATA_COLLECTION',
+    failure_detail_code: 'TAG_IDENTITY_CONFLICT',
   })
 })
 

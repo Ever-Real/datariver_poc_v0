@@ -4,6 +4,7 @@ import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import process from 'node:process'
 
 import { prepGeneralSmokeClassification } from '../frontend/poc-llm-timeout.mjs'
+import { K9_METADATA_FAILURE_DETAILS } from '../frontend/poc-k9-metadata-collection.mjs'
 
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([
@@ -30,6 +31,7 @@ const k9SourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_METADATA_FAILURE_DETAILS,
 ])
 
 function argument(name, fallback = null) {

@@ -120,8 +120,17 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /function datasetAsset[\s\S]*?id: entity\.urn,[\s\S]*?external_urn: entity\.urn,[\s\S]*?classification/);
   assert.match(product, /async function datahubGlossary[\s\S]*?return \{\s*items: terms\.sort/);
   assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?Math\.min\(50,[\s\S]*?Math\.min\(100_000,[\s\S]*?page: \{ next_cursor:/);
-  assert.match(product, /collectGlossaryInventorySeam[\s\S]*?datahubGlossaryQuery,[\s\S]*?60_000/);
-  assert.match(product, /const inventory = await currentDatahubInventory\(\)[\s\S]*?triggerLineagePublish[\s\S]*?collectLineageInventorySeam\(liveAuth\.authorityPin, inventory\)[\s\S]*?triggerGlossaryPublish[\s\S]*?collectGlossaryInventorySeam\(liveAuth\.authorityPin, inventory\)/);
+  assert.match(product, /async function datahubRefreshGraphql[\s\S]*?datahubGraphql\(query, variables, 60_000, signal\)/);
+  assert.match(product, /collectGlossaryInventorySeam[\s\S]*?createK9MetadataCollector[\s\S]*?refreshGraphql: datahubRefreshGraphql,[\s\S]*?glossaryQuery: datahubGlossaryQuery/);
+  assert.match(product, /createPocK9RefreshTask\(\{[\s\S]*?currentInventory: currentDatahubInventory,[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?ensureSemanticIndex:/);
+});
+
+test('POC runtime image copies the bounded K9 metadata collector module', () => {
+  const dockerfile = readFileSync(new URL('../deploy/poc/Dockerfile.example', import.meta.url), 'utf8');
+  assert.match(
+    dockerfile,
+    /COPY frontend\/poc-k9-scheduler\.mjs \.\/poc-k9-scheduler\.mjs\nCOPY frontend\/poc-k9-metadata-collection\.mjs \.\/poc-k9-metadata-collection\.mjs\n/,
+  );
 });
 
 test('mapping contracts bind exact source and T-Box pins and preserve deterministic fail-closed semantics', () => {

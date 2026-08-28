@@ -269,6 +269,38 @@ test('K9 source metadata GraphQL failure retains its exact non-retryable substag
   assert.equal(dependencies.sourceRetryWait.mock.calls.length, 0)
 })
 
+test('K9 source metadata invariant persists only its bounded local detail and preserves LKG promotion order', async () => {
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({
+    collectMetadata: mock.fn(async () => {
+      throw Object.assign(new Error('raw urn:li:tag:private and provider body'), {
+        k9SourceFailureDetailCode: 'TAG_IDENTITY_CONFLICT',
+      })
+    }),
+  })
+
+  const result = await task()
+
+  assert.deepEqual(result, {
+    status: 'FAILURE',
+    reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failureCode: 'K9_DATAHUB_SOURCE_FAILED',
+    failureStage: 'METADATA_COLLECTION',
+    failureDetailCode: 'TAG_IDENTITY_CONFLICT',
+    lineage: undefined,
+    glossary: undefined,
+  })
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
+    'K9_DATAHUB_SOURCE_FAILED',
+    ['metadata-lineage', 'data-glossary'],
+    { failureStage: 'METADATA_COLLECTION', failureDetailCode: 'TAG_IDENTITY_CONFLICT' },
+  ])
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 0)
+  assert.equal(JSON.stringify(result).includes('urn:li:'), false)
+  assert.equal(JSON.stringify(managedGraphs.recordRefreshFailure.mock.calls).includes('provider body'), false)
+})
+
 test('K9 source runtime identity contract failure is deterministic and never retried', async () => {
   const { task, dependencies } = k9RefreshFixture({
     runtimeIdentity: mock.fn(async () => ({ commit: 'missing-version' })),
