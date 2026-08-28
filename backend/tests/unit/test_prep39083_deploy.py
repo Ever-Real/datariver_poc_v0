@@ -571,19 +571,22 @@ def _web_image_document(
     product_sha: str = "a" * 40,
     architecture: str = "amd64",
     manifest_digest: str | None = None,
+    descriptor_platform: bool = True,
 ) -> dict[str, object]:
     image = f"datariver-poc:{'a' * 40}"
     manifest_digest = manifest_digest or f"sha256:{'d' * 64}"
+    descriptor: dict[str, object] = {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": manifest_digest,
+    }
+    if descriptor_platform:
+        descriptor["platform"] = {"architecture": architecture, "os": "linux"}
     return {
         "Id": "sha256:bounded-test-image",
         "Os": "linux",
         "Architecture": architecture,
         "RepoTags": [image],
-        "Descriptor": {
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": manifest_digest,
-            "platform": {"architecture": architecture, "os": "linux"},
-        },
+        "Descriptor": descriptor,
         "Config": {
             "Env": ["POC_SERVER_PORT=8080"],
             "Labels": {"org.opencontainers.image.revision": product_sha},
@@ -710,6 +713,21 @@ def test_doctor_loads_exact_artifact_when_absent_and_reuses_valid_present_image(
         "--platform",
         "linux/amd64",
     ]
+
+
+def test_loaded_image_may_omit_descriptor_platform_after_archive_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _artifact_release(tmp_path, monkeypatch)
+    assert release.web_artifact is not None
+
+    deploy.inspect_web_image(
+        _web_image_document(descriptor_platform=False),
+        release.web_artifact.image_reference,
+        release.web_artifact,
+        doctor=False,
+    )
 
 
 @pytest.mark.parametrize(

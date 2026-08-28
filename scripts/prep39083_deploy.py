@@ -1587,7 +1587,10 @@ def inspect_web_image(
         not isinstance(descriptor, dict)
         or descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
         or descriptor.get("digest") != artifact.manifest_digest
-        or descriptor_platform != {"architecture": "amd64", "os": "linux"}
+        or (
+            descriptor_platform is not None
+            and descriptor_platform != {"architecture": "amd64", "os": "linux"}
+        )
     ):
         raise PrepError(
             "IMAGE_IDENTITY",
