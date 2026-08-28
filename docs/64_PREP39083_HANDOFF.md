@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  052d8867501bd6aaf3d75b9e9c7158a327c6a264
-Evidence de51aeb0719f9f15ff409a317b60a1c07cd24519
+Product  be74759b2eec0c61090feaeba9e110d66ab3e334
+Evidence 262617a881d27c56f4d3a0f96f5a9dfb1d9e56ae
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -90,7 +90,10 @@ values. Missing or mismatched artifacts fail closed; there is no build or pull f
 If no administrator exists, the same command prompts for username, hidden password and confirmation.
 If an administrator exists, it prompts only for that administrator's hidden smoke password. The
 password exists only in memory and one short-lived mode-0600 file and is never written to an env,
-Git, log or Evidence.
+Git, log or Evidence. On first installation only, the disposable bootstrap container runs as
+container root so it can read a root-operator-owned mode-0600 bind mount. This does not change the
+Web runtime user, add privilege, expose the Docker socket or add a host write mount. Existing-admin
+reconciliation does not elevate the container user or mount the password file.
 
 ## Environment ownership
 
@@ -148,12 +151,17 @@ identity.
 
 ## Current hotfix evidence
 
-The current release-contract evidence is
+The current hotfix evidence is
+[`docs/evidence/prep-root-operator-bootstrap-portability/README.md`](evidence/prep-root-operator-bootstrap-portability/README.md).
+It records the root-operated WSL `EACCES` reproduction, the bounded first-install-only bootstrap
+UID correction, focused and isolated Docker gates, and the exact promoted Product artifact. The
+target is a disposable TEST PC, not Actual PREP; this Handoff does not claim Actual PREP or OPS
+execution.
+
+The preceding release-contract evidence remains at
 [`docs/evidence/prep-exact-oci-artifact-promotion/README.md`](evidence/prep-exact-oci-artifact-promotion/README.md).
 It records the local-index versus registry-digest classification, approved archive transport,
-exact Product archive/checksum/child-manifest/config identity, fail-closed negative gates and a
-real remove→load→inspect proof. This Handoff changes no Product business logic and does not claim
-Actual PREP or OPS execution.
+fail-closed negative gates and the remove→load→inspect proof reused by this descendant.
 
 The preceding Product recovery narrative is
 [`docs/evidence/prep-k9-glossary-assignment-reconciliation/README.md`](evidence/prep-k9-glossary-assignment-reconciliation/README.md).
