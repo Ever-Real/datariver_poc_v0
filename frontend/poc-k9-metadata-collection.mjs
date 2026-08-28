@@ -340,8 +340,66 @@ function observationClassification(existing, incoming) {
   const existingDomain = existing?.domain_reference?.urn || null
   const incomingDomain = incoming?.domain_reference?.urn || null
   if (existing?.entity_type !== incoming?.entity_type
+    || (existing?.assignment_totals && incoming?.assignment_totals
+      && (existing.assignment_totals.TABLE !== incoming.assignment_totals.TABLE
+        || existing.assignment_totals.COLUMN !== incoming.assignment_totals.COLUMN))
     || (existingDomain && incomingDomain && existingDomain !== incomingDomain)) return 'CONTRADICTION'
   return 'COMPATIBLE_SPARSE_RICH'
+}
+
+function deterministicText(left, right) {
+  const candidates = [left, right].filter((value) => typeof value === 'string' && value.length > 0)
+  if (!candidates.length) return typeof left === 'string' ? left : (typeof right === 'string' ? right : '')
+  return candidates.sort((first, second) => (
+    second.length - first.length || first.localeCompare(second)
+  ))[0]
+}
+
+function deterministicAttributeMerge(left, right) {
+  if (left === null || left === undefined) return globalThis.structuredClone(right)
+  if (right === null || right === undefined) return globalThis.structuredClone(left)
+  if (typeof left === 'string' || typeof right === 'string') return deterministicText(left, right)
+  if (Array.isArray(left) && Array.isArray(right)) {
+    const byShape = new Map([...left, ...right].map((item) => [canonicalProfileJson(item), item]))
+    return [...byShape.entries()].sort(([first], [second]) => first.localeCompare(second))
+      .map(([, item]) => globalThis.structuredClone(item))
+  }
+  if (left && right && typeof left === 'object' && typeof right === 'object'
+    && !Array.isArray(left) && !Array.isArray(right)) {
+    return Object.fromEntries([...new Set([...Object.keys(left), ...Object.keys(right)])].sort()
+      .map((key) => [key, deterministicAttributeMerge(left[key], right[key])]))
+  }
+  if (Object.is(left, right)) return left
+  return canonicalProfileJson(left).localeCompare(canonicalProfileJson(right)) <= 0
+    ? globalThis.structuredClone(left)
+    : globalThis.structuredClone(right)
+}
+
+function mergeCompatibleObservation(existing, incoming) {
+  const classification = observationClassification(existing, incoming)
+  return {
+    classification,
+    value: classification === 'CONTRADICTION'
+      ? null
+      : deterministicAttributeMerge(existing, incoming),
+  }
+}
+
+function publicGlossaryObservation(value) {
+  const publicValue = { ...value }
+  delete publicValue.entity_type
+  delete publicValue.assignment_totals
+  return publicValue
+}
+
+function compareBy(...keys) {
+  return (left, right) => {
+    for (const key of keys) {
+      const comparison = String(left?.[key] ?? '').localeCompare(String(right?.[key] ?? ''))
+      if (comparison) return comparison
+    }
+    return 0
+  }
 }
 
 function observeIdentityResolution(profile, classification) {
@@ -481,6 +539,8 @@ export function createK9MetadataCollector({
     const nodeSet = new Set()
     const termObservations = new Map()
     const nodeObservations = new Map()
+    const termIndexes = new Map()
+    const nodeIndexes = new Map()
     const glossaryIdentityTypes = new Map()
     const assignmentSet = new Set()
     const termParentEdgeSet = new Set()
@@ -600,6 +660,11 @@ export function createK9MetadataCollector({
         glossaryIdentityTypes.set(entity.urn, entity.type)
         if (entity.type === 'GLOSSARY_TERM') {
           const termInfo = entity.glossaryTermInfo || entity.properties || {}
+          const tableTotal = entity.tableAssignments?.total
+          const columnTotal = entity.columnAssignments?.total
+          if (!nonNegativeSafeInteger(tableTotal) || !nonNegativeSafeInteger(columnTotal)) {
+            throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
+          }
           const termValue = {
             urn: entity.urn,
             name: termInfo.name || entity.properties?.name || '',
@@ -615,43 +680,43 @@ export function createK9MetadataCollector({
               description: entity.domain.domain.properties?.description || '',
             } : null,
           }
-          const termObservation = { ...termValue, entity_type: entity.type }
+          const termObservation = {
+            ...termValue,
+            entity_type: entity.type,
+            assignment_totals: { TABLE: tableTotal, COLUMN: columnTotal },
+          }
           if (termSet.has(entity.urn)) {
             profile.glossary_scroll.duplicate_term_observation_count += 1
-            identityFailure(
-              profile,
-              'DUPLICATE_TERM_IDENTITY',
-              observationClassification(termObservations.get(entity.urn), termObservation),
-              entity.urn,
-              termObservation,
-              pages,
-              fetchedTerms + resultIndex,
-            )
-          }
-          termSet.add(entity.urn)
-          termObservations.set(entity.urn, termObservation)
-          profile.glossary_scroll.unique_term_count = termSet.size
-          terms.push(termValue)
-          const tableTotal = entity.tableAssignments?.total
-          const columnTotal = entity.columnAssignments?.total
-          if (!nonNegativeSafeInteger(tableTotal) || !nonNegativeSafeInteger(columnTotal)) {
-            throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
-          }
-          profile.assignments.declared_table_assignment_total += tableTotal
-          profile.assignments.declared_column_assignment_total += columnTotal
-          assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
-          for (const parentNode of entity.parentNodes?.nodes || []) {
-            const edgeKey = `${entity.urn}->${parentNode.urn}`
-            if (termParentEdgeSet.has(edgeKey)) {
+            const merged = mergeCompatibleObservation(termObservations.get(entity.urn), termObservation)
+            if (merged.classification === 'CONTRADICTION') {
               identityFailure(
                 profile,
-                'DUPLICATE_TERM_PARENT_EDGE',
-                'EXACT_DUPLICATE',
-                edgeKey,
-                { source_type: entity.type, relationship_type: 'PARENT_NODE' },
+                'DUPLICATE_TERM_IDENTITY',
+                merged.classification,
+                entity.urn,
+                termObservation,
                 pages,
                 fetchedTerms + resultIndex,
               )
+            }
+            observeIdentityResolution(profile, merged.classification)
+            termObservations.set(entity.urn, merged.value)
+            terms[termIndexes.get(entity.urn)] = publicGlossaryObservation(merged.value)
+          } else {
+            termSet.add(entity.urn)
+            termObservations.set(entity.urn, termObservation)
+            termIndexes.set(entity.urn, terms.length)
+            profile.glossary_scroll.unique_term_count = termSet.size
+            terms.push(termValue)
+            profile.assignments.declared_table_assignment_total += tableTotal
+            profile.assignments.declared_column_assignment_total += columnTotal
+            assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
+          }
+          for (const parentNode of entity.parentNodes?.nodes || []) {
+            const edgeKey = `${entity.urn}->${parentNode.urn}`
+            if (termParentEdgeSet.has(edgeKey)) {
+              observeIdentityResolution(profile, 'EXACT_DUPLICATE')
+              continue
             }
             termParentEdgeSet.add(edgeKey)
             term_parent_edges.push({ term_urn: entity.urn, parent_urn: parentNode.urn })
@@ -698,32 +763,33 @@ export function createK9MetadataCollector({
           const nodeObservation = { ...nodeValue, entity_type: entity.type }
           if (nodeSet.has(entity.urn)) {
             profile.glossary_scroll.duplicate_node_observation_count += 1
-            identityFailure(
-              profile,
-              'DUPLICATE_NODE_IDENTITY',
-              observationClassification(nodeObservations.get(entity.urn), nodeObservation),
-              entity.urn,
-              nodeObservation,
-              pages,
-              fetchedTerms + resultIndex,
-            )
-          }
-          nodeSet.add(entity.urn)
-          nodeObservations.set(entity.urn, nodeObservation)
-          profile.glossary_scroll.unique_node_count = nodeSet.size
-          parent_nodes.push(nodeValue)
-          for (const parentNode of entity.parentNodes?.nodes || []) {
-            const edgeKey = `${entity.urn}->${parentNode.urn}`
-            if (nodeParentEdgeSet.has(edgeKey)) {
+            const merged = mergeCompatibleObservation(nodeObservations.get(entity.urn), nodeObservation)
+            if (merged.classification === 'CONTRADICTION') {
               identityFailure(
                 profile,
-                'DUPLICATE_NODE_PARENT_EDGE',
-                'EXACT_DUPLICATE',
-                edgeKey,
-                { source_type: entity.type, relationship_type: 'PARENT_NODE' },
+                'DUPLICATE_NODE_IDENTITY',
+                merged.classification,
+                entity.urn,
+                nodeObservation,
                 pages,
                 fetchedTerms + resultIndex,
               )
+            }
+            observeIdentityResolution(profile, merged.classification)
+            nodeObservations.set(entity.urn, merged.value)
+            parent_nodes[nodeIndexes.get(entity.urn)] = publicGlossaryObservation(merged.value)
+          } else {
+            nodeSet.add(entity.urn)
+            nodeObservations.set(entity.urn, nodeObservation)
+            nodeIndexes.set(entity.urn, parent_nodes.length)
+            profile.glossary_scroll.unique_node_count = nodeSet.size
+            parent_nodes.push(nodeValue)
+          }
+          for (const parentNode of entity.parentNodes?.nodes || []) {
+            const edgeKey = `${entity.urn}->${parentNode.urn}`
+            if (nodeParentEdgeSet.has(edgeKey)) {
+              observeIdentityResolution(profile, 'EXACT_DUPLICATE')
+              continue
             }
             nodeParentEdgeSet.add(edgeKey)
             node_parent_edges.push({ child_urn: entity.urn, parent_urn: parentNode.urn })
@@ -780,7 +846,8 @@ export function createK9MetadataCollector({
     profile.glossary_scroll.cursor_progression_status = 'COMPLETE'
     profile.glossary_scroll.completion_status = true
 
-    const observedAssignmentTotals = new Map([...termSet].map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
+    const observedAssignmentTotals = new Map([...termSet].sort()
+      .map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
     const registerAssignment = (type, termUrn, item, field, classification) => {
       if (type === 'TABLE') profile.assignments.observed_table_assignment_total += 1
       else profile.assignments.observed_column_assignment_total += 1
@@ -798,27 +865,18 @@ export function createK9MetadataCollector({
             : profile.assignments.observed_column_assignment_total,
         )
       }
-      observedAssignmentTotals.get(termUrn)[type] += 1
-      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) return
       const assignId = type === 'TABLE'
         ? `TABLE:${urnFor(item)}`
         : `COLUMN:${urnFor(item)}:${field.fieldPath}`
       const assignKey = `${assignId}->${termUrn}`
       if (assignmentSet.has(assignKey)) {
         profile.assignments.duplicate_assignment_observation_count += 1
-        identityFailure(
-          profile,
-          'DUPLICATE_ASSIGNMENT_IDENTITY',
-          'EXACT_DUPLICATE',
-          assignKey,
-          { assignment_type: type, term_in_snapshot: true },
-          pages,
-          type === 'TABLE'
-            ? profile.assignments.observed_table_assignment_total
-            : profile.assignments.observed_column_assignment_total,
-        )
+        observeIdentityResolution(profile, 'EXACT_DUPLICATE')
+        return
       }
       assignmentSet.add(assignKey)
+      observedAssignmentTotals.get(termUrn)[type] += 1
+      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) return
       const assignment = {
         id: assignId,
         term_urn: termUrn,
@@ -841,7 +899,7 @@ export function createK9MetadataCollector({
       }
     }
 
-    for (const termUrn of termSet) {
+    for (const termUrn of [...termSet].sort()) {
       const expected = assignmentTotals.get(termUrn)
       const observed = observedAssignmentTotals.get(termUrn)
       completeness_metadata.per_assignment[termUrn] = {
@@ -857,25 +915,27 @@ export function createK9MetadataCollector({
       authority_pin: authorityPin,
       source_profile: sanitizeK9MetadataSourceProfile(profile),
       completeness_metadata,
-      table_nodes,
-      column_nodes,
-      table_column_edges,
-      terms,
-      parent_nodes,
-      table_assignments,
-      column_assignments,
-      term_parent_edges,
-      node_parent_edges,
-      glossary_relationships,
+      table_nodes: table_nodes.sort(compareBy('id')),
+      column_nodes: column_nodes.sort(compareBy('id')),
+      table_column_edges: table_column_edges.sort(compareBy('table_id', 'column_id')),
+      terms: terms.sort(compareBy('urn')),
+      parent_nodes: parent_nodes.sort(compareBy('urn')),
+      table_assignments: table_assignments.sort(compareBy('id', 'term_urn')),
+      column_assignments: column_assignments.sort(compareBy('id', 'term_urn')),
+      term_parent_edges: term_parent_edges.sort(compareBy('term_urn', 'parent_urn')),
+      node_parent_edges: node_parent_edges.sort(compareBy('child_urn', 'parent_urn')),
+      glossary_relationships: glossary_relationships.sort(compareBy(
+        'source_urn', 'target_urn', 'relationship_type',
+      )),
       tags: [...tags.values()].map(publicTag).sort((left, right) => left.urn.localeCompare(right.urn)),
       domains: [...domains.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
       containers: [...containers.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
       platform_instances: [...platform_instances.values()].sort((left, right) => left.urn.localeCompare(right.urn)),
-      table_tag_assignments,
-      column_tag_assignments,
-      table_domain_assignments,
-      table_container_assignments,
-      table_platform_instance_assignments,
+      table_tag_assignments: table_tag_assignments.sort(compareBy('source_id', 'target_id')),
+      column_tag_assignments: column_tag_assignments.sort(compareBy('source_id', 'target_id')),
+      table_domain_assignments: table_domain_assignments.sort(compareBy('source_id', 'target_id')),
+      table_container_assignments: table_container_assignments.sort(compareBy('source_id', 'target_id')),
+      table_platform_instance_assignments: table_platform_instance_assignments.sort(compareBy('source_id', 'target_id')),
     }
     } catch (error) {
       if (!profile.glossary_scroll.completion_status) {

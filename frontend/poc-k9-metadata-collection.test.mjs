@@ -273,45 +273,61 @@ test('relationship count overshoot fails as GLOSSARY_RELATION_COUNT_MISMATCH', a
     'GLOSSARY_RELATION_COUNT_MISMATCH')
 })
 
-test('duplicate term, parent edge, assignment, and unknown term identities fail distinctly', async () => {
-  const duplicateTerm = fixture({ pages: [page([
+test('exact duplicate term, node, parent edge, and assignment observations dedupe idempotently', async () => {
+  const duplicateTerm = await fixture({ pages: [page([
     { entity: glossaryTerm() }, { entity: glossaryTerm() },
-  ])] }).collector
-  assert.equal(await failureDetail(duplicateTerm), 'DUPLICATE_TERM_IDENTITY')
+  ])] }).collector(authorityPin, [dataset('term-dedupe')])
+  assert.equal(duplicateTerm.terms.length, 1)
+  assert.equal(duplicateTerm.source_profile.glossary_scroll.duplicate_term_observation_count, 1)
+  assert.equal(duplicateTerm.source_profile.identity_resolution.exact_duplicate_observation_count, 1)
 
-  const duplicateNode = fixture({ pages: [page([
+  const duplicateNode = await fixture({ pages: [page([
     { entity: glossaryNode('duplicate') }, { entity: glossaryNode('duplicate') },
-  ])] }).collector
-  assert.equal(await failureDetail(duplicateNode), 'DUPLICATE_NODE_IDENTITY')
+  ])] }).collector(authorityPin, [dataset('node-dedupe')])
+  assert.equal(duplicateNode.parent_nodes.length, 1)
+  assert.equal(duplicateNode.source_profile.glossary_scroll.duplicate_node_observation_count, 1)
 
   const parent = { urn: 'urn:li:glossaryNode:parent' }
-  const duplicateParent = fixture({ pages: [page([{ entity: glossaryTerm({
+  const duplicateParent = await fixture({ pages: [page([{ entity: glossaryTerm({
     parentNodes: { nodes: [parent, parent] },
-  }) }])] }).collector
-  assert.equal(await failureDetail(duplicateParent), 'DUPLICATE_TERM_PARENT_EDGE')
+  }) }])] }).collector(authorityPin, [dataset('term-parent-dedupe')])
+  assert.equal(duplicateParent.term_parent_edges.length, 1)
+  assert.equal(duplicateParent.source_profile.identity_resolution.exact_duplicate_observation_count, 1)
 
-  const duplicateNodeParent = fixture({ pages: [page([{ entity: glossaryNode('child', {
+  const duplicateNodeParent = await fixture({ pages: [page([{ entity: glossaryNode('child', {
     parentNodes: { nodes: [parent, parent] },
-  }) }])] }).collector
-  assert.equal(await failureDetail(duplicateNodeParent), 'DUPLICATE_NODE_PARENT_EDGE')
+  }) }])] }).collector(authorityPin, [dataset('node-parent-dedupe')])
+  assert.equal(duplicateNodeParent.node_parent_edges.length, 1)
+  assert.equal(duplicateNodeParent.source_profile.identity_resolution.exact_duplicate_observation_count, 1)
 
   const duplicateAssignmentInventory = [dataset('duplicate-assignment', {
     glossary_terms: [{ urn: termUrn }, { urn: termUrn }],
   })]
-  const duplicateAssignment = fixture({ pages: [page([{ entity: glossaryTerm({
-    tableAssignments: { total: 2 },
-  }) }])] }).collector
-  assert.equal(await failureDetail(duplicateAssignment, duplicateAssignmentInventory), 'DUPLICATE_ASSIGNMENT_IDENTITY')
+  const duplicateAssignment = await fixture({ pages: [page([{ entity: glossaryTerm({
+    tableAssignments: { total: 1 },
+  }) }])] }).collector(authorityPin, duplicateAssignmentInventory)
+  assert.equal(duplicateAssignment.table_assignments.length, 1)
+  assert.equal(duplicateAssignment.source_profile.assignments.observed_table_assignment_total, 2)
+  assert.equal(duplicateAssignment.source_profile.assignments.duplicate_assignment_observation_count, 1)
+  assert.deepEqual(duplicateAssignment.completeness_metadata.per_assignment[termUrn].TABLE, {
+    fetched: 1, total: 1,
+  })
+})
 
+test('assignment to a Term outside the complete glossary snapshot remains a contradiction', async () => {
   const unknownTermInventory = [dataset('unknown', {
     glossary_terms: [{ urn: 'urn:li:glossaryTerm:unknown' }],
   })]
-  assert.equal(await failureDetail(fixture().collector, unknownTermInventory), 'ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT')
+  const failed = await failureRecord(fixture().collector, unknownTermInventory)
+  assert.equal(failed.detail, 'ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT')
+  assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
 })
 
-test('staged profiler reports only bounded counts and hashes at an exact duplicate term locus', async () => {
+test('staged profiler reports only bounded counts after exact duplicate term dedupe', async () => {
   const privateTerm = glossaryTerm({
     properties: { name: 'private-business-term', description: 'private-business-description' },
+    tableAssignments: { total: 1 },
+    columnAssignments: { total: 1 },
   })
   const inventory = [dataset('profile', {
     tag_references: [
@@ -325,14 +341,15 @@ test('staged profiler reports only bounded counts and hashes at an exact duplica
       glossaryTerms: { terms: [{ term: { urn: termUrn } }] },
     }],
   })]
-  const failed = await failureRecord(
-    fixture({ pages: [page([{ entity: privateTerm }, { entity: globalThis.structuredClone(privateTerm) }])] }).collector,
+  const result = await fixture({
+    pages: [page([{ entity: privateTerm }, { entity: globalThis.structuredClone(privateTerm) }])],
+  }).collector(
+    authorityPin,
     inventory,
     { sourceGeneration: 'a'.repeat(64) },
   )
-
-  assert.equal(failed.detail, 'DUPLICATE_TERM_IDENTITY')
-  assert.deepEqual(failed.profile.inventory, {
+  const profile = result.source_profile
+  assert.deepEqual(profile.inventory, {
     total_dataset_count: 1,
     table_count: 1,
     view_count: 0,
@@ -344,7 +361,7 @@ test('staged profiler reports only bounded counts and hashes at an exact duplica
     column_glossary_term_observation_count: 1,
     non_empty: true,
   })
-  assert.deepEqual(failed.profile.glossary_scroll, {
+  assert.deepEqual(profile.glossary_scroll, {
     provider_reported_total: 2,
     pages_fetched: 1,
     entities_fetched: 2,
@@ -352,15 +369,13 @@ test('staged profiler reports only bounded counts and hashes at an exact duplica
     unique_node_count: 0,
     duplicate_term_observation_count: 1,
     duplicate_node_observation_count: 0,
-    cursor_progression_status: 'FAILED',
-    completion_status: false,
+    cursor_progression_status: 'COMPLETE',
+    completion_status: true,
   })
-  assert.equal(failed.profile.relationships.glossary_entities_inspected, 1)
-  assert.equal(failed.profile.identity_resolution.failure.locus, 'DUPLICATE_TERM_IDENTITY')
-  assert.equal(failed.profile.identity_resolution.failure.classification, 'EXACT_DUPLICATE')
-  assert.match(failed.profile.identity_resolution.failure.identity_hash, /^[0-9a-f]{64}$/)
-  assert.match(failed.profile.identity_resolution.failure.shape_hash, /^[0-9a-f]{64}$/)
-  const serialized = JSON.stringify(failed.profile)
+  assert.equal(profile.relationships.glossary_entities_inspected, 2)
+  assert.equal(profile.identity_resolution.exact_duplicate_observation_count, 1)
+  assert.equal(profile.identity_resolution.failure, null)
+  const serialized = JSON.stringify(profile)
   for (const forbidden of [
     termUrn,
     'private-business-term',
@@ -373,11 +388,14 @@ test('staged profiler reports only bounded counts and hashes at an exact duplica
 test('profiler distinguishes compatible sparse-rich observations from structural contradiction', async () => {
   const sparse = glossaryTerm({ properties: { name: 'Shared', description: '' } })
   const rich = glossaryTerm({ properties: { name: 'Display Shared', description: 'Richer optional metadata' } })
-  const compatible = await failureRecord(fixture({ pages: [page([
+  const compatible = await fixture({ pages: [page([
     { entity: sparse }, { entity: rich },
-  ])] }).collector)
-  assert.equal(compatible.detail, 'DUPLICATE_TERM_IDENTITY')
-  assert.equal(compatible.profile.identity_resolution.failure.classification, 'COMPATIBLE_SPARSE_RICH')
+  ])] }).collector(authorityPin, [dataset('compatible')])
+  assert.equal(compatible.terms.length, 1)
+  assert.equal(compatible.terms[0].name, 'Display Shared')
+  assert.equal(compatible.terms[0].description, 'Richer optional metadata')
+  assert.equal(compatible.source_profile.identity_resolution.compatible_sparse_rich_observation_count, 1)
+  assert.equal(compatible.source_profile.identity_resolution.failure, null)
 
   const contradictory = await failureRecord(fixture({ pages: [page([
     { entity: glossaryTerm() },
@@ -385,6 +403,54 @@ test('profiler distinguishes compatible sparse-rich observations from structural
   ])] }).collector)
   assert.equal(contradictory.detail, 'RELATION_IDENTITY_CONFLICT')
   assert.equal(contradictory.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+})
+
+test('sparse-rich Term and Node merge is deterministic across observation order', async () => {
+  const sparseTerm = glossaryTerm({ properties: { name: 'Term', description: '' } })
+  const richTerm = glossaryTerm({ properties: { name: 'Display Term', description: 'Rich term description' } })
+  const sparseNode = glossaryNode('node', { properties: { name: 'Node', description: '' } })
+  const richNode = glossaryNode('node', { properties: { name: 'Display Node', description: 'Rich node description' } })
+  const collect = async (entities) => fixture({
+    pages: [page(entities.map((entity) => ({ entity })))],
+  }).collector(authorityPin, [dataset('order')], { sourceGeneration: 'd'.repeat(64) })
+
+  const forward = await collect([sparseTerm, richTerm, sparseNode, richNode])
+  const reverse = await collect([richNode, sparseNode, richTerm, sparseTerm])
+
+  assert.deepEqual(forward, reverse)
+  assert.deepEqual(forward.terms.map(({ name, description }) => ({ name, description })), [{
+    name: 'Display Term', description: 'Rich term description',
+  }])
+  assert.deepEqual(forward.parent_nodes.map(({ name, description }) => ({ name, description })), [{
+    name: 'Display Node', description: 'Rich node description',
+  }])
+  assert.equal(forward.source_profile.identity_resolution.compatible_sparse_rich_observation_count, 2)
+})
+
+test('same Term URN with mutually exclusive Domain identity remains fail closed', async () => {
+  const withDomain = (suffix) => glossaryTerm({
+    domain: { domain: {
+      urn: `urn:li:domain:${suffix}`,
+      properties: { name: suffix, description: '' },
+    } },
+  })
+  const failed = await failureRecord(fixture({ pages: [page([
+    { entity: withDomain('one') }, { entity: withDomain('two') },
+  ])] }).collector)
+  assert.equal(failed.detail, 'DUPLICATE_TERM_IDENTITY')
+  assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+})
+
+test('exact duplicate relationship identity dedupes with complete provider accounting', async () => {
+  const relationship = { type: 'RelatedTerms', entity: glossaryNode('target') }
+  const collected = await fixture({ pages: [page([{ entity: glossaryTerm({
+    outgoingRelationships: { total: 2, relationships: [relationship, globalThis.structuredClone(relationship)] },
+  }) }])] }).collector(authorityPin, [dataset('relationship-dedupe')])
+  assert.equal(collected.glossary_relationships.length, 1)
+  assert.equal(collected.source_profile.relationships.provider_relationship_total, 2)
+  assert.equal(collected.source_profile.relationships.relationships_fetched, 2)
+  assert.equal(collected.source_profile.relationships.duplicate_relationship_observations, 1)
+  assert.equal(collected.source_profile.identity_resolution.exact_duplicate_observation_count, 1)
 })
 
 test('relationship response identity mismatch has an exact contradiction locus', async () => {
