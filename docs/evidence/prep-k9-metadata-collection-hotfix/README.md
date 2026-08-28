@@ -98,10 +98,12 @@ secret, checkpoint, graph generation, ledger, or operator command was changed.
 
 ## Exact OCI and disposable descendant resume
 
-The exact Product image is `linux/amd64`, has OCI revision
-`9c960e28d10c5cd7fb748e745860d73c6ffeb2ae`, and image ID
+The exact Product image is `linux/amd64` and has OCI revision
+`9c960e28d10c5cd7fb748e745860d73c6ffeb2ae`. The pre-fixture exact build had image ID
 `sha256:ed6fe1194e56388ed6fcf2299a2832e1d1fbeca12d250ae110ee18eca7322510`.
-The runtime image imports the new K9 metadata module.
+The official fixture rebuilt the same exact Product through Buildx; the final inspected manifest ID
+is `sha256:09e6510df7afb666aaff6e79b86e76ea83f1c1dcc0de34898644abdf287eb7ee`, still
+`linux/amd64` with the same exact revision. The runtime image imports the new K9 metadata module.
 
 The unchanged official current-style `SMOKE_FAILED` descendant-resume fixture ran from prior
 Handoff `c517ff9e8db2fe92c525398affa893733241c80f` to the exact Product:
