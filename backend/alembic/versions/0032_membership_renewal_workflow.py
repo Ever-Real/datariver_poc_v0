@@ -10,6 +10,11 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0032"
 down_revision: str | Sequence[str] | None = "0031"
 branch_labels: str | Sequence[str] | None = None
@@ -51,6 +56,20 @@ _CANONICAL_CONSTRAINTS = (
 _CANONICAL_INDEXES = (
     "ix_membership_renewals_workspace_state_created",
     "uq_membership_renewals_pending_subject",
+)
+_CANONICAL_DEFINITION_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "d07b78ea13dd261a98b24e7fedb9d7242abf775d8b31e44654ed5b341ec2a603",
+    "6a745700c8eec3c71e97782e4a7e0d88bd3a3e76e0799c7dd5df8f26fd7d712d",
+    "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "true|true",
+)
+_CANONICAL_MEMBERSHIP_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "9c3d0b8dad566bedb30d78e6d0e7f0a9e4b1d516f0bd9e911bf40e27710e2354",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "c0854f58f2fd197a0297390551c355ad5a78ef5e8c32d1f7886697e90767dd47",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "true|true",
 )
 
 
@@ -145,6 +164,12 @@ def _is_canonical_schema() -> bool:
         and tuple(row["membership_column"])
         == ("access_expires_at|timestamp with time zone|timestamptz||YES",)
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(
+            op.get_bind(), "iam.membership_renewal_requests"
+        )
+        == _CANONICAL_DEFINITION_FINGERPRINT
+        and read_relation_definition_fingerprint_v1(op.get_bind(), "iam.workspace_memberships")
+        == _CANONICAL_MEMBERSHIP_FINGERPRINT
     )
 
 

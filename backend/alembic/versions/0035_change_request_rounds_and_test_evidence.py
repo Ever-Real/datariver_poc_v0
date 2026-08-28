@@ -11,6 +11,11 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0035"
 down_revision: str | Sequence[str] | None = "0034"
 branch_labels: str | Sequence[str] | None = None
@@ -83,6 +88,52 @@ _CANONICAL_TABLES = {
             "uq_change_test_runs_workspace_id_change_request_id_round_id_id",
         ),
         ("ix_change_test_runs_round_system",),
+    ),
+}
+_CANONICAL_DEFINITION_FINGERPRINTS = {
+    "governance.change_request_rounds": RelationDefinitionFingerprintV1(
+        "610dd638c64d3333acb75f04e80130eb8b1be4b485dd0009de43af4c01cac266",
+        "0b4880fb89e98d13499496e5697d6fa84c08bbbef9d8f2b150e67f7ef9bf8ce1",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
+    ),
+    "governance.change_test_runs": RelationDefinitionFingerprintV1(
+        "347bb8063b5c543949469ecaf6fb8c0b8ebd9cab3411d294981490fc76b0c8f3",
+        "bb6bf30b9b17c0cd1ab290de92f35c506ac5fa508601a982ec677faf4aa617cc",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
+    ),
+}
+_CANONICAL_ASSOCIATED_FINGERPRINTS = {
+    "governance.change_requests": RelationDefinitionFingerprintV1(
+        "40c3f4d00f7aa6398cfda9757bdb82a130c5510886bbd152b62bf02e9263e51d",
+        "d5e199b5152f00e11b1459aa29b80f35009ae58c89910143d7a71d0e100e0681",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
+    ),
+    "governance.approvals": RelationDefinitionFingerprintV1(
+        "70e8dca42ff455fcd28e06cfafb8093ab0176d0c8d654e540ac5d10c2391b10f",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
+    ),
+    "governance.state_transitions": RelationDefinitionFingerprintV1(
+        "05407dcda1d8253436be60c4ecceaf0fa160258ecaca731be7439a9fd9e96732",
+        "2eb065b7bd552c396fbd7f67f9037517886bd5c2a0ec5e6e8010a4ffdf14b8ac",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
+    ),
+    "governance.change_request_attachments": RelationDefinitionFingerprintV1(
+        "8b1a58645fc9d78d2df7405a84c1015c1213cb55070653aa57fd315cb514d4aa",
+        "f6ea65b5bb8859e3bde28589ff49b6f12afed0d3a2eadd0707f9c923e1d99361",
+        "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "true|true",
     ),
 }
 
@@ -178,6 +229,8 @@ def _table_contract_is_exact(
         and tuple(row["indexes"]) == expected_indexes
         and tuple(row["policies"]) == ("workspace_isolation",)
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(op.get_bind(), relation)
+        == _CANONICAL_DEFINITION_FINGERPRINTS[relation]
     )
 
 
@@ -212,13 +265,18 @@ def _is_canonical_schema() -> bool:
         .scalars()
         .all()
     )
-    return associated_columns == (
+    if associated_columns != (
         "approvals.round_id|uuid|uuid||NO",
         "change_request_attachments.round_id|uuid|uuid||NO",
         "change_requests.current_round_id|uuid|uuid||NO",
         "change_requests.current_round_number|integer|int4||NO",
         "change_requests.requester_department_id|uuid|uuid||YES",
         "state_transitions.round_id|uuid|uuid||NO",
+    ):
+        return False
+    return all(
+        read_relation_definition_fingerprint_v1(op.get_bind(), relation) == expected
+        for relation, expected in _CANONICAL_ASSOCIATED_FINGERPRINTS.items()
     )
 
 

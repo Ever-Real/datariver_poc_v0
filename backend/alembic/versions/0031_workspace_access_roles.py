@@ -11,6 +11,11 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0031"
 down_revision: str | Sequence[str] | None = "0030"
 branch_labels: str | Sequence[str] | None = None
@@ -63,6 +68,13 @@ _CANONICAL_POLICIES = (
     "access_roles_human_insert",
     "access_roles_human_update",
     "access_roles_workspace_select",
+)
+_CANONICAL_DEFINITION_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "2a23e8b1a31b52bcc892030c43b87f224faa77650a152f498e308ea56fdd2a89",
+    "3cd86bc755256aadff2f04fb6321e66eda0a52718531604b70eb5a37e450510f",
+    "78d920342e71ff558b061afc48b7fd8cc252b2f2d0ec19dc93811b40a4fa89d1",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "true|true",
 )
 
 
@@ -145,6 +157,8 @@ def _is_canonical_schema() -> bool:
         and tuple(row["indexes"]) == _CANONICAL_INDEXES
         and tuple(row["policies"]) == _CANONICAL_POLICIES
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(op.get_bind(), "iam.access_roles")
+        == _CANONICAL_DEFINITION_FINGERPRINT
     )
 
 

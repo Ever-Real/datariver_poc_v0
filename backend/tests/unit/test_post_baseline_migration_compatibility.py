@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Callable
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Never, cast
 
 import pytest
@@ -360,7 +360,7 @@ def test_0092_editable_change_request_revision_migration_is_additive_and_fail_cl
     assert '"ordinal >= 0"' in source
 
 
-def test_0092_canonical_reentry_only_reasserts_current_contract(
+def test_0092_classifier_reentry_reasserts_contract_below_quarantined_shortcut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_migration("0092_change_request_editable_revisions.py")
@@ -369,7 +369,13 @@ def test_0092_canonical_reentry_only_reasserts_current_contract(
     monkeypatch.setattr(module, "_schema_state", lambda: "CURRENT")
     monkeypatch.setattr(module, "_assert_current_contract", lambda: calls.append("assert"))
     monkeypatch.setattr(module, "_install_security_contract", lambda: calls.append("grants"))
+    monkeypatch.setattr(module.op, "get_bind", lambda: object())
     monkeypatch.setattr(module.op, "execute", lambda sql: calls.append(str(sql)))
+    monkeypatch.setattr(
+        module.sa,
+        "inspect",
+        lambda _bind: SimpleNamespace(has_table=lambda *_args, **_kwargs: False),
+    )
 
     module.upgrade()
 

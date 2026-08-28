@@ -9,6 +9,10 @@ from typing import Never, cast
 
 import pytest
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RELATION_DEFINITION_FINGERPRINT_SQL_V1,
+)
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -59,6 +63,27 @@ class _LegacyCreateProbe:
 
 class _LegacyPathEntered(Exception):
     pass
+
+
+class _MappingResult:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+
+    def mappings(self) -> _MappingResult:
+        return self
+
+    def one(self) -> dict[str, object]:
+        return self._row
+
+
+class _SequentialDefinitionBind:
+    def __init__(self, *rows: dict[str, object]) -> None:
+        self._rows = list(rows)
+
+    def execute(self, *_args: object, **_kwargs: object) -> _MappingResult:
+        if not self._rows:
+            raise AssertionError("unexpected fingerprint fixture query")
+        return _MappingResult(self._rows.pop(0))
 
 
 def test_0011_fresh_canonical_and_malformed_states_are_distinct(
@@ -218,6 +243,66 @@ def test_explicit_compatibility_manifests_match_squashed_0001_columns() -> None:
         module = _load_migration(filename)
         for table_name, expected in module._CANONICAL_TABLES.items():
             assert set(expected[0]) == set(canonical[f"{schema_name}.{table_name}"])
+
+
+def test_definition_fingerprint_v1_normalizes_security_and_integrity_definitions() -> None:
+    source = str(RELATION_DEFINITION_FINGERPRINT_SQL_V1)
+    for required_fragment in (
+        "pg_get_constraintdef",
+        "pg_get_indexdef",
+        "indisunique",
+        "indpred",
+        "polpermissive",
+        "polcmd",
+        "polroles",
+        "polqual",
+        "polwithcheck",
+        "pg_get_triggerdef",
+        "tgenabled",
+        "tgfoid::regprocedure",
+        "relrowsecurity",
+        "relforcerowsecurity",
+        "[[:space:]]+",
+    ):
+        assert required_fragment in source
+
+
+@pytest.mark.parametrize(
+    "malformed_field",
+    ("constraints", "indexes", "policies", "triggers", "rls"),
+)
+def test_0037_same_name_wrong_definition_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    malformed_field: str,
+) -> None:
+    module = _load_migration("0037_knowledge_source_graphrag_projection.py")
+    relation = "knowledge.source_snapshots"
+    expected_columns, expected_constraints, expected_indexes, expected_triggers = (
+        module._CANONICAL_TABLES["source_snapshots"]
+    )
+    expected_fingerprint = module._CANONICAL_DEFINITION_FINGERPRINTS[relation]
+    malformed_value = "false|true" if malformed_field == "rls" else "0" * 64
+    malformed_fingerprint = expected_fingerprint._replace(**{malformed_field: malformed_value})
+    bind = _SequentialDefinitionBind(
+        {
+            "columns": expected_columns,
+            "constraints": expected_constraints,
+            "indexes": expected_indexes,
+            "policies": module._CANONICAL_POLICIES[relation],
+            "triggers": expected_triggers,
+            "force_rls": True,
+        },
+        malformed_fingerprint._asdict(),
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: bind)
+
+    assert not module._table_contract_is_exact(
+        "source_snapshots",
+        expected_columns,
+        expected_constraints,
+        expected_indexes,
+        expected_triggers,
+    )
 
 
 def _static_fixture(tmp_path: Path) -> tuple[Path, Path]:

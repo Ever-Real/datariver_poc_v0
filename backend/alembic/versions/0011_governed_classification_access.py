@@ -12,6 +12,11 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0011"
 down_revision: str | Sequence[str] | None = "0010"
 branch_labels: str | Sequence[str] | None = None
@@ -270,6 +275,60 @@ _CANONICAL_TABLES = {
     ),
 }
 
+_EMPTY_DEFINITION_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+_WORKSPACE_POLICY_SHA256 = "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86"
+_CANONICAL_DEFINITION_FINGERPRINTS = {
+    "authz.classification_access_generations": RelationDefinitionFingerprintV1(
+        "d11275dae85c018293f58c275a65fef0d37807c018ee629f91df1b8ca54fb072",
+        _EMPTY_DEFINITION_SHA256,
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "integration.inference_provider_generations": RelationDefinitionFingerprintV1(
+        "6df6a29a3bab2669d588f2d0940cfa9a4370fc99223f5d69abe2d6f02f322efe",
+        _EMPTY_DEFINITION_SHA256,
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "authz.classification_access_policy_versions": RelationDefinitionFingerprintV1(
+        "8429181b04e4043c0d502cb98da3b6eba17d45ba04b3f86406d7e8e36e10632f",
+        "f95396785d3371c3225bdb24953fc8f42abebd64caa463c1869d85272b2e71fc",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "integration.inference_provider_profile_versions": RelationDefinitionFingerprintV1(
+        "c774bd1779602195e803c0c699a7626484f3ecab5c2c639c93389c762bc6dd73",
+        "fe0e66a81ae4adae60a8e5eb0a307cb5c5368065bbe50557b54b8c717f196a7c",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "authz.classification_access_policy_rules": RelationDefinitionFingerprintV1(
+        "014c6fe4ba4dffb8da7f0a9fe5bfd4d375dc3ee539569066bd62af894d079a33",
+        "068aca09e5c425942b736c54d97f20bd8e28c4c2df7c15928ae16da824c1516b",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "authz.restricted_search_grants": RelationDefinitionFingerprintV1(
+        "cbad437130ef76e240449a39af4e3b73e4970a7c1cbae01a14db5b03a13929f8",
+        "c71b9a2051e1f5dca1b945d3461ab3b7560d29612b6e7cca1ee631d850f146b5",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+    "authz.restricted_search_grant_events": RelationDefinitionFingerprintV1(
+        "98a26ad6a930af2bbc46f945ce0888166d20bed82978b64b345c38d71d3f8f67",
+        "b4a9a73c43c469f8c179898a8e0bb1a73415502d827efb5974094f5771ede1b6",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+}
+
 
 def _existing_object_count() -> int:
     return int(
@@ -358,6 +417,8 @@ def _table_contract_is_exact(
         and tuple(row["indexes"]) == expected_indexes
         and tuple(row["policies"]) == ("workspace_isolation",)
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(op.get_bind(), relation)
+        == _CANONICAL_DEFINITION_FINGERPRINTS[relation]
     )
 
 

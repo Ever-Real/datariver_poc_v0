@@ -11,6 +11,11 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0037"
 down_revision: str | Sequence[str] | None = "0036"
 branch_labels: str | Sequence[str] | None = None
@@ -165,6 +170,62 @@ _CANONICAL_TABLES = {
         (),
     ),
 }
+_WORKSPACE_POLICY_SHA256 = "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86"
+_EMPTY_DEFINITION_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+_CANONICAL_POLICIES = {
+    "knowledge.source_snapshots": (
+        "knowledge_worker_current_source",
+        "workspace_isolation",
+    ),
+    "knowledge.source_pages": ("workspace_isolation",),
+    "knowledge.source_page_embeddings": ("workspace_isolation",),
+    "knowledge.extraction_runs": ("workspace_isolation",),
+    "knowledge.graphrag_audits": ("workspace_isolation",),
+}
+_CANONICAL_DEFINITION_FINGERPRINTS = {
+    "knowledge.source_snapshots": RelationDefinitionFingerprintV1(
+        "7c9b3d7dbaafe2fa800dad73da58e5e1b23905c97a5e9db01446cff44562e274",
+        "dec7ac0314d71de691a89f3ffa011444446e161bd768980a304f6b43e819b9ac",
+        "c721fec877c6a82e6cdb3c71505db022143a4fcea6a0b5e7ea724b1b3fccb5ce",
+        "7a90ac0585ef83dcd3a507ed394b69f67134add10874e8e0769b957f8d9e2f00",
+        "true|true",
+    ),
+    "knowledge.source_pages": RelationDefinitionFingerprintV1(
+        "903e9b110bee8930c2c93b2152bdcd327117ab0a9db7907a67df3d03ddf73003",
+        _EMPTY_DEFINITION_SHA256,
+        _WORKSPACE_POLICY_SHA256,
+        "0a6b0cb0e5829b7b4bf759ac180b2ef231ad474d9665ffa809add11f76b4015b",
+        "true|true",
+    ),
+    "knowledge.source_page_embeddings": RelationDefinitionFingerprintV1(
+        "bda929749a15b37335e98cc096a2039d1d532d319d942ed559c0e021557e3ebf",
+        "b1a63e44b6530e62b233d88beef92a685ac901cc076e6415c8502ae3fe5a3982",
+        _WORKSPACE_POLICY_SHA256,
+        "580846b5cc80d63950aa729c2c5115a62d6b1fd1ee9fe7e725503ea9152077bb",
+        "true|true",
+    ),
+    "knowledge.extraction_runs": RelationDefinitionFingerprintV1(
+        "18f2aba6b70b27f3c11bb1c93148f6514e064dba7dd3a3687207dfa82c408850",
+        "e094aacfc8e153355acca842f0aad4926871a45af1bf5cc780f8867795ad3d9b",
+        _WORKSPACE_POLICY_SHA256,
+        "be802981730811253316fd1c3f9fe09e63c0137b2fb6982f5f13a8a1e2ad7a39",
+        "true|true",
+    ),
+    "knowledge.graphrag_audits": RelationDefinitionFingerprintV1(
+        "912278759b496f564d8c85667d2134562c1c2f59a6485990137fcc93534fd9c5",
+        "023f2063f42b3ec704c416f0a465ea54e26f1cb3e936ec13d6ab1df795d224c9",
+        _WORKSPACE_POLICY_SHA256,
+        _EMPTY_DEFINITION_SHA256,
+        "true|true",
+    ),
+}
+_CANONICAL_DEPLOYMENT_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "cd8f5b6199c1b6b0b4f58bc212c699f074967910e50f4828c226f47bce44ada9",
+    "acdc7fb9f8cf63db24e05bff25a68135828666d1872998d80913fafe844b8764",
+    "9b5ca7ec5c37c60f1f4bbebc96a32edc1a47b8ee5f15c5cadceb73f291aedb86",
+    _EMPTY_DEFINITION_SHA256,
+    "true|true",
+)
 
 
 def _existing_object_count() -> int:
@@ -266,9 +327,11 @@ def _table_contract_is_exact(
         tuple(sorted(row["columns"])) == tuple(sorted(expected_columns))
         and tuple(row["constraints"]) == expected_constraints
         and tuple(row["indexes"]) == expected_indexes
-        and tuple(row["policies"]) == ("workspace_isolation",)
+        and tuple(row["policies"]) == _CANONICAL_POLICIES[relation]
         and tuple(row["triggers"]) == expected_triggers
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(op.get_bind(), relation)
+        == _CANONICAL_DEFINITION_FINGERPRINTS[relation]
     )
 
 
@@ -299,7 +362,7 @@ def _is_canonical_schema() -> bool:
         .scalars()
         .all()
     )
-    return tuple(sorted(deployment_columns)) == tuple(
+    if tuple(sorted(deployment_columns)) != tuple(
         sorted(
             (
                 "graph_id|uuid|uuid||NO",
@@ -309,6 +372,11 @@ def _is_canonical_schema() -> bool:
                 "error_code|character varying|varchar|100|YES",
             )
         )
+    ):
+        return False
+    return (
+        read_relation_definition_fingerprint_v1(op.get_bind(), "knowledge.projection_deployments")
+        == _CANONICAL_DEPLOYMENT_FINGERPRINT
     )
 
 

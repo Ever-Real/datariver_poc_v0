@@ -10,6 +10,11 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from datariver.infrastructure.db.migration_definition_fingerprint import (
+    RelationDefinitionFingerprintV1,
+    read_relation_definition_fingerprint_v1,
+)
+
 revision: str = "0034"
 down_revision: str | Sequence[str] | None = "0033"
 branch_labels: str | Sequence[str] | None = None
@@ -53,6 +58,20 @@ _CANONICAL_CONSTRAINTS = (
     "pk_external_service_profile_versions",
     "uq_external_service_profile_versions_workspace_id_id",
     "uq_external_service_profile_versions_workspace_id_profi_c8c5",
+)
+_CANONICAL_DEFINITION_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "761ea62942edabd1dc2ab4709c82b60f51ab1a92de280d65e6a0190612b70790",
+    "48e37f5205aee433ae1beb8df2c86ce848f7d2cc652093134b75aad9133c4122",
+    "d0966462ecba0c8c90ff6d38cb07d19fd621d7ffccd5d22ab9cc7d9fb351235b",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "true|true",
+)
+_CANONICAL_PROFILE_FINGERPRINT = RelationDefinitionFingerprintV1(
+    "2db456f551262f8f5db47cbd54f6f1f53cdef8d1209e0a3c63eb63eba56c7924",
+    "3bd8541567798b5a221d6957c9e2396c15c3af09efe82081eb23c73ba7bfd255",
+    "8baee280feb3c75405e8c454ad5622c0d01b5edca16a787b355413d303544645",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "true|true",
 )
 
 
@@ -155,11 +174,20 @@ def _is_canonical_schema() -> bool:
         tuple(sorted(row["columns"])) == tuple(sorted(_CANONICAL_COLUMNS))
         and tuple(row["constraints"]) == _CANONICAL_CONSTRAINTS
         and tuple(row["indexes"]) == ("ix_external_service_profile_versions_workspace_profile",)
-        and tuple(row["policies"]) == ("workspace_isolation",)
+        and tuple(row["policies"])
+        == ("knowledge_worker_inference_profile_versions", "workspace_isolation")
         and tuple(row["activation_column"]) == ("activated_version|integer|int4||YES",)
         and tuple(row["activation_constraint"])
         == ("ck_external_service_profiles_activated_version_range",)
         and bool(row["force_rls"])
+        and read_relation_definition_fingerprint_v1(
+            op.get_bind(), "platform.external_service_profile_versions"
+        )
+        == _CANONICAL_DEFINITION_FINGERPRINT
+        and read_relation_definition_fingerprint_v1(
+            op.get_bind(), "platform.external_service_profiles"
+        )
+        == _CANONICAL_PROFILE_FINGERPRINT
     )
 
 
