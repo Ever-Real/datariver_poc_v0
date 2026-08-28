@@ -1503,10 +1503,14 @@ def test_smoke_uses_loopback_transport_and_canonical_request_origin(
         "bounded-test-password",
         request_origin=canonical_origin,
         k9_mode="REQUIRED",
+        glossary_term_urn="urn:li:glossaryTerm:configured-fixture",
     )
 
     assert runner.arguments[runner.arguments.index("--origin") + 1] == ("http://127.0.0.1:39083")
     assert runner.arguments[runner.arguments.index("--request-origin") + 1] == canonical_origin
+    assert runner.arguments[runner.arguments.index("--glossary-term-urn") + 1] == (
+        "urn:li:glossaryTerm:configured-fixture"
+    )
 
 
 def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
@@ -1548,6 +1552,7 @@ def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
 @pytest.mark.parametrize(
     ("classification", "step"),
     (
+        ("PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED", "DATAHUB_GLOSSARY_TERM"),
         ("PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED", "K9_INITIAL_REFRESH"),
         ("PREP_SMOKE_SEMANTIC_INDEX_NOT_READY", "K9_INITIAL_REFRESH"),
         ("PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED", "MCL_INITIAL_CAPTURE"),

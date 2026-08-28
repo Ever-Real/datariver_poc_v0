@@ -2157,6 +2157,28 @@ query DataRiverPocGlossaryTermByUrn($urn: String!) {
   }
 }`
 
+const datahubGlossarySmokeDiscoveryQuery = `
+query DataRiverPocGlossarySmokeDiscovery($input: ScrollAcrossEntitiesInput!) {
+  scrollAcrossEntities(input: $input) {
+    searchResults { entity { urn type } }
+  }
+}`
+
+const datahubGlossarySmokeTargetQuery = `
+query DataRiverPocGlossarySmokeTarget($urn: String!) {
+  entityExists(urn: $urn)
+  entity(urn: $urn) {
+    urn type
+    ... on GlossaryTerm {
+      exists
+      status { removed }
+      hierarchicalName
+      properties { name description }
+      glossaryTermInfo { name description }
+    }
+  }
+}`
+
 const datahubEntityRelationshipsQuery = `
 query DataRiverPocEntityRelationships($urn: String!, $input: RelationshipsInput!) {
   entity(urn: $urn) {
@@ -2255,6 +2277,39 @@ async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, s
     })
   }
   return payload.data
+}
+
+function glossarySmokeProviderDetail(error) {
+  if (['TimeoutError', 'AbortError'].includes(error?.name)) return 'TIMEOUT'
+  if (error?.providerFailureKind === 'HTTP') {
+    if (error?.providerHttpClass === '4xx') return 'HTTP_4XX'
+    if (error?.providerHttpClass === '5xx') return 'HTTP_5XX'
+    return 'HTTP_OTHER'
+  }
+  if (error?.providerFailureKind === 'GRAPHQL') return 'GRAPHQL'
+  if (error?.providerFailureKind === 'RESPONSE_JSON') return 'CONTRACT'
+  if (error?.providerFailureKind === 'TRANSPORT') return 'CONNECTIVITY'
+  return 'CONTRACT'
+}
+
+function glossarySmokeFailure(code, substage, operation, reason, {
+  statusCode = 502,
+  terminal = true,
+  cause,
+} = {}) {
+  const nestedErrorCode = cause ? glossarySmokeProviderDetail(cause) : reason
+  return Object.assign(new Error('Bounded DataHub GlossaryTerm smoke verification failed.'), {
+    statusCode,
+    code,
+    diagnostic: {
+      terminal,
+      substage,
+      endpoint: 'DATAHUB_GRAPHQL',
+      operation,
+      sanitized_reason: reason,
+      nested_error_code: nestedErrorCode,
+    },
+  })
 }
 
 async function datahubRefreshGraphql(query, variables, signal) {
@@ -4148,6 +4203,130 @@ async function datahubGlossary(searchParameters, principal) {
   }
   return {
     items: terms.sort((left, right) => left.name.localeCompare(right.name)),
+  }
+}
+
+async function datahubGlossarySmokeTarget(searchParameters) {
+  const rawConfiguredUrn = searchParameters.get('urn')
+  const configuredUrn = typeof rawConfiguredUrn === 'string' ? rawConfiguredUrn.trim() : ''
+  if (
+    (rawConfiguredUrn !== null && rawConfiguredUrn.length > 1000)
+    || (
+      configuredUrn
+      && (
+        !configuredUrn.startsWith('urn:li:glossaryTerm:')
+        || configuredUrn === 'urn:li:glossaryTerm:'
+        || hasAccessControlCharacter(configuredUrn)
+      )
+    )
+  ) {
+    throw glossarySmokeFailure(
+      'PREP_SMOKE_GLOSSARY_TERM_INPUT_FAILED',
+      'TARGET_RESOLUTION',
+      'VALIDATE_CONFIGURED_URN',
+      'GLOSSARY_TERM_URN_INVALID',
+      { statusCode: 400 },
+    )
+  }
+
+  let targetUrn = configuredUrn
+  let selectionSource = 'CONFIGURED'
+  if (!targetUrn) {
+    selectionSource = 'RUNTIME_DISCOVERED'
+    let discovery
+    try {
+      discovery = await datahubGraphql(datahubGlossarySmokeDiscoveryQuery, {
+        input: {
+          types: ['GLOSSARY_TERM'],
+          query: '*',
+          count: 1,
+          keepAlive: '1m',
+          sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
+          searchFlags: { skipAggregates: true, skipHighlighting: true },
+        },
+      })
+    } catch (error) {
+      const detail = glossarySmokeProviderDetail(error)
+      throw glossarySmokeFailure(
+        'PREP_SMOKE_GLOSSARY_TERM_DISCOVERY_FAILED',
+        'TARGET_DISCOVERY',
+        'SCROLL_GLOSSARY_TERM_CANDIDATE',
+        `PROVIDER_${detail}`,
+        { terminal: !['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'].includes(detail), cause: error },
+      )
+    }
+    const candidate = discovery?.scrollAcrossEntities?.searchResults?.[0]?.entity
+    if (!candidate) {
+      throw glossarySmokeFailure(
+        'PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED',
+        'TARGET_DISCOVERY',
+        'SCROLL_GLOSSARY_TERM_CANDIDATE',
+        'NO_GLOSSARY_TERM_CANDIDATE',
+        { statusCode: 424 },
+      )
+    }
+    if (candidate.type !== 'GLOSSARY_TERM' || typeof candidate.urn !== 'string'
+      || !candidate.urn.startsWith('urn:li:glossaryTerm:')
+      || candidate.urn === 'urn:li:glossaryTerm:' || hasAccessControlCharacter(candidate.urn)) {
+      throw glossarySmokeFailure(
+        'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
+        'TARGET_DISCOVERY',
+        'SCROLL_GLOSSARY_TERM_CANDIDATE',
+        'DISCOVERED_ENTITY_CONTRACT_INVALID',
+      )
+    }
+    targetUrn = candidate.urn
+  }
+
+  let lookup
+  try {
+    lookup = await datahubGraphql(datahubGlossarySmokeTargetQuery, { urn: targetUrn })
+  } catch (error) {
+    const detail = glossarySmokeProviderDetail(error)
+    throw glossarySmokeFailure(
+      'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED',
+      'EXACT_ENTITY_LOOKUP',
+      'READ_GLOSSARY_TERM_BY_URN',
+      `PROVIDER_${detail}`,
+      { terminal: !['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'].includes(detail), cause: error },
+    )
+  }
+  const entity = lookup?.entity
+  if (lookup?.entityExists !== true || !entity || entity.exists !== true || entity.status?.removed === true) {
+    throw glossarySmokeFailure(
+      'PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED',
+      'EXACT_ENTITY_LOOKUP',
+      'READ_GLOSSARY_TERM_BY_URN',
+      'ENTITY_NOT_CURRENT',
+      { statusCode: 424 },
+    )
+  }
+  if (entity.urn !== targetUrn || entity.type !== 'GLOSSARY_TERM') {
+    throw glossarySmokeFailure(
+      'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
+      'EXACT_ENTITY_LOOKUP',
+      'READ_GLOSSARY_TERM_BY_URN',
+      'ENTITY_IDENTITY_OR_TYPE_MISMATCH',
+    )
+  }
+  const basicName = entity.properties?.name || entity.glossaryTermInfo?.name || entity.hierarchicalName
+  if (typeof basicName !== 'string' || !basicName.trim()) {
+    throw glossarySmokeFailure(
+      'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
+      'BASIC_METADATA_READ',
+      'READ_GLOSSARY_TERM_BASIC_METADATA',
+      'BASIC_METADATA_MISSING',
+    )
+  }
+  return {
+    contract: 'DATARIVER_PREP_GLOSSARY_TERM_SMOKE_TARGET_V1',
+    selection_source: selectionSource,
+    urn: targetUrn,
+    entity_exists: true,
+    entity_type: 'GLOSSARY_TERM',
+    glossary_term_exists: true,
+    basic_metadata_read: true,
+    mutation_performed: false,
   }
 }
 
@@ -10487,6 +10666,7 @@ async function api(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/vector-index') return json(response, 200, catalogEmbeddingStatus(context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems(context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams, context.principal))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/smoke-target') return json(response, 200, await datahubGlossarySmokeTarget(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/chat/sessions') {
     const rawLimit = url.searchParams.get('limit') ?? '50'
@@ -11001,7 +11181,7 @@ export function createPocServer({
         status,
         code,
         error instanceof Error ? error.message : 'Provider request failed.',
-        error?.inventoryDiagnostic,
+        error?.diagnostic || error?.inventoryDiagnostic,
       )
     }
   })

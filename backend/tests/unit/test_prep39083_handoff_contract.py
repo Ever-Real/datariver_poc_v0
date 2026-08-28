@@ -93,6 +93,8 @@ def test_prep_and_ops_templates_are_isolated_amd64_and_provider_external() -> No
     assert '"FIXED"' in contract
     contract_value = json.loads(contract)
     assert "POC_INTRANET_HTTP_ALLOWED_CIDRS" in contract_value["ownership"]["OPTIONAL"]
+    assert "PREP_GLOSSARY_TERM_URN" in contract_value["ownership"]["OPTIONAL"]
+    assert "PREP_GLOSSARY_TERM_URN=" in prep
     assert contract_value["ownership"]["FIXED"]["POC_BIND_HOST"] == "0.0.0.0"  # noqa: S104
     assert contract_value["ownership"]["FIXED"]["POC_STATE_BIND_HOST"] == "127.0.0.1"
     assert contract_value["ownership"]["FIXED"]["POC_K9_SCHEDULER_ENABLED"] == "true"

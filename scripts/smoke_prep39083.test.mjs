@@ -19,6 +19,9 @@ async function fixture(k9Mode, {
   chatStatus = 200,
   chatFailureCode = null,
   catalogFailure = null,
+  glossaryFailure = null,
+  glossaryTarget = null,
+  glossaryTermUrn = '',
   readinessTimeoutMs = '5000',
   managedItems = null,
   changeHistory = null,
@@ -34,7 +37,7 @@ async function fixture(k9Mode, {
   await chmod(passwordFile, 0o600)
   let managedRequests = 0
   const observed = {
-    healthHosts: [], loginOrigins: [], logoutOrigins: [], chatOrigins: [],
+    healthHosts: [], loginOrigins: [], logoutOrigins: [], chatOrigins: [], glossaryUrls: [],
   }
   const server = createServer(async (request, response) => {
     const json = (status, body, headers = {}) => {
@@ -63,6 +66,24 @@ async function fixture(k9Mode, {
       || request.url === '/poc-api/datahub/catalog?limit=1') {
       if (catalogFailure) json(catalogFailure.status, catalogFailure.body)
       else json(200, { items: [], meta: { refresh_state: 'CURRENT_OR_REFRESHING' } })
+    } else if (request.url?.startsWith('/poc-api/datahub/glossary/smoke-target')) {
+      observed.glossaryUrls.push(request.url)
+      const parsed = new URL(request.url, canonicalOrigin)
+      if (glossaryFailure) {
+        json(glossaryFailure.status, glossaryFailure.body)
+      } else {
+        const configuredUrn = parsed.searchParams.get('urn')
+        json(200, glossaryTarget || {
+          contract: 'DATARIVER_PREP_GLOSSARY_TERM_SMOKE_TARGET_V1',
+          selection_source: configuredUrn ? 'CONFIGURED' : 'RUNTIME_DISCOVERED',
+          urn: configuredUrn || 'urn:li:glossaryTerm:runtime-discovered-fixture',
+          entity_exists: true,
+          entity_type: 'GLOSSARY_TERM',
+          glossary_term_exists: true,
+          basic_metadata_read: true,
+          mutation_performed: false,
+        })
+      }
     } else if (request.url === '/poc-api/knowledge/managed-assets') {
       managedRequests += 1
       json(200, { items: managedItems || [
@@ -90,7 +111,7 @@ async function fixture(k9Mode, {
   const transportOrigin = `http://127.0.0.1:${address.port}`
   const smokeRequestOrigin = requestOrigin === 'TRANSPORT' ? transportOrigin : requestOrigin
   const completed = await new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [
+    const argumentsList = [
       script,
       '--origin', transportOrigin,
       '--request-origin', smokeRequestOrigin,
@@ -100,7 +121,9 @@ async function fixture(k9Mode, {
       '--readiness-timeout-ms', readinessTimeoutMs,
       '--output', output,
       '--failure-output', failureOutput,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    ]
+    if (glossaryTermUrn) argumentsList.push('--glossary-term-urn', glossaryTermUrn)
+    const child = spawn(process.execPath, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk })
@@ -122,8 +145,85 @@ test('PREP smoke separates loopback transport from the canonical intranet reques
   assert.deepEqual(result.observed.loginOrigins, [canonicalIntranetOrigin])
   assert.deepEqual(result.observed.chatOrigins, [canonicalIntranetOrigin])
   assert.deepEqual(result.observed.logoutOrigins, [canonicalIntranetOrigin])
+  assert.deepEqual(result.observed.glossaryUrls, ['/poc-api/datahub/glossary/smoke-target'])
+  assert.equal(result.report.glossary_term, 'PASS')
+  assert.equal(result.report.glossary_term_selection_source, 'RUNTIME_DISCOVERED')
+  assert.equal(result.report.glossary_term_urn, 'urn:li:glossaryTerm:runtime-discovered-fixture')
+  assert.equal(result.report.glossary_term_entity_exists, true)
+  assert.equal(result.report.glossary_term_exists, true)
+  assert.equal(result.report.glossary_term_metadata_read, true)
+  assert.equal(result.report.glossary_term_mutation_performed, false)
   assert.ok(result.observed.healthHosts.every((host) => host?.startsWith('127.0.0.1:')))
   assert.match(result.completed.stdout, /\[SMOKE 6\/6\].*PASS/u)
+})
+
+test('PREP smoke uses an optional exact configured GlossaryTerm URN without mutation', async () => {
+  const urn = 'urn:li:glossaryTerm:configured-fixture'
+  const result = await fixture('deferred', { glossaryTermUrn: urn })
+  assert.equal(result.completed.code, 0, result.completed.stderr)
+  assert.equal(result.report.glossary_term_urn, urn)
+  assert.equal(result.report.glossary_term_selection_source, 'CONFIGURED')
+  assert.equal(result.report.glossary_term_mutation_performed, false)
+  assert.equal(new URL(result.observed.glossaryUrls[0], canonicalIntranetOrigin).searchParams.get('urn'), urn)
+})
+
+test('PREP smoke rejects a malformed configured GlossaryTerm URN before login', async () => {
+  const result = await fixture('deferred', { glossaryTermUrn: 'urn:li:dataset:not-a-term' })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'INPUT')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_INPUT_INVALID')
+  assert.deepEqual(result.observed.loginOrigins, [])
+})
+
+test('PREP smoke preserves bounded GlossaryTerm provider diagnostics', async () => {
+  const result = await fixture('deferred', {
+    glossaryFailure: {
+      status: 502,
+      body: {
+        code: 'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED',
+        detail: 'provider body must not be retained',
+        diagnostic: {
+          terminal: true,
+          substage: 'EXACT_ENTITY_LOOKUP',
+          endpoint: 'DATAHUB_GRAPHQL',
+          operation: 'READ_GLOSSARY_TERM_BY_URN',
+          sanitized_reason: 'PROVIDER_GRAPHQL',
+          nested_error_code: 'GRAPHQL',
+        },
+      },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'DATAHUB_GLOSSARY_TERM')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED')
+  assert.deepEqual(result.failure.diagnostic, {
+    terminal: true,
+    substage: 'EXACT_ENTITY_LOOKUP',
+    endpoint: 'DATAHUB_GRAPHQL',
+    operation: 'READ_GLOSSARY_TERM_BY_URN',
+    sanitized_reason: 'PROVIDER_GRAPHQL',
+    nested_error_code: 'GRAPHQL',
+  })
+  assert.equal(result.completed.stderr.includes('provider body must not be retained'), false)
+})
+
+test('PREP smoke fails closed when the GlossaryTerm read contract is not current', async () => {
+  const result = await fixture('deferred', {
+    glossaryTarget: {
+      contract: 'DATARIVER_PREP_GLOSSARY_TERM_SMOKE_TARGET_V1',
+      selection_source: 'RUNTIME_DISCOVERED',
+      urn: 'urn:li:glossaryTerm:removed-fixture',
+      entity_exists: false,
+      entity_type: 'GLOSSARY_TERM',
+      glossary_term_exists: false,
+      basic_metadata_read: false,
+      mutation_performed: false,
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'DATAHUB_GLOSSARY_TERM')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED')
+  assert.equal(result.failure.diagnostic.nested_error_code, 'CONTRACT')
 })
 
 test('PREP smoke classifies canonical Origin rejection separately from authentication', async () => {

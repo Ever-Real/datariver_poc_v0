@@ -344,6 +344,37 @@ function providerHandler(request, response) {
           },
         } } })
       }
+      if (payload.query.includes('DataRiverPocGlossarySmokeDiscovery')) {
+        return sendJson(response, { data: { scrollAcrossEntities: {
+          count: 1,
+          total: 1,
+          nextScrollId: null,
+          searchResults: [{ entity: {
+            urn: 'urn:li:glossaryTerm:runtime-discovered-fixture',
+            type: 'GLOSSARY_TERM',
+          } }],
+        } } })
+      }
+      if (payload.query.includes('DataRiverPocGlossarySmokeTarget')) {
+        if (payload.variables.urn === 'urn:li:glossaryTerm:provider-error-fixture') {
+          return sendJson(response, { errors: [{ message: 'sensitive provider detail' }] })
+        }
+        if (payload.variables.urn === 'urn:li:glossaryTerm:missing-fixture') {
+          return sendJson(response, { data: { entityExists: false, entity: null } })
+        }
+        return sendJson(response, { data: {
+          entityExists: true,
+          entity: {
+            urn: payload.variables.urn,
+            type: 'GLOSSARY_TERM',
+            exists: true,
+            status: { removed: false },
+            hierarchicalName: 'runtime.discovered.fixture',
+            properties: { name: 'Runtime discovered fixture', description: '' },
+            glossaryTermInfo: null,
+          },
+        } })
+      }
       if (payload.query.includes('DataRiverPocGlossaryAssignments')) {
         const entity = {
               urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)',
@@ -776,6 +807,18 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(glossary.items[0].table_asset_count, 1)
   assert.equal(glossary.items[0].column_asset_count, 1)
   assert.deepEqual(glossary.items[0].assets, [])
+  const smokeTargetResponse = await fetch(`${pocOrigin}/poc-api/datahub/glossary/smoke-target`)
+  assert.equal(smokeTargetResponse.status, 200)
+  assert.deepEqual(await smokeTargetResponse.json(), {
+    contract: 'DATARIVER_PREP_GLOSSARY_TERM_SMOKE_TARGET_V1',
+    selection_source: 'RUNTIME_DISCOVERED',
+    urn: 'urn:li:glossaryTerm:runtime-discovered-fixture',
+    entity_exists: true,
+    entity_type: 'GLOSSARY_TERM',
+    glossary_term_exists: true,
+    basic_metadata_read: true,
+    mutation_performed: false,
+  })
   const termUrn = encodeURIComponent(glossary.items[0].urn)
   const tableAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${termUrn}&target_type=TABLE&limit=25`)).json()
   assert.equal(tableAssignments.total, 1)
@@ -787,6 +830,47 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(columnAssignments.items[0].field_path, 'wafer_id')
   const technicalGlossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=manufacturing_wafer`)).json()
   assert.equal(technicalGlossary.items[0].name, 'Wafer')
+})
+
+test('resolves configured GlossaryTerm smoke targets exactly and fails closed with bounded diagnostics', async () => {
+  const configuredUrn = 'urn:li:glossaryTerm:configured-fixture'
+  const configured = await (await fetch(
+    `${pocOrigin}/poc-api/datahub/glossary/smoke-target?urn=${encodeURIComponent(configuredUrn)}`,
+  )).json()
+  assert.equal(configured.selection_source, 'CONFIGURED')
+  assert.equal(configured.urn, configuredUrn)
+  assert.equal(configured.entity_exists, true)
+  assert.equal(configured.glossary_term_exists, true)
+  assert.equal(configured.mutation_performed, false)
+
+  const missing = await fetch(
+    `${pocOrigin}/poc-api/datahub/glossary/smoke-target?urn=${encodeURIComponent('urn:li:glossaryTerm:missing-fixture')}`,
+  )
+  assert.equal(missing.status, 424)
+  assert.deepEqual(await missing.json(), {
+    code: 'PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED',
+    detail: 'Bounded DataHub GlossaryTerm smoke verification failed.',
+    status: 424,
+    title: 'POC integration request failed',
+    diagnostic: {
+      terminal: true,
+      substage: 'EXACT_ENTITY_LOOKUP',
+      endpoint: 'DATAHUB_GRAPHQL',
+      operation: 'READ_GLOSSARY_TERM_BY_URN',
+      sanitized_reason: 'ENTITY_NOT_CURRENT',
+      nested_error_code: 'ENTITY_NOT_CURRENT',
+    },
+  })
+
+  const providerFailure = await fetch(
+    `${pocOrigin}/poc-api/datahub/glossary/smoke-target?urn=${encodeURIComponent('urn:li:glossaryTerm:provider-error-fixture')}`,
+  )
+  assert.equal(providerFailure.status, 502)
+  const providerBody = await providerFailure.json()
+  assert.equal(providerBody.code, 'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED')
+  assert.equal(providerBody.diagnostic.substage, 'EXACT_ENTITY_LOOKUP')
+  assert.equal(providerBody.diagnostic.nested_error_code, 'GRAPHQL')
+  assert.equal(JSON.stringify(providerBody).includes('sensitive provider detail'), false)
 })
 
 test('runs the fixed embedding, reranking and Chat pipeline', async () => {

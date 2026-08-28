@@ -134,6 +134,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('catalog.vector-index', 'GET', /^\/poc-api\/datahub\/vector-index$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.systems', 'GET', /^\/poc-api\/datahub\/systems$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.glossary', 'GET', /^\/poc-api\/datahub\/glossary$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
+  route('catalog.glossary-smoke-target', 'GET', /^\/poc-api\/datahub\/glossary\/smoke-target$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.glossary-assignments', 'GET', /^\/poc-api\/datahub\/glossary\/assignments$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.asset', 'GET', /^\/poc-api\/datahub\/asset$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.lineage', 'GET', /^\/poc-api\/datahub\/lineage$/, 'CAPABILITY_PROTECTED', 'catalog.read'),

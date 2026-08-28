@@ -68,6 +68,15 @@ SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES = frozenset(
         "PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED",
     },
 )
+SUPPORTED_GLOSSARY_SMOKE_FAILURE_CODES = frozenset(
+    {
+        "PREP_SMOKE_GLOSSARY_TERM_INPUT_FAILED",
+        "PREP_SMOKE_GLOSSARY_TERM_DISCOVERY_FAILED",
+        "PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED",
+        "PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED",
+        "PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED",
+    },
+)
 HOST_SUBPROCESS_ENVIRONMENT_KEYS = frozenset(
     {
         "PATH",
@@ -2334,6 +2343,7 @@ def run_smoke(
     *,
     request_origin: str,
     k9_mode: str,
+    glossary_term_urn: str = "",
 ) -> None:
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     output = RUNTIME_ROOT / "smoke.json"
@@ -2343,29 +2353,29 @@ def run_smoke(
         SMOKE_FAILURE.unlink()
     with private_password_file(password) as password_path:
         try:
-            runner.run(
-                [
-                    "node",
-                    SMOKE_TOOL,
-                    "--origin",
-                    f"http://127.0.0.1:{release.port}",
-                    "--request-origin",
-                    request_origin,
-                    "--username",
-                    username,
-                    "--password-file",
-                    password_path,
-                    "--k9-mode",
-                    k9_mode.lower(),
-                    "--readiness-timeout-ms",
-                    "1200000",
-                    "--output",
-                    output,
-                    "--failure-output",
-                    SMOKE_FAILURE,
-                ],
-                visible=True,
-            )
+            command: list[str | os.PathLike[str]] = [
+                "node",
+                SMOKE_TOOL,
+                "--origin",
+                f"http://127.0.0.1:{release.port}",
+                "--request-origin",
+                request_origin,
+                "--username",
+                username,
+                "--password-file",
+                password_path,
+                "--k9-mode",
+                k9_mode.lower(),
+                "--readiness-timeout-ms",
+                "1200000",
+                "--output",
+                output,
+                "--failure-output",
+                SMOKE_FAILURE,
+            ]
+            if glossary_term_urn.strip():
+                command.extend(["--glossary-term-urn", glossary_term_urn.strip()])
+            runner.run(command, visible=True)
         except CommandFailure as error:
             try:
                 failure = _read_json(SMOKE_FAILURE, "sanitized smoke failure")
@@ -2374,6 +2384,7 @@ def run_smoke(
             code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
             if (
                 code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES
+                and code not in SUPPORTED_GLOSSARY_SMOKE_FAILURE_CODES
                 and code not in SUPPORTED_K9_SMOKE_FAILURE_CODES
                 and code not in SUPPORTED_MCL_SMOKE_FAILURE_CODES
                 and not re.fullmatch(r"PREP_SMOKE_[A-Z0-9_]+_FAILED", code)
@@ -2382,6 +2393,11 @@ def run_smoke(
             if (
                 code.startswith("PREP_SMOKE_GENERAL_PROVIDER_")
                 and code not in SUPPORTED_GENERAL_PROVIDER_FAILURE_CODES
+            ):
+                code = "PREP_SMOKE_UNKNOWN_FAILED"
+            if (
+                code.startswith("PREP_SMOKE_GLOSSARY_TERM_")
+                and code not in SUPPORTED_GLOSSARY_SMOKE_FAILURE_CODES
             ):
                 code = "PREP_SMOKE_UNKNOWN_FAILED"
             if code == "PREP_SMOKE_ADMIN_AUTH_FAILED":
@@ -2397,7 +2413,9 @@ def run_smoke(
                     "command; do not reset persistent state."
                 )
             smoke_step = (
-                "K9_INITIAL_REFRESH"
+                "DATAHUB_GLOSSARY_TERM"
+                if code in SUPPORTED_GLOSSARY_SMOKE_FAILURE_CODES
+                else "K9_INITIAL_REFRESH"
                 if "_K9_" in code or code == "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY"
                 else "MCL_INITIAL_CAPTURE"
                 if "_MCL_" in code
@@ -2648,6 +2666,7 @@ def deploy(
                     password,
                     request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
                     k9_mode=bundle.k9_mode,
+                    glossary_term_urn=bundle.effective.get("PREP_GLOSSARY_TERM_URN", ""),
                 )
         except PrepError:
             advance_attempt_phase(attempt, "SMOKE_FAILED")
@@ -2799,6 +2818,7 @@ def smoke(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         password,
         request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
         k9_mode=bundle.k9_mode,
+        glossary_term_urn=bundle.effective.get("PREP_GLOSSARY_TERM_URN", ""),
     )
     print("PREP39083 SMOKE PASS")
 

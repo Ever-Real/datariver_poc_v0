@@ -33,6 +33,13 @@ const k9SourceFailureDetails = new Set([
   'INTERNAL_TRANSFORM',
   ...K9_METADATA_FAILURE_DETAILS,
 ])
+const glossaryFailureClassifications = new Set([
+  'PREP_SMOKE_GLOSSARY_TERM_INPUT_FAILED',
+  'PREP_SMOKE_GLOSSARY_TERM_DISCOVERY_FAILED',
+  'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED',
+  'PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED',
+  'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
+])
 
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
@@ -120,13 +127,19 @@ async function responseJson(url, init, stage, classification) {
       && inventoryFailureClassifications.has(body.code)
       ? body.code
       : classification
+    const glossaryClassification = stage === 'DATAHUB_GLOSSARY_TERM'
+      && typeof body?.code === 'string'
+      && glossaryFailureClassifications.has(body.code)
+      ? body.code
+      : undefined
     const generalClassification = stage === 'GENERAL_PROVIDER'
       ? prepGeneralSmokeClassification(body?.code)
       : undefined
     const adminClassification = stage === 'ADMIN_LOGIN'
       ? adminLoginClassification(body, response.status)
       : undefined
-    const failureClassification = adminClassification || generalClassification || inventoryClassification
+    const failureClassification = adminClassification || generalClassification
+      || glossaryClassification || inventoryClassification
     throw smokeFailure(
       stage,
       failureClassification,
@@ -219,6 +232,7 @@ const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
 const failureOutput = argument('--failure-output')
+const glossaryTermUrn = String(argument('--glossary-term-urn', '') || '').trim()
 const k9Mode = String(argument('--k9-mode', 'required')).trim().toUpperCase()
 const readinessTimeoutMs = boundedMilliseconds(
   argument('--readiness-timeout-ms'), 1_200_000, 1_000, 3_600_000, '--readiness-timeout-ms',
@@ -235,6 +249,15 @@ async function main() {
   }
   if (!['REQUIRED', 'DEFERRED'].includes(k9Mode)) {
     throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', '--k9-mode must be required or deferred.')
+  }
+  if (glossaryTermUrn && (!glossaryTermUrn.startsWith('urn:li:glossaryTerm:')
+    || glossaryTermUrn === 'urn:li:glossaryTerm:' || glossaryTermUrn.length > 1000
+    || /[\u0000-\u001f\u007f]/u.test(glossaryTermUrn))) {
+    throw smokeFailure(
+      'INPUT',
+      'PREP_SMOKE_INPUT_INVALID',
+      '--glossary-term-urn must be one bounded canonical DataHub GlossaryTerm URN.',
+    )
   }
   for (const [name, value] of [['--origin', transportOrigin], ['--request-origin', requestOrigin]]) {
     let parsed
@@ -286,6 +309,13 @@ async function main() {
     login: 'PASS',
     k9_mode: k9Mode,
     datahub: 'FAIL',
+    glossary_term: 'FAIL',
+    glossary_term_urn: null,
+    glossary_term_selection_source: null,
+    glossary_term_entity_exists: false,
+    glossary_term_exists: false,
+    glossary_term_metadata_read: false,
+    glossary_term_mutation_performed: false,
     managed_assets: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     default_lineage: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     metadata_master: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
@@ -312,9 +342,49 @@ async function main() {
       if (!catalog.body || typeof catalog.body !== 'object') {
         throw smokeFailure('DATAHUB', 'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED', 'DataHub Catalog response is invalid.')
       }
+      const glossaryParameters = new URLSearchParams()
+      if (glossaryTermUrn) glossaryParameters.set('urn', glossaryTermUrn)
+      const glossaryQuery = glossaryParameters.toString()
+      const glossaryTarget = await responseJson(
+        `${transportOrigin}/poc-api/datahub/glossary/smoke-target${glossaryQuery ? `?${glossaryQuery}` : ''}`,
+        { headers: { Cookie: cookie } },
+        'DATAHUB_GLOSSARY_TERM',
+        'PREP_SMOKE_GLOSSARY_TERM_LOOKUP_FAILED',
+      )
+      const term = glossaryTarget.body
+      if (term?.contract !== 'DATARIVER_PREP_GLOSSARY_TERM_SMOKE_TARGET_V1'
+        || !['CONFIGURED', 'RUNTIME_DISCOVERED'].includes(term?.selection_source)
+        || typeof term?.urn !== 'string' || !term.urn.startsWith('urn:li:glossaryTerm:')
+        || term.entity_exists !== true || term.entity_type !== 'GLOSSARY_TERM'
+        || term.glossary_term_exists !== true || term.basic_metadata_read !== true
+        || term.mutation_performed !== false
+        || (glossaryTermUrn && (term.urn !== glossaryTermUrn || term.selection_source !== 'CONFIGURED'))
+        || (!glossaryTermUrn && term.selection_source !== 'RUNTIME_DISCOVERED')) {
+        throw smokeFailure(
+          'DATAHUB_GLOSSARY_TERM',
+          'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
+          'GlossaryTerm smoke target response is invalid.',
+          null,
+          {
+            terminal: true,
+            substage: 'SMOKE_RESPONSE_VALIDATION',
+            endpoint: 'PRODUCT_GLOSSARY_SMOKE_TARGET',
+            operation: 'VALIDATE_GLOSSARY_TERM_READ',
+            sanitized_reason: 'PRODUCT_RESPONSE_CONTRACT_INVALID',
+            nested_error_code: 'CONTRACT',
+          },
+        )
+      }
+      report.glossary_term = 'PASS'
+      report.glossary_term_urn = term.urn
+      report.glossary_term_selection_source = term.selection_source
+      report.glossary_term_entity_exists = true
+      report.glossary_term_exists = true
+      report.glossary_term_metadata_read = true
+      report.glossary_term_mutation_performed = false
       report.datahub = 'PASS'
     }, readinessTimeoutMs, '3/6 DataHub')
-    progress('3/6', 'DataHub bounded read PASS')
+    progress('3/6', 'DataHub bounded read and read-only GlossaryTerm smoke PASS')
 
     if (k9Mode === 'REQUIRED') {
       await retryReadiness(async () => {

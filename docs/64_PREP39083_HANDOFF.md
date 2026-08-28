@@ -88,7 +88,7 @@ Git, log or Evidence.
 
 | File | Owner | Contents | Update behavior |
 |---|---|---|---|
-| `.env.prep` | PREP operator | private intranet origin, build/runtime network, DataHub/inference providers, and DataHub Kafka connectivity | preserved |
+| `.env.prep` | PREP operator | private intranet origin, build/runtime network, DataHub/inference providers, DataHub Kafka connectivity, and optional exact read-only GlossaryTerm smoke URN | preserved |
 | `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
 | `.env.prep.optional` | PREP operator | optional existing Airflow/MinIO and Grafana settings | absent is valid |
 | `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
@@ -383,6 +383,15 @@ rejection (`PREP_SMOKE_ADMIN_AUTH_FAILED`). Other failures are classified as Dat
 connectivity/auth, K9/semantic readiness, or GENERAL provider/route. Sanitized failure metadata is
 stored in ignored `runtime/prep39083/smoke-failure.json`; it contains no URL, credential, token or
 response body and is superseded by the next successful smoke.
+
+The DataHub stage also performs a read-only GlossaryTerm acceptance check. An optional
+`PREP_GLOSSARY_TERM_URN` in `.env.prep` selects one exact canonical Term; when blank, the Product
+deterministically discovers one current `GLOSSARY_TERM` from the configured target and verifies the
+same exact URN through `entityExists`, `GlossaryTerm.exists`, current status, entity type, and basic
+metadata read-back. It never falls back to a sample business term and never creates, mutates, or
+deletes target metadata. An empty target glossary fails explicitly. Provider and contract failures
+preserve only bounded substage, operation, reason, and nested code diagnostics; response bodies,
+names, descriptions, credentials, and tokens are not retained.
 
 ### Manual Compose inspection
 
