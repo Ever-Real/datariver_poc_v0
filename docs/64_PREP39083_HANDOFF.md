@@ -7,7 +7,7 @@ The machine-readable accepted release is
 
 ```text
 Product  b0402d142cc3920cbe936e7b19d1426009b0cdf1
-Evidence 9114e9d8adec794d114502f5f163cb629a010607
+Evidence bf557a724d455f8fa3db1f11952582b15a2760bb
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
