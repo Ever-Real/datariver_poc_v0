@@ -77,26 +77,34 @@ No database migration or new deployment framework was added. The canonical comma
 
 The exact Product image is `linux/amd64`, has OCI revision
 `a5e88b5ec25faff6990ac88489a218d8f6198113`, and image ID
-`sha256:f6f2f3386e2b2b7dff53018917a014ffacda5c4c02b27af61a562a0977428a06`.
+`sha256:8a23982c9897217b9dc2e86a64b112fa07f787fdfdc8090f515c148105a3cd22`.
 The runtime image imports the corrected `createPocK9RefreshTask` implementation.
 
-The current-style `SMOKE_FAILED` descendant-resume Docker fixture was attempted twice. Docker
-Compose 5.3.1 hung without CPU/IO progress in `up --wait` before any Product assertion completed:
+Early current-style `SMOKE_FAILED` descendant-resume attempts encountered intermittent Docker
+Compose 5.3.1 client hangs during `build` or `up --wait`. They were not counted as PASS, and every
+exact disposable resource was removed individually. After independent minimal Compose build and
+health-wait probes passed and both descendant images were cache-warm, the unchanged official
+fixture was rerun from a detached exact Product worktree:
 
-- attempt 1 reached healthy isolated PostgreSQL/Neo4j/Redis, then hung before creating the Web
-  container;
-- attempt 2 hung before creating the isolated state containers.
+- source transition: prior Handoff `aa8cf75fc96b7c2f1cdb2d679e8c815ea72b5977` to exact Product
+  `a5e88b5ec25faff6990ac88489a218d8f6198113`;
+- result: `1 passed in 155.82s`;
+- first attempt state: current-style `SMOKE_FAILED` with no accepted marker;
+- resumed state: `EXISTING_OWNED_INCOMPLETE` to `ACCEPTED` through the same deploy flow;
+- generated ownership secrets were preserved; no resecret occurred;
+- exactly one administrator remained, the three canonical users remained, and K9/MCP identities
+  were not duplicated;
+- port 39080 remained unchanged.
 
-The attempts are `TOOL_BLOCKED`, not PASS and not Product failures. The first exact disposable
-project's two remaining containers, network, and three volumes were removed individually; the
-second created no Docker resources. Zero `datariver-prep39083-retry-*` fixture resources remain.
-No `docker compose down -v` or `down --volumes` command was executed. No Actual PREP volume, secret,
-receipt, accepted marker, administrator, K9/MCP identity, graph generation, ledger, or checkpoint
-was accessed or changed. Port 39080 was not touched.
+The fixture teardown was intercepted only to prohibit its test-only `down --volumes` call. Compose
+performed a plain `down`, and the three exact disposable volumes were then removed individually by
+name. Zero `datariver-prep39083-retry-*` fixture resources remain. No `docker compose down -v` or
+`down --volumes` command was executed. No Actual PREP volume, secret, receipt, accepted marker,
+administrator, K9/MCP identity, graph generation, ledger, or checkpoint was accessed or changed.
 
-The same-command Actual PREP rerun is therefore the outstanding external acceptance step. It will
-either succeed after the single bounded transient retry or expose the exact durable stage/detail
-needed for the next bounded operator decision.
+The DEV resume gate is PASS. The same-command Actual PREP rerun remains the operator-owned external
+acceptance step. It will either succeed after the single bounded transient retry or expose the exact
+durable stage/detail needed for the next bounded operator decision.
 
 Actual PREP: **NOT EXECUTED BY CONTROL PLANE**.
 
