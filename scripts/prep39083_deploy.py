@@ -2381,6 +2381,8 @@ def reconcile_bootstrap(
         if created:
             command.extend(
                 [
+                    "--user",
+                    "0:0",
                     "--volume",
                     f"{password_path}:/run/prep-admin.password:ro",
                 ]

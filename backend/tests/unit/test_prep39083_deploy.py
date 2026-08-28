@@ -1919,6 +1919,97 @@ def test_known_post_preflight_gate_preserves_more_precise_product_classification
     assert captured.value is precise
 
 
+def test_new_admin_bootstrap_reads_root_owned_private_password_as_container_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BootstrapRunner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(
+            self,
+            arguments: Sequence[str | os.PathLike[str]],
+            **_keywords: object,
+        ) -> subprocess.CompletedProcess[str]:
+            values = [os.fspath(value) for value in arguments]
+            self.calls.append(values)
+            volume = values[values.index("--volume") + 1]
+            password_path = Path(volume.split(":", 1)[0])
+            assert stat.S_IMODE(password_path.stat().st_mode) == 0o600
+            return subprocess.CompletedProcess(
+                values,
+                0,
+                json.dumps(
+                    {
+                        "services": [{"status": "PRESENT"}],
+                    }
+                ),
+                "",
+            )
+
+    runner = BootstrapRunner()
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "admin")
+    monkeypatch.setattr(
+        deploy.getpass,
+        "getpass",
+        lambda _prompt="": "correct horse battery staple",
+    )
+
+    username, password = deploy.reconcile_bootstrap(
+        runner,
+        ["docker", "compose"],
+        {"administrators": []},
+    )
+
+    assert username == "admin"
+    assert password == "correct horse battery staple"
+    command = runner.calls[0]
+    assert command[command.index("--user") + 1] == "0:0"
+    assert command[command.index("--volume") + 1].endswith(":/run/prep-admin.password:ro")
+    assert "--admin-password-file" in command
+
+
+def test_existing_admin_bootstrap_does_not_elevate_container_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BootstrapRunner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(
+            self,
+            arguments: Sequence[str | os.PathLike[str]],
+            **_keywords: object,
+        ) -> subprocess.CompletedProcess[str]:
+            values = [os.fspath(value) for value in arguments]
+            self.calls.append(values)
+            return subprocess.CompletedProcess(
+                values,
+                0,
+                json.dumps({"services": [{"status": "PRESENT"}]}),
+                "",
+            )
+
+    runner = BootstrapRunner()
+    monkeypatch.setattr(
+        deploy.getpass,
+        "getpass",
+        lambda _prompt="": "correct horse battery staple",
+    )
+
+    username, _password = deploy.reconcile_bootstrap(
+        runner,
+        ["docker", "compose"],
+        {"administrators": [{"username": "admin"}]},
+    )
+
+    assert username == "admin"
+    command = runner.calls[0]
+    assert "--user" not in command
+    assert "--volume" not in command
+    assert "--admin-password-file" not in command
+
+
 def test_wrapper_uses_uv_and_never_sources_operator_environment() -> None:
     source = (ROOT / "scripts/prep39083").read_text(encoding="utf-8")
     assert "uv run --frozen python scripts/prep39083_deploy.py" in source
