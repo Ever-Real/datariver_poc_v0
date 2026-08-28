@@ -1,7 +1,7 @@
 {
   "contract": "DATARIVER_PREP39083_RELEASE_V2",
-  "product_sha": "80618b6039bf994585a2a3ff623b44c1e16efeb5",
-  "evidence_sha": "d37271fcc6115a1ba394deb9210b9bce6550e0e4",
+  "product_sha": "3daf21e43830cc42411c15ed375042feadae661c",
+  "evidence_sha": "0c118454d8f12671bd7657fb71858eb709696ab7",
   "handoff_commit_policy": "CURRENT_COMMITTED_HEAD",
   "platform": "linux/amd64",
   "port": 39083,
