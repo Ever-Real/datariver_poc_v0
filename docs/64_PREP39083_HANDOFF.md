@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  3daf21e43830cc42411c15ed375042feadae661c
-Evidence 0c127442f1ee1769f6403913ff63ffef4bcc72be
+Product  052d8867501bd6aaf3d75b9e9c7158a327c6a264
+Evidence de51aeb0719f9f15ff409a317b60a1c07cd24519
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -148,7 +148,14 @@ identity.
 
 ## Current hotfix evidence
 
-The current verification narrative is
+The current release-contract evidence is
+[`docs/evidence/prep-exact-oci-artifact-promotion/README.md`](evidence/prep-exact-oci-artifact-promotion/README.md).
+It records the local-index versus registry-digest classification, approved archive transport,
+exact Product archive/checksum/child-manifest/config identity, fail-closed negative gates and a
+real remove→load→inspect proof. This Handoff changes no Product business logic and does not claim
+Actual PREP or OPS execution.
+
+The preceding Product recovery narrative is
 [`docs/evidence/prep-k9-glossary-assignment-reconciliation/README.md`](evidence/prep-k9-glossary-assignment-reconciliation/README.md).
 It records the bounded correction for the operator-provided Actual PREP failure
 `K9_DATAHUB_SOURCE_FAILED / METADATA_COLLECTION / ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT`. A complete
