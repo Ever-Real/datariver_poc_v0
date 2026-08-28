@@ -704,6 +704,23 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
                 "cursor_progression_status": "COMPLETE",
                 "completion_status": True,
             }
+            assert profile["relationships"] == {
+                "glossary_entities_inspected": 2,
+                "provider_relationship_total": 0,
+                "relationship_pages_fetched": 2,
+                "relationships_fetched": 0,
+                "duplicate_relationship_observations": 0,
+                "response_entity_identity_mismatch_count": 0,
+                "completeness_mismatch_count": 0,
+            }
+            assert profile["assignments"] == {
+                "declared_table_assignment_total": 0,
+                "observed_table_assignment_total": 0,
+                "declared_column_assignment_total": 0,
+                "observed_column_assignment_total": 0,
+                "term_outside_snapshot_count": 0,
+                "duplicate_assignment_observation_count": 0,
+            }
             assert profile["identity_resolution"] == {
                 "exact_duplicate_observation_count": 0,
                 "compatible_sparse_rich_observation_count": 1,
