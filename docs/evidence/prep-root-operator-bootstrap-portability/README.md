@@ -94,10 +94,57 @@ OCI revision   be74759b2eec0c61090feaeba9e110d66ab3e334
 
 The archive remains an ignored release artifact and is not committed to Git.
 
-## Remaining runtime gate
+## Provisional runtime gate
 
 The TEST PC's retained `SCHEMA_READY` attempt must be updated to the descendant Handoff and resumed
 with the unchanged canonical command. Acceptance requires exact artifact verification, no rebuild,
 administrator creation, health, K9, MCL, GENERAL and GlossaryTerm smoke, preservation of the target
-secrets/volumes/identities, and a final `ACCEPTED` receipt. This result is TEST evidence only and
-must not be described as Actual PREP or OPS acceptance.
+secrets/volumes/identities, and a final `ACCEPTED` receipt. The following section records completion
+of that gate. It remains TEST evidence only and must not be described as Actual PREP or OPS
+acceptance.
+
+## TEST PC same-command resume result
+
+The exact archive was transferred over the existing private Tailscale connection to the ignored
+path pinned by the provisional Handoff. The TEST PC independently verified archive SHA-256, loaded
+the image, and reported every required provider READY except the intentionally unconfigured
+Airflow/MinIO/quality-execution integrations, which remained DEFERRED.
+
+The retained attempt began as the preceding Product's `SCHEMA_READY` state. Running only:
+
+```text
+./scripts/prep39083 deploy
+```
+
+reclassified it as `EXISTING_OWNED_INCOMPLETE`, proved ancestry and ownership, reused the persisted
+runtime environment and named volumes, and completed the corrected administrator bootstrap. The
+Web service remained `USER 1000:1000`; only the one-shot created-admin bootstrap used container
+root. Web restart count was zero.
+
+The TEST runtime smoke completed in 1,415 seconds:
+
+```text
+1/6 Health                                      PASS
+2/6 Administrator login                        PASS
+3/6 DataHub bounded inventory + GlossaryTerm   PASS
+4/6 Managed graphs + semantic index            PASS
+5/6 MCL source + durable checkpoint             PASS
+6/6 GENERAL provider + route                    PASS
+Final receipt                                   ACCEPTED
+```
+
+The read-only GlossaryTerm smoke selected
+`urn:li:glossaryTerm:active_indicator` through `RUNTIME_DISCOVERED`; `entityExists`,
+`glossaryTerm.exists` and the basic metadata read were true. Mutation was false. No DEV `Wafer`
+fallback was used.
+
+Post-acceptance bounded state counts were one administrator plus the two canonical service
+credentials, two K9 policies, two K9 runs, one MCL source and one MCL checkpoint. All four Product
+containers were healthy, Web had no restart, and PostgreSQL/Neo4j/Redis remained loopback-bound.
+The accepted image was linux/amd64 with manifest
+`sha256:5f4153b2e6978dc5a1dc6204bf66a482314162543dd9e9fc6e6e6820fdf757d3` and exact Product
+revision `be74759b2eec0c61090feaeba9e110d66ab3e334`. Source rebuilding did not occur and port 39080
+was untouched.
+
+This is `TEST_PC_RUNTIME_ACCEPTED`, not Actual PREP or OPS acceptance. Actual PREP and OPS remain
+`NOT EXECUTED` by the Control Plane.
