@@ -105,6 +105,7 @@ lookup, not-found/current-state, and response-contract failures.
 |---|---|
 | PREP smoke process | 33/33 PASS |
 | Product provider + authorization | 32/32 PASS |
+| Complete Node Product server contract | 175/175 PASS |
 | PREP deploy + handoff | 111/111 PASS |
 | ESLint | PASS |
 | TypeScript typecheck | PASS |
