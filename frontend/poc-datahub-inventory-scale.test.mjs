@@ -148,6 +148,7 @@ async function exactInventoryScenario(rawEntities, suffix) {
     for await (const chunk of request) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.match(body.query, /DataRiverPocCatalogEmbeddingInventory/u)
+    assert.match(body.query, /exists\s+status \{ removed \}/u)
     assert.equal(body.variables.input.count, providerPageSize)
     assert.deepEqual(body.variables.input.sortInput, {
       sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }],
@@ -321,16 +322,16 @@ test('accepts a cursor-driven partial terminal page whose provider count metadat
 
 test('promotes a large generated rich inventory after explicit noncurrent filtering and canonical deduplication', async () => {
   const generatedRawCount = providerPageSize * 6 + 37
-  const current = Array.from({ length: generatedRawCount - 3 }, (_value, index) => dataset(index, {
+  const current = Array.from({ length: generatedRawCount - 4 }, (_value, index) => dataset(index, {
     sparse: index % 17 === 0,
     missingHierarchy: index % 31 === 0,
     view: index % 19 === 0,
   }))
-  const noncurrent = [dataset(50_000), dataset(50_001)].map((value) => ({
-    ...value,
-    properties: null,
-    schemaMetadata: null,
-  }))
+  const noncurrent = [
+    { ...dataset(50_000), properties: null, schemaMetadata: null },
+    { ...dataset(50_001), exists: false, status: { removed: false } },
+    { ...dataset(50_002), exists: true, status: { removed: true } },
+  ]
   const rawEntities = [...current, ...noncurrent, structuredClone(current[17])]
   assert.equal(rawEntities.length, generatedRawCount)
   const scenario = await exactInventoryScenario(rawEntities, 'large-generated-rich-inventory')
@@ -356,7 +357,9 @@ test('promotes a large generated rich inventory after explicit noncurrent filter
       terminal: false,
     })
     assert.deepEqual(body.meta.inventory_refresh.filtered_noncurrent_reasons, {
-      DATASET_CURRENT_ASPECTS_ABSENT: noncurrent.length,
+      DATASET_CURRENT_ASPECTS_ABSENT: 1,
+      DATASET_EXISTS_FALSE: 1,
+      DATASET_STATUS_REMOVED: 1,
     })
     assert.equal(
       body.meta.inventory_refresh.processed_count,

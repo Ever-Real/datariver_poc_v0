@@ -87,7 +87,8 @@ import {
   resolveNewCrResponsibleSystem,
 } from './poc-cr-lifecycle.mjs'
 import {
-  currentDatahubDatasetExists,
+  DATAHUB_DATASET_CURRENTNESS_REASONS,
+  classifyCurrentDatahubDataset,
   datahubDatasetKind,
   isCurrentDatahubTable,
 } from './poc-datahub-current-table.mjs'
@@ -1767,6 +1768,8 @@ query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) 
       entity {
         urn type
         ... on Dataset {
+          exists
+          status { removed }
           name
           subTypes { typeNames }
           platform { urn name }
@@ -1859,6 +1862,8 @@ query DataRiverPocAsset($urn: String!) {
   entity(urn: $urn) {
     urn type
     ... on Dataset {
+      exists
+      status { removed }
       name
       subTypes { typeNames }
       platform { urn name }
@@ -1957,9 +1962,11 @@ query DataRiverPocAsset($urn: String!) {
 
 const datahubCurrentEntitiesQuery = `
 query DataRiverPocCurrentTables($urns: [String!]!) {
-  entities(urns: $urns) {
+  entities(urns: $urns, checkForExistence: true) {
     urn type
     ... on Dataset {
+      exists
+      status { removed }
       subTypes { typeNames }
       properties { customProperties { key value } }
       schemaMetadata(version: 0) { name }
@@ -1980,6 +1987,8 @@ query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
         entity {
           urn type
           ... on Dataset {
+            exists
+            status { removed }
             name
             subTypes { typeNames }
             platform { urn name }
@@ -3067,6 +3076,9 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
   }
   const items = []
   let skippedNoncurrentCount = 0
+  const skippedNoncurrentReasons = Object.fromEntries(
+    DATAHUB_DATASET_CURRENTNESS_REASONS.map((reason) => [reason, 0]),
+  )
   let normalizationMs = 0
   const extractionDiagnostic = (reason) => ({
     ...pageDiagnostic,
@@ -3106,8 +3118,18 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
         extractionDiagnostic('SEARCH_RESULT_DATASET_URN_INVALID'),
       )
     }
-    if (!currentDatahubDatasetExists(entity, entity.urn)) {
+    const currentness = classifyCurrentDatahubDataset(entity, entity.urn)
+    if (currentness.reason === 'DATASET_CURRENTNESS_SIGNAL_INVALID') {
+      throw inventoryFailure(
+        'PREP_DATAHUB_INVENTORY_CONTRACT_FAILED',
+        'ENTITY_EXTRACTION',
+        'DataHub inventory contains malformed Dataset currentness signals.',
+        extractionDiagnostic('DATASET_CURRENTNESS_SIGNAL_INVALID'),
+      )
+    }
+    if (!currentness.current) {
       skippedNoncurrentCount += 1
+      skippedNoncurrentReasons[currentness.reason] += 1
       continue
     }
     const normalizationStartedAt = Date.now()
@@ -3151,7 +3173,7 @@ async function datahubCatalogPage(providerCursor, signal, pageNumber, progressDi
     providerMetadataCount: page.count,
     searchResultEnvelopeCount,
     skippedNoncurrentCount,
-    skippedNoncurrentReasons: { DATASET_CURRENT_ASPECTS_ABSENT: skippedNoncurrentCount },
+    skippedNoncurrentReasons,
     unresolvedSearchResultCount: 0,
     nextProviderCursor,
     pageFetchMs: Date.now() - pageStartedAt,
@@ -3308,12 +3330,17 @@ function boundedInventoryDiagnostic(value = {}) {
     'SEARCH_RESULT_ENTITY_ABSENT',
     'SEARCH_RESULT_ENTITY_TYPE_INVALID',
     'SEARCH_RESULT_DATASET_URN_INVALID',
+    'DATASET_CURRENTNESS_SIGNAL_INVALID',
     'DATASET_CURRENT_ASPECTS_ABSENT',
   ])
   if (extractionReasons.has(value.extraction_reason)) result.extraction_reason = value.extraction_reason
-  const currentAspectsAbsent = value.filtered_noncurrent_reasons?.DATASET_CURRENT_ASPECTS_ABSENT
-  if (Number.isSafeInteger(currentAspectsAbsent) && currentAspectsAbsent >= 0) {
-    result.filtered_noncurrent_reasons = { DATASET_CURRENT_ASPECTS_ABSENT: currentAspectsAbsent }
+  const filteredNoncurrentReasons = {}
+  for (const reason of DATAHUB_DATASET_CURRENTNESS_REASONS) {
+    const count = value.filtered_noncurrent_reasons?.[reason]
+    if (Number.isSafeInteger(count) && count > 0) filteredNoncurrentReasons[reason] = count
+  }
+  if (Object.keys(filteredNoncurrentReasons).length > 0) {
+    result.filtered_noncurrent_reasons = filteredNoncurrentReasons
   }
   if (typeof value.provider_http_class === 'string' && /^[1-5]xx$/.test(value.provider_http_class)) {
     result.provider_http_class = value.provider_http_class
@@ -3368,7 +3395,9 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
     let terminalConfirmationPending = false
     let processedCount = 0
     let skippedNoncurrentCount = 0
-    let skippedCurrentAspectsAbsentCount = 0
+    const skippedNoncurrentReasons = Object.fromEntries(
+      DATAHUB_DATASET_CURRENTNESS_REASONS.map((reason) => [reason, 0]),
+    )
     let duplicateCount = 0
     let unresolvedSearchResultCount = 0
     let providerMetadataCount = 0
@@ -3383,9 +3412,7 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       expected_total: providerTotal,
       normalized_count: observed.size,
       skipped_noncurrent_count: skippedNoncurrentCount,
-      filtered_noncurrent_reasons: {
-        DATASET_CURRENT_ASPECTS_ABSENT: skippedCurrentAspectsAbsentCount,
-      },
+      filtered_noncurrent_reasons: skippedNoncurrentReasons,
       duplicate_count: duplicateCount,
       unresolved_search_result_count: unresolvedSearchResultCount,
       provider_metadata_count: providerMetadataCount,
@@ -3491,7 +3518,9 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       processedCount += page.rawCount
       unresolvedSearchResultCount += page.unresolvedSearchResultCount
       skippedNoncurrentCount += page.skippedNoncurrentCount
-      skippedCurrentAspectsAbsentCount += page.skippedNoncurrentReasons.DATASET_CURRENT_ASPECTS_ABSENT
+      for (const reason of DATAHUB_DATASET_CURRENTNESS_REASONS) {
+        skippedNoncurrentReasons[reason] += page.skippedNoncurrentReasons[reason]
+      }
       for (const item of page.items) {
         if (typeof item.id !== 'string' || !item.id) {
           throw inventoryFailure(
@@ -3619,7 +3648,7 @@ async function currentDatahubTables(tableUrns, { signal } = {}) {
       throw new Error('DataHub returned an invalid current entity confirmation.')
     }
     data.entities.forEach((entity, index) => {
-      if (!isCurrentDatahubTable(entity, batch[index])) return
+      if (!isCurrentDatahubTable(entity, batch[index], { entityExists: entity !== null })) return
       confirmed.push({
         id: entity.urn,
         dataset_kind: 'TABLE',

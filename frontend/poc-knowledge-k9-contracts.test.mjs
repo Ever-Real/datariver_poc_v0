@@ -121,6 +121,8 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /async function datahubGlossary[\s\S]*?return \{\s*items: terms\.sort/);
   assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?Math\.min\(50,[\s\S]*?Math\.min\(100_000,[\s\S]*?page: \{ next_cursor:/);
   assert.match(product, /async function datahubRefreshGraphql[\s\S]*?datahubGraphql\(query, variables, 60_000, signal\)/);
+  assert.match(product, /DataRiverPocCatalogEmbeddingInventory[\s\S]*?\.\.\. on Dataset \{\s*exists\s*status \{ removed \}/);
+  assert.match(product, /collectLineageInventorySeam[\s\S]*?authorizedByUrn\.has\(k9AssetUrn\(relAsset\)\)[\s\S]*?registerLineageEdge/);
   assert.match(product, /collectGlossaryInventorySeam[\s\S]*?createK9MetadataCollector[\s\S]*?refreshGraphql: datahubRefreshGraphql,[\s\S]*?glossaryQuery: datahubGlossaryQuery/);
   assert.match(product, /createPocK9RefreshTask\(\{[\s\S]*?currentInventory: currentDatahubInventory,[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?ensureSemanticIndex:/);
 });
