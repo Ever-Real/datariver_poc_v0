@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  71529ba69c2191884144e5f43ab5bc97720be4e9
-Evidence 04ace444f2bd99098bf57b8e28c61344c3e35086
+Product  80618b6039bf994585a2a3ff623b44c1e16efeb5
+Evidence d37271fcc6115a1ba394deb9210b9bce6550e0e4
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -141,23 +141,26 @@ identity.
 ## Current hotfix evidence
 
 The current verification narrative is
-[`docs/evidence/prep-recovery-k9-mcl/README.md`](evidence/prep-recovery-k9-mcl/README.md).
-It records the integrated K9 real-data metadata reconciliation and the independently verified MCL
-normalization delta. The exact Actual-PREP parent Product is reproduced in disposable Docker as a
-`SMOKE_FAILED` descendant with
-`K9_DATAHUB_SOURCE_FAILED / METADATA_COLLECTION / METADATA_IDENTITY_CONFLICT`. The same deploy flow
-then advances this Product to `ACCEPTED` without reset, resecret, duplicate administrator or
-service identities, or Docker residue. Both managed graphs and the semantic index are READY; the
-MCL checkpoint remains continuous; GENERAL completes. The exact image is linux/amd64 and carries
-the Product revision.
+[`docs/evidence/prep-k9-glossary-assignment-reconciliation/README.md`](evidence/prep-k9-glossary-assignment-reconciliation/README.md).
+It records the bounded correction for the operator-provided Actual PREP failure
+`K9_DATAHUB_SOURCE_FAILED / METADATA_COLLECTION / ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT`. A complete
+glossary search is no longer treated as the sole canonical existence authority: each sorted unique
+missing assigned Term is resolved by exact URN through DataHub, checked for exact Glossary Term
+identity and existence, normalized through the same Term path, and hydrated without dropping its
+assignment. Null, removed, or incompatible results fail closed as
+`DANGLING_GLOSSARY_ASSIGNMENT`; provider faults retain their typed classification.
 
-The metadata collector now persists a sanitized staged source profile and applies the canonical
-DataHub identity contract: exact duplicates dedupe, optional sparse/rich observations merge
-deterministically, and structural contradictions fail closed at an exact bounded locus. The
-historical parent detail did not include this profile, so the handoff does not invent an exact
-historical PREP URN or sub-locus. A descendant retry is exposed as RUNNING before the HTTP listener
-can expose a retained parent terminal result; the retained failure history and any LKG remain
-untouched.
+The exact integrated parent Product reproduces the retained failure after health, login, and
+DataHub smoke pass. The exact descendant then performs one direct recovery, reaches both managed
+graphs and semantic index READY, preserves the MCL checkpoint, completes GENERAL, and finishes
+`ACCEPTED` through the same deploy flow. Runtime secrets, one administrator, K9/MCP identities,
+LKG, and 39080 are preserved; disposable container, volume, and network residue is zero. The exact
+image is linux/amd64 and carries the Product revision.
+
+The preceding integrated K9/MCL evidence remains at
+[`docs/evidence/prep-recovery-k9-mcl/README.md`](evidence/prep-recovery-k9-mcl/README.md).
+It records the generic metadata identity profile, active-retry visibility correction, and the
+independently verified MCL normalization delta that this K9-only descendant leaves unchanged.
 
 The MCL correction is the exact Product delta previously verified at Product
 `16ad344e7bde7ec060816a04b4f40aab40f28097`. It accepts the supported DataHub v1.6.0 record
