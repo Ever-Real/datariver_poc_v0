@@ -7791,7 +7791,13 @@ function isoValue(value) {
   return typeof value === 'string' ? value : null
 }
 
-export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, includeQualityMetrics = false) {
+export function managedK9AssetSummary(
+  row,
+  semanticIndex,
+  schedulerConfig,
+  includeQualityMetrics = false,
+  activeRefreshAttempt = null,
+) {
   const definition = k9GraphAssetDefinition(row.graph_id)
   if (!definition) throw knowledgeProjectionError(409, 'K9_ASSET_DEFINITION_MISSING', 'The managed graph Asset definition is missing.')
   const manifest = row.active_manifest && typeof row.active_manifest === 'object'
@@ -7807,8 +7813,10 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
     !sourceSnapshot.catalog_generation
     || semanticIndex.generation === sourceSnapshot.catalog_generation
   )
-  const latestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
-  const storedFailureCode = latestResult === 'FAILURE'
+  const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
+  const storedLatestResult = row.latest_result === 'RUN' ? 'SUCCESS' : (row.latest_result || 'NOT_RUN')
+  const latestResult = refreshRunning ? 'RUNNING' : storedLatestResult
+  const storedFailureCode = !refreshRunning && latestResult === 'FAILURE'
     ? /^((?:K9_)[A-Z0-9_]+):/.exec(row.latest_error_message || '')?.[1] || 'K9_REFRESH_FAILED'
     : null
   const sourceDiagnostic = storedFailureCode === 'K9_DATAHUB_SOURCE_FAILED'
@@ -7870,6 +7878,7 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
     last_refresh: isoValue(row.latest_completed_at),
     last_result: latestResult,
     last_error_code: storedFailureCode,
+    refresh_attempt: refreshRunning ? activeRefreshAttempt : null,
     ...(sourceDiagnostic || {}),
     metadata_source_profile: includeQualityMetrics
       ? latestFailureProfile || activeMetadataProfile
@@ -7988,6 +7997,9 @@ async function managedK9Assets(context) {
     bindingHash: bindingHash || null,
     generation: semanticIndexGeneration || null,
   }
+  const activeRefreshAttempt = typeof context.k9SchedulerStatus === 'function'
+    ? context.k9SchedulerStatus()
+    : null
   return rows.flatMap((row) => {
     try {
       assertManagedK9AssetGrade(context, row.classification)
@@ -7996,6 +8008,7 @@ async function managedK9Assets(context) {
         semanticIndex,
         context.k9SchedulerConfig,
         context.principal.role === 'admin',
+        activeRefreshAttempt,
       )]
     } catch (error) {
       if (error?.code === 'KNOWLEDGE_GRAPH_NOT_FOUND') return []
@@ -10865,6 +10878,7 @@ export function createPocServer({
   currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
   currentDatahubTables: currentDatahubTablesProvider = currentDatahubTables,
   k9SchedulerConfig = null,
+  k9SchedulerStatus = null,
 } = {}) {
   if (stateStore) pocStateStore = stateStore
   const baseContext = {
@@ -10872,6 +10886,7 @@ export function createPocServer({
     currentDatahubInventory: currentDatahubInventoryProvider,
     currentDatahubTables: currentDatahubTablesProvider,
     k9SchedulerConfig,
+    k9SchedulerStatus,
   }
   return createServer(async (request, response) => {
     try {
@@ -11382,7 +11397,16 @@ export async function startPocServer({ stateStore } = {}) {
     await k9.performRestartRecovery()
   }
 
-  const server = createPocServer({ stateStore: serverStateStore, authenticator, k9SchedulerConfig })
+  // Start the refresh attempt before the HTTP listener becomes observable. The
+  // managed-assets read model can then distinguish a retained terminal result
+  // from the descendant Product's active, non-destructive retry.
+  await k9Scheduler.start()
+  const server = createPocServer({
+    stateStore: serverStateStore,
+    authenticator,
+    k9SchedulerConfig,
+    k9SchedulerStatus: () => k9Scheduler.currentAttempt(),
+  })
   const host = resolvePocServerHost()
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
@@ -11392,7 +11416,6 @@ export async function startPocServer({ stateStore } = {}) {
   }
   if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
   await scheduler.start()
-  await k9Scheduler.start()
 
   let stopping
   server.stopPoc = () => {

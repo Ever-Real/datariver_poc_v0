@@ -129,6 +129,38 @@ test('managed K9 failure status preserves LKG and never exposes an unbound seman
   assert.equal(withLkg.active_release_id, 'k9_stage_existing_lkg')
 })
 
+test('managed K9 resume reports an active descendant attempt instead of a retained terminal failure', async () => {
+  const { managedK9AssetSummary } = await import('./poc-server.mjs?k9-active-retry-summary-contract')
+  const summary = managedK9AssetSummary({
+    graph_id: '01a02d2a-f8a0-7658-b5da-890eccdccf44',
+    name: 'CATALOG_MIRROR',
+    classification: 'INTERNAL',
+    studio_release_id: '01a02d2a-f8ad-789f-acb0-7df3ea3d0ef0',
+    publication_version: 6,
+    schedule: '02:00 Asia/Seoul',
+    managed_intent: 'metadata-lineage',
+    latest_result: 'FAILURE',
+    latest_error_message: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=METADATA_IDENTITY_CONFLICT.',
+    latest_completed_at: '2026-08-28T00:00:00.000Z',
+    created_at: '2026-08-27T00:00:00.000Z',
+    updated_at: '2026-08-28T00:00:00.000Z',
+  }, { ready: false }, null, false, {
+    status: 'RUNNING',
+    scheduled_for: '2026-08-27T17:00:00.000Z',
+    trigger: 'scheduled',
+  })
+
+  assert.equal(summary.status, 'PENDING')
+  assert.equal(summary.last_result, 'RUNNING')
+  assert.equal(summary.last_error_code, null)
+  assert.deepEqual(summary.refresh_attempt, {
+    status: 'RUNNING',
+    scheduled_for: '2026-08-27T17:00:00.000Z',
+    trigger: 'scheduled',
+  })
+  assert.equal(summary.semantic_index_status, 'PENDING')
+})
+
 test('managed K9 source failure exposes only bounded durable source diagnostics', async () => {
   const { managedK9AssetSummary } = await import('./poc-server.mjs?k9-source-diagnostic-summary')
   const summary = managedK9AssetSummary({

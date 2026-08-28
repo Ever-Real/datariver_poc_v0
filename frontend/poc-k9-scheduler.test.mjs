@@ -165,6 +165,42 @@ test('K9 Scheduler manual trigger runs triggerK9Refresh and fails if no-publish'
   assert.equal(result.status, 'FAILURE')
 })
 
+test('K9 Scheduler exposes only the currently active retry attempt', async () => {
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_STUDIO_DATABASE_URL: 'postgres://studio-reader@example.test/studio',
+  })
+  let releaseRefresh
+  const refreshGate = new Promise((resolve) => { releaseRefresh = resolve })
+  const stateStore = {
+    configured: { postgres: true },
+    runK9Scheduler: mock.fn(async (_command, task) => task()),
+  }
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh: async () => {
+      await refreshGate
+      return { status: 'SUCCESS' }
+    },
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  assert.deepEqual(scheduler.currentAttempt(), {
+    status: 'RUNNING',
+    scheduled_for: scheduler.currentAttempt().scheduled_for,
+    trigger: 'scheduled',
+  })
+  assert.ok(Number.isFinite(Date.parse(scheduler.currentAttempt().scheduled_for)))
+
+  releaseRefresh()
+  await scheduler.stop()
+  assert.equal(scheduler.currentAttempt(), null)
+})
+
 test('K9 Scheduler durably records a first failure without a successful boundary', async () => {
   const database = k9SchedulerDatabase()
   const stateStore = createPocStateStore({ databasePool: database.pool })

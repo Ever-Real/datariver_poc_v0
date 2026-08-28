@@ -360,6 +360,7 @@ export function createPocK9Scheduler({
   let timer
   let stopped = false
   let activeRun
+  let activeAttempt
 
   const execute = async (scheduledFor, trigger) => stateStore.runK9Scheduler({
     lockName: config.lockName,
@@ -380,7 +381,15 @@ export function createPocK9Scheduler({
     const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
 
     if (!activeRun) {
-      activeRun = execute(scheduledFor, triggerType).finally(() => { activeRun = undefined })
+      activeAttempt = Object.freeze({
+        status: 'RUNNING',
+        scheduled_for: scheduledFor.toISOString(),
+        trigger: triggerType,
+      })
+      activeRun = execute(scheduledFor, triggerType).finally(() => {
+        activeRun = undefined
+        activeAttempt = undefined
+      })
     }
     return activeRun
   }
@@ -405,6 +414,9 @@ export function createPocK9Scheduler({
 
   return {
     config,
+    currentAttempt() {
+      return activeAttempt || null
+    },
     async start() {
       if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
       if (!config.enabled) return { status: 'idle', mode: config.refreshMode }
