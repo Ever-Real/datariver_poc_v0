@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  9c960e28d10c5cd7fb748e745860d73c6ffeb2ae
-Evidence 0946e0e32d01845e119e604a75fa2c6492a3db65
+Product  71529ba69c2191884144e5f43ab5bc97720be4e9
+Evidence 04ace444f2bd99098bf57b8e28c61344c3e35086
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -141,15 +141,35 @@ identity.
 ## Current hotfix evidence
 
 The current verification narrative is
+[`docs/evidence/prep-recovery-k9-mcl/README.md`](evidence/prep-recovery-k9-mcl/README.md).
+It records the integrated K9 real-data metadata reconciliation and the independently verified MCL
+normalization delta. The exact Actual-PREP parent Product is reproduced in disposable Docker as a
+`SMOKE_FAILED` descendant with
+`K9_DATAHUB_SOURCE_FAILED / METADATA_COLLECTION / METADATA_IDENTITY_CONFLICT`. The same deploy flow
+then advances this Product to `ACCEPTED` without reset, resecret, duplicate administrator or
+service identities, or Docker residue. Both managed graphs and the semantic index are READY; the
+MCL checkpoint remains continuous; GENERAL completes. The exact image is linux/amd64 and carries
+the Product revision.
+
+The metadata collector now persists a sanitized staged source profile and applies the canonical
+DataHub identity contract: exact duplicates dedupe, optional sparse/rich observations merge
+deterministically, and structural contradictions fail closed at an exact bounded locus. The
+historical parent detail did not include this profile, so the handoff does not invent an exact
+historical PREP URN or sub-locus. A descendant retry is exposed as RUNNING before the HTTP listener
+can expose a retained parent terminal result; the retained failure history and any LKG remain
+untouched.
+
+The MCL correction is the exact Product delta previously verified at Product
+`16ad344e7bde7ec060816a04b4f40aab40f28097`. It accepts the supported DataHub v1.6.0 record
+representations, persists only bounded record-shape diagnostics, and replays a rejected retained
+offset without checkpoint advance or duplicate append. Its standalone Evidence is commit
+`ed5f21015772f913f181a6e2e316226f832744a7` in the quarantined MCL candidate lineage; all integrated
+claims and exact source/hash checks are recorded in the current in-lineage recovery Evidence above.
+
+The preceding metadata-only evidence remains at
 [`docs/evidence/prep-k9-metadata-collection-hotfix/README.md`](evidence/prep-k9-metadata-collection-hotfix/README.md).
-It preserves the prior Migration/MCL and K9 source-diagnostic closure and records the bounded
-DataHub v1.6.0 metadata correction. The same exact tag URN may be observed with either its tag-key
-name or the richer optional `properties.name`; the Product now performs a deterministic,
-provenance-aware merge while retaining fail-closed conflicts and completeness checks. Local
-metadata invariants use bounded detail enums without persisting raw provider content. Focused
-K9/state/server/smoke, build/static, migration-integrity, exact linux/amd64 OCI, and the unchanged
-official current-style `SMOKE_FAILED` descendant-resume fixture are `PASS`. The unchanged operator
-command is the target acceptance step.
+It records the earlier bounded DataHub v1.6.0 Tag projection correction and its source/runtime
+gates.
 
 The preceding source-stage diagnostic evidence remains at
 [`docs/evidence/prep-k9-source-diagnostic-hotfix/README.md`](evidence/prep-k9-source-diagnostic-hotfix/README.md).
