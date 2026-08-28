@@ -53,6 +53,8 @@ RUNTIME_ROOT = ROOT / "runtime" / "prep39083"
 ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
 ATTEMPT_RECEIPT = RUNTIME_ROOT / "deploy-attempt.json"
 SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
+ACCEPTED_CONTRACT_V1 = "DATARIVER_PREP39083_ACCEPTED_V1"
+ACCEPTED_CONTRACT_V2 = "DATARIVER_PREP39083_ACCEPTED_V2"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CHANGE_ME_PREFIX = "CHANGE_ME"
@@ -239,6 +241,7 @@ class TargetInventory:
     attempt_receipt_present: bool = False
     attempt_receipt_valid: bool = False
     attempt_receipt: Mapping[str, Any] | None = None
+    accepted_marker: Mapping[str, Any] | None = None
 
     @property
     def running(self) -> bool:
@@ -468,21 +471,44 @@ def _optional_keys() -> set[str]:
     )
 
 
-def _accepted_marker_valid(path: Path) -> bool:
+def _accepted_marker(path: Path) -> Mapping[str, Any] | None:
     if not path.is_file() or path.is_symlink():
-        return False
+        return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
-    return bool(
-        isinstance(value, dict)
-        and value.get("contract") == "DATARIVER_PREP39083_ACCEPTED_V1"
-        and all(
-            isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
-            for key in ("product_sha", "evidence_sha", "handoff_commit")
-        )
+        return None
+    if not isinstance(value, dict) or value.get("contract") not in {
+        ACCEPTED_CONTRACT_V1,
+        ACCEPTED_CONTRACT_V2,
+    }:
+        return None
+    if not all(
+        isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
+        for key in ("product_sha", "evidence_sha", "handoff_commit")
+    ):
+        return None
+    if value.get("contract") == ACCEPTED_CONTRACT_V1:
+        return value
+    valid_v2 = (
+        isinstance(value.get("project"), str)
+        and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", value["project"]))
+        and value.get("platform") == "linux/amd64"
+        and isinstance(value.get("port"), int)
+        and 1 <= value["port"] <= 65535
+        and value.get("k9_mode") in {"REQUIRED", "DEFERRED"}
+        and value.get("ownership_fingerprint_contract") == OWNERSHIP_FINGERPRINT_CONTRACT
+        and isinstance(value.get("ownership_fingerprint"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", value["ownership_fingerprint"]))
+        and isinstance(value.get("volume_identities"), list)
+        and len(value["volume_identities"]) == len(set(value["volume_identities"]))
+        and all(isinstance(item, str) and item for item in value["volume_identities"])
     )
+    return value if valid_v2 else None
+
+
+def _accepted_marker_valid(path: Path) -> bool:
+    return _accepted_marker(path) is not None
 
 
 ATTEMPT_PHASES = frozenset(
@@ -622,10 +648,11 @@ def inspect_target_inventory(
             )
         )
     )
+    accepted = _accepted_marker(accepted_marker_path)
     attempt = _attempt_receipt(attempt_receipt_path)
     return TargetInventory(
         accepted_marker_path.exists(),
-        _accepted_marker_valid(accepted_marker_path),
+        accepted is not None,
         runtime_path.exists(),
         _runtime_env_valid(runtime_path),
         tuple(sorted(containers, key=lambda item: (item.service, item.identifier))),
@@ -634,6 +661,7 @@ def inspect_target_inventory(
         attempt_receipt_path.exists(),
         attempt is not None,
         attempt,
+        accepted,
     )
 
 
@@ -650,17 +678,22 @@ def classify_target_state(inventory: TargetInventory) -> TargetState:
     ):
         return TargetState.EXISTING_STATE_AMBIGUOUS
     if inventory.accepted_marker_present:
-        if (
+        if not (
             inventory.accepted_marker_valid
             and inventory.runtime_env_valid
             and required_accepted_volumes <= inventory.volume_names
+            and inventory.attempt_receipt_present
+            and inventory.attempt_receipt_valid
+            and isinstance(inventory.attempt_receipt, Mapping)
         ):
+            return TargetState.EXISTING_STATE_AMBIGUOUS
+        if inventory.attempt_receipt.get("phase") == "ACCEPTED":
             return (
                 TargetState.EXISTING_ACCEPTED_RUNNING
                 if inventory.running
                 else TargetState.EXISTING_ACCEPTED_STOPPED
             )
-        return TargetState.EXISTING_STATE_AMBIGUOUS
+        return TargetState.EXISTING_OWNED_INCOMPLETE
     if inventory.attempt_receipt_present:
         attempt = inventory.attempt_receipt
         if (
@@ -1203,23 +1236,55 @@ def prepare_deployment(
     state = classify_target_state(inventory)
     runner.note(f"Classify PREP target state: {state.value}")
     if state is TargetState.EXISTING_STATE_AMBIGUOUS:
+        if inventory.accepted_marker_present:
+            _accepted_state_failure(
+                "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+                "The accepted marker is not paired with one complete owned target state.",
+            )
         _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
     previous_attempt: Mapping[str, Any] | None = None
-    if state is TargetState.EXISTING_OWNED_INCOMPLETE:
+    if state in {
+        TargetState.EXISTING_ACCEPTED_RUNNING,
+        TargetState.EXISTING_ACCEPTED_STOPPED,
+        TargetState.EXISTING_OWNED_INCOMPLETE,
+    }:
         preserved_runtime = read_env_file(
             RUNTIME_ENV,
             private=True,
             label=".env.prep.runtime",
         )
-        previous_attempt = validate_owned_attempt(
-            runner,
-            release,
-            source["handoff_commit"],
-            inventory,
-            preserved_runtime,
-            k9_mode_from_operator(operator),
-        )
-        runner.note("Prove incomplete target ownership and source ancestry before reconciliation")
+        if state in {
+            TargetState.EXISTING_ACCEPTED_RUNNING,
+            TargetState.EXISTING_ACCEPTED_STOPPED,
+        }:
+            previous_attempt = validate_accepted_state(
+                runner,
+                release,
+                source["handoff_commit"],
+                inventory,
+                preserved_runtime,
+                k9_mode_from_operator(operator),
+            )
+            runner.note("Prove accepted target ownership and compatible source ancestry")
+        else:
+            previous_attempt = validate_owned_attempt(
+                runner,
+                release,
+                source["handoff_commit"],
+                inventory,
+                preserved_runtime,
+                k9_mode_from_operator(operator),
+            )
+            if inventory.accepted_marker_present:
+                validate_prior_accepted_marker(
+                    runner,
+                    release,
+                    inventory,
+                    preserved_runtime,
+                )
+            runner.note(
+                "Prove incomplete target ownership and source ancestry before reconciliation"
+            )
     bundle = reconcile_environment(release, target_state=state)
     runner.environment = child_environment(bundle.effective)
     return bundle, DeploymentPreparation(
@@ -1438,6 +1503,190 @@ def advance_attempt_phase(receipt: Mapping[str, Any], phase: str) -> dict[str, A
     return payload
 
 
+def _accepted_state_failure(code: str, reason: str) -> NoReturn:
+    raise PrepError(
+        "TARGET_STATE",
+        code,
+        reason,
+        "Preserve all containers, volumes, receipts and target-owned environment files; "
+        "do not reset or treat this target as fresh.",
+    )
+
+
+def _attempt_fingerprint_matches(
+    runner: Runner,
+    receipt: Mapping[str, Any],
+    preserved_runtime: Mapping[str, str],
+) -> bool:
+    if receipt.get("contract") == ATTEMPT_CONTRACT_V1:
+        historical_contract = _historical_env_contract(
+            runner,
+            str(receipt["handoff_commit"]),
+        )
+        legacy_runtime = _legacy_runtime_for_receipt(
+            preserved_runtime,
+            historical_contract,
+        )
+        legacy_runtime["POC_K9_SCHEDULER_ENABLED"] = (
+            "true" if receipt.get("k9_mode") == "REQUIRED" else "false"
+        )
+        return receipt.get("runtime_env_fingerprint") == legacy_runtime_env_fingerprint_v1(
+            legacy_runtime
+        )
+    return receipt.get("ownership_fingerprint") == target_ownership_fingerprint(preserved_runtime)
+
+
+def _git_is_ancestor(runner: Runner, ancestor: str, descendant: str) -> bool:
+    return (
+        runner.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def validate_accepted_state(
+    runner: Runner,
+    release: ReleaseIdentity,
+    handoff: str,
+    inventory: TargetInventory,
+    preserved_runtime: Mapping[str, str],
+    expected_k9_mode: str,
+) -> Mapping[str, Any]:
+    marker = inventory.accepted_marker
+    receipt = inventory.attempt_receipt
+    if not inventory.accepted_marker_valid or not isinstance(marker, Mapping):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The accepted marker is absent, malformed or outside the supported marker contract.",
+        )
+    if (
+        not inventory.attempt_receipt_valid
+        or not isinstance(receipt, Mapping)
+        or receipt.get("phase") != "ACCEPTED"
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The accepted marker is not paired with one canonical ACCEPTED deployment receipt.",
+        )
+    expected_volumes = set(canonical_volume_identities(release))
+    observed_volumes = {volume.name for volume in inventory.volumes}
+    common_keys = ("product_sha", "evidence_sha", "handoff_commit")
+    if (
+        any(marker.get(key) != receipt.get(key) for key in common_keys)
+        or receipt.get("project") != release.project
+        or receipt.get("platform") != release.platform
+        or receipt.get("port") != release.port
+        or receipt.get("k9_mode") != expected_k9_mode
+        or set(receipt.get("volume_identities", ())) != expected_volumes
+        or observed_volumes != expected_volumes
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The accepted marker, receipt and canonical target identity do not agree.",
+        )
+    if not _attempt_fingerprint_matches(runner, receipt, preserved_runtime):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_FINGERPRINT_MISMATCH",
+            "The accepted receipt no longer matches the preserved target-owned runtime secrets.",
+        )
+    if marker.get("contract") == ACCEPTED_CONTRACT_V2:
+        if (
+            marker.get("project") != release.project
+            or marker.get("platform") != release.platform
+            or marker.get("port") != release.port
+            or marker.get("k9_mode") != expected_k9_mode
+            or set(marker.get("volume_identities", ())) != expected_volumes
+        ):
+            _accepted_state_failure(
+                "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+                "The accepted V2 marker no longer matches the canonical target identity.",
+            )
+        if marker.get("ownership_fingerprint") != target_ownership_fingerprint(preserved_runtime):
+            _accepted_state_failure(
+                "PREP_ACCEPTED_STATE_FINGERPRINT_MISMATCH",
+                "The accepted V2 marker no longer matches the preserved target ownership.",
+            )
+    ancestry_pairs = (
+        (str(receipt["product_sha"]), str(receipt["evidence_sha"])),
+        (str(receipt["evidence_sha"]), str(receipt["handoff_commit"])),
+        (str(receipt["product_sha"]), release.product_sha),
+        (str(receipt["handoff_commit"]), handoff),
+    )
+    if any(
+        not _git_is_ancestor(runner, ancestor, descendant)
+        for ancestor, descendant in ancestry_pairs
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_LINEAGE_MISMATCH",
+            "The accepted Product/Evidence/Handoff lineage is not compatible with this release.",
+        )
+    return receipt
+
+
+def validate_prior_accepted_marker(
+    runner: Runner,
+    release: ReleaseIdentity,
+    inventory: TargetInventory,
+    preserved_runtime: Mapping[str, str],
+) -> None:
+    marker = inventory.accepted_marker
+    receipt = inventory.attempt_receipt
+    if not inventory.accepted_marker_valid or not isinstance(marker, Mapping):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The interrupted accepted-state update has no supported prior accepted marker.",
+        )
+    if not inventory.attempt_receipt_valid or not isinstance(receipt, Mapping):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The interrupted accepted-state update has no canonical owned attempt receipt.",
+        )
+    if receipt.get("target_state_before") not in {
+        TargetState.EXISTING_ACCEPTED_RUNNING.value,
+        TargetState.EXISTING_ACCEPTED_STOPPED.value,
+        TargetState.EXISTING_OWNED_INCOMPLETE.value,
+    }:
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The accepted marker contradicts the recorded origin of the incomplete attempt.",
+        )
+    expected_volumes = set(canonical_volume_identities(release))
+    if {volume.name for volume in inventory.volumes} != expected_volumes:
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The interrupted accepted-state update no longer owns the canonical volumes.",
+        )
+    if marker.get("contract") == ACCEPTED_CONTRACT_V2:
+        if (
+            set(marker.get("volume_identities", ())) != expected_volumes
+            or marker.get("project") != release.project
+            or marker.get("platform") != release.platform
+            or marker.get("port") != release.port
+            or marker.get("ownership_fingerprint")
+            != target_ownership_fingerprint(preserved_runtime)
+        ):
+            _accepted_state_failure(
+                "PREP_ACCEPTED_STATE_FINGERPRINT_MISMATCH",
+                "The prior accepted marker no longer matches target ownership.",
+            )
+    ancestry_pairs = (
+        (str(marker["product_sha"]), str(marker["evidence_sha"])),
+        (str(marker["evidence_sha"]), str(marker["handoff_commit"])),
+        (str(marker["product_sha"]), str(receipt["product_sha"])),
+        (str(marker["handoff_commit"]), str(receipt["handoff_commit"])),
+    )
+    if any(
+        not _git_is_ancestor(runner, ancestor, descendant)
+        for ancestor, descendant in ancestry_pairs
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_LINEAGE_MISMATCH",
+            "The prior accepted marker is outside the interrupted update lineage.",
+        )
+
+
 def validate_owned_attempt(
     runner: Runner,
     release: ReleaseIdentity,
@@ -1456,40 +1705,16 @@ def validate_owned_attempt(
         or receipt.get("port") != release.port
         or receipt.get("k9_mode") != expected_k9_mode
         or sorted(receipt.get("volume_identities", ())) != sorted(expected_volumes)
-        or {volume.name for volume in inventory.volumes} - set(expected_volumes)
+        or {volume.name for volume in inventory.volumes} != set(expected_volumes)
     ):
         _ambiguous_state("The incomplete deployment receipt no longer matches target ownership.")
-    if receipt.get("contract") == ATTEMPT_CONTRACT_V1:
-        historical_contract = _historical_env_contract(
-            runner,
-            str(receipt["handoff_commit"]),
-        )
-        legacy_runtime = _legacy_runtime_for_receipt(
-            preserved_runtime,
-            historical_contract,
-        )
-        legacy_runtime["POC_K9_SCHEDULER_ENABLED"] = (
-            "true" if receipt.get("k9_mode") == "REQUIRED" else "false"
-        )
-        fingerprint_matches = receipt.get(
-            "runtime_env_fingerprint",
-        ) == legacy_runtime_env_fingerprint_v1(legacy_runtime)
-    else:
-        fingerprint_matches = receipt.get(
-            "ownership_fingerprint",
-        ) == target_ownership_fingerprint(preserved_runtime)
-    if not fingerprint_matches:
+    if not _attempt_fingerprint_matches(runner, receipt, preserved_runtime):
         _ambiguous_state("The incomplete deployment receipt no longer matches target ownership.")
     for ancestor, descendant in (
         (str(receipt["product_sha"]), release.product_sha),
         (str(receipt["handoff_commit"]), handoff),
     ):
-        if (
-            runner.run(
-                ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
-            ).returncode
-            != 0
-        ):
+        if not _git_is_ancestor(runner, ancestor, descendant):
             _ambiguous_state(
                 "The incomplete deployment receipt is outside current source ancestry."
             )
@@ -2533,22 +2758,36 @@ def write_accepted_marker(
     release: ReleaseIdentity,
     handoff: str,
     *,
+    attempt: Mapping[str, Any],
     target_state: TargetState,
     k9_mode: str,
 ) -> None:
-    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     payload = {
-        "contract": "DATARIVER_PREP39083_ACCEPTED_V1",
+        "contract": ACCEPTED_CONTRACT_V2,
         "product_sha": release.product_sha,
         "evidence_sha": release.evidence_sha,
         "handoff_commit": handoff,
+        "project": release.project,
+        "platform": release.platform,
+        "port": release.port,
         "initial_target_state": target_state.value,
         "k9_mode": k9_mode,
+        "ownership_fingerprint_contract": OWNERSHIP_FINGERPRINT_CONTRACT,
+        "ownership_fingerprint": attempt.get("ownership_fingerprint"),
+        "volume_identities": sorted(set(attempt.get("volume_identities", ()))),
         "accepted_at": datetime.now(UTC).isoformat(),
     }
-    temporary = ACCEPTED_MARKER.with_suffix(".tmp")
-    temporary.write_text(f"{json.dumps(payload, indent=2, sort_keys=True)}\n", encoding="utf-8")
-    os.replace(temporary, ACCEPTED_MARKER)
+    if (
+        payload["ownership_fingerprint_contract"] != attempt.get("ownership_fingerprint_contract")
+        or not isinstance(payload["ownership_fingerprint"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload["ownership_fingerprint"])
+        or set(payload["volume_identities"]) != set(canonical_volume_identities(release))
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+            "The accepted marker cannot be bound to the completed owned attempt.",
+        )
+    _atomic_json(ACCEPTED_MARKER, payload)
 
 
 @contextmanager
@@ -2788,6 +3027,7 @@ def deploy(
             write_accepted_marker(
                 release,
                 source["handoff_commit"],
+                attempt=attempt,
                 target_state=bundle.target_state,
                 k9_mode=bundle.k9_mode,
             )
@@ -2970,7 +3210,30 @@ def prepare_operational_bundle(
     inventory = inspect_target_inventory(runner, release)
     state = classify_target_state(inventory)
     if state is TargetState.EXISTING_STATE_AMBIGUOUS:
+        if inventory.accepted_marker_present:
+            _accepted_state_failure(
+                "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
+                "The accepted marker is not paired with one complete owned target state.",
+            )
         _ambiguous_state("Existing PREP receipts, runtime secrets and persistent volumes disagree.")
+    if state in {
+        TargetState.EXISTING_ACCEPTED_RUNNING,
+        TargetState.EXISTING_ACCEPTED_STOPPED,
+    }:
+        source = verify_source_identity(release)
+        preserved_runtime = read_env_file(
+            RUNTIME_ENV,
+            private=True,
+            label=".env.prep.runtime",
+        )
+        validate_accepted_state(
+            runner,
+            release,
+            source["handoff_commit"],
+            inventory,
+            preserved_runtime,
+            k9_mode_from_operator(operator),
+        )
     if action in {"smoke", "export"} and state not in {
         TargetState.EXISTING_ACCEPTED_RUNNING,
         TargetState.EXISTING_ACCEPTED_STOPPED,

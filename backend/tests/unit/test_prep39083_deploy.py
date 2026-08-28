@@ -192,6 +192,49 @@ def _base_attempt_receipt(runtime: dict[str, str]) -> dict[str, object]:
     }
 
 
+def _accepted_receipt(runtime: dict[str, str]) -> dict[str, object]:
+    receipt = _base_attempt_receipt(runtime)
+    receipt.update(
+        {
+            "product_sha": "a" * 40,
+            "evidence_sha": "b" * 40,
+            "handoff_commit": "c" * 40,
+            "target_state_before": deploy.TargetState.FRESH_CLEAN.value,
+            "k9_mode": "REQUIRED",
+            "phase": "ACCEPTED",
+        }
+    )
+    return receipt
+
+
+def _accepted_marker_document(
+    receipt: dict[str, object],
+    *,
+    contract: str = "DATARIVER_PREP39083_ACCEPTED_V2",
+) -> dict[str, object]:
+    marker = {
+        "contract": contract,
+        "product_sha": receipt["product_sha"],
+        "evidence_sha": receipt["evidence_sha"],
+        "handoff_commit": receipt["handoff_commit"],
+        "initial_target_state": deploy.TargetState.FRESH_CLEAN.value,
+        "k9_mode": receipt["k9_mode"],
+        "accepted_at": "2026-08-29T00:00:00+00:00",
+    }
+    if contract == "DATARIVER_PREP39083_ACCEPTED_V2":
+        marker.update(
+            {
+                "project": receipt["project"],
+                "platform": receipt["platform"],
+                "port": receipt["port"],
+                "ownership_fingerprint_contract": receipt["ownership_fingerprint_contract"],
+                "ownership_fingerprint": receipt["ownership_fingerprint"],
+                "volume_identities": receipt["volume_identities"],
+            }
+        )
+    return marker
+
+
 def test_operator_environment_is_preserved_and_generated_secrets_are_stable(tmp_path: Path) -> None:
     operator = tmp_path / ".env.prep"
     runtime = tmp_path / ".env.prep.runtime"
@@ -887,6 +930,7 @@ def _inventory(
     network: bool = False,
     attempt: dict[str, object] | None = None,
     attempt_present: bool = False,
+    accepted_marker: dict[str, object] | None = None,
 ) -> object:
     containers = (deploy.TargetContainer("container", "web", running),) if running or marker else ()
     return deploy.TargetInventory(
@@ -900,6 +944,7 @@ def _inventory(
         attempt_present,
         attempt is not None,
         attempt,
+        accepted_marker,
     )
 
 
@@ -915,21 +960,20 @@ def _inventory(
                 runtime_valid=True,
                 running=True,
                 volumes=("pgvector-data", "neo4j-data", "neo4j-logs"),
+                attempt=_accepted_receipt(_runtime_values()),
+                attempt_present=True,
             ),
             deploy.TargetState.EXISTING_ACCEPTED_RUNNING,
         ),
         (
-            deploy.TargetInventory(
-                True,
-                True,
-                True,
-                True,
-                (),
-                (
-                    deploy.TargetVolume("project_pg", "pgvector-data"),
-                    deploy.TargetVolume("project_neo", "neo4j-data"),
-                ),
-                (),
+            _inventory(
+                marker=True,
+                marker_valid=True,
+                runtime=True,
+                runtime_valid=True,
+                volumes=("pgvector-data", "neo4j-data", "neo4j-logs"),
+                attempt=_accepted_receipt(_runtime_values()),
+                attempt_present=True,
             ),
             deploy.TargetState.EXISTING_ACCEPTED_STOPPED,
         ),
@@ -957,6 +1001,171 @@ def _inventory(
 )
 def test_target_state_classifier(inventory: object, expected: object) -> None:
     assert deploy.classify_target_state(inventory) is expected
+
+
+def _accepted_inventory(
+    runtime: dict[str, str],
+    *,
+    receipt: dict[str, object] | None = None,
+    marker: dict[str, object] | None = None,
+    volumes: tuple[str, ...] | None = None,
+) -> Any:
+    accepted_receipt = receipt or _accepted_receipt(runtime)
+    accepted_marker = marker or _accepted_marker_document(accepted_receipt)
+    volume_names = volumes or tuple(deploy.canonical_volume_identities(_release()))
+    return deploy.TargetInventory(
+        True,
+        True,
+        True,
+        True,
+        (),
+        tuple(
+            deploy.TargetVolume(name, name.removeprefix("datariver-prep39083_"))
+            for name in volume_names
+        ),
+        ("datariver-prep39083-services",),
+        True,
+        True,
+        accepted_receipt,
+        accepted_marker,
+    )
+
+
+def test_accepted_state_requires_receipt_and_supports_compatible_successor() -> None:
+    runtime = _runtime_values()
+    inventory = _accepted_inventory(runtime)
+    runner = AttemptValidationRunner(
+        json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text()),
+    )
+
+    validated = deploy.validate_accepted_state(
+        runner,
+        _release(),
+        "d" * 40,
+        inventory,
+        runtime,
+        "REQUIRED",
+    )
+
+    assert validated == inventory.attempt_receipt
+    assert deploy.classify_target_state(inventory) is deploy.TargetState.EXISTING_ACCEPTED_STOPPED
+    assert (
+        deploy.classify_target_state(replace(inventory, attempt_receipt_present=False))
+        is deploy.TargetState.EXISTING_STATE_AMBIGUOUS
+    )
+
+
+def test_legacy_accepted_marker_requires_matching_owned_accepted_receipt() -> None:
+    runtime = _runtime_values()
+    receipt = _accepted_receipt(runtime)
+    marker = _accepted_marker_document(
+        receipt,
+        contract="DATARIVER_PREP39083_ACCEPTED_V1",
+    )
+    inventory = _accepted_inventory(runtime, receipt=receipt, marker=marker)
+    runner = AttemptValidationRunner(
+        json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text()),
+    )
+
+    assert (
+        deploy.validate_accepted_state(
+            runner,
+            _release(),
+            "d" * 40,
+            inventory,
+            runtime,
+            "REQUIRED",
+        )
+        == receipt
+    )
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected_code"),
+    (
+        ("foreign-marker", "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN"),
+        ("foreign-volume", "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN"),
+        ("fingerprint", "PREP_ACCEPTED_STATE_FINGERPRINT_MISMATCH"),
+        ("lineage", "PREP_ACCEPTED_STATE_LINEAGE_MISMATCH"),
+    ),
+)
+def test_accepted_state_drift_fails_closed(drift: str, expected_code: str) -> None:
+    runtime = _runtime_values()
+    receipt = _accepted_receipt(runtime)
+    marker = _accepted_marker_document(receipt)
+    volumes = tuple(deploy.canonical_volume_identities(_release()))
+    ancestry = True
+    if drift == "foreign-marker":
+        marker["product_sha"] = "f" * 40
+    elif drift == "foreign-volume":
+        volumes = (*volumes[:-1], "foreign_pgvector-data")
+    elif drift == "fingerprint":
+        runtime["NEO4J_PASSWORD"] = "foreign-secret"
+    elif drift == "lineage":
+        ancestry = False
+    inventory = _accepted_inventory(
+        runtime,
+        receipt=receipt,
+        marker=marker,
+        volumes=volumes,
+    )
+    runner = AttemptValidationRunner(
+        json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text()),
+        ancestry=ancestry,
+    )
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_accepted_state(
+            runner,
+            _release(),
+            "d" * 40,
+            inventory,
+            runtime,
+            "REQUIRED",
+        )
+
+    assert captured.value.code == expected_code
+
+
+def test_stale_accepted_marker_cannot_mask_nonaccepted_partial_attempt() -> None:
+    runtime = _runtime_values()
+    receipt = _accepted_receipt(runtime)
+    marker = _accepted_marker_document(receipt)
+    receipt.update({"phase": "SCHEMA_READY", "target_state_before": "FRESH_CLEAN"})
+    inventory = _accepted_inventory(runtime, receipt=receipt, marker=marker)
+    runner = AttemptValidationRunner(
+        json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text()),
+    )
+
+    assert deploy.classify_target_state(inventory) is deploy.TargetState.EXISTING_OWNED_INCOMPLETE
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_prior_accepted_marker(runner, _release(), inventory, runtime)
+    assert captured.value.code == "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN"
+
+
+def test_accepted_marker_v2_is_atomic_and_binds_owned_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_values()
+    receipt = _accepted_receipt(runtime)
+    marker_path = tmp_path / "accepted.json"
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", marker_path)
+
+    deploy.write_accepted_marker(
+        _release(),
+        "c" * 40,
+        attempt=receipt,
+        target_state=deploy.TargetState.FRESH_CLEAN,
+        k9_mode="REQUIRED",
+    )
+
+    marker = deploy._accepted_marker(marker_path)
+    assert marker is not None
+    assert marker["contract"] == "DATARIVER_PREP39083_ACCEPTED_V2"
+    assert marker["ownership_fingerprint"] == receipt["ownership_fingerprint"]
+    assert marker["volume_identities"] == receipt["volume_identities"]
+    assert stat.S_IMODE(marker_path.stat().st_mode) == 0o600
 
 
 def test_owned_incomplete_receipt_is_resumable_but_malformed_receipt_is_ambiguous() -> None:
