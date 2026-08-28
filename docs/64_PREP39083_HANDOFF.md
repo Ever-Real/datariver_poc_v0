@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  b0402d142cc3920cbe936e7b19d1426009b0cdf1
-Evidence a40bdd06f55ba9556719f8d52d56d42e84268c29
+Product  9c960e28d10c5cd7fb748e745860d73c6ffeb2ae
+Evidence f99c92f08d426ba1f5d7aeb937e99e6ab8def397
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -141,13 +141,20 @@ identity.
 ## Current hotfix evidence
 
 The current verification narrative is
+[`docs/evidence/prep-k9-metadata-collection-hotfix/README.md`](evidence/prep-k9-metadata-collection-hotfix/README.md).
+It preserves the prior Migration/MCL and K9 source-diagnostic closure and records the bounded
+DataHub v1.6.0 metadata correction. The same exact tag URN may be observed with either its tag-key
+name or the richer optional `properties.name`; the Product now performs a deterministic,
+provenance-aware merge while retaining fail-closed conflicts and completeness checks. Local
+metadata invariants use bounded detail enums without persisting raw provider content. Focused
+K9/state/server/smoke, build/static, migration-integrity, exact linux/amd64 OCI, and the unchanged
+official current-style `SMOKE_FAILED` descendant-resume fixture are `PASS`. The unchanged operator
+command is the target acceptance step.
+
+The preceding source-stage diagnostic evidence remains at
 [`docs/evidence/prep-k9-source-diagnostic-hotfix/README.md`](evidence/prep-k9-source-diagnostic-hotfix/README.md).
-It preserves the prior Migration/MCL closure and records the bounded K9-only correction: five
-DataHub source substages, sanitized durable detail, deterministic retry only for transient failure
-families, semantic/LKG preservation, focused source/server/smoke gates, and the exact linux/amd64
-Product. The disposable descendant-resume fixture is explicitly recorded as Docker Compose
-`PASS` from the prior Handoff to the exact Product after intermittent Compose tool attempts were
-kept separate and cleaned exactly. The unchanged operator command is the target acceptance step.
+It records the five DataHub source substages, durable bounded high-level detail, deterministic
+transient retry policy, semantic/LKG preservation, and the prior exact disposable resume gate.
 
 The previous one-time Migration/K9/MCL closure evidence remains at
 [`docs/evidence/prep-hotfix-migration-k9-mcl/README.md`](evidence/prep-hotfix-migration-k9-mcl/README.md).
