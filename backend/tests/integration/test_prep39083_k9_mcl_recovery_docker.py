@@ -63,7 +63,17 @@ def _dataset() -> dict[str, Any]:
         "domain": None,
         "ownership": {"owners": []},
         "globalTags": {"tags": [{"tag": classification_tag}]},
-        "glossaryTerms": {"terms": []},
+        "glossaryTerms": {
+            "terms": [
+                {
+                    "term": {
+                        "urn": "urn:li:glossaryTerm:fixture_term",
+                        "name": "Fixture term",
+                        "properties": {"name": "Fixture term", "description": ""},
+                    }
+                }
+            ]
+        },
         "schemaMetadata": {
             "name": "asset",
             "fields": [
@@ -87,25 +97,26 @@ def _dataset() -> dict[str, Any]:
     }
 
 
-def _glossary_term(*, rich: bool = False) -> dict[str, Any]:
-    description = "Richer optional fixture metadata" if rich else ""
+def _glossary_term(*, assigned: bool = False) -> dict[str, Any]:
     return {
         "urn": "urn:li:glossaryTerm:fixture_term",
         "type": "GLOSSARY_TERM",
+        "exists": True,
+        "status": {"removed": False},
         "hierarchicalName": "fixture_term",
-        "properties": {"name": "Fixture term", "description": description},
+        "properties": {"name": "Fixture term", "description": ""},
         "glossaryTermInfo": {
             "name": "Fixture term",
-            "description": description,
+            "description": "",
             "termSource": None,
             "sourceRef": None,
             "sourceUrl": None,
-            "customProperties": [{"key": "fixture", "value": "rich"}] if rich else [],
+            "customProperties": [],
         },
         "domain": None,
         "structuredProperties": {"properties": []},
         "parentNodes": {"nodes": []},
-        "tableAssignments": {"total": 0},
+        "tableAssignments": {"total": 1 if assigned else 0},
         "columnAssignments": {"total": 0},
         "outgoingRelationships": {"total": 0, "relationships": []},
     }
@@ -119,6 +130,7 @@ def _provider_fixture() -> Iterator[tuple[str, dict[str, int]]]:
         "lineage": 0,
         "embedding": 0,
         "general": 0,
+        "direct_term": 0,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -188,22 +200,21 @@ def _provider_fixture() -> Iterator[tuple[str, dict[str, int]]]:
                         },
                     )
                     return
+                if "DataRiverPocGlossaryTermByUrn" in query:
+                    observations["direct_term"] += 1
+                    self._json(200, {"data": {"entity": _glossary_term(assigned=True)}})
+                    return
                 if "DataRiverPocGlossary" in query:
                     observations["glossary"] += 1
-                    sparse_term = _glossary_term()
-                    rich_term = _glossary_term(rich=True)
                     self._json(
                         200,
                         {
                             "data": {
                                 "scrollAcrossEntities": {
                                     "nextScrollId": None,
-                                    "count": 2,
-                                    "total": 2,
-                                    "searchResults": [
-                                        {"entity": sparse_term},
-                                        {"entity": rich_term},
-                                    ],
+                                    "count": 0,
+                                    "total": 0,
+                                    "searchResults": [],
                                 }
                             }
                         },
@@ -567,7 +578,7 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
                 "terminal": True,
                 "product_error_code": "K9_DATAHUB_SOURCE_FAILED",
                 "failure_stage": "METADATA_COLLECTION",
-                "failure_detail_code": "METADATA_IDENTITY_CONFLICT",
+                "failure_detail_code": "ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT",
             }
 
             retry_inventory = deploy.inspect_target_inventory(
@@ -689,37 +700,44 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
                 "total_column_count": 1,
                 "table_tag_observation_count": 1,
                 "column_tag_observation_count": 0,
-                "table_glossary_term_observation_count": 0,
+                "table_glossary_term_observation_count": 1,
                 "column_glossary_term_observation_count": 0,
                 "non_empty": True,
             }
             assert profile["glossary_scroll"] == {
-                "provider_reported_total": 2,
+                "provider_reported_total": 0,
                 "pages_fetched": 1,
-                "entities_fetched": 2,
-                "unique_term_count": 1,
+                "entities_fetched": 0,
+                "unique_term_count": 0,
                 "unique_node_count": 0,
-                "duplicate_term_observation_count": 1,
+                "duplicate_term_observation_count": 0,
                 "duplicate_node_observation_count": 0,
                 "cursor_progression_status": "COMPLETE",
                 "completion_status": True,
             }
             assert profile["relationships"] == {
-                "glossary_entities_inspected": 2,
+                "glossary_entities_inspected": 1,
                 "provider_relationship_total": 0,
-                "relationship_pages_fetched": 2,
+                "relationship_pages_fetched": 1,
                 "relationships_fetched": 0,
                 "duplicate_relationship_observations": 0,
                 "response_entity_identity_mismatch_count": 0,
                 "completeness_mismatch_count": 0,
             }
             assert profile["assignments"] == {
-                "declared_table_assignment_total": 0,
-                "observed_table_assignment_total": 0,
+                "declared_table_assignment_total": 1,
+                "observed_table_assignment_total": 1,
                 "declared_column_assignment_total": 0,
                 "observed_column_assignment_total": 0,
-                "term_outside_snapshot_count": 0,
+                "term_outside_snapshot_count": 1,
                 "duplicate_assignment_observation_count": 0,
+                "missing_term_reference_count": 1,
+                "direct_term_resolution_attempt_count": 1,
+                "direct_term_resolution_recovered_count": 1,
+                "direct_term_resolution_dangling_count": 0,
+                "table_missing_term_count": 1,
+                "column_missing_term_count": 0,
+                "source_consistency_conflict_count": 0,
             }
             assert profile["identity_resolution"] == {
                 "exact_duplicate_observation_count": 0,
@@ -729,6 +747,7 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
             }
             assert provider_observations["inventory"] >= 2
             assert provider_observations["glossary"] >= 2
+            assert provider_observations["direct_term"] >= 1
             assert provider_observations["lineage"] >= 4
             assert provider_observations["embedding"] >= 1
             assert provider_observations["general"] >= 1

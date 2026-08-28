@@ -30,6 +30,8 @@ function glossaryTerm(overrides = {}) {
   return {
     urn: termUrn,
     type: 'GLOSSARY_TERM',
+    exists: true,
+    status: { removed: false },
     properties: { name: 'Shared', description: 'Shared term' },
     tableAssignments: { total: 0 },
     columnAssignments: { total: 0 },
@@ -54,17 +56,25 @@ function page(searchResults, { total = searchResults.length, nextScrollId = null
   return { scrollAcrossEntities: { total, nextScrollId, searchResults } }
 }
 
-function fixture({ pages = [page([])], relationshipPages = [], dependencyOverrides = {} } = {}) {
+function fixture({
+  pages = [page([])],
+  directTerms = [],
+  relationshipPages = [],
+  dependencyOverrides = {},
+} = {}) {
   const glossaryPages = [...pages]
+  const remainingDirectTerms = [...directTerms]
   const remainingRelationshipPages = [...relationshipPages]
   const refreshGraphql = mock.fn(async (query) => {
     if (query === 'GLOSSARY') return glossaryPages.shift()
+    if (query === 'TERM') return remainingDirectTerms.shift()
     if (query === 'RELATIONSHIPS') return remainingRelationshipPages.shift()
     throw new Error('Unexpected query')
   })
   const collector = createK9MetadataCollector({
     refreshGraphql,
     glossaryQuery: 'GLOSSARY',
+    glossaryTermQuery: 'TERM',
     relationshipsQuery: 'RELATIONSHIPS',
     buildScrollVariables: (scrollId) => ({ scrollId }),
     schemaFields: (item) => item.schema_fields,
@@ -314,13 +324,113 @@ test('exact duplicate term, node, parent edge, and assignment observations dedup
   })
 })
 
-test('assignment to a Term outside the complete glossary snapshot remains a contradiction', async () => {
+test('search snapshot omission resolves the exact Term and preserves its assignment', async () => {
   const unknownTermInventory = [dataset('unknown', {
-    glossary_terms: [{ urn: 'urn:li:glossaryTerm:unknown' }],
+    glossary_terms: [{ urn: termUrn, name: 'Shared', description: '' }],
   })]
-  const failed = await failureRecord(fixture().collector, unknownTermInventory)
-  assert.equal(failed.detail, 'ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT')
+  const result = await fixture({
+    directTerms: [{ entity: glossaryTerm({ tableAssignments: { total: 1 } }) }],
+  }).collector(authorityPin, unknownTermInventory)
+  assert.equal(result.table_assignments.length, 1)
+  assert.equal(result.table_assignments[0].term_urn, termUrn)
+  assert.equal(result.terms.length, 1)
+  assert.deepEqual(result.source_profile.assignments, {
+    declared_table_assignment_total: 1,
+    observed_table_assignment_total: 1,
+    declared_column_assignment_total: 0,
+    observed_column_assignment_total: 0,
+    term_outside_snapshot_count: 1,
+    duplicate_assignment_observation_count: 0,
+    missing_term_reference_count: 1,
+    direct_term_resolution_attempt_count: 1,
+    direct_term_resolution_recovered_count: 1,
+    direct_term_resolution_dangling_count: 0,
+    table_missing_term_count: 1,
+    column_missing_term_count: 0,
+    source_consistency_conflict_count: 0,
+  })
+})
+
+test('direct Term hydration merges sparse and rich assignment observations deterministically', async () => {
+  const direct = glossaryTerm({
+    properties: { name: 'Shared', description: '' },
+    tableAssignments: { total: 1 },
+  })
+  const sparse = { urn: termUrn, name: 'Shared', description: '' }
+  const rich = { urn: termUrn, name: 'Shared', description: 'Richer optional metadata' }
+  const collect = async (references) => fixture({ directTerms: [{ entity: direct }] }).collector(
+    authorityPin,
+    [dataset('direct-order', { glossary_terms: references })],
+  )
+  const forward = await collect([sparse, rich])
+  const reverse = await collect([rich, sparse])
+  assert.deepEqual(forward, reverse)
+  assert.equal(forward.terms[0].description, 'Richer optional metadata')
+  assert.equal(forward.table_assignments.length, 1)
+  assert.equal(forward.source_profile.assignments.direct_term_resolution_attempt_count, 1)
+})
+
+test('confirmed absent or removed direct Term fails as DANGLING_GLOSSARY_ASSIGNMENT', async () => {
+  const inventory = [dataset('dangling', { glossary_terms: [{ urn: termUrn }] })]
+  for (const entity of [null, glossaryTerm({ exists: true, status: { removed: true } })]) {
+    const failed = await failureRecord(fixture({ directTerms: [{ entity }] }).collector, inventory)
+    assert.equal(failed.detail, 'DANGLING_GLOSSARY_ASSIGNMENT')
+    assert.equal(failed.profile.assignments.direct_term_resolution_dangling_count, 1)
+    assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+  }
+})
+
+test('wrong direct entity type fails closed without exposing its identity', async () => {
+  const inventory = [dataset('wrong-type', { glossary_terms: [{ urn: termUrn }] })]
+  const failed = await failureRecord(fixture({ directTerms: [{ entity: {
+    urn: termUrn,
+    type: 'GLOSSARY_NODE',
+  } }] }).collector, inventory)
+  assert.equal(failed.detail, 'DANGLING_GLOSSARY_ASSIGNMENT')
   assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+  assert.equal(JSON.stringify(failed.profile).includes(termUrn), false)
+})
+
+test('direct Term provider failures preserve every existing bounded provider family', async () => {
+  for (const properties of [
+    { providerFailureKind: 'TRANSPORT' },
+    { name: 'TimeoutError' },
+    { providerFailureKind: 'HTTP', providerHttpClass: '4xx' },
+    { providerFailureKind: 'HTTP', providerHttpClass: '5xx' },
+    { providerFailureKind: 'GRAPHQL' },
+    { providerFailureKind: 'CONTRACT' },
+  ]) {
+    const providerError = Object.assign(new Error('private provider body'), properties)
+    const collector = fixture({ dependencyOverrides: {
+      refreshGraphql: async (query) => {
+        if (query === 'GLOSSARY') return page([])
+        throw providerError
+      },
+    } }).collector
+    await assert.rejects(
+      () => collector(authorityPin, [dataset('direct-provider', { glossary_terms: [{ urn: termUrn }] })]),
+      (error) => error === providerError,
+    )
+  }
+})
+
+test('direct Term response contract and resolution fanout remain bounded', async () => {
+  const malformed = fixture({ directTerms: [{}] }).collector
+  await assert.rejects(
+    () => malformed(authorityPin, [dataset('malformed-direct', { glossary_terms: [{ urn: termUrn }] })]),
+    (error) => error?.providerFailureKind === 'CONTRACT',
+  )
+
+  const references = Array.from({ length: 1_001 }, (_, index) => ({
+    urn: `urn:li:glossaryTerm:bounded-${index}`,
+  }))
+  const failed = await failureRecord(
+    fixture().collector,
+    [dataset('bounded-direct', { glossary_terms: references })],
+  )
+  assert.equal(failed.detail, 'GLOSSARY_DIRECT_RESOLUTION_LIMIT_EXCEEDED')
+  assert.equal(failed.profile.assignments.missing_term_reference_count, 1_001)
+  assert.equal(failed.profile.assignments.direct_term_resolution_attempt_count, 0)
 })
 
 test('staged profiler reports only bounded counts after exact duplicate term dedupe', async () => {

@@ -12,6 +12,10 @@ export const K9_METADATA_FAILURE_DETAILS = Object.freeze([
   'DUPLICATE_NODE_IDENTITY',
   'DUPLICATE_TERM_PARENT_EDGE',
   'DUPLICATE_NODE_PARENT_EDGE',
+  'DANGLING_GLOSSARY_ASSIGNMENT',
+  'GLOSSARY_DIRECT_RESOLUTION_LIMIT_EXCEEDED',
+  // Retained only so the current Actual-PREP-style failed receipt remains
+  // readable during descendant resume. New collection paths resolve first.
   'ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT',
   'DUPLICATE_ASSIGNMENT_IDENTITY',
   'RELATION_IDENTITY_CONFLICT',
@@ -34,6 +38,7 @@ const supportedMetadataFailureDetails = new Set(K9_METADATA_FAILURE_DETAILS)
 const supportedTagNameSources = new Set(['LEGACY', 'PROPERTIES'])
 const supportedIdentityClassifications = new Set(K9_METADATA_IDENTITY_CLASSIFICATIONS)
 const sha256Pattern = /^[0-9a-f]{64}$/
+const MAX_DIRECT_GLOSSARY_TERM_RESOLUTIONS = 1_000
 
 function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
@@ -131,6 +136,13 @@ export function sanitizeK9MetadataSourceProfile(value) {
       observed_column_assignment_total: boundedCount(assignments.observed_column_assignment_total),
       term_outside_snapshot_count: boundedCount(assignments.term_outside_snapshot_count),
       duplicate_assignment_observation_count: boundedCount(assignments.duplicate_assignment_observation_count),
+      missing_term_reference_count: boundedCount(assignments.missing_term_reference_count),
+      direct_term_resolution_attempt_count: boundedCount(assignments.direct_term_resolution_attempt_count),
+      direct_term_resolution_recovered_count: boundedCount(assignments.direct_term_resolution_recovered_count),
+      direct_term_resolution_dangling_count: boundedCount(assignments.direct_term_resolution_dangling_count),
+      table_missing_term_count: boundedCount(assignments.table_missing_term_count),
+      column_missing_term_count: boundedCount(assignments.column_missing_term_count),
+      source_consistency_conflict_count: boundedCount(assignments.source_consistency_conflict_count),
     },
     identity_resolution: {
       exact_duplicate_observation_count: boundedCount(resolution.exact_duplicate_observation_count),
@@ -156,6 +168,13 @@ function metadataFailure(detailCode, cause, profile) {
   return profileError(Object.assign(
     new Error('The bounded K9 metadata collection invariant failed.', cause ? { cause } : undefined),
     { k9SourceFailureDetailCode: detailCode },
+  ), profile)
+}
+
+function providerContractFailure(profile) {
+  return profileError(Object.assign(
+    new Error('The bounded DataHub glossary entity response contract is invalid.'),
+    { providerFailureKind: 'CONTRACT' },
   ), profile)
 }
 
@@ -293,6 +312,13 @@ function createMetadataSourceProfile(sourceGeneration) {
       observed_column_assignment_total: 0,
       term_outside_snapshot_count: 0,
       duplicate_assignment_observation_count: 0,
+      missing_term_reference_count: 0,
+      direct_term_resolution_attempt_count: 0,
+      direct_term_resolution_recovered_count: 0,
+      direct_term_resolution_dangling_count: 0,
+      table_missing_term_count: 0,
+      column_missing_term_count: 0,
+      source_consistency_conflict_count: 0,
     },
     identity_resolution: {
       exact_duplicate_observation_count: 0,
@@ -433,6 +459,7 @@ function requiredFunction(value, label) {
 export function createK9MetadataCollector({
   refreshGraphql,
   glossaryQuery,
+  glossaryTermQuery,
   relationshipsQuery,
   buildScrollVariables,
   schemaFields,
@@ -615,6 +642,106 @@ export function createK9MetadataCollector({
       return relationships
     }
 
+    const registerGlossaryTerm = async (entity, {
+      pageNumber = null,
+      ordinal = null,
+      fromScroll = false,
+    } = {}) => {
+      const termInfo = entity.glossaryTermInfo || entity.properties || {}
+      const tableTotal = entity.tableAssignments?.total
+      const columnTotal = entity.columnAssignments?.total
+      if (!nonNegativeSafeInteger(tableTotal) || !nonNegativeSafeInteger(columnTotal)) {
+        throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
+      }
+      const termValue = {
+        urn: entity.urn,
+        name: termInfo.name || entity.properties?.name || '',
+        description: termInfo.description || entity.properties?.description || '',
+        term_source: termInfo.termSource || entity.properties?.termSource || null,
+        source_ref: termInfo.sourceRef || entity.properties?.sourceRef || null,
+        source_url: termInfo.sourceUrl || entity.properties?.sourceUrl || null,
+        custom_properties: customPropertiesFor(termInfo),
+        structured_properties: structuredPropertiesFor(entity.structuredProperties),
+        domain_reference: entity.domain?.domain?.urn ? {
+          urn: entity.domain.domain.urn,
+          name: entity.domain.domain.properties?.name || tailFor(entity.domain.domain.urn),
+          description: entity.domain.domain.properties?.description || '',
+        } : null,
+      }
+      const termObservation = {
+        ...termValue,
+        entity_type: entity.type,
+        assignment_totals: { TABLE: tableTotal, COLUMN: columnTotal },
+      }
+      if (termSet.has(entity.urn)) {
+        if (fromScroll) profile.glossary_scroll.duplicate_term_observation_count += 1
+        const merged = mergeCompatibleObservation(termObservations.get(entity.urn), termObservation)
+        if (merged.classification === 'CONTRADICTION') {
+          identityFailure(
+            profile,
+            'DUPLICATE_TERM_IDENTITY',
+            merged.classification,
+            entity.urn,
+            termObservation,
+            pageNumber,
+            ordinal,
+          )
+        }
+        observeIdentityResolution(profile, merged.classification)
+        termObservations.set(entity.urn, merged.value)
+        terms[termIndexes.get(entity.urn)] = publicGlossaryObservation(merged.value)
+      } else {
+        termSet.add(entity.urn)
+        termObservations.set(entity.urn, termObservation)
+        termIndexes.set(entity.urn, terms.length)
+        if (fromScroll) profile.glossary_scroll.unique_term_count = termSet.size
+        terms.push(termValue)
+        profile.assignments.declared_table_assignment_total += tableTotal
+        profile.assignments.declared_column_assignment_total += columnTotal
+        assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
+      }
+      for (const parentNode of entity.parentNodes?.nodes || []) {
+        const edgeKey = `${entity.urn}->${parentNode.urn}`
+        if (termParentEdgeSet.has(edgeKey)) {
+          observeIdentityResolution(profile, 'EXACT_DUPLICATE')
+          continue
+        }
+        termParentEdgeSet.add(edgeKey)
+        term_parent_edges.push({ term_urn: entity.urn, parent_urn: parentNode.urn })
+      }
+      for (const relationship of await explicitOutgoingRelationships(entity)) {
+        if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
+          || typeof relationship.entity?.urn !== 'string') continue
+        const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
+        const targetType = glossaryIdentityTypes.get(relationship.entity.urn)
+        if (targetType && targetType !== relationship.entity.type) {
+          identityFailure(
+            profile,
+            'RELATION_IDENTITY_CONFLICT',
+            'CONTRADICTION',
+            relationKey,
+            { source_type: entity.type, target_type: relationship.entity.type, existing_target_type: targetType },
+            pageNumber,
+            ordinal,
+          )
+        }
+        glossaryIdentityTypes.set(relationship.entity.urn, relationship.entity.type)
+        if (glossaryRelationshipSet.has(relationKey)) {
+          profile.relationships.duplicate_relationship_observations += 1
+          observeIdentityResolution(profile, 'EXACT_DUPLICATE')
+          continue
+        }
+        glossaryRelationshipSet.add(relationKey)
+        glossary_relationships.push({
+          source_urn: entity.urn,
+          target_urn: relationship.entity.urn,
+          source_type: entity.type,
+          target_type: relationship.entity.type,
+          relationship_type: relationship.type,
+        })
+      }
+    }
+
     while (true) {
       if (pages >= 10002) throw metadataFailure('GLOSSARY_CURSOR_STALLED')
       const data = await fetchGraphql(glossaryQuery, scrollVariables(nextScrollId), signal)
@@ -659,99 +786,11 @@ export function createK9MetadataCollector({
         }
         glossaryIdentityTypes.set(entity.urn, entity.type)
         if (entity.type === 'GLOSSARY_TERM') {
-          const termInfo = entity.glossaryTermInfo || entity.properties || {}
-          const tableTotal = entity.tableAssignments?.total
-          const columnTotal = entity.columnAssignments?.total
-          if (!nonNegativeSafeInteger(tableTotal) || !nonNegativeSafeInteger(columnTotal)) {
-            throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
-          }
-          const termValue = {
-            urn: entity.urn,
-            name: termInfo.name || entity.properties?.name || '',
-            description: termInfo.description || entity.properties?.description || '',
-            term_source: termInfo.termSource || entity.properties?.termSource || null,
-            source_ref: termInfo.sourceRef || entity.properties?.sourceRef || null,
-            source_url: termInfo.sourceUrl || entity.properties?.sourceUrl || null,
-            custom_properties: customPropertiesFor(termInfo),
-            structured_properties: structuredPropertiesFor(entity.structuredProperties),
-            domain_reference: entity.domain?.domain?.urn ? {
-              urn: entity.domain.domain.urn,
-              name: entity.domain.domain.properties?.name || tailFor(entity.domain.domain.urn),
-              description: entity.domain.domain.properties?.description || '',
-            } : null,
-          }
-          const termObservation = {
-            ...termValue,
-            entity_type: entity.type,
-            assignment_totals: { TABLE: tableTotal, COLUMN: columnTotal },
-          }
-          if (termSet.has(entity.urn)) {
-            profile.glossary_scroll.duplicate_term_observation_count += 1
-            const merged = mergeCompatibleObservation(termObservations.get(entity.urn), termObservation)
-            if (merged.classification === 'CONTRADICTION') {
-              identityFailure(
-                profile,
-                'DUPLICATE_TERM_IDENTITY',
-                merged.classification,
-                entity.urn,
-                termObservation,
-                pages,
-                fetchedTerms + resultIndex,
-              )
-            }
-            observeIdentityResolution(profile, merged.classification)
-            termObservations.set(entity.urn, merged.value)
-            terms[termIndexes.get(entity.urn)] = publicGlossaryObservation(merged.value)
-          } else {
-            termSet.add(entity.urn)
-            termObservations.set(entity.urn, termObservation)
-            termIndexes.set(entity.urn, terms.length)
-            profile.glossary_scroll.unique_term_count = termSet.size
-            terms.push(termValue)
-            profile.assignments.declared_table_assignment_total += tableTotal
-            profile.assignments.declared_column_assignment_total += columnTotal
-            assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
-          }
-          for (const parentNode of entity.parentNodes?.nodes || []) {
-            const edgeKey = `${entity.urn}->${parentNode.urn}`
-            if (termParentEdgeSet.has(edgeKey)) {
-              observeIdentityResolution(profile, 'EXACT_DUPLICATE')
-              continue
-            }
-            termParentEdgeSet.add(edgeKey)
-            term_parent_edges.push({ term_urn: entity.urn, parent_urn: parentNode.urn })
-          }
-          for (const relationship of await explicitOutgoingRelationships(entity)) {
-            if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship.entity?.type)
-              || typeof relationship.entity?.urn !== 'string') continue
-            const relationKey = `${entity.urn}->${relationship.entity.urn}->${relationship.type}`
-            const targetType = glossaryIdentityTypes.get(relationship.entity.urn)
-            if (targetType && targetType !== relationship.entity.type) {
-              identityFailure(
-                profile,
-                'RELATION_IDENTITY_CONFLICT',
-                'CONTRADICTION',
-                relationKey,
-                { source_type: entity.type, target_type: relationship.entity.type, existing_target_type: targetType },
-                pages,
-                fetchedTerms + resultIndex,
-              )
-            }
-            glossaryIdentityTypes.set(relationship.entity.urn, relationship.entity.type)
-            if (glossaryRelationshipSet.has(relationKey)) {
-              profile.relationships.duplicate_relationship_observations += 1
-              observeIdentityResolution(profile, 'EXACT_DUPLICATE')
-              continue
-            }
-            glossaryRelationshipSet.add(relationKey)
-            glossary_relationships.push({
-              source_urn: entity.urn,
-              target_urn: relationship.entity.urn,
-              source_type: entity.type,
-              target_type: relationship.entity.type,
-              relationship_type: relationship.type,
-            })
-          }
+          await registerGlossaryTerm(entity, {
+            pageNumber: pages,
+            ordinal: fetchedTerms + resultIndex,
+            fromScroll: true,
+          })
         } else {
           const nodeValue = {
             urn: entity.urn,
@@ -846,24 +885,150 @@ export function createK9MetadataCollector({
     profile.glossary_scroll.cursor_progression_status = 'COMPLETE'
     profile.glossary_scroll.completion_status = true
 
+    const assignmentReferences = []
+    for (const item of inventory) {
+      const classification = classificationFor(item, authorityPin.classification_ceiling)
+      for (const term of item.glossary_terms || []) {
+        if (term?.urn) assignmentReferences.push({ type: 'TABLE', reference: term, item, field: null, classification })
+      }
+      for (const field of fieldsFor(item)) {
+        for (const reference of field.glossaryTerms?.terms || []) {
+          if (reference.term?.urn) assignmentReferences.push({
+            type: 'COLUMN', reference: reference.term, item, field, classification,
+          })
+        }
+      }
+    }
+
+    const missingTermReferences = new Map()
+    for (const assignment of assignmentReferences) {
+      const termUrn = assignment.reference.urn
+      if (termSet.has(termUrn)) continue
+      profile.assignments.term_outside_snapshot_count += 1
+      profile.assignments.missing_term_reference_count += 1
+      if (assignment.type === 'TABLE') profile.assignments.table_missing_term_count += 1
+      else profile.assignments.column_missing_term_count += 1
+      const observations = missingTermReferences.get(termUrn) || []
+      observations.push(assignment.reference)
+      missingTermReferences.set(termUrn, observations)
+    }
+    if (missingTermReferences.size > MAX_DIRECT_GLOSSARY_TERM_RESOLUTIONS) {
+      throw metadataFailure('GLOSSARY_DIRECT_RESOLUTION_LIMIT_EXCEEDED', undefined, profile)
+    }
+
+    for (const [termUrn, references] of [...missingTermReferences.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))) {
+      profile.assignments.direct_term_resolution_attempt_count += 1
+      const data = await fetchGraphql(glossaryTermQuery, { urn: termUrn }, signal)
+      if (!data || typeof data !== 'object' || Array.isArray(data)
+        || !Object.hasOwn(data, 'entity')) throw providerContractFailure(profile)
+      const entity = data.entity
+      if (entity === null) {
+        profile.assignments.direct_term_resolution_dangling_count += 1
+        identityFailure(
+          profile,
+          'DANGLING_GLOSSARY_ASSIGNMENT',
+          'CONTRADICTION',
+          termUrn,
+          { resolution: 'ABSENT', assignment_reference_count: references.length },
+          pages,
+          profile.assignments.direct_term_resolution_attempt_count,
+        )
+      }
+      if (!entity || typeof entity !== 'object' || Array.isArray(entity)
+        || typeof entity.urn !== 'string' || typeof entity.type !== 'string') {
+        throw providerContractFailure(profile)
+      }
+      if (entity.urn !== termUrn) throw providerContractFailure(profile)
+      if (entity.type !== 'GLOSSARY_TERM') {
+        profile.assignments.direct_term_resolution_dangling_count += 1
+        identityFailure(
+          profile,
+          'DANGLING_GLOSSARY_ASSIGNMENT',
+          'CONTRADICTION',
+          termUrn,
+          { resolution: 'INCOMPATIBLE_ENTITY_TYPE', entity_type: entity.type },
+          pages,
+          profile.assignments.direct_term_resolution_attempt_count,
+        )
+      }
+      if (typeof entity.exists !== 'boolean') throw providerContractFailure(profile)
+      if (entity.status !== null && entity.status !== undefined
+        && (typeof entity.status !== 'object' || Array.isArray(entity.status)
+          || typeof entity.status.removed !== 'boolean')) throw providerContractFailure(profile)
+      if (entity.exists === false || entity.status?.removed === true) {
+        profile.assignments.direct_term_resolution_dangling_count += 1
+        identityFailure(
+          profile,
+          'DANGLING_GLOSSARY_ASSIGNMENT',
+          'CONTRADICTION',
+          termUrn,
+          {
+            resolution: entity.status?.removed === true ? 'REMOVED' : 'DOES_NOT_EXIST',
+            assignment_reference_count: references.length,
+          },
+          pages,
+          profile.assignments.direct_term_resolution_attempt_count,
+        )
+      }
+      const existingEntityType = glossaryIdentityTypes.get(entity.urn)
+      if (existingEntityType && existingEntityType !== entity.type) {
+        identityFailure(
+          profile,
+          'RELATION_IDENTITY_CONFLICT',
+          'CONTRADICTION',
+          entity.urn,
+          { entity_type: entity.type, existing_entity_type: existingEntityType },
+          pages,
+          profile.assignments.direct_term_resolution_attempt_count,
+        )
+      }
+      glossaryIdentityTypes.set(entity.urn, entity.type)
+      await registerGlossaryTerm(entity, {
+        pageNumber: pages,
+        ordinal: profile.assignments.direct_term_resolution_attempt_count,
+      })
+      let mergedObservation = termObservations.get(termUrn)
+      for (const reference of references) {
+        const sparseObservation = {
+          urn: termUrn,
+          name: typeof reference.name === 'string' ? reference.name : '',
+          description: typeof reference.description === 'string' ? reference.description : '',
+          term_source: null,
+          source_ref: null,
+          source_url: null,
+          custom_properties: [],
+          structured_properties: [],
+          domain_reference: null,
+          entity_type: 'GLOSSARY_TERM',
+        }
+        const merged = mergeCompatibleObservation(mergedObservation, sparseObservation)
+        if (merged.classification === 'CONTRADICTION') {
+          identityFailure(
+            profile,
+            'DUPLICATE_TERM_IDENTITY',
+            merged.classification,
+            termUrn,
+            sparseObservation,
+            pages,
+            profile.assignments.direct_term_resolution_attempt_count,
+          )
+        }
+        observeIdentityResolution(profile, merged.classification)
+        mergedObservation = merged.value
+      }
+      termObservations.set(termUrn, mergedObservation)
+      terms[termIndexes.get(termUrn)] = publicGlossaryObservation(mergedObservation)
+      profile.assignments.direct_term_resolution_recovered_count += 1
+    }
+
     const observedAssignmentTotals = new Map([...termSet].sort()
       .map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
     const registerAssignment = (type, termUrn, item, field, classification) => {
       if (type === 'TABLE') profile.assignments.observed_table_assignment_total += 1
       else profile.assignments.observed_column_assignment_total += 1
       if (!termSet.has(termUrn)) {
-        profile.assignments.term_outside_snapshot_count += 1
-        identityFailure(
-          profile,
-          'ASSIGNMENT_TERM_OUTSIDE_SNAPSHOT',
-          'CONTRADICTION',
-          termUrn,
-          { assignment_type: type, term_in_snapshot: false },
-          pages,
-          type === 'TABLE'
-            ? profile.assignments.observed_table_assignment_total
-            : profile.assignments.observed_column_assignment_total,
-        )
+        throw providerContractFailure(profile)
       }
       const assignId = type === 'TABLE'
         ? `TABLE:${urnFor(item)}`
@@ -887,16 +1052,14 @@ export function createK9MetadataCollector({
       else column_assignments.push(assignment)
     }
 
-    for (const item of inventory) {
-      const classification = classificationFor(item, authorityPin.classification_ceiling)
-      for (const term of item.glossary_terms || []) {
-        if (term?.urn) registerAssignment('TABLE', term.urn, item, null, classification)
-      }
-      for (const field of fieldsFor(item)) {
-        for (const reference of field.glossaryTerms?.terms || []) {
-          if (reference.term?.urn) registerAssignment('COLUMN', reference.term.urn, item, field, classification)
-        }
-      }
+    for (const assignment of assignmentReferences) {
+      registerAssignment(
+        assignment.type,
+        assignment.reference.urn,
+        assignment.item,
+        assignment.field,
+        assignment.classification,
+      )
     }
 
     for (const termUrn of [...termSet].sort()) {
