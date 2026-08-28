@@ -146,8 +146,8 @@ It preserves the prior Migration/MCL closure and records the bounded K9-only cor
 DataHub source substages, sanitized durable detail, deterministic retry only for transient failure
 families, semantic/LKG preservation, focused source/server/smoke gates, and the exact linux/amd64
 Product. The disposable descendant-resume fixture is explicitly recorded as Docker Compose
-`TOOL_BLOCKED` before Product assertions rather than as a false PASS. The unchanged operator command
-is the target acceptance step.
+`PASS` from the prior Handoff to the exact Product after intermittent Compose tool attempts were
+kept separate and cleaned exactly. The unchanged operator command is the target acceptance step.
 
 The previous one-time Migration/K9/MCL closure evidence remains at
 [`docs/evidence/prep-hotfix-migration-k9-mcl/README.md`](evidence/prep-hotfix-migration-k9-mcl/README.md).
