@@ -155,10 +155,61 @@ pull or rebuild fallback.
 
 ## TEST PC accepted-state revalidation
 
-Status before provisional Handoff: `PENDING`. The existing TEST acceptance and its persistent
-state must be preserved. The exact candidate will be applied only through
-`./scripts/prep39083 deploy`; no volume deletion, reset, resecret, identity replacement, or user
-DataHub metadata mutation is permitted.
+The preserved TEST PC began at accepted Handoff
+`af74fc4d0cc99295a0ebfe897ccbaeb94cb5dfe6`. It is not Actual PREP. Its checkout was clean and was
+fast-forwarded to provisional Handoff `7ec89277f254a1e56c676df347b1a34acdbfff33`. The exact Product
+archive was transferred through the existing private transport and independently matched
+`3ca2a564e90d0d40e152262ad7e4922540d93511a693411b8f0463dd16deef5f` before deployment.
+
+The only deployment command was:
+
+```bash
+./scripts/prep39083 deploy
+```
+
+The first run classified the target as `EXISTING_ACCEPTED_RUNNING`, proved accepted marker,
+ACCEPTED receipt, volume ownership, target fingerprint, and compatible ancestry, then verified and
+loaded the pinned archive without rebuilding. The Product-owned PostgreSQL integrity check passed
+before idempotent state reconciliation. Smoke completed in 559 seconds:
+
+```text
+1/6 Health                                      PASS
+2/6 Administrator login                        PASS
+3/6 DataHub current inventory + GlossaryTerm   PASS
+4/6 Managed graphs + semantic index            PASS
+5/6 MCL source + durable checkpoint             PASS
+6/6 GENERAL provider + route                    PASS
+Final receipt                                   ACCEPTED
+```
+
+The read-only GlossaryTerm smoke selected `urn:li:glossaryTerm:active_indicator` through
+`RUNTIME_DISCOVERED`; `entityExists`, `glossaryTerm.exists`, and the basic metadata read were true.
+Mutation was false. No Wafer or fixed DEV seed fallback was used.
+
+A second unchanged-command rerun again classified `EXISTING_ACCEPTED_RUNNING`, passed all six smoke
+stages, and reached `ACCEPTED` in 207 seconds. Bounded state counts before and after that rerun were
+unchanged: three local credentials (one administrator and the two canonical services), two K9
+policies, four historical/current K9 run receipts, one MCL source, one MCL checkpoint, and one
+active login session. No duplicate identity was created.
+
+The final accepted marker is `DATARIVER_PREP39083_ACCEPTED_V2` and binds Product `6422abe46e4f6b5e68128c981ed58c94259d479e`, provisional Evidence
+`acb64c947bd34b324a767dce1e2ef1737b0e6899`, provisional Handoff
+`7ec89277f254a1e56c676df347b1a34acdbfff33`, project `datariver-prep39083`, port 39083, and
+`linux/amd64`. The loaded image carries the exact Product revision and manifest identity
+`sha256:5b4f4c7675d9d0245196c8c9d26809917229d9f705b287150f63ca6fa8211bdd`; the release verifier also
+proved the pinned config digest
+`sha256:e75da9634cdc7f4356672f1cb0c42152e23c3568a193b56cbcdb400f27f9ae6c` before start.
+
+Web was healthy as `1000:1000` with restart count zero. The three canonical state volumes remained
+present, port 39080 was untouched, and the tailnet health endpoint returned HTTP 200. The deploy did
+not reset state, regenerate retained secrets, rebuild or pull source, replace user DataHub metadata,
+or mutate the discovered GlossaryTerm. Airflow, MinIO, and GX execution remained explicitly
+DEFERRED in this TEST topology; the required DataHub, Chat, Embedding, Reranker, K9, MCL, and GX
+read contracts were READY/PASS.
+
+An independent Antigravity Gemini 3.1 Pro (High) read-only audit inspected the four Product commits
+and returned `ACCEPT_PRODUCT_CANDIDATE`: no blocker, target-data hardcoding, fake provider token,
+authorization widening, whole-database hash, unbounded retry, or runtime fail-open path was found.
 
 ## Boundaries retained
 
@@ -172,4 +223,3 @@ DataHub metadata mutation is permitted.
 - Runtime Web stays non-root; elevated bootstrap remains disposable and bounded.
 - Unknown ownership/schema/currentness/source drift never falls back to broader authorization,
   fresh/reset, stale-candidate promotion, or source rebuild.
-
