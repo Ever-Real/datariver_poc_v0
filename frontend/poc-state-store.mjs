@@ -6,7 +6,10 @@ import { URL } from 'node:url'
 import pg from 'pg'
 import { createClient } from 'redis'
 
-import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
+import {
+  isMclRuntimeClassification,
+  sanitizeMclRecordShape,
+} from './poc-mcl-runtime-failure.mjs'
 import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
@@ -1975,12 +1978,25 @@ export function createPocStateStore({ databasePool } = {}) {
     if (failureDetailCode && !/^[A-Z][A-Z0-9_]{0,79}$/.test(failureDetailCode)) {
       throw new Error('The POC change-history runtime failure detail code is invalid.')
     }
+    const recordShape = command.state === 'READY' || command.recordShape === undefined
+      ? null
+      : sanitizeMclRecordShape(command.recordShape)
+    if (command.recordShape !== undefined && !recordShape) {
+      throw new Error('The POC change-history rejected-record shape is invalid.')
+    }
+    if (recordShape && failureStage !== 'RECORD_NORMALIZATION') {
+      throw new Error('The POC change-history rejected-record shape is outside its failure stage.')
+    }
+    if (recordShape && recordShape.rejection_locus !== failureDetailCode) {
+      throw new Error('The POC change-history rejected-record shape conflicts with its failure detail.')
+    }
     return write(CHANGE_HISTORY_RUNTIME_STATUS_SCOPE, {
       contract: 'DATARIVER_CHANGE_HISTORY_RUNTIME_STATUS_V1',
       state: command.state,
       classification,
       failure_stage: failureStage,
       failure_detail_code: failureDetailCode,
+      ...(recordShape ? { record_shape: recordShape } : {}),
       observed_at: explicitSchedulerTimestamp(command.observedAt, 'observedAt'),
     })
   }

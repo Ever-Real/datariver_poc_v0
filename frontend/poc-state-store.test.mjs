@@ -643,6 +643,52 @@ test('records only bounded sanitized MCL capture runtime states', async () => {
     failure_detail_code: 'CLUSTER_ID_UNAVAILABLE',
     observed_at: '2026-08-14T01:03:00.000Z',
   })
+  const recordShape = {
+    contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+    partition: 1,
+    offset: 99,
+    entity_type: 'dataset',
+    aspect_name: 'schemaMetadata',
+    change_type: 'UPSERT',
+    aspect_present: true,
+    previous_aspect_value_present: false,
+    aspect_content_type: 'APPLICATION_JSON',
+    previous_aspect_content_type: 'MISSING',
+    created_type: 'OBJECT',
+    created_time_type: 'NUMBER',
+    created_time_representation: 'NUMBER',
+    created_actor_type: 'STRING',
+    current_aspect_decoded_object: true,
+    previous_aspect_decoded_object: false,
+    current_collection_item_count: 12,
+    previous_collection_item_count: null,
+    rejection_locus: 'SCHEMA_FIELD_CONTRACT_INVALID',
+  }
+  await store.writeChangeHistoryRuntimeStatus({
+    state: 'CAPTURE_FAILED',
+    classification: 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED',
+    failureStage: 'RECORD_NORMALIZATION',
+    failureDetailCode: 'SCHEMA_FIELD_CONTRACT_INVALID',
+    recordShape,
+    observedAt: '2026-08-14T01:04:00.000Z',
+  })
+  assert.deepEqual((await store.read('change-history-runtime-status-v1')).value.record_shape, recordShape)
+  await assert.rejects(store.writeChangeHistoryRuntimeStatus({
+    state: 'CAPTURE_FAILED',
+    classification: 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED',
+    failureStage: 'DURABLE_APPEND',
+    failureDetailCode: 'LEDGER_WRITE_REJECTED',
+    recordShape,
+    observedAt: '2026-08-14T01:04:01.000Z',
+  }), /outside its failure stage/)
+  await assert.rejects(store.writeChangeHistoryRuntimeStatus({
+    state: 'CAPTURE_FAILED',
+    classification: 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED',
+    failureStage: 'RECORD_NORMALIZATION',
+    failureDetailCode: 'SCHEMA_FIELD_CONTRACT_INVALID',
+    recordShape: { ...recordShape, entity_type: 'urn:li:dataset:private' },
+    observedAt: '2026-08-14T01:04:02.000Z',
+  }), /rejected-record shape is invalid/)
   await assert.rejects(
     store.writeChangeHistoryRuntimeStatus({
       state: 'CAPTURE_FAILED', classification: 'untrusted',

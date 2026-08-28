@@ -2422,9 +2422,44 @@ test('change-history summary exposes only bounded durable MCL failure diagnostic
       assert.equal(summary.capture_failure_classification, 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED')
       assert.equal(summary.capture_failure_stage, 'DURABLE_APPEND')
       assert.equal(summary.capture_failure_detail_code, 'LEDGER_WRITE_REJECTED')
+      assert.equal(summary.capture_failure_record_shape, null)
 
+      projection.runtimeStatus.value.classification = 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED'
+      projection.runtimeStatus.value.failure_stage = 'RECORD_NORMALIZATION'
+      projection.runtimeStatus.value.failure_detail_code = 'CREATED_TIME_INVALID'
+      projection.runtimeStatus.value.record_shape = {
+        contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+        partition: 0,
+        offset: 17,
+        entity_type: 'dataset',
+        aspect_name: 'schemaMetadata',
+        change_type: 'UPSERT',
+        aspect_present: true,
+        previous_aspect_value_present: false,
+        aspect_content_type: 'APPLICATION_JSON',
+        previous_aspect_content_type: 'MISSING',
+        created_type: 'OBJECT',
+        created_time_type: 'NUMBER',
+        created_time_representation: 'NUMBER',
+        created_actor_type: 'STRING',
+        current_aspect_decoded_object: true,
+        previous_aspect_decoded_object: false,
+        current_collection_item_count: 8,
+        previous_collection_item_count: null,
+        rejection_locus: 'CREATED_TIME_INVALID',
+      }
+      const normalization = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.deepEqual(normalization.capture_failure_record_shape, projection.runtimeStatus.value.record_shape)
+
+      projection.runtimeStatus.value.record_shape.entity_type = 'urn:li:dataset:private'
+      const rejectedShape = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(rejectedShape.capture_failure_record_shape, null)
+      assert.equal(JSON.stringify(rejectedShape).includes('urn:li:dataset:private'), false)
+
+      projection.runtimeStatus.value.classification = 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED'
       delete projection.runtimeStatus.value.failure_stage
       delete projection.runtimeStatus.value.failure_detail_code
+      delete projection.runtimeStatus.value.record_shape
       const legacy = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
       assert.equal(legacy.capture_state, 'CAPTURE_FAILED')
       assert.equal(legacy.capture_failure_classification, 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED')

@@ -25,6 +25,48 @@ describe('DataChangeStatusPanel', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows only bounded MCL rejection shape diagnostics for a failed capture', async () => {
+    const request = vi.fn((path: string) => responseFor(path, {
+      summary: summaryFor(path, {
+        capture_state: 'CAPTURE_FAILED',
+        sync_status: 'CAPTURE_FAILED',
+        capture_failure_classification: 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED',
+        capture_failure_stage: 'RECORD_NORMALIZATION',
+        capture_failure_detail_code: 'CREATED_TIME_INVALID',
+        capture_failure_record_shape: {
+          contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+          partition: 0,
+          offset: 17,
+          entity_type: 'dataset',
+          aspect_name: 'schemaMetadata',
+          change_type: 'UPSERT',
+          aspect_present: true,
+          previous_aspect_value_present: false,
+          aspect_content_type: 'APPLICATION_JSON',
+          previous_aspect_content_type: 'MISSING',
+          created_type: 'OBJECT',
+          created_time_type: 'NUMBER',
+          created_time_representation: 'NUMBER',
+          created_actor_type: 'STRING',
+          current_aspect_decoded_object: true,
+          previous_aspect_decoded_object: false,
+          current_collection_item_count: 12,
+          previous_collection_item_count: null,
+          rejection_locus: 'CREATED_TIME_INVALID',
+        },
+      }),
+      page: eventPage([]),
+    }))
+    render(<DataChangeStatusPanel client={clientFor(request)} />)
+
+    const facts = await screen.findByLabelText('변경 이력 원장 상태')
+    expect(within(facts).getAllByText('캡처 실패')).toHaveLength(2)
+    expect(within(facts).getByText('PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED')).toBeInTheDocument()
+    expect(within(facts).getByText('RECORD_NORMALIZATION / CREATED_TIME_INVALID')).toBeInTheDocument()
+    expect(within(facts).getByText('dataset · schemaMetadata · p0@17 · time NUMBER')).toBeInTheDocument()
+    expect(facts).not.toHaveTextContent('urn:li:')
+  })
+
   it('renders load failure separately from zero and empty states', async () => {
     const request = vi.fn().mockRejectedValue(new Error('변경 이력 provider 조회 실패'))
     render(<DataChangeStatusPanel client={clientFor(request)} />)
@@ -261,6 +303,10 @@ function summary(weekStart: string, overrides: Record<string, unknown> = {}) {
     operation_counts: { CREATE: 0, UPDATE: 0, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
     capture_state: 'CAPTURE_PENDING',
     sync_status: 'CAPTURE_PENDING',
+    capture_failure_classification: null,
+    capture_failure_stage: null,
+    capture_failure_detail_code: null,
+    capture_failure_record_shape: null,
     source_generation: '5'.repeat(64),
     source_observed_at: timestamp,
     source_occurred_at: null,

@@ -34,6 +34,17 @@ const systemResolutions = new Set(['RESOLVED', 'UNMAPPED', 'AMBIGUOUS'])
 const syncStates = new Set<ChangeHistorySummary['sync_status']>([
   'SOURCE_NOT_CONFIGURED', 'SOURCE_AMBIGUOUS', 'CHECKPOINT_NOT_AVAILABLE',
   'CHECKPOINT_INVALID', 'CAPTURE_PENDING', 'CONTIGUOUS_CAPTURE_RECORDED',
+  'DISCOVERY_FAILED', 'CAPTURE_FAILED',
+])
+const diagnosticIdentifier = /^[A-Z][A-Z0-9_]{0,79}$/
+const mclRuntimeClassification = /^PREP_MCL_(?:CAPTURE|DISCOVERY)_[A-Z0-9_]+_(?:FAILED|BLOCKED)$/
+const shapeTypeClasses = new Set([
+  'NULL', 'UNDEFINED', 'BOOLEAN', 'NUMBER', 'STRING', 'BIGINT', 'OBJECT', 'FUNCTION', 'SYMBOL', 'OTHER',
+])
+const shapeTimeRepresentations = new Set(['NUMBER', 'STRING', 'LONG_OBJECT', 'NULL', 'OTHER'])
+const shapeContentTypes = new Set(['APPLICATION_JSON', 'MISSING', 'OTHER'])
+const shapeChangeTypes = new Set([
+  'UPSERT', 'CREATE', 'UPDATE', 'DELETE', 'PATCH', 'RESTATE', 'CREATE_ENTITY', 'MISSING', 'OTHER',
 ])
 
 export class ChangeHistoryApi {
@@ -334,6 +345,53 @@ function assertSummary(value: unknown, expectedWeekStart: string): asserts value
     || candidate.first_mcl_offsets.length > 1_000
     || candidate.first_mcl_offsets.some((item: unknown) => !isRecord(item)
       || !nonNegativeInteger(item.partition) || !nonNegativeInteger(item.offset)))) invalid()
+  const failed = candidate.capture_state === 'DISCOVERY_FAILED' || candidate.capture_state === 'CAPTURE_FAILED'
+  if (failed) {
+    if (typeof candidate.capture_failure_classification !== 'string'
+      || !mclRuntimeClassification.test(candidate.capture_failure_classification)
+      || !(candidate.capture_failure_stage === null
+        || (typeof candidate.capture_failure_stage === 'string' && diagnosticIdentifier.test(candidate.capture_failure_stage)))
+      || !(candidate.capture_failure_detail_code === null
+        || (typeof candidate.capture_failure_detail_code === 'string'
+          && diagnosticIdentifier.test(candidate.capture_failure_detail_code)))) invalid()
+  } else if (candidate.capture_failure_classification !== null
+    || candidate.capture_failure_stage !== null
+    || candidate.capture_failure_detail_code !== null) invalid()
+  assertMclRejectedRecordShape(candidate.capture_failure_record_shape, candidate.capture_failure_stage,
+    candidate.capture_failure_detail_code)
+}
+
+function assertMclRejectedRecordShape(value: unknown, stage: unknown, detailCode: unknown) {
+  if (value === null) return
+  if (stage !== 'RECORD_NORMALIZATION' || !isRecord(value)
+    || value.contract !== 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1'
+    || !nonNegativeInteger(value.partition) || !nonNegativeInteger(value.offset)
+    || !shapeIdentifier(value.entity_type) || !shapeIdentifier(value.aspect_name)
+    || !shapeChangeTypes.has(String(value.change_type))
+    || typeof value.aspect_present !== 'boolean'
+    || typeof value.previous_aspect_value_present !== 'boolean'
+    || !shapeContentTypes.has(String(value.aspect_content_type))
+    || !shapeContentTypes.has(String(value.previous_aspect_content_type))
+    || !shapeTypeClasses.has(String(value.created_type))
+    || !shapeTypeClasses.has(String(value.created_time_type))
+    || !shapeTimeRepresentations.has(String(value.created_time_representation))
+    || !shapeTypeClasses.has(String(value.created_actor_type))
+    || typeof value.current_aspect_decoded_object !== 'boolean'
+    || typeof value.previous_aspect_decoded_object !== 'boolean'
+    || !shapeCount(value.current_collection_item_count)
+    || !shapeCount(value.previous_collection_item_count)
+    || typeof value.rejection_locus !== 'string'
+    || !diagnosticIdentifier.test(value.rejection_locus)
+    || value.rejection_locus !== detailCode) invalid()
+}
+
+function shapeIdentifier(value: unknown) {
+  return value === 'MISSING' || value === 'MALFORMED' || value === 'UNSUPPORTED'
+    || (typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value))
+}
+
+function shapeCount(value: unknown) {
+  return value === null || (nonNegativeInteger(value) && Number(value) <= 1_000_000)
 }
 
 function assertCountRecord<T extends string>(value: unknown, allowed: Set<T>) {

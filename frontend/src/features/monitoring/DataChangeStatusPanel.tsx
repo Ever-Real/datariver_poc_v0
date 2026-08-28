@@ -256,6 +256,23 @@ function SummaryView({ summary }: { summary: ChangeHistorySummary }) {
         <SummaryFact label="CR 미연결" value={formatCount(summary.unlinked_count)} />
         <SummaryFact label="DataHub 상태" value={syncStateLabel(summary.capture_state)} />
         <SummaryFact label="Sync 상태" value={syncStateLabel(summary.sync_status)} />
+        {summary.capture_failure_classification && (
+          <SummaryFact label="MCL failure" value={summary.capture_failure_classification} code />
+        )}
+        {summary.capture_failure_stage && summary.capture_failure_detail_code && (
+          <SummaryFact
+            label="MCL rejection locus"
+            value={`${summary.capture_failure_stage} / ${summary.capture_failure_detail_code}`}
+            code
+          />
+        )}
+        {summary.capture_failure_record_shape && (
+          <SummaryFact
+            label="Rejected record shape"
+            value={`${summary.capture_failure_record_shape.entity_type} · ${summary.capture_failure_record_shape.aspect_name} · p${summary.capture_failure_record_shape.partition}@${summary.capture_failure_record_shape.offset} · time ${summary.capture_failure_record_shape.created_time_representation}`}
+            code
+          />
+        )}
         <SummaryFact label="history available from" value={formatTimestamp(summary.history_available_from)} />
         <SummaryFact label="ledger guarantee from" value={formatTimestamp(summary.ledger_guarantee_from)} />
       </section>
@@ -662,6 +679,8 @@ function syncStateLabel(value: ChangeHistorySyncStatus): string {
     CHECKPOINT_INVALID: '체크포인트 오류',
     CAPTURE_PENDING: '캡처 대기',
     CONTIGUOUS_CAPTURE_RECORDED: '연속 캡처 기록됨',
+    DISCOVERY_FAILED: '소스 탐색 실패',
+    CAPTURE_FAILED: '캡처 실패',
   }
   return labels[value]
 }

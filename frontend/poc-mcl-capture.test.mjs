@@ -13,6 +13,7 @@ import {
   createPocMclCapture,
   decodeConfluentMcl,
   normalizeMclRecord,
+  profileMclRecordShape,
 } from './poc-mcl-capture.mjs'
 
 const { CompressionCodecs, CompressionTypes } = KafkaJs
@@ -29,8 +30,13 @@ const MCL_SCHEMA = {
   type: 'record',
   name: 'MetadataChangeLog',
   fields: [
-    { name: 'entityUrn', type: 'string' },
-    { name: 'aspectName', type: 'string' },
+    { name: 'entityType', type: 'string' },
+    { name: 'entityUrn', type: ['null', 'string'], default: null },
+    {
+      name: 'changeType',
+      type: { type: 'enum', name: 'ChangeType', symbols: ['UPSERT', 'CREATE', 'UPDATE', 'DELETE', 'PATCH', 'RESTATE', 'CREATE_ENTITY'] },
+    },
+    { name: 'aspectName', type: ['null', 'string'], default: null },
     {
       name: 'aspect',
       type: ['null', {
@@ -46,14 +52,15 @@ const MCL_SCHEMA = {
     { name: 'previousAspectValue', type: ['null', 'GenericAspect'], default: null },
     {
       name: 'created',
-      type: {
+      type: ['null', {
         type: 'record',
         name: 'AuditStamp',
         fields: [
           { name: 'actor', type: ['null', 'string'], default: null },
           { name: 'time', type: ['null', 'long'], default: null },
         ],
-      },
+      }],
+      default: null,
     },
   ],
 }
@@ -79,7 +86,9 @@ function schemaRegistry() {
 async function framedMcl(overrides = {}) {
   const registry = schemaRegistry()
   const record = {
+    entityType: 'dataset',
     entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    changeType: 'UPSERT',
     aspectName: 'schemaMetadata',
     aspect: {
       contentType: 'application/json',
@@ -325,6 +334,97 @@ test('fails safe on malformed supported MCL and on DB failure without advancing 
   assert.equal(store.captures.length, 0)
 })
 
+test('profiles only bounded non-business MCL shape at the exact normalization rejection locus', () => {
+  const profile = profileMclRecordShape({
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,private.schema.secret_table,PROD)',
+    entityType: 'dataset',
+    aspectName: 'datasetProperties',
+    changeType: 'UPSERT',
+    aspect: {
+      contentType: 'application/json',
+      value: Buffer.from(JSON.stringify({ description: 'private business description' })),
+    },
+    previousAspectValue: null,
+    created: { actor: 'urn:li:corpuser:private-user', time: -1 },
+  }, {
+    partition: 2,
+    offset: 41,
+    rejectionLocus: 'CREATED_TIME_INVALID',
+  })
+
+  assert.deepEqual(profile, {
+    contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+    partition: 2,
+    offset: 41,
+    entity_type: 'dataset',
+    aspect_name: 'datasetProperties',
+    change_type: 'UPSERT',
+    aspect_present: true,
+    previous_aspect_value_present: false,
+    aspect_content_type: 'APPLICATION_JSON',
+    previous_aspect_content_type: 'MISSING',
+    created_type: 'OBJECT',
+    created_time_type: 'NUMBER',
+    created_time_representation: 'NUMBER',
+    created_actor_type: 'STRING',
+    current_aspect_decoded_object: true,
+    previous_aspect_decoded_object: false,
+    current_collection_item_count: null,
+    previous_collection_item_count: null,
+    rejection_locus: 'CREATED_TIME_INVALID',
+  })
+  const serialized = JSON.stringify(profile)
+  for (const prohibited of ['secret_table', 'private-user', 'private business description', 'urn:li:']) {
+    assert.equal(serialized.includes(prohibited), false)
+  }
+})
+
+test('classifies invalid DataHub MCL time, preserves its checkpoint, and replays the same offset once after correction', async () => {
+  const rejected = await framedMcl({
+    created: { actor: 'urn:li:corpuser:builder', time: -1 },
+  })
+  const store = stateStoreDouble({ 0: 0 })
+  const offsets = [{ partition: 0, low: '0', high: '1', offset: '0' }]
+  const rejectedMessages = new Map([[0, [{ offset: '0', value: rejected.buffer }]]])
+
+  await assert.rejects(createPocMclCapture({
+    config: captureConfig(), stateStore: store,
+    kafka: kafkaDouble(offsets, rejectedMessages), schemaRegistry: rejected.registry,
+    clock: () => new Date('2026-08-28T01:00:00.000Z'),
+  }).run(), (error) => (
+    error.code === 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED'
+    && error.mclStage === 'RECORD_NORMALIZATION'
+    && error.mclDetailCode === 'CREATED_TIME_INVALID'
+    && error.mclRecordShape?.partition === 0
+    && error.mclRecordShape?.offset === 0
+    && error.mclRecordShape?.created_time_representation === 'NUMBER'
+  ))
+  assert.equal(store.checkpoints.get(0), 0)
+  assert.equal(store.captures.length, 0)
+
+  const corrected = await framedMcl()
+  const correctedMessages = new Map([[0, [{ offset: '0', value: corrected.buffer }]]])
+  const first = await createPocMclCapture({
+    config: captureConfig(), stateStore: store,
+    kafka: kafkaDouble(offsets, correctedMessages), schemaRegistry: corrected.registry,
+    clock: () => new Date('2026-08-28T01:00:00.000Z'),
+  }).run()
+  assert.equal(first.partitions[0].nextOffset, 1)
+  assert.equal(store.checkpoints.get(0), 1)
+  assert.equal(store.captures.length, 1)
+  assert.equal(store.captures[0].offset, 0)
+  assert.equal(store.captures[0].sourceIdentityHash, SOURCE_HASH)
+
+  const rerun = await createPocMclCapture({
+    config: captureConfig(), stateStore: store,
+    kafka: kafkaDouble(offsets, correctedMessages), schemaRegistry: corrected.registry,
+    clock: () => new Date('2026-08-28T01:00:00.000Z'),
+  }).run()
+  assert.equal(rerun.partitions[0].nextOffset, 1)
+  assert.equal(store.checkpoints.get(0), 1)
+  assert.equal(store.captures.length, 1)
+})
+
 test('persists earliest retained fresh boundaries before consume and fails closed on retention, topology, or boundary failure', async () => {
   const fixture = await framedMcl()
   const nonemptyStore = stateStoreDouble()
@@ -522,12 +622,11 @@ test('normalizes empty descriptions to null only at MCL description call sites',
   }, { detectedAt })
   assert.deepEqual(normalizedEditableFields.events.map((event) => event.afterData.description), [null, null])
 
-  const normalizedEditableTopLevel = normalizeMclRecord({
+  assert.throws(() => normalizeMclRecord({
     ...base,
     aspectName: 'editableSchemaMetadata',
     aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ description: '' })) },
-  }, { detectedAt })
-  assert.equal(normalizedEditableTopLevel.events[0].afterData.description, null)
+  }, { detectedAt }), (error) => error.mclNormalizationLocus === 'SCHEMA_FIELD_CONTRACT_INVALID')
 
   const normalizedDataset = normalizeMclRecord({
     ...base,
@@ -693,6 +792,137 @@ test('normalizes every supported DataHub v1.6 SchemaFieldDataType discriminator'
   }, { detectedAt })
   assert.deepEqual(normalized.events.map((event) => [event.afterData.logical_type, event.afterData.nullable]),
     SCHEMA_FIELD_LOGICAL_TYPES.map((logicalType) => [logicalType, false]))
+})
+
+test('normalizes the pinned DataHub Avro long representation to canonical UTC and rejects unsafe variants', async () => {
+  const fixture = await framedMcl()
+  const decoded = await decodeConfluentMcl(fixture.buffer, fixture.registry, 65_536)
+  assert.equal(typeof decoded.created.time, 'number')
+  assert.equal(decoded.created.time, 1_786_634_800_000)
+  assert.equal(normalizeMclRecord(decoded, {
+    detectedAt: '2026-08-28T01:00:00.000Z',
+  }).events[0].sourceOccurredAt, '2026-08-13T15:26:40.000Z')
+
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'datasetProperties',
+    aspect: { contentType: 'application/json', value: Buffer.from('{}') },
+    previousAspectValue: null,
+    created: { actor: null, time: 0 },
+  }
+  assert.equal(normalizeMclRecord({
+    ...base, created: { actor: null, time: '1786634800000' },
+  }, { detectedAt: '2026-08-28T01:00:00.000Z' }).events[0].sourceOccurredAt, '2026-08-13T15:26:40.000Z')
+  for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY, 8_640_000_000_000_001,
+    { low: 1, high: 2, unsigned: false }]) {
+    assert.throws(() => normalizeMclRecord({
+      ...base, created: { actor: null, time: value },
+    }, { detectedAt: '2026-08-28T01:00:00.000Z' }), (error) => (
+      error.mclNormalizationLocus === 'CREATED_TIME_INVALID'
+    ))
+  }
+})
+
+test('assigns every local normalization rejection to a bounded operator-safe locus', () => {
+  const detectedAt = '2026-08-28T01:00:00.000Z'
+  const aspect = (document, contentType = 'application/json') => ({
+    contentType, value: Buffer.from(typeof document === 'string' ? document : JSON.stringify(document)),
+  })
+  const field = {
+    fieldPath: 'id', nativeDataType: 'bigint', nullable: false, type: schemaFieldType('NumberType'),
+  }
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    entityType: 'dataset',
+    changeType: 'UPSERT',
+    aspectName: 'schemaMetadata',
+    aspect: aspect({ fields: [field] }),
+    previousAspectValue: null,
+    created: { actor: 'urn:li:corpuser:builder', time: 1_786_634_800_000 },
+  }
+  const cases = [
+    ['ENTITY_URN_INVALID', { ...base, entityUrn: null }],
+    ['ASPECT_NAME_INVALID', { ...base, aspectName: 7 }],
+    ['CREATED_TIME_INVALID', { ...base, created: { actor: null, time: -1 } }],
+    ['CREATED_ACTOR_INVALID', { ...base, created: { actor: 7, time: 0 } }],
+    ['ASPECT_CONTENT_TYPE_INVALID', { ...base, aspect: aspect({}, 'text/plain') }],
+    ['ASPECT_JSON_INVALID', { ...base, aspect: aspect('{not-json') }],
+    ['CURRENT_PREVIOUS_EVIDENCE_MISSING', { ...base, aspect: null, previousAspectValue: null }],
+    ['ENTITY_LIFECYCLE_CONTRACT_INVALID', { ...base, aspectName: '', entityType: 'chart' }],
+    ['SCHEMA_FIELD_CONTRACT_INVALID', { ...base, aspect: aspect({ fields: [{ ...field, nativeDataType: null }] }) }],
+    ['SCHEMA_FIELD_DUPLICATE', { ...base, aspect: aspect({ fields: [field, field] }) }],
+    ['LOGICAL_TYPE_CONTRACT_INVALID', { ...base, aspect: aspect({ fields: [{ ...field, type: {} }] }) }],
+    ['COLLECTION_ITEM_CONTRACT_INVALID', { ...base, aspectName: 'globalTags', aspect: aspect({ tags: [7] }) }],
+    ['COLLECTION_ITEM_DUPLICATE', { ...base, aspectName: 'globalTags', aspect: aspect({
+      tags: [{ tag: 'urn:li:tag:duplicate' }, { tag: 'urn:li:tag:duplicate' }],
+    }) }],
+    ['DOCUMENT_FIELD_CONTRACT_INVALID', { ...base, aspectName: 'datasetProperties', aspect: aspect({ description: 7 }) }],
+  ]
+  for (const [locus, record] of cases) {
+    assert.throws(() => normalizeMclRecord(record, { detectedAt }), (error) => (
+      error.mclNormalizationLocus === locus
+    ), locus)
+  }
+  assert.throws(() => normalizeMclRecord(base, {
+    detectedAt, maxDocumentBytes: 10,
+  }), (error) => error.mclNormalizationLocus === 'ASPECT_SIZE_LIMIT_EXCEEDED')
+  assert.throws(() => normalizeMclRecord({
+    ...base,
+    aspectName: 'globalTags',
+    previousAspectValue: aspect({ tags: [{ tag: 'urn:li:tag:before' }] }),
+    aspect: aspect({ tags: [{ tag: 'urn:li:tag:after' }] }),
+  }, { detectedAt, maxItems: 1 }), (error) => error.mclNormalizationLocus === 'EVENT_FANOUT_LIMIT_EXCEEDED')
+  assert.throws(() => normalizeMclRecord(null, {
+    detectedAt,
+  }), (error) => error.mclNormalizationLocus === 'OTHER_NORMALIZATION_CONTRACT_INVALID')
+})
+
+test('accepts legal current-only, previous-only, and defaulted status shapes without weakening malformed checks', () => {
+  const detectedAt = '2026-08-28T01:00:00.000Z'
+  const aspect = (document) => ({ contentType: 'application/json', value: Buffer.from(JSON.stringify(document)) })
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    entityType: 'dataset', changeType: 'UPSERT', created: { actor: null, time: 0 },
+  }
+  const currentOnly = normalizeMclRecord({
+    ...base, aspectName: 'globalTags', aspect: aspect({ tags: [{ tag: 'urn:li:tag:current' }] }),
+    previousAspectValue: null,
+  }, { detectedAt })
+  assert.deepEqual(currentOnly.events.map((event) => event.operation), ['ADD'])
+  const previousOnly = normalizeMclRecord({
+    ...base, aspectName: 'globalTags', aspect: null,
+    previousAspectValue: aspect({ tags: [{ tag: 'urn:li:tag:previous' }] }),
+  }, { detectedAt })
+  assert.deepEqual(previousOnly.events.map((event) => event.operation), ['REMOVE'])
+  const defaultedStatus = normalizeMclRecord({
+    ...base, aspectName: 'status', aspect: aspect({}), previousAspectValue: aspect({ removed: true }),
+  }, { detectedAt })
+  assert.deepEqual(defaultedStatus.events.map((event) => event.operation), ['CREATE'])
+  assert.throws(() => normalizeMclRecord({
+    ...base, aspectName: 'globalTags', aspect: aspect({}), previousAspectValue: null,
+  }, { detectedAt }), (error) => error.mclNormalizationLocus === 'COLLECTION_ITEM_CONTRACT_INVALID')
+})
+
+test('accepts a bounded DataHub schema aspect larger than the obsolete 16 KiB local seam', () => {
+  const fields = Array.from({ length: 240 }, (_, index) => ({
+    fieldPath: `nested.field_${String(index).padStart(3, '0')}`,
+    nativeDataType: 'varchar(255)',
+    nullable: index % 2 === 0,
+    type: schemaFieldType('StringType'),
+  }))
+  const value = Buffer.from(JSON.stringify({ fields }))
+  assert.ok(value.length > 16_384)
+  assert.ok(value.length < 65_536)
+  const normalized = normalizeMclRecord({
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.large_table,PROD)',
+    entityType: 'dataset',
+    changeType: 'UPSERT',
+    aspectName: 'schemaMetadata',
+    aspect: { contentType: 'application/json', value },
+    previousAspectValue: null,
+    created: { actor: 'urn:li:corpuser:builder', time: 1_786_634_800_000 },
+  }, { detectedAt: '2026-08-28T01:00:00.000Z', maxDocumentBytes: 65_536 })
+  assert.equal(normalized.events.length, 240)
 })
 
 test('fails closed for malformed DataHub v1.6 SchemaFieldDataType, nativeDataType, nullable, tag, and term shapes', () => {

@@ -128,7 +128,29 @@ export interface ChangeHistoryWeeklySummary {
 
 export type ChangeHistorySyncStatus = 'SOURCE_NOT_CONFIGURED' | 'SOURCE_AMBIGUOUS'
   | 'CHECKPOINT_NOT_AVAILABLE' | 'CHECKPOINT_INVALID' | 'CAPTURE_PENDING'
-  | 'CONTIGUOUS_CAPTURE_RECORDED'
+  | 'CONTIGUOUS_CAPTURE_RECORDED' | 'DISCOVERY_FAILED' | 'CAPTURE_FAILED'
+
+export interface MclRejectedRecordShape {
+  contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1'
+  partition: number
+  offset: number
+  entity_type: string
+  aspect_name: string
+  change_type: 'UPSERT' | 'CREATE' | 'UPDATE' | 'DELETE' | 'PATCH' | 'RESTATE' | 'CREATE_ENTITY' | 'MISSING' | 'OTHER'
+  aspect_present: boolean
+  previous_aspect_value_present: boolean
+  aspect_content_type: 'APPLICATION_JSON' | 'MISSING' | 'OTHER'
+  previous_aspect_content_type: 'APPLICATION_JSON' | 'MISSING' | 'OTHER'
+  created_type: string
+  created_time_type: string
+  created_time_representation: 'NUMBER' | 'STRING' | 'LONG_OBJECT' | 'NULL' | 'OTHER'
+  created_actor_type: string
+  current_aspect_decoded_object: boolean
+  previous_aspect_decoded_object: boolean
+  current_collection_item_count: number | null
+  previous_collection_item_count: number | null
+  rejection_locus: string
+}
 
 export interface ChangeHistorySummary extends ChangeHistoryWeeklySummary {
   schema_change_count: number
@@ -140,6 +162,10 @@ export interface ChangeHistorySummary extends ChangeHistoryWeeklySummary {
   operation_counts: Record<ChangeHistoryOperation, number>
   capture_state: ChangeHistorySyncStatus
   sync_status: ChangeHistorySyncStatus
+  capture_failure_classification: string | null
+  capture_failure_stage: string | null
+  capture_failure_detail_code: string | null
+  capture_failure_record_shape: MclRejectedRecordShape | null
   source_generation: string
   source_observed_at: string
   source_occurred_at: string | null

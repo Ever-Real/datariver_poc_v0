@@ -45,6 +45,46 @@ test('reduces runtime exceptions to bounded typed MCL diagnostics without retain
   })
 })
 
+test('persists a sanitized rejected-record shape only for normalization failures', async () => {
+  const recordShape = {
+    contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+    partition: 0,
+    offset: 17,
+    entity_type: 'dataset',
+    aspect_name: 'schemaMetadata',
+    change_type: 'UPSERT',
+    aspect_present: true,
+    previous_aspect_value_present: true,
+    aspect_content_type: 'APPLICATION_JSON',
+    previous_aspect_content_type: 'APPLICATION_JSON',
+    created_type: 'OBJECT',
+    created_time_type: 'NUMBER',
+    created_time_representation: 'NUMBER',
+    created_actor_type: 'STRING',
+    current_aspect_decoded_object: true,
+    previous_aspect_decoded_object: true,
+    current_collection_item_count: 3,
+    previous_collection_item_count: 2,
+    rejection_locus: 'SCHEMA_FIELD_CONTRACT_INVALID',
+  }
+  const failure = mclCaptureFailure(new Error('raw aspect body must stay transient'), {
+    stage: 'RECORD_NORMALIZATION',
+    detailCode: 'SCHEMA_FIELD_CONTRACT_INVALID',
+    recordShape,
+  })
+  let written
+  const persisted = await persistMclRuntimeFailure({
+    stateStore: {
+      async writeChangeHistoryRuntimeStatus(command) { written = command; return 12 },
+    },
+    error: failure,
+    observedAt: '2026-08-28T01:02:03.000Z',
+  })
+  assert.deepEqual(written.recordShape, recordShape)
+  assert.deepEqual(persisted.recordShape, recordShape)
+  assert.equal(JSON.stringify(written).includes('raw aspect body'), false)
+})
+
 test('awaits and verifies the sanitized durable MCL failure-status write', async () => {
   let releaseWrite
   let settled = false

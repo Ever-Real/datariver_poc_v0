@@ -178,6 +178,52 @@ describe('ChangeHistoryApi', () => {
     await expect(summaryApi.summary(weekStart)).rejects.toThrow('검증된 계약')
   })
 
+  it('accepts only bounded MCL rejected-record shape diagnostics', async () => {
+    const recordShape = {
+      contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1',
+      partition: 0,
+      offset: 17,
+      entity_type: 'dataset',
+      aspect_name: 'schemaMetadata',
+      change_type: 'UPSERT',
+      aspect_present: true,
+      previous_aspect_value_present: false,
+      aspect_content_type: 'APPLICATION_JSON',
+      previous_aspect_content_type: 'MISSING',
+      created_type: 'OBJECT',
+      created_time_type: 'NUMBER',
+      created_time_representation: 'NUMBER',
+      created_actor_type: 'STRING',
+      current_aspect_decoded_object: true,
+      previous_aspect_decoded_object: false,
+      current_collection_item_count: 12,
+      previous_collection_item_count: null,
+      rejection_locus: 'SCHEMA_FIELD_CONTRACT_INVALID',
+    }
+    const request = vi.fn().mockResolvedValue({
+      ...summary(),
+      capture_state: 'CAPTURE_FAILED',
+      sync_status: 'CAPTURE_FAILED',
+      capture_failure_classification: 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED',
+      capture_failure_stage: 'RECORD_NORMALIZATION',
+      capture_failure_detail_code: 'SCHEMA_FIELD_CONTRACT_INVALID',
+      capture_failure_record_shape: recordShape,
+    })
+    const api = new ChangeHistoryApi({ request, requestWithMeta: vi.fn() })
+    expect((await api.summary(weekStart)).capture_failure_record_shape).toEqual(recordShape)
+
+    request.mockResolvedValueOnce({
+      ...summary(),
+      capture_state: 'CAPTURE_FAILED',
+      sync_status: 'CAPTURE_FAILED',
+      capture_failure_classification: 'PREP_MCL_CAPTURE_RECORD_CONTRACT_FAILED',
+      capture_failure_stage: 'RECORD_NORMALIZATION',
+      capture_failure_detail_code: 'SCHEMA_FIELD_CONTRACT_INVALID',
+      capture_failure_record_shape: { ...recordShape, entity_type: 'urn:li:dataset:private' },
+    })
+    await expect(api.summary(weekStart)).rejects.toThrow('검증된 계약')
+  })
+
   it('decodes exact lifecycle events and requires the lifecycle summary zero-count key', async () => {
     const lifecycle = {
       ...event(), category: 'LIFECYCLE', change_type: 'METADATA_CHANGE', source_aspect: 'status', operation: 'DELETE',
@@ -270,6 +316,10 @@ function summary() {
     operation_counts: { CREATE: 0, UPDATE: 1, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
     capture_state: 'CONTIGUOUS_CAPTURE_RECORDED',
     sync_status: 'CONTIGUOUS_CAPTURE_RECORDED',
+    capture_failure_classification: null,
+    capture_failure_stage: null,
+    capture_failure_detail_code: null,
+    capture_failure_record_shape: null,
     source_generation: '6'.repeat(64),
     source_observed_at: timestamp,
     source_occurred_at: timestamp,

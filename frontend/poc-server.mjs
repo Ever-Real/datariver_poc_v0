@@ -40,7 +40,10 @@ import {
   loadPocChangeHistorySchedulerConfig,
   persistMclRuntimeFailure,
 } from './poc-change-history-scheduler.mjs'
-import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
+import {
+  isMclRuntimeClassification,
+  sanitizeMclRecordShape,
+} from './poc-mcl-runtime-failure.mjs'
 import {
   buildK9GlossaryScrollVariables,
   createK9ManagedGraphs,
@@ -1437,6 +1440,9 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
   const runtimeFailureDetailCode = /^[A-Z][A-Z0-9_]{0,79}$/.test(runtimeFailure?.failure_detail_code || '')
     ? runtimeFailure.failure_detail_code
     : null
+  const runtimeFailureRecordShape = runtimeFailureStage === 'RECORD_NORMALIZATION'
+    ? sanitizeMclRecordShape(runtimeFailure?.record_shape)
+    : null
   const occurred = rows.map((row) => row.event.source_occurred_at)
   const detected = rows.map((row) => row.event.detected_at)
   const captured = rows.map((row) => row.event.captured_at)
@@ -1457,6 +1463,7 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     capture_failure_classification: runtimeFailure?.classification || null,
     capture_failure_stage: runtimeFailureStage,
     capture_failure_detail_code: runtimeFailureDetailCode,
+    capture_failure_record_shape: runtimeFailureRecordShape,
     source_generation: projection.catalog.value.source_generation,
     source_observed_at: projection.catalog.value.observed_at,
     source_occurred_at: changeHistoryMaximumTimestamp(occurred),
