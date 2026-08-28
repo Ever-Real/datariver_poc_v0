@@ -54,7 +54,7 @@ def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
         if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The Chat retention binding schema is only partially present.")
+            raise RuntimeError("The Chat retention binding schema is only partially present.")
         _assert_chat_retention_binding_contract()
         return
 

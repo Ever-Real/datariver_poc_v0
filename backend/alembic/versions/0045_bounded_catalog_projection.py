@@ -164,7 +164,7 @@ def _constraint_state(
         return None
     expected = _canonical(f"CHECK ({expression})")
     if _canonical(str(row["definition"])) != expected:
-        print("Bypassed strict schema check: ", f"Constraint catalog.{table}.{name} has an unexpected definition.")
+        raise RuntimeError(f"Constraint catalog.{table}.{name} has an unexpected definition.")
     return bool(row["validated"])
 
 
@@ -239,7 +239,7 @@ def upgrade() -> None:
         .scalar_one_or_none()
     )
     if oversized_urn is not None:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Catalog projection contains an invalid external URN. "
             "Invalid external URNs must be corrected in DataHub and the "
             "non-canonical projection rebuilt before migration."

@@ -67,7 +67,7 @@ def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
         if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The governance target binding schema is only partially present.")
+            raise RuntimeError("The governance target binding schema is only partially present.")
         return
     op.add_column(
         "change_request_items",

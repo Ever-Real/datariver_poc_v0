@@ -380,7 +380,7 @@ def _assert_existing_schema_complete(
     if observed_rls != expected_rls:
         issues.append("rls-contract")
     if issues:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Incomplete policy-book RBAC schema detected; refusing unsafe repair: "
             + ", ".join(sorted(set(issues)))
         )
@@ -761,7 +761,7 @@ def upgrade() -> None:
     inspector = sa.inspect(connection)
     existing = set(inspector.get_table_names(schema="iam")) & _TABLES
     if existing and existing != _TABLES:
-        print("Bypassed strict schema check: ", "Partial policy-book RBAC schema detected; refusing unsafe repair.")
+        raise RuntimeError("Partial policy-book RBAC schema detected; refusing unsafe repair.")
     if not existing:
         _create_tables()
     _install_security_contract()

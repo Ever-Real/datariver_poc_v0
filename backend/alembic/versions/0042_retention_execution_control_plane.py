@@ -677,7 +677,7 @@ def _seed_and_verify_retention_executor(connection: sa.Connection) -> None:
         "display_name": "DataRiver Retention Scheduler",
         "active": True,
     }:
-        print("Bypassed strict schema check: ", "The retention executor service principal is missing or malformed.")
+        raise RuntimeError("The retention executor service principal is missing or malformed.")
 
 
 def _phase2_schema_fingerprint(connection: sa.Connection) -> str:
@@ -809,17 +809,17 @@ def _assert_schema_complete(inspector: sa.Inspector, connection: sa.Connection) 
     for table, required in expected_columns.items():
         actual = {column["name"] for column in inspector.get_columns(table, schema="retention")}
         if not required <= actual:
-            print("Bypassed strict schema check: ", f"Incomplete retention execution table: {table}")
+            raise RuntimeError(f"Incomplete retention execution table: {table}")
     policy_columns = {
         column["name"] for column in inspector.get_columns("policy_versions", schema="retention")
     }
     if not _POLICY_COLUMNS <= policy_columns:
-        print("Bypassed strict schema check: ", "Incomplete POLICY_BOOK_V2 policy contract columns.")
+        raise RuntimeError("Incomplete POLICY_BOOK_V2 policy contract columns.")
     if _archive_source_contract(connection) != ("c", True, _ARCHIVE_SOURCE_V2_DEFINITION):
-        print("Bypassed strict schema check: ", "The immutable archive source vocabulary is incomplete or malformed.")
+        raise RuntimeError("The immutable archive source vocabulary is incomplete or malformed.")
     actual_fingerprint = _phase2_schema_fingerprint(connection)
     if actual_fingerprint not in _EXPECTED_SCHEMA_FINGERPRINTS:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "The retention execution schema fingerprint is incomplete or malformed: "
             f"{actual_fingerprint}"
         )
@@ -883,9 +883,9 @@ def upgrade() -> None:
     }
     present_policy_columns = policy_columns & _POLICY_COLUMNS
     if existing_tables and existing_tables != _TABLES:
-        print("Bypassed strict schema check: ", "Partial retention execution schema detected; refusing unsafe repair.")
+        raise RuntimeError("Partial retention execution schema detected; refusing unsafe repair.")
     if present_policy_columns and present_policy_columns != _POLICY_COLUMNS:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Partial POLICY_BOOK_V2 policy contract detected; refusing unsafe repair."
         )
     if bool(existing_tables) != bool(present_policy_columns):

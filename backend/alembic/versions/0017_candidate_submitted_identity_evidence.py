@@ -70,7 +70,7 @@ def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
         if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", 
+            raise RuntimeError(
                 "The submitted candidate identity evidence schema is only partially present."
             )
         _install_immutability_contract()
