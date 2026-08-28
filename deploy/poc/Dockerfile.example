@@ -59,6 +59,7 @@ COPY frontend/poc-llm-timeout.mjs ./poc-llm-timeout.mjs
 COPY frontend/poc-disable-local-credential.mjs ./poc-disable-local-credential.mjs
 COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs
+COPY frontend/poc-postgres-schema-integrity.mjs ./poc-postgres-schema-integrity.mjs
 COPY frontend/poc-change-history-scheduler.mjs ./poc-change-history-scheduler.mjs
 COPY frontend/poc-mcl-capture.mjs ./poc-mcl-capture.mjs
 COPY frontend/poc-mcl-discovery.mjs ./poc-mcl-discovery.mjs

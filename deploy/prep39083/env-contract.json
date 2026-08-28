@@ -59,6 +59,7 @@
       "NEO4J_IMAGE": "neo4j:2026.06.0",
       "POC_POSTGRES_DB": "datariver_poc",
       "POC_POSTGRES_USER": "datariver_poc",
+      "POC_POSTGRES_SCHEMA_INTEGRITY_REQUIRED": "true",
       "NEO4J_USERNAME": "neo4j",
       "POC_AUTH_SESSION_TTL_SECONDS": "28800",
       "POC_AUTH_FAILED_ATTEMPT_LIMIT": "5",

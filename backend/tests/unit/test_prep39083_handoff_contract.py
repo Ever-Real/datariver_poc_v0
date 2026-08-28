@@ -238,6 +238,11 @@ def test_product_image_contains_the_runtime_mcl_modules() -> None:
     assert "COPY frontend/poc-mcl-runtime-failure.mjs ./poc-mcl-runtime-failure.mjs" in dockerfile
 
 
+def test_product_image_contains_the_postgres_owned_schema_integrity_module() -> None:
+    dockerfile = (ROOT / "deploy" / "poc" / "Dockerfile.example").read_text(encoding="utf-8")
+    assert "COPY frontend/poc-postgres-schema-integrity.mjs ./poc-postgres-schema-integrity.mjs" in dockerfile
+
+
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:
     archive_path = tmp_path / "unsafe.tar"
     with tarfile.open(archive_path, "w") as archive:

@@ -918,6 +918,19 @@ def test_postgres_contract_matches_or_returns_classified_credential_failure() ->
     assert classified.code == "PREP_LOCAL_DB_CREDENTIAL_MISMATCH"
     assert "28P01" not in classified.reason
 
+    schema_failure = subprocess.CompletedProcess(
+        ["docker", "compose", "run"],
+        2,
+        stdout="",
+        stderr='{"code":"POC_POSTGRES_SCHEMA_INTEGRITY_FAILED","detail":"private"}',
+    )
+    classified_schema = deploy.classify_bootstrap_failure(
+        deploy.CommandFailure(schema_failure.args, schema_failure),
+    )
+    assert classified_schema.step == "POSTGRES_SCHEMA_INTEGRITY"
+    assert classified_schema.code == "POC_POSTGRES_SCHEMA_INTEGRITY_FAILED"
+    assert "private" not in classified_schema.reason
+
 
 def _inventory(
     *,

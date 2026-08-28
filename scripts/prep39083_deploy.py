@@ -128,6 +128,16 @@ SUPPORTED_MCL_SMOKE_FAILURE_CODES = frozenset(
         "PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED",
     }
 )
+SUPPORTED_POSTGRES_SCHEMA_FAILURE_CODES = frozenset(
+    {
+        "POC_POSTGRES_SCHEMA_INSPECTION_INVALID",
+        "POC_POSTGRES_SCHEMA_INTEGRITY_CONFIG_INVALID",
+        "POC_POSTGRES_SCHEMA_INTEGRITY_FAILED",
+        "POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE",
+        "POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED",
+        "POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH",
+    }
+)
 
 
 class PrepError(RuntimeError):
@@ -1187,6 +1197,17 @@ def classify_bootstrap_failure(error: CommandFailure) -> PrepError:
             "The Compose application credential cannot authenticate to the existing "
             "PostgreSQL volume.",
             "Restore the original target-local database secret. Do not delete an accepted volume.",
+        )
+    schema_code = next(
+        (code for code in SUPPORTED_POSTGRES_SCHEMA_FAILURE_CODES if code in private_output),
+        None,
+    )
+    if schema_code:
+        return PrepError(
+            "POSTGRES_SCHEMA_INTEGRITY",
+            schema_code,
+            "The Product-owned PostgreSQL schema is partial, malformed or unsupported.",
+            "Preserve the database and deployment receipts; do not reset or apply manual DDL.",
         )
     return PrepError(
         "TARGET_BOOTSTRAP",

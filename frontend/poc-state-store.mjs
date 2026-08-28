@@ -14,6 +14,11 @@ import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import {
+  POC_POSTGRES_SCHEMA_INTEGRITY_FLAG,
+  inspectPocPostgresOwnedSchema,
+  recordPocPostgresOwnedSchemaReceipt,
+} from './poc-postgres-schema-integrity.mjs'
 
 const { Pool } = pg
 
@@ -561,12 +566,87 @@ const K9_MANAGED_GRAPH_SCHEMA = [
   `
 ]
 
+async function applyPocPostgresSchema(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS poc_state (
+      scope text PRIMARY KEY,
+      value jsonb NOT NULL,
+      version bigint NOT NULL DEFAULT 1,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `)
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS poc_catalog_embedding (
+      binding_hash char(64) NOT NULL,
+      asset_urn text NOT NULL,
+      source_hash char(64) NOT NULL,
+      source_generation char(64) NOT NULL,
+      content_text text NOT NULL,
+      metadata jsonb NOT NULL,
+      embedding vector NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (binding_hash, asset_urn),
+      CONSTRAINT ck_poc_catalog_embedding_dimension
+        CHECK (vector_dims(embedding) BETWEEN 1 AND 4096)
+    )
+  `)
+  for (const statement of CHANGE_HISTORY_SCHEMA) await client.query(statement)
+  for (const statement of LOCAL_AUTH_SCHEMA) await client.query(statement)
+  for (const statement of CHAT_HISTORY_SCHEMA) await client.query(statement)
+  for (const statement of USER_TABLE_GRANT_SCHEMA) await client.query(statement)
+  for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await client.query(statement)
+  for (const statement of K9_MANAGED_GRAPH_SCHEMA) await client.query(statement)
+}
+
+async function initializePocPostgresSchema(pool, integrityRequired) {
+  if (!integrityRequired) {
+    await applyPocPostgresSchema(pool)
+    return
+  }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const before = await inspectPocPostgresOwnedSchema(client)
+    if (['FRESH', 'KNOWN_OLDER_MIGRATABLE'].includes(before.state)) {
+      await applyPocPostgresSchema(client)
+    }
+    if (before.state !== 'CURRENT') {
+      const after = await inspectPocPostgresOwnedSchema(client)
+      if (after.state !== 'CURRENT_UNVERSIONED') {
+        throw Object.assign(new Error('Product-owned PostgreSQL schema migration was incomplete.'), {
+          code: 'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+        })
+      }
+      await recordPocPostgresOwnedSchemaReceipt(client)
+      const recorded = await inspectPocPostgresOwnedSchema(client)
+      if (recorded.state !== 'CURRENT') {
+        throw Object.assign(new Error('Product-owned PostgreSQL schema receipt was not durable.'), {
+          code: 'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+        })
+      }
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
   assertIsolatedTestDatabaseTarget({ databasePool, databaseUrl, databaseHost })
   const databaseConfigured = Boolean(databasePool || databaseUrl || databaseHost)
+  const schemaIntegritySetting = process.env[POC_POSTGRES_SCHEMA_INTEGRITY_FLAG]?.trim().toLowerCase()
+  if (schemaIntegritySetting && !['true', 'false'].includes(schemaIntegritySetting)) {
+    throw Object.assign(new Error('PostgreSQL schema integrity setting must be true or false.'), {
+      code: 'POC_POSTGRES_SCHEMA_INTEGRITY_CONFIG_INVALID',
+    })
+  }
+  const schemaIntegrityRequired = schemaIntegritySetting === 'true'
   const redisUrl = process.env.POC_REDIS_URL?.trim()
   const memory = new Map()
   const memoryCatalogEmbeddings = new Map()
@@ -600,35 +680,7 @@ export function createPocStateStore({ databasePool } = {}) {
         })
       }
       pool.on?.('error', () => undefined)
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS poc_state (
-          scope text PRIMARY KEY,
-          value jsonb NOT NULL,
-          version bigint NOT NULL DEFAULT 1,
-          updated_at timestamptz NOT NULL DEFAULT now()
-        )
-      `)
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS poc_catalog_embedding (
-          binding_hash char(64) NOT NULL,
-          asset_urn text NOT NULL,
-          source_hash char(64) NOT NULL,
-          source_generation char(64) NOT NULL,
-          content_text text NOT NULL,
-          metadata jsonb NOT NULL,
-          embedding vector NOT NULL,
-          updated_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (binding_hash, asset_urn),
-          CONSTRAINT ck_poc_catalog_embedding_dimension
-            CHECK (vector_dims(embedding) BETWEEN 1 AND 4096)
-        )
-      `)
-      for (const statement of CHANGE_HISTORY_SCHEMA) await pool.query(statement)
-      for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
-      for (const statement of CHAT_HISTORY_SCHEMA) await pool.query(statement)
-      for (const statement of USER_TABLE_GRANT_SCHEMA) await pool.query(statement)
-      for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await pool.query(statement)
-      for (const statement of K9_MANAGED_GRAPH_SCHEMA) await pool.query(statement)
+      await initializePocPostgresSchema(pool, schemaIntegrityRequired)
     })()
     try {
       await startingDatabase
