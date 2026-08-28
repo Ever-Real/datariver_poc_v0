@@ -35,12 +35,16 @@ releases do not repeat this 54-file audit, and broad review is reserved for base
 integrity, or supported-upgrade-policy changes. `MIGRATION_BASELINE_V2_AND_LEGACY_RETIREMENT` is a
 separate POST-PREP design backlog; no legacy migration was deleted or reorganized.
 
-Audit 2 was run exactly once by GPT-5.6 Sol xhigh. Its verdict was BLOCK because the six initial
+Audit 2 was run exactly once by GPT-5.6 Sol xhigh. Its initial checkpoint was BLOCK because the six
 compatibility validators compared names rather than normalized definitions and one 0092 fixture
-described an unreachable state. Only those bounded findings were corrected. The corrected candidate
-proved all six canonical squashed-0001 states and rejected same-name malformed constraint, index,
-policy, and trigger states. Audit 2 found no K9, MCL, one-command deploy, authorization-widening,
-secret, reset, or remote-ref blocker. It was not rerun.
+described an unreachable state. Only those bounded findings were corrected. The same Audit 2
+session then performed a read-only correction disposition against the final Product and returned
+PASS; this was not a second or broadened audit. The final candidate proves all six canonical
+squashed-0001 states and rejects same-name malformed constraint, index, policy, and trigger states.
+Audit 2 found no remaining Migration, K9, MCL, one-command deploy, authorization-widening, secret,
+reset, or remote-ref blocker. Its final focused evidence was Migration/checksum/handoff `124/124
+PASS`, integrated K9/MCL/server/smoke `137/137 PASS`, static integrity PASS, and source contract
+PASS with `runtime_input_diff=NONE`.
 
 Known c306 reachability findings for revisions 0082 and 0084 are explicitly outside this closure
 scope and remain POST-PREP backlog. They are not represented as passing hotfix assertions.
