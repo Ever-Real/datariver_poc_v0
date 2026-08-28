@@ -56,6 +56,7 @@ import {
   createK9MetadataCollector,
   K9_METADATA_FAILURE_DETAILS,
   normalizeDatahubTagReferences,
+  sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
 import {
   createProviderTransport,
@@ -2323,6 +2324,7 @@ export function buildDatahubKnowledgeSourceSnapshot({
     semantic_index_contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
     semantic_index_binding_hash: semanticIndex.bindingHash,
     semantic_index_generation: semanticIndex.generation,
+    metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
     lineage_hash: canonicalHash({
       nodes: lineageSource?.nodes,
       edges: lineageSource?.edges,
@@ -7805,6 +7807,10 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
   const sourceDiagnostic = storedFailureCode === 'K9_DATAHUB_SOURCE_FAILED'
     ? managedK9SourceDiagnostic(row.latest_error_message)
     : null
+  const latestFailureProfile = sanitizeK9MetadataSourceProfile(
+    row.latest_manifest?.failure_diagnostic?.metadata_source_profile,
+  )
+  const activeMetadataProfile = sanitizeK9MetadataSourceProfile(sourceSnapshot.metadata_source_profile)
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
     : (latestResult === 'FAILURE' ? 'FAILED' : 'PENDING')
@@ -7858,6 +7864,9 @@ export function managedK9AssetSummary(row, semanticIndex, schedulerConfig, inclu
     last_result: latestResult,
     last_error_code: storedFailureCode,
     ...(sourceDiagnostic || {}),
+    metadata_source_profile: includeQualityMetrics
+      ? latestFailureProfile || activeMetadataProfile
+      : null,
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
     semantic_index_contract: semanticIndex?.contract || null,
     semantic_index_generation: semanticIndex?.generation || null,
@@ -11287,7 +11296,9 @@ export async function startPocServer({ stateStore } = {}) {
       urnTail,
       signal: serverBackgroundAbortController?.signal,
     })
-    return collectMetadata(authorityPin, inventory)
+    return collectMetadata(authorityPin, inventory, {
+      sourceGeneration: inventorySnapshot?.projection?.source_generation || null,
+    })
   }
 
   async function resolveLiveK9AuthCtx() {

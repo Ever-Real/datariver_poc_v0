@@ -1173,6 +1173,7 @@ test('records K9 shared-stage failures atomically without changing active releas
           graphId,
           errorMessage: parameters[2],
           activePointer: activePointers.get(graphId),
+          failureManifest: parameters[3] ? JSON.parse(parameters[3]) : null,
         })
         return { rows: [{ graph_id: graphId }] }
       }
@@ -1187,23 +1188,49 @@ test('records K9 shared-stage failures atomically without changing active releas
     },
   })
 
+  const metadataProfile = {
+    contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+    source_generation: 'a'.repeat(64),
+    inventory: { total_dataset_count: 2, table_count: 2, non_empty: true },
+    identity_resolution: {
+      exact_duplicate_observation_count: 1,
+      failure: {
+        locus: 'DUPLICATE_TERM_IDENTITY',
+        classification: 'EXACT_DUPLICATE',
+        identity_hash: 'b'.repeat(64),
+        shape_hash: 'c'.repeat(64),
+        page_number: 1,
+        ordinal: 1,
+      },
+    },
+  }
   await store.recordK9ManagedRefreshFailure(graphIds, 'K9_DATAHUB_SOURCE_FAILED', {
     failureStage: 'METADATA_COLLECTION',
-    failureDetailCode: 'TAG_IDENTITY_CONFLICT',
+    failureDetailCode: 'DUPLICATE_TERM_IDENTITY',
+    metadataProfile,
   })
 
-  assert.deepEqual(inserted, [
+  assert.deepEqual(inserted.map(({ graphId, errorMessage, activePointer }) => ({
+    graphId, errorMessage, activePointer,
+  })), [
     {
       graphId: graphIds[0],
-      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=DUPLICATE_TERM_IDENTITY.',
       activePointer: null,
     },
     {
       graphId: graphIds[1],
-      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
+      errorMessage: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=DUPLICATE_TERM_IDENTITY.',
       activePointer: 'k9_stage_existing_lkg',
     },
   ])
+  assert.ok(inserted.every(({ failureManifest }) => (
+    failureManifest.failure_diagnostic.metadata_source_profile.contract
+      === 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1'
+      && failureManifest.failure_diagnostic.metadata_source_profile.identity_resolution.failure.identity_hash
+        === 'b'.repeat(64)
+      && !JSON.stringify(failureManifest).includes('urn:li:')
+  )))
   assert.equal(statements[0].sql, 'BEGIN')
   assert.equal(statements.at(-1).sql, 'COMMIT')
   assert.ok(statements.filter(({ sql }) => sql.startsWith('INSERT INTO poc_k9_refresh_runs')).every(({ sql }) => (

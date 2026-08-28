@@ -140,15 +140,33 @@ test('managed K9 source failure exposes only bounded durable source diagnostics'
     schedule: '02:00 Asia/Seoul',
     managed_intent: 'metadata-lineage',
     latest_result: 'FAILURE',
-    latest_error_message: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=TAG_IDENTITY_CONFLICT.',
+    latest_error_message: 'K9_DATAHUB_SOURCE_FAILED: failure_stage=METADATA_COLLECTION; failure_detail_code=DUPLICATE_TERM_IDENTITY.',
+    latest_manifest: { failure_diagnostic: { metadata_source_profile: {
+      contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+      source_generation: 'a'.repeat(64),
+      inventory: { total_dataset_count: 2, table_count: 2, non_empty: true },
+      identity_resolution: {
+        exact_duplicate_observation_count: 1,
+        failure: {
+          locus: 'DUPLICATE_TERM_IDENTITY',
+          classification: 'EXACT_DUPLICATE',
+          identity_hash: 'b'.repeat(64),
+          shape_hash: 'c'.repeat(64),
+          page_number: 1,
+          ordinal: 1,
+        },
+      },
+    } } },
     latest_completed_at: '2026-08-28T00:00:00.000Z',
     created_at: '2026-08-27T00:00:00.000Z',
     updated_at: '2026-08-28T00:00:00.000Z',
-  }, { ready: false }, null)
+  }, { ready: false }, null, true)
 
   assert.equal(summary.last_error_code, 'K9_DATAHUB_SOURCE_FAILED')
   assert.equal(summary.failure_stage, 'METADATA_COLLECTION')
-  assert.equal(summary.failure_detail_code, 'TAG_IDENTITY_CONFLICT')
+  assert.equal(summary.failure_detail_code, 'DUPLICATE_TERM_IDENTITY')
+  assert.equal(summary.metadata_source_profile.identity_resolution.failure.classification, 'EXACT_DUPLICATE')
+  assert.equal(summary.metadata_source_profile.identity_resolution.failure.identity_hash, 'b'.repeat(64))
   assert.equal(JSON.stringify(summary).includes('urn:li:'), false)
 })
 

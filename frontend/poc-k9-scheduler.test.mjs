@@ -7,7 +7,39 @@ import {
   currentScheduleBoundary,
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
+import {
+  K9_METADATA_SOURCE_PROFILE_CONTRACT,
+  sanitizeK9MetadataSourceProfile,
+} from './poc-k9-metadata-collection.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
+
+function metadataSourceProfile(overrides = {}) {
+  return sanitizeK9MetadataSourceProfile({
+    contract: K9_METADATA_SOURCE_PROFILE_CONTRACT,
+    source_generation: 'a'.repeat(64),
+    inventory: { total_dataset_count: 2, table_count: 2, total_column_count: 3, non_empty: true },
+    glossary_scroll: {
+      provider_reported_total: 2,
+      pages_fetched: 1,
+      entities_fetched: 2,
+      unique_term_count: 1,
+      duplicate_term_observation_count: 1,
+      cursor_progression_status: 'FAILED',
+    },
+    identity_resolution: {
+      exact_duplicate_observation_count: 1,
+      failure: {
+        locus: 'DUPLICATE_TERM_IDENTITY',
+        classification: 'EXACT_DUPLICATE',
+        identity_hash: 'b'.repeat(64),
+        shape_hash: 'c'.repeat(64),
+        page_number: 1,
+        ordinal: 1,
+      },
+    },
+    ...overrides,
+  })
+}
 
 function k9SchedulerDatabase(initialValue) {
   let value = initialValue
@@ -270,10 +302,12 @@ test('K9 source metadata GraphQL failure retains its exact non-retryable substag
 })
 
 test('K9 source metadata invariant persists only its bounded local detail and preserves LKG promotion order', async () => {
+  const profile = metadataSourceProfile()
   const { task, dependencies, managedGraphs } = k9RefreshFixture({
     collectMetadata: mock.fn(async () => {
       throw Object.assign(new Error('raw urn:li:tag:private and provider body'), {
-        k9SourceFailureDetailCode: 'TAG_IDENTITY_CONFLICT',
+        k9SourceFailureDetailCode: 'DUPLICATE_TERM_IDENTITY',
+        k9MetadataSourceProfile: profile,
       })
     }),
   })
@@ -285,14 +319,19 @@ test('K9 source metadata invariant persists only its bounded local detail and pr
     reason: 'K9_DATAHUB_SOURCE_FAILED',
     failureCode: 'K9_DATAHUB_SOURCE_FAILED',
     failureStage: 'METADATA_COLLECTION',
-    failureDetailCode: 'TAG_IDENTITY_CONFLICT',
+    failureDetailCode: 'DUPLICATE_TERM_IDENTITY',
+    metadataProfile: profile,
     lineage: undefined,
     glossary: undefined,
   })
   assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
     'K9_DATAHUB_SOURCE_FAILED',
     ['metadata-lineage', 'data-glossary'],
-    { failureStage: 'METADATA_COLLECTION', failureDetailCode: 'TAG_IDENTITY_CONFLICT' },
+    {
+      failureStage: 'METADATA_COLLECTION',
+      failureDetailCode: 'DUPLICATE_TERM_IDENTITY',
+      metadataProfile: profile,
+    },
   ])
   assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
   assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)

@@ -7,7 +7,10 @@ import pg from 'pg'
 import { createClient } from 'redis'
 
 import { isMclRuntimeClassification } from './poc-mcl-runtime-failure.mjs'
-import { K9_METADATA_FAILURE_DETAILS } from './poc-k9-metadata-collection.mjs'
+import {
+  K9_METADATA_FAILURE_DETAILS,
+  sanitizeK9MetadataSourceProfile,
+} from './poc-k9-metadata-collection.mjs'
 
 const { Pool } = pg
 
@@ -2556,6 +2559,7 @@ export function createPocStateStore({ databasePool } = {}) {
         latest.started_at AS latest_started_at,
         latest.completed_at AS latest_completed_at,
         latest.error_message AS latest_error_message,
+        latest.manifest AS latest_manifest,
         active.run_id AS active_run_id,
         active.started_at AS active_started_at,
         active.completed_at AS active_completed_at,
@@ -2564,7 +2568,7 @@ export function createPocStateStore({ databasePool } = {}) {
         active.canonical_release AS active_canonical_release
       FROM poc_k9_managed_graph_policies AS policy
       LEFT JOIN LATERAL (
-        SELECT run_id, status, started_at, completed_at, error_message
+        SELECT run_id, status, started_at, completed_at, error_message, manifest
         FROM poc_k9_refresh_runs
         WHERE graph_id = policy.graph_id
         ORDER BY started_at DESC, run_id DESC
@@ -2738,6 +2742,10 @@ export function createPocStateStore({ databasePool } = {}) {
       ? {
           failureStage: sourceDiagnosticValue.failureStage,
           failureDetailCode: sourceDiagnosticValue.failureDetailCode,
+          ...(sourceDiagnosticValue.failureStage === 'METADATA_COLLECTION'
+            && sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile)
+            ? { metadataProfile: sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile) }
+            : {}),
         }
       : null
     if (failureCode === 'K9_DATAHUB_SOURCE_FAILED' && !sourceDiagnostic) {
@@ -2749,6 +2757,9 @@ export function createPocStateStore({ databasePool } = {}) {
     const errorMessage = sourceDiagnostic
       ? `${failureCode}: failure_stage=${sourceDiagnostic.failureStage}; failure_detail_code=${sourceDiagnostic.failureDetailCode}.`
       : `${failureCode}: Shared managed refresh failed at a classified stage.`
+    const failureManifest = sourceDiagnostic?.metadataProfile
+      ? { failure_diagnostic: { metadata_source_profile: sourceDiagnostic.metadataProfile } }
+      : null
     await startDatabase()
     if (!pool) throw new Error('K9 managed refresh failures require PostgreSQL')
     const client = await pool.connect()
@@ -2758,14 +2769,14 @@ export function createPocStateStore({ databasePool } = {}) {
         const inserted = await client.query(`
           INSERT INTO poc_k9_refresh_runs (
             run_id, graph_id, status, input_snapshot_hash, policy_hash,
-            started_at, completed_at, active_release_pointer, error_message
+            started_at, completed_at, active_release_pointer, error_message, manifest
           )
           SELECT $1, policy.graph_id, 'FAILURE', NULL, policy.policy_hash,
-            clock_timestamp(), clock_timestamp(), policy.active_release_pointer, $3
+            clock_timestamp(), clock_timestamp(), policy.active_release_pointer, $3, $4::jsonb
           FROM poc_k9_managed_graph_policies AS policy
           WHERE policy.graph_id = $2
           RETURNING graph_id
-        `, [randomUUID(), graphId, errorMessage])
+        `, [randomUUID(), graphId, errorMessage, failureManifest ? JSON.stringify(failureManifest) : null])
         if (inserted.rows.length !== 1 || inserted.rows[0].graph_id !== graphId) {
           throw new Error('K9 managed refresh failure policy was not found.')
         }
@@ -2862,6 +2873,10 @@ export function createPocStateStore({ databasePool } = {}) {
           ? {
               failure_stage: result.failureStage,
               failure_detail_code: result.failureDetailCode,
+              ...(result.failureStage === 'METADATA_COLLECTION'
+                && sanitizeK9MetadataSourceProfile(result.metadataProfile)
+                ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }
+                : {}),
             }
           : null
         const failureReceipt = {
@@ -2897,6 +2912,9 @@ export function createPocStateStore({ databasePool } = {}) {
         trigger,
         last_attempt: {
           status: 'SUCCESS',
+          ...(sanitizeK9MetadataSourceProfile(result?.metadataProfile)
+            ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }
+            : {}),
           scheduled_for: scheduledFor,
           completed_at: completedAt,
           trigger,

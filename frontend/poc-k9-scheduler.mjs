@@ -1,6 +1,9 @@
 /* global clearTimeout, process, setTimeout */
 
-import { K9_METADATA_FAILURE_DETAILS } from './poc-k9-metadata-collection.mjs'
+import {
+  K9_METADATA_FAILURE_DETAILS,
+  sanitizeK9MetadataSourceProfile,
+} from './poc-k9-metadata-collection.mjs'
 
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_REFRESH_MODE = 'DAILY'
@@ -134,9 +137,17 @@ async function datahubSourceStage(failureStage, action, sourceRetryWait) {
           // bounded provider failure into an unclassified scheduler error.
         }
       }
+      const metadataProfile = failureStage === 'METADATA_COLLECTION'
+        ? errorChain(error).map((item) => sanitizeK9MetadataSourceProfile(item?.k9MetadataSourceProfile))
+          .find(Boolean) || null
+        : null
       throw Object.assign(new Error('K9_DATAHUB_SOURCE_FAILED'), {
         k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
-        k9SourceDiagnostic: Object.freeze({ failureStage, failureDetailCode }),
+        k9SourceDiagnostic: Object.freeze({
+          failureStage,
+          failureDetailCode,
+          ...(metadataProfile ? { metadataProfile } : {}),
+        }),
       })
     }
   }
@@ -190,6 +201,10 @@ export function createPocK9RefreshTask({
         ? {
             failureStage: candidateDiagnostic.failureStage,
             failureDetailCode: candidateDiagnostic.failureDetailCode,
+            ...(candidateDiagnostic.failureStage === 'METADATA_COLLECTION'
+              && sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile)
+              ? { metadataProfile: sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile) }
+              : {}),
           }
         : null
       try {
@@ -269,6 +284,9 @@ export function createPocK9RefreshTask({
         status: 'SUCCESS',
         source_snapshot: sourceSnapshot,
         semantic_index: semanticIndex,
+        ...(sanitizeK9MetadataSourceProfile(metadataSource.source_profile)
+          ? { metadataProfile: sanitizeK9MetadataSourceProfile(metadataSource.source_profile) }
+          : {}),
         lineage,
         glossary,
       }
