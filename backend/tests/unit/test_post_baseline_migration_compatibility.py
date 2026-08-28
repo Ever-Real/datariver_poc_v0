@@ -85,6 +85,14 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
     ),
 )
 
+EXPLICIT_CANONICAL_MIGRATIONS = (
+    "0031_workspace_access_roles.py",
+    "0032_membership_renewal_workflow.py",
+    "0034_system_configuration_activation.py",
+    "0035_change_request_rounds_and_test_evidence.py",
+    "0037_knowledge_source_graphrag_projection.py",
+)
+
 
 class _LegacyPathEntered(Exception):
     pass
@@ -163,6 +171,8 @@ def test_post_baseline_upgrade_accepts_complete_canonical_schema(
     del first_operation
     module = _load_migration(filename)
     monkeypatch.setattr(module, "_existing_object_count", lambda: _expected_count(module))
+    if hasattr(module, "_is_canonical_schema"):
+        monkeypatch.setattr(module, "_is_canonical_schema", lambda: True)
     monkeypatch.setattr(module, "op", _RejectingOperations())
     installer_calls = 0
     secondary_installer_calls = 0
@@ -225,6 +235,20 @@ def test_post_baseline_upgrade_fails_closed_for_partial_schema(
     del first_operation, installer_name
     module = _load_migration(filename)
     monkeypatch.setattr(module, "_existing_object_count", lambda: 1)
+    monkeypatch.setattr(module, "op", _RejectingOperations())
+
+    with pytest.raises(RuntimeError, match="partially present"):
+        _callable(module, "upgrade")()
+
+
+@pytest.mark.parametrize("filename", EXPLICIT_CANONICAL_MIGRATIONS)
+def test_post_baseline_upgrade_rejects_malformed_complete_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+) -> None:
+    module = _load_migration(filename)
+    monkeypatch.setattr(module, "_existing_object_count", lambda: _expected_count(module))
+    monkeypatch.setattr(module, "_is_canonical_schema", lambda: False)
     monkeypatch.setattr(module, "op", _RejectingOperations())
 
     with pytest.raises(RuntimeError, match="partially present"):

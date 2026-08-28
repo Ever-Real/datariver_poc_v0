@@ -1002,7 +1002,6 @@ $function$;
 
 
 def upgrade() -> None:
-    return # Functions only
     op.execute(FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL)
 
 

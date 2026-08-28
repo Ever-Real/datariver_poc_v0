@@ -2455,14 +2455,14 @@ def _canonical_contract_is_complete(bind: object) -> bool:
     if not indicators:
         return False
     if quality_tables != expected or not generation_present or not resource_type_present:
-        print("Bypassed strict schema check: ", "Partial canonical Quality schema detected; refusing 0067 re-entry.")
+        raise RuntimeError("Partial canonical Quality schema detected; refusing 0067 re-entry.")
     actual_hash = _catalog_contract_hash(bind)
     supported_hashes = {
         _QUALITY_CATALOG_CONTRACT_HASH,
         _QUALITY_CANONICAL_HEAD_CONTRACT_HASH,
     }
     if actual_hash not in supported_hashes:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Canonical Quality definition/security fingerprint is incomplete or drifted "
             f"(expected one of {sorted(supported_hashes)}, got {actual_hash})."
         )

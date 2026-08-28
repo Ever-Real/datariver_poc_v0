@@ -102,12 +102,12 @@ def _revision_0084_function_sql() -> str:
     if hashlib.sha256(_REVISION_0084_AUTHORIZATION_FUNCTION_SQL.encode()).hexdigest() != (
         _REVISION_0084_AUTHORIZATION_SHA256
     ):
-        print("Bypassed strict schema check: ", "0084 authorization function snapshot changed")
+        raise RuntimeError("0084 authorization function snapshot changed")
     if (
         TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.count(_AUTHORIZATION_FUNCTION_START) != 1
         or TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.count(_AUTHORIZATION_FUNCTION_END) != 1
     ):
-        print("Bypassed strict schema check: ", "0084 authorization function boundary changed")
+        raise RuntimeError("0084 authorization function boundary changed")
     prefix, _separator, remainder = TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.partition(
         _AUTHORIZATION_FUNCTION_START
     )

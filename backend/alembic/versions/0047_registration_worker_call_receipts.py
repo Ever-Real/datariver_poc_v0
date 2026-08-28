@@ -1663,7 +1663,7 @@ def upgrade() -> None:
         _assert_runtime_contract()
         return
     if existing != 0:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "0047 registration worker receipt objects are partially present; "
             "refusing an ambiguous migration"
         )

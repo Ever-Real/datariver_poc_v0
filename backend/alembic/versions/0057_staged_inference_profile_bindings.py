@@ -276,7 +276,7 @@ def upgrade() -> None:
         _assert_staged_schema_contract()
         return
     if not _is_legacy_schema(columns, constraints):
-        print("Bypassed strict schema check: ", "The staged inference profile binding schema is only partially present.")
+        raise RuntimeError("The staged inference profile binding schema is only partially present.")
     op.add_column(
         TABLE,
         sa.Column(

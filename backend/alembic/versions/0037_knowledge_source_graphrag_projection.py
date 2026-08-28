@@ -17,6 +17,155 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 EXPECTED_OBJECT_COUNT = 16
 
+_CANONICAL_TABLES = {
+    "source_snapshots": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "graph_id|uuid|uuid||NO",
+            "upload_id|uuid|uuid||NO",
+            "bucket|character varying|varchar|255|NO",
+            "object_key|text|text||NO",
+            "storage_version|character varying|varchar|255|NO",
+            "media_type|character varying|varchar|100|NO",
+            "byte_size|bigint|int8||NO",
+            "content_sha256|character varying|varchar|64|NO",
+            "classification|integer|int4||NO",
+            "state|character varying|varchar|32|NO",
+            "created_by|uuid|uuid||NO",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+        ),
+        (
+            "ck_source_snapshots_bounded_size",
+            "ck_source_snapshots_content_sha256",
+            "ck_source_snapshots_media_type_vocabulary",
+            "ck_source_snapshots_state_vocabulary",
+            "fk_source_snapshots_manifest_graph",
+            "fk_source_snapshots_workspace_id_graph_id_graphs",
+            "pk_source_snapshots",
+            "uq_source_snapshots_workspace_graph_id",
+            "uq_source_snapshots_workspace_id_graph_id_upload_id",
+            "uq_source_snapshots_workspace_id_id",
+        ),
+        ("ix_source_snapshots_graph_created",),
+        ("trg_source_snapshot_job_scope",),
+    ),
+    "source_pages": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "source_snapshot_id|uuid|uuid||NO",
+            "page_number|integer|int4||NO",
+            "content_sha256|character varying|varchar|64|NO",
+            "content|text|text||NO",
+        ),
+        (
+            "ck_source_pages_content_sha256",
+            "ck_source_pages_page_number_positive",
+            "fk_source_pages_workspace_id_source_snapshot_id_source__9a0d",
+            "pk_source_pages",
+        ),
+        (),
+        ("trg_source_page_job_scope",),
+    ),
+    "source_page_embeddings": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "source_snapshot_id|uuid|uuid||NO",
+            "page_number|integer|int4||NO",
+            "provider|character varying|varchar|100|NO",
+            "model_identity|character varying|varchar|200|NO",
+            "dimension|integer|int4||NO",
+            "embedding|jsonb|jsonb||NO",
+            "content_sha256|character varying|varchar|64|NO",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+        ),
+        (
+            "ck_source_page_embeddings_bounded_dimension",
+            "ck_source_page_embeddings_content_sha256",
+            "fk_source_page_embeddings_workspace_id_source_snapshot__8ea1",
+            "pk_source_page_embeddings",
+            "uq_source_page_embeddings_source_snapshot_id_page_numbe_7805",
+        ),
+        ("ix_source_page_embeddings_source",),
+        ("trg_source_embedding_job_scope",),
+    ),
+    "extraction_runs": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "graph_id|uuid|uuid||NO",
+            "source_snapshot_id|uuid|uuid||NO",
+            "proposed_changeset_id|uuid|uuid||NO",
+            "source_analysis_job_id|uuid|uuid||YES",
+            "source_analysis_attempt_id|uuid|uuid||YES",
+            "contract_version|character varying|varchar|32|NO",
+            "state|character varying|varchar|32|NO",
+            "parser_config_hash|character varying|varchar|64|NO",
+            "embedding_binding|jsonb|jsonb||NO",
+            "extraction_binding|jsonb|jsonb||NO",
+            "input_hash|character varying|varchar|64|NO",
+            "output_hash|character varying|varchar|64|NO",
+            "error_code|character varying|varchar|100|YES",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+            "version|integer|int4||NO",
+        ),
+        (
+            "ck_extraction_runs_contract_shape",
+            "ck_extraction_runs_input_hash",
+            "ck_extraction_runs_output_hash",
+            "ck_extraction_runs_state_vocabulary",
+            "fk_extraction_runs_workspace_id_graph_id_graphs",
+            "fk_extraction_runs_workspace_id_proposed_changeset_id_c_f9f4",
+            "fk_extraction_runs_workspace_id_source_analysis_attempt_ae22",
+            "fk_extraction_runs_workspace_id_source_analysis_job_id__1b91",
+            "fk_extraction_runs_workspace_id_source_snapshot_id_sour_9a6d",
+            "pk_extraction_runs",
+            "uq_extraction_runs_workspace_id_id",
+        ),
+        ("ix_extraction_runs_graph_created",),
+        ("trg_extraction_run_job_scope",),
+    ),
+    "graphrag_audits": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "graph_id|uuid|uuid||NO",
+            "release_id|uuid|uuid||NO",
+            "actor_id|uuid|uuid||NO",
+            "request_id|character varying|varchar|100|NO",
+            "question_sha256|character varying|varchar|64|NO",
+            "evidence_ids|jsonb|jsonb||NO",
+            "cited_evidence_ids|jsonb|jsonb||NO",
+            "provider|character varying|varchar|100|NO",
+            "model_identity|character varying|varchar|200|NO",
+            "prompt_version|character varying|varchar|200|NO",
+            "tool_schema_version|character varying|varchar|200|NO",
+            "configuration_source|character varying|varchar|32|YES",
+            "configuration_version|integer|int4||YES",
+            "configuration_hash|character varying|varchar|64|YES",
+            "input_tokens|integer|int4||YES",
+            "output_tokens|integer|int4||YES",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+        ),
+        (
+            "ck_graphrag_audits_configuration_evidence_shape",
+            "ck_graphrag_audits_input_tokens_nonnegative",
+            "ck_graphrag_audits_output_tokens_nonnegative",
+            "ck_graphrag_audits_question_sha256",
+            "fk_graphrag_audits_workspace_id_graph_id_release_id_releases",
+            "pk_graphrag_audits",
+            "uq_graphrag_audits_workspace_id_request_id",
+        ),
+        ("ix_graphrag_audits_release_created",),
+        (),
+    ),
+}
+
 
 def _existing_object_count() -> int:
     return int(
@@ -54,6 +203,115 @@ def _existing_object_count() -> int:
     )
 
 
+def _table_contract_is_exact(
+    table_name: str,
+    expected_columns: tuple[str, ...],
+    expected_constraints: tuple[str, ...],
+    expected_indexes: tuple[str, ...],
+    expected_triggers: tuple[str, ...],
+) -> bool:
+    relation = f"knowledge.{table_name}"
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'knowledge' AND table_name = :table_name
+                        ORDER BY ordinal_position
+                    ) AS columns,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = to_regclass(:relation)
+                        ORDER BY conname
+                    ) AS constraints,
+                    ARRAY(
+                        SELECT index_class.relname
+                        FROM pg_index AS index_state
+                        JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
+                        WHERE index_state.indrelid = to_regclass(:relation)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pg_constraint
+                              WHERE conindid = index_state.indexrelid
+                          )
+                        ORDER BY index_class.relname
+                    ) AS indexes,
+                    ARRAY(
+                        SELECT polname FROM pg_policy
+                        WHERE polrelid = to_regclass(:relation)
+                        ORDER BY polname
+                    ) AS policies,
+                    ARRAY(
+                        SELECT tgname FROM pg_trigger
+                        WHERE tgrelid = to_regclass(:relation) AND NOT tgisinternal
+                        ORDER BY tgname
+                    ) AS triggers,
+                    COALESCE((
+                        SELECT relrowsecurity AND relforcerowsecurity
+                        FROM pg_class WHERE oid = to_regclass(:relation)
+                    ), FALSE) AS force_rls
+                """
+            ),
+            {"relation": relation, "table_name": table_name},
+        )
+        .mappings()
+        .one()
+    )
+    return (
+        tuple(sorted(row["columns"])) == tuple(sorted(expected_columns))
+        and tuple(row["constraints"]) == expected_constraints
+        and tuple(row["indexes"]) == expected_indexes
+        and tuple(row["policies"]) == ("workspace_isolation",)
+        and tuple(row["triggers"]) == expected_triggers
+        and bool(row["force_rls"])
+    )
+
+
+def _is_canonical_schema() -> bool:
+    if not all(
+        _table_contract_is_exact(table_name, *expected)
+        for table_name, expected in _CANONICAL_TABLES.items()
+    ):
+        return False
+    deployment_columns = tuple(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT column_name || '|' || data_type || '|' || udt_name
+                    || '|' || COALESCE(character_maximum_length::text, '')
+                    || '|' || is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'knowledge'
+                  AND table_name = 'projection_deployments'
+                  AND column_name IN (
+                    'graph_id', 'job_id', 'verification_hash', 'verified_at', 'error_code'
+                  )
+                ORDER BY ordinal_position
+                """
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(sorted(deployment_columns)) == tuple(
+        sorted(
+            (
+                "graph_id|uuid|uuid||NO",
+                "job_id|uuid|uuid||YES",
+                "verification_hash|character varying|varchar|64|YES",
+                "verified_at|timestamp with time zone|timestamptz||YES",
+                "error_code|character varying|varchar|100|YES",
+            )
+        )
+    )
+
+
 def _install_security_contract() -> None:
     op.execute(
         """DO $datariver$ BEGIN
@@ -82,8 +340,8 @@ def _workspace_rls(table_name: str) -> None:
 def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
-        if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The Knowledge pipeline schema is only partially present.")
+        if existing_objects != EXPECTED_OBJECT_COUNT or not _is_canonical_schema():
+            raise RuntimeError("The Knowledge pipeline schema is only partially present.")
         _install_security_contract()
         return
     op.add_column(

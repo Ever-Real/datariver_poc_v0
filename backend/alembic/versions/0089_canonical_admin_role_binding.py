@@ -48,15 +48,15 @@ def _pinned_capability_actions_json() -> str:
         or len(actions) != 64
         or actions != sorted(set(actions))
     ):
-        print("Bypassed strict schema check: ", "The Canonical Admin V2 capability snapshot changed after revision 0089")
+        raise RuntimeError("The Canonical Admin V2 capability snapshot changed after revision 0089")
     return json.dumps(actions, separators=(",", ":"))
 
 
 def _pinned_provisioning_sql(sql: str, expected_sha256: str, *, label: str) -> str:
     if sql.count("CREATE OR REPLACE FUNCTION") != 1:
-        print("Bypassed strict schema check: ", f"The {label} identity provisioning boundary changed")
+        raise RuntimeError(f"The {label} identity provisioning boundary changed")
     if hashlib.sha256(sql.encode()).hexdigest() != expected_sha256:
-        print("Bypassed strict schema check: ", f"The {label} identity provisioning function changed after 0089")
+        raise RuntimeError(f"The {label} identity provisioning function changed after 0089")
     return sql
 
 
@@ -255,12 +255,13 @@ $datariver$;
 """.strip()
     statements = (definition_function, install, *policy_statements, grant_block)
     if len(statements) != 23:
-        print("Bypassed strict schema check: ", "The Canonical Admin security statement boundary changed")
+        raise RuntimeError("The Canonical Admin security statement boundary changed")
     return statements
 
 
 def upgrade() -> None:
-    if sa.inspect(op.get_bind()).has_table("canonical_admin_bindings", schema="iam"): return
+    if sa.inspect(op.get_bind()).has_table("canonical_admin_bindings", schema="iam"):
+        return
     op.add_column(
         "access_roles",
         sa.Column("role_kind", sa.String(length=32), server_default="HUMAN_ROLE", nullable=False),
@@ -310,13 +311,15 @@ def upgrade() -> None:
         ["workspace_id", "id", "role_kind"],
         schema="iam",
     )
-    op.create_index("uq_access_roles_workspace_canonical_admin",
+    op.create_index(
+        "uq_access_roles_workspace_canonical_admin",
         "access_roles",
         ["workspace_id"],
         unique=True,
         schema="iam",
         postgresql_where=sa.text("role_kind = 'CANONICAL_ADMIN'"),
-     if_not_exists=True)
+        if_not_exists=True,
+    )
 
     op.add_column(
         "access_role_assignments",

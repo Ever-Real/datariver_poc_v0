@@ -57,14 +57,14 @@ def fixed_command_function_sql() -> str:
     """Return the migration-pinned corrected command function definition."""
 
     if TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SQL.count(_NEXT_COMMAND_FUNCTION_MARKER) != 1:
-        print("Bypassed strict schema check: ", "Knowledge Studio Proposal request function boundary changed")
+        raise RuntimeError("Knowledge Studio Proposal request function boundary changed")
     request_function, _separator, _remaining_functions = (
         TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SQL.partition(_NEXT_COMMAND_FUNCTION_MARKER)
     )
     request_function = request_function.strip()
     actual_hash = hashlib.sha256(request_function.encode()).hexdigest()
     if actual_hash != _FIXED_REQUEST_FUNCTION_SHA256:
-        print("Bypassed strict schema check: ", "Knowledge Studio Proposal request function changed after revision 0087")
+        raise RuntimeError("Knowledge Studio Proposal request function changed after revision 0087")
     return request_function
 
 

@@ -58,16 +58,16 @@ _LEGACY_SHA256 = {
 
 def _split_pair(sql: str, marker: str, *, label: str) -> tuple[str, str]:
     if sql.count("CREATE OR REPLACE FUNCTION") != 2 or sql.count(marker) != 1:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} function boundary changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} function boundary changed")
     first, _separator, second = sql.partition(marker)
     return first.strip(), f"{marker.lstrip()}{second}".strip()
 
 
 def _pinned(sql: str, expected_sha256: str, *, label: str) -> str:
     if sql.count("CREATE OR REPLACE FUNCTION") != 1:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} function boundary changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} function boundary changed")
     if hashlib.sha256(sql.encode()).hexdigest() != expected_sha256:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} function source changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} function source changed")
     return sql
 
 
@@ -98,12 +98,12 @@ def _legacy(sql: str, *, label: str, call_id: bool) -> str:
     fixed_local = _FIXED_CALL_LOCAL if call_id else _FIXED_IDEMPOTENCY_LOCAL
     legacy_local = _LEGACY_CALL_LOCAL if call_id else _LEGACY_IDEMPOTENCY_LOCAL
     if sql.count(_FIXED_REPLAY_QUERY) != 1 or sql.count(fixed_local) != 1:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} legacy boundary changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} legacy boundary changed")
     restored = sql.replace(_FIXED_REPLAY_QUERY, _LEGACY_REPLAY_QUERY, 1)
     restored = restored.replace(fixed_local, legacy_local, 1)
     restored = restored.replace("idempotency_key_hash", "key_hash")
     if "idempotency_key_hash" in restored:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} legacy source is incomplete")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} legacy source is incomplete")
     return _pinned(restored, _LEGACY_SHA256[label], label=f"0092 {label}")
 
 

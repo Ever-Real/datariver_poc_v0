@@ -18,6 +18,43 @@ depends_on: str | Sequence[str] | None = None
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 EXPECTED_OBJECT_COUNT = 5
 
+_CANONICAL_COLUMNS = (
+    "workspace_id|uuid|uuid||NO",
+    "profile_id|uuid|uuid||NO",
+    "configuration_version|integer|int4||NO",
+    "configuration_hash|character varying|varchar|64|NO",
+    "configuration_yaml|text|text||NO",
+    "endpoint_url|character varying|varchar|2048|YES",
+    "created_by|uuid|uuid||NO",
+    "test_status|character varying|varchar|32|YES",
+    "test_scope|character varying|varchar|32|YES",
+    "test_latency_ms|integer|int4||YES",
+    "tested_at|timestamp with time zone|timestamptz||YES",
+    "tested_by|uuid|uuid||YES",
+    "activated_at|timestamp with time zone|timestamptz||YES",
+    "activated_by|uuid|uuid||YES",
+    "id|uuid|uuid||NO",
+    "created_at|timestamp with time zone|timestamptz||NO",
+    "updated_at|timestamp with time zone|timestamptz||NO",
+)
+_CANONICAL_CONSTRAINTS = (
+    "ck_external_service_profile_versions_activation_evidence_shape",
+    "ck_external_service_profile_versions_configuration_hash_sha256",
+    "ck_external_service_profile_versions_configuration_vers_2afc",
+    "ck_external_service_profile_versions_latency_non_negative",
+    "ck_external_service_profile_versions_test_evidence_shape",
+    "ck_external_service_profile_versions_test_scope_vocabulary",
+    "ck_external_service_profile_versions_test_status_vocabulary",
+    "fk_external_service_profile_versions_activator",
+    "fk_external_service_profile_versions_creator",
+    "fk_external_service_profile_versions_profile",
+    "fk_external_service_profile_versions_tester",
+    "fk_external_service_profile_versions_workspace_id_workspaces",
+    "pk_external_service_profile_versions",
+    "uq_external_service_profile_versions_workspace_id_id",
+    "uq_external_service_profile_versions_workspace_id_profi_c8c5",
+)
+
 
 def _existing_object_count() -> int:
     return int(
@@ -45,6 +82,84 @@ def _existing_object_count() -> int:
             )
         )
         .scalar_one()
+    )
+
+
+def _is_canonical_schema() -> bool:
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'platform'
+                          AND table_name = 'external_service_profile_versions'
+                        ORDER BY ordinal_position
+                    ) AS columns,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid =
+                            to_regclass('platform.external_service_profile_versions')
+                        ORDER BY conname
+                    ) AS constraints,
+                    ARRAY(
+                        SELECT index_class.relname
+                        FROM pg_index AS index_state
+                        JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
+                        WHERE index_state.indrelid =
+                            to_regclass('platform.external_service_profile_versions')
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pg_constraint
+                              WHERE conindid = index_state.indexrelid
+                          )
+                        ORDER BY index_class.relname
+                    ) AS indexes,
+                    ARRAY(
+                        SELECT polname FROM pg_policy
+                        WHERE polrelid =
+                            to_regclass('platform.external_service_profile_versions')
+                        ORDER BY polname
+                    ) AS policies,
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'platform'
+                          AND table_name = 'external_service_profiles'
+                          AND column_name = 'activated_version'
+                    ) AS activation_column,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = to_regclass('platform.external_service_profiles')
+                          AND conname = 'ck_external_service_profiles_activated_version_range'
+                    ) AS activation_constraint,
+                    COALESCE((
+                        SELECT relrowsecurity AND relforcerowsecurity
+                        FROM pg_class
+                        WHERE oid =
+                            to_regclass('platform.external_service_profile_versions')
+                    ), FALSE) AS force_rls
+                """
+            )
+        )
+        .mappings()
+        .one()
+    )
+    return (
+        tuple(sorted(row["columns"])) == tuple(sorted(_CANONICAL_COLUMNS))
+        and tuple(row["constraints"]) == _CANONICAL_CONSTRAINTS
+        and tuple(row["indexes"]) == ("ix_external_service_profile_versions_workspace_profile",)
+        and tuple(row["policies"]) == ("workspace_isolation",)
+        and tuple(row["activation_column"]) == ("activated_version|integer|int4||YES",)
+        and tuple(row["activation_constraint"])
+        == ("ck_external_service_profiles_activated_version_range",)
+        and bool(row["force_rls"])
     )
 
 
@@ -80,8 +195,8 @@ def _install_security_contract() -> None:
 def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
-        if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The System Settings activation schema is only partially present.")
+        if existing_objects != EXPECTED_OBJECT_COUNT or not _is_canonical_schema():
+            raise RuntimeError("The System Settings activation schema is only partially present.")
         _install_security_contract()
         return
     op.add_column(

@@ -1230,7 +1230,7 @@ def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
         if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", 
+            raise RuntimeError(
                 "The registration execution control schema is only partially present."
             )
         _assert_existing_contract()

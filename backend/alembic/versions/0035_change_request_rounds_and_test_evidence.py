@@ -17,6 +17,75 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 EXPECTED_OBJECT_COUNT = 10
 
+_CANONICAL_TABLES = {
+    "change_request_rounds": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "change_request_id|uuid|uuid||NO",
+            "round_number|integer|int4||NO",
+            "submitted_by|uuid|uuid||NO",
+            "submitted_at|timestamp with time zone|timestamptz||NO",
+            "closed_at|timestamp with time zone|timestamptz||YES",
+            "evidence_hash|character varying|varchar|64|NO",
+            "revision_kind|character varying|varchar|16|NO",
+            "title|character varying|varchar|500|NO",
+            "request_date|date|date||YES",
+            "request_department|character varying|varchar|500|NO",
+            "request_reason|text|text||NO",
+            "request_content|text|text||NO",
+            "requested_due_date|date|date||YES",
+            "priority|character varying|varchar|16|YES",
+            "urgency|character varying|varchar|16|YES",
+            "classification|integer|int4||NO",
+            "selected_system_id|uuid|uuid||YES",
+            "id|uuid|uuid||NO",
+        ),
+        (
+            "ck_change_request_rounds_classification_range",
+            "ck_change_request_rounds_evidence_hash_valid",
+            "ck_change_request_rounds_priority_vocabulary",
+            "ck_change_request_rounds_revision_kind_vocabulary",
+            "ck_change_request_rounds_round_number_positive",
+            "ck_change_request_rounds_title_required",
+            "ck_change_request_rounds_urgency_vocabulary",
+            "fk_change_request_rounds_request",
+            "fk_change_request_rounds_selected_system",
+            "pk_change_request_rounds",
+            "uq_change_request_rounds_workspace_id_change_request_id_1e58",
+            "uq_change_request_rounds_workspace_id_change_request_id_id",
+        ),
+        ("ix_change_request_rounds_request",),
+    ),
+    "change_test_runs": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "change_request_id|uuid|uuid||NO",
+            "round_id|uuid|uuid||NO",
+            "system_id|uuid|uuid||NO",
+            "attachment_id|uuid|uuid||NO",
+            "state|character varying|varchar|16|NO",
+            "plan_hash|character varying|varchar|64|NO",
+            "result_hash|character varying|varchar|64|NO",
+            "bounded_summary|jsonb|jsonb||NO",
+            "recorded_by|uuid|uuid||NO",
+            "occurred_at|timestamp with time zone|timestamptz||NO",
+            "id|uuid|uuid||NO",
+        ),
+        (
+            "ck_change_test_runs_plan_hash_valid",
+            "ck_change_test_runs_result_hash_valid",
+            "ck_change_test_runs_state_vocabulary",
+            "ck_change_test_runs_summary_object",
+            "fk_change_test_runs_attachment",
+            "fk_change_test_runs_round",
+            "fk_change_test_runs_system",
+            "pk_change_test_runs",
+            "uq_change_test_runs_workspace_id_change_request_id_round_id_id",
+        ),
+        ("ix_change_test_runs_round_system",),
+    ),
+}
+
 
 def _existing_object_count() -> int:
     return int(
@@ -50,6 +119,109 @@ def _existing_object_count() -> int:
     )
 
 
+def _table_contract_is_exact(
+    table_name: str,
+    expected_columns: tuple[str, ...],
+    expected_constraints: tuple[str, ...],
+    expected_indexes: tuple[str, ...],
+) -> bool:
+    relation = f"governance.{table_name}"
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'governance' AND table_name = :table_name
+                        ORDER BY ordinal_position
+                    ) AS columns,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = to_regclass(:relation)
+                        ORDER BY conname
+                    ) AS constraints,
+                    ARRAY(
+                        SELECT index_class.relname
+                        FROM pg_index AS index_state
+                        JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
+                        WHERE index_state.indrelid = to_regclass(:relation)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pg_constraint
+                              WHERE conindid = index_state.indexrelid
+                          )
+                        ORDER BY index_class.relname
+                    ) AS indexes,
+                    ARRAY(
+                        SELECT polname FROM pg_policy
+                        WHERE polrelid = to_regclass(:relation)
+                        ORDER BY polname
+                    ) AS policies,
+                    COALESCE((
+                        SELECT relrowsecurity AND relforcerowsecurity
+                        FROM pg_class WHERE oid = to_regclass(:relation)
+                    ), FALSE) AS force_rls
+                """
+            ),
+            {"relation": relation, "table_name": table_name},
+        )
+        .mappings()
+        .one()
+    )
+    return (
+        tuple(sorted(row["columns"])) == tuple(sorted(expected_columns))
+        and tuple(row["constraints"]) == expected_constraints
+        and tuple(row["indexes"]) == expected_indexes
+        and tuple(row["policies"]) == ("workspace_isolation",)
+        and bool(row["force_rls"])
+    )
+
+
+def _is_canonical_schema() -> bool:
+    if not all(
+        _table_contract_is_exact(table_name, *expected)
+        for table_name, expected in _CANONICAL_TABLES.items()
+    ):
+        return False
+    associated_columns = tuple(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT table_name || '.' || column_name || '|' || data_type || '|'
+                    || udt_name || '|' || COALESCE(character_maximum_length::text, '')
+                    || '|' || is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'governance'
+                  AND (
+                    (table_name = 'change_requests' AND column_name IN (
+                        'requester_department_id', 'current_round_id', 'current_round_number'
+                    ))
+                    OR (table_name IN (
+                        'approvals', 'state_transitions', 'change_request_attachments'
+                    ) AND column_name = 'round_id')
+                  )
+                ORDER BY table_name, column_name
+                """
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return associated_columns == (
+        "approvals.round_id|uuid|uuid||NO",
+        "change_request_attachments.round_id|uuid|uuid||NO",
+        "change_requests.current_round_id|uuid|uuid||NO",
+        "change_requests.current_round_number|integer|int4||NO",
+        "change_requests.requester_department_id|uuid|uuid||YES",
+        "state_transitions.round_id|uuid|uuid||NO",
+    )
+
+
 def _install_security_contract() -> None:
     op.execute(
         """DO $datariver$ BEGIN
@@ -68,8 +240,8 @@ def _install_security_contract() -> None:
 def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
-        if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The CR revision/test-evidence schema is only partially present.")
+        if existing_objects != EXPECTED_OBJECT_COUNT or not _is_canonical_schema():
+            raise RuntimeError("The CR revision/test-evidence schema is only partially present.")
         _install_security_contract()
         return
     op.create_table(

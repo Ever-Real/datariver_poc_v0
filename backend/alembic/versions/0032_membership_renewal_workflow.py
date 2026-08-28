@@ -18,6 +18,41 @@ depends_on: str | Sequence[str] | None = None
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 EXPECTED_OBJECT_COUNT = 5
 
+_CANONICAL_COLUMNS = (
+    "workspace_id|uuid|uuid||NO",
+    "target_subject_id|uuid|uuid||NO",
+    "requester_id|uuid|uuid||NO",
+    "reason|character varying|varchar|4000|NO",
+    "current_expires_at|timestamp with time zone|timestamptz||NO",
+    "requested_expires_at|timestamp with time zone|timestamptz||NO",
+    "state|character varying|varchar|20|NO",
+    "checker_id|uuid|uuid||YES",
+    "decision_reason|character varying|varchar|4000|YES",
+    "decision_policy_decision_id|uuid|uuid||YES",
+    "decided_at|timestamp with time zone|timestamptz||YES",
+    "id|uuid|uuid||NO",
+    "created_at|timestamp with time zone|timestamptz||NO",
+    "updated_at|timestamp with time zone|timestamptz||NO",
+    "version|integer|int4||NO",
+)
+_CANONICAL_CONSTRAINTS = (
+    "ck_membership_renewal_requests_extension_positive",
+    "ck_membership_renewal_requests_independent_checker",
+    "ck_membership_renewal_requests_self_request",
+    "ck_membership_renewal_requests_state",
+    "ck_membership_renewal_requests_state_shape",
+    "fk_membership_renewal_requests_workspace_id_workspaces",
+    "fk_membership_renewals_checker_membership",
+    "fk_membership_renewals_requester_membership",
+    "fk_membership_renewals_target_membership",
+    "pk_membership_renewal_requests",
+    "uq_membership_renewal_requests_workspace_id_id",
+)
+_CANONICAL_INDEXES = (
+    "ix_membership_renewals_workspace_state_created",
+    "uq_membership_renewals_pending_subject",
+)
+
 
 def _existing_object_count() -> int:
     return int(
@@ -41,6 +76,75 @@ def _existing_object_count() -> int:
             )
         )
         .scalar_one()
+    )
+
+
+def _is_canonical_schema() -> bool:
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'iam'
+                          AND table_name = 'membership_renewal_requests'
+                        ORDER BY ordinal_position
+                    ) AS columns,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = to_regclass('iam.membership_renewal_requests')
+                        ORDER BY conname
+                    ) AS constraints,
+                    ARRAY(
+                        SELECT index_class.relname
+                        FROM pg_index AS index_state
+                        JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
+                        WHERE index_state.indrelid =
+                            to_regclass('iam.membership_renewal_requests')
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pg_constraint
+                              WHERE conindid = index_state.indexrelid
+                          )
+                        ORDER BY index_class.relname
+                    ) AS indexes,
+                    ARRAY(
+                        SELECT polname FROM pg_policy
+                        WHERE polrelid = to_regclass('iam.membership_renewal_requests')
+                        ORDER BY polname
+                    ) AS policies,
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'iam'
+                          AND table_name = 'workspace_memberships'
+                          AND column_name = 'access_expires_at'
+                    ) AS membership_column,
+                    COALESCE((
+                        SELECT relrowsecurity AND relforcerowsecurity
+                        FROM pg_class
+                        WHERE oid = to_regclass('iam.membership_renewal_requests')
+                    ), FALSE) AS force_rls
+                """
+            )
+        )
+        .mappings()
+        .one()
+    )
+    return (
+        tuple(sorted(row["columns"])) == tuple(sorted(_CANONICAL_COLUMNS))
+        and tuple(row["constraints"]) == _CANONICAL_CONSTRAINTS
+        and tuple(row["indexes"]) == _CANONICAL_INDEXES
+        and tuple(row["policies"]) == ("workspace_isolation",)
+        and tuple(row["membership_column"])
+        == ("access_expires_at|timestamp with time zone|timestamptz||YES",)
+        and bool(row["force_rls"])
     )
 
 
@@ -117,8 +221,8 @@ def _install_default_workspace_resolver() -> None:
 def upgrade() -> None:
     existing_objects = _existing_object_count()
     if existing_objects:
-        if existing_objects != EXPECTED_OBJECT_COUNT:
-            print("Bypassed strict schema check: ", "The membership renewal schema is only partially present.")
+        if existing_objects != EXPECTED_OBJECT_COUNT or not _is_canonical_schema():
+            raise RuntimeError("The membership renewal schema is only partially present.")
         _install_security_contract()
         return
     op.add_column(

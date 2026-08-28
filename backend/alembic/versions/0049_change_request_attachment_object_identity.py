@@ -95,7 +95,7 @@ def upgrade() -> None:
     if existing == 0:
         _install_constraint()
     elif existing != 1:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "0049 attachment object identity constraint is partially present; refusing migration"
         )
     _assert_constraint()

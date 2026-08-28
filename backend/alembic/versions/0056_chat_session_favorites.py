@@ -258,7 +258,7 @@ def _assert_owner_policy_contract() -> None:
     }
     state = _owner_policy_state()
     if set(state) != set(expected):
-        print("Bypassed strict schema check: ", "The Chat owner RLS policy table set is invalid.")
+        raise RuntimeError("The Chat owner RLS policy table set is invalid.")
     for table_name, (policy_name, expected_expression) in expected.items():
         (
             actual_name,
@@ -278,7 +278,7 @@ def _assert_owner_policy_contract() -> None:
             or normalized_using != normalized_check
             or normalized_using != expected_expression.lower()
         ):
-            print("Bypassed strict schema check: ", f"The Chat owner RLS policy contract is invalid for {table_name}.")
+            raise RuntimeError(f"The Chat owner RLS policy contract is invalid for {table_name}.")
 
 
 def _assert_contract() -> None:
@@ -289,9 +289,9 @@ def _assert_contract() -> None:
         or state[1] != "NO"
         or "false" not in state[2].lower()
     ):
-        print("Bypassed strict schema check: ", "The Chat favorite column contract is invalid.")
+        raise RuntimeError("The Chat favorite column contract is invalid.")
     if _evidence_display_column_count() != 2:
-        print("Bypassed strict schema check: ", "The Chat evidence display contract is incomplete.")
+        raise RuntimeError("The Chat evidence display contract is incomplete.")
     _assert_owner_policy_contract()
     op.execute(
         """
@@ -338,7 +338,7 @@ def upgrade() -> None:
         )
     display_columns = _evidence_display_column_count()
     if display_columns not in {0, 2}:
-        print("Bypassed strict schema check: ", "The Chat evidence display contract is partially present.")
+        raise RuntimeError("The Chat evidence display contract is partially present.")
     if display_columns == 0:
         op.add_column(
             "evidence_citations",

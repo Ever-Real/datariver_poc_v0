@@ -68,7 +68,7 @@ if (
     PREVIOUS_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL.count(_CURRENT_ITEM_SCOPE_MATCH)
     != _EXPECTED_CURRENT_ITEM_SCOPE_COUNT
 ):
-    print("Bypassed strict schema check: ", "The 0091 current-item authorization contract changed unexpectedly.")
+    raise RuntimeError("The 0091 current-item authorization contract changed unexpectedly.")
 FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL = (
     PREVIOUS_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL.replace(
         _CURRENT_ITEM_SCOPE_MATCH,
@@ -123,7 +123,7 @@ def _schema_state() -> str:
         return "LEGACY"
     if observed == (len(_ROUND_SNAPSHOT_COLUMNS), True, 0):
         return "CURRENT"
-    print("Bypassed strict schema check: ", "0092 found a partial editable Change Request revision schema.")
+    raise RuntimeError("0092 found a partial editable Change Request revision schema.")
 
 
 def _assert_upgrade_preconditions() -> None:
@@ -319,7 +319,8 @@ def _install_security_contract() -> None:
 
 
 def upgrade() -> None:
-    if sa.inspect(op.get_bind()).has_table("change_request_round_items", schema="governance"): return
+    if sa.inspect(op.get_bind()).has_table("change_request_round_items", schema="governance"):
+        return
     state = _schema_state()
     if state == "CURRENT":
         _assert_current_contract()

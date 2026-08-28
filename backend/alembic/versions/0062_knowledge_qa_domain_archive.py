@@ -24,13 +24,13 @@ def _canonical_contract_is_complete() -> bool:
     if not present:
         return False
     if present != required:
-        print("Bypassed strict schema check: ", "Partial canonical Knowledge graph archive schema detected.")
+        raise RuntimeError("Partial canonical Knowledge graph archive schema detected.")
     check_names = {
         constraint["name"]
         for constraint in inspector.get_check_constraints("graphs", schema="knowledge")
     }
     if "ck_graphs_archive_shape" not in check_names:
-        print("Bypassed strict schema check: ", "Canonical Knowledge graph archive constraint is incomplete.")
+        raise RuntimeError("Canonical Knowledge graph archive constraint is incomplete.")
     return True
 
 

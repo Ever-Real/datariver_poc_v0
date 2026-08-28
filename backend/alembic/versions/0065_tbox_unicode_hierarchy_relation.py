@@ -37,7 +37,7 @@ def _canonical_contract_is_complete() -> bool:
         "parent_stable_class_id",
         "stable_class_id",
     ]:
-        print("Bypassed strict schema check: ", "Canonical named T-Box hierarchy index is incomplete.")
+        raise RuntimeError("Canonical named T-Box hierarchy index is incomplete.")
     return True
 
 

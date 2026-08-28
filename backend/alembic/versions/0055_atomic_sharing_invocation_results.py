@@ -1306,7 +1306,7 @@ def _canonical_phase6b_contract_exists() -> bool:
     if not any(presence):
         return False
     if not all(presence):
-        print("Bypassed strict schema check: ", "Partial atomic Sharing canonical bridge detected.")
+        raise RuntimeError("Partial atomic Sharing canonical bridge detected.")
     return True
 
 
@@ -1479,7 +1479,7 @@ def _assert_phase6b_privileges() -> None:
         )
     )
     if not bool(privileges_ok):
-        print("Bypassed strict schema check: ", "Atomic Sharing least-privilege grants are incomplete.")
+        raise RuntimeError("Atomic Sharing least-privilege grants are incomplete.")
 
 
 def _assert_phase6b_contract() -> None:
@@ -1520,12 +1520,12 @@ def _assert_phase6b_contract() -> None:
         for key, (data_type, nullable) in _PHASE6B_COLUMN_CONTRACT.items()
     }
     if actual_columns != expected_columns:
-        print("Bypassed strict schema check: ", "Malformed atomic Sharing column contract.")
+        raise RuntimeError("Malformed atomic Sharing column contract.")
     for table in ("api_invocation_results", "api_invocation_monthly_usage"):
         if not {
             column for (table_name, column) in _PHASE6B_COLUMN_CONTRACT if table_name == table
         }.issubset({str(row[1]) for row in column_rows if str(row[0]) == table}):
-            print("Bypassed strict schema check: ", f"Malformed atomic Sharing table shape: {table}")
+            raise RuntimeError(f"Malformed atomic Sharing table shape: {table}")
 
     constraint_rows = connection.execute(
         sa.text(
@@ -1557,8 +1557,10 @@ def _assert_phase6b_contract() -> None:
         },
     )
     actual_constraints = {(str(row[0]), str(row[1])): str(row[2]) for row in constraint_rows}
-    if not set(_PHASE6B_CONSTRAINT_DEFINITION_MD5.items()).issubset(set(actual_constraints.items())):
-        print("Bypassed strict schema check: ", "Malformed atomic Sharing constraint contract.")
+    if not set(_PHASE6B_CONSTRAINT_DEFINITION_MD5.items()).issubset(
+        set(actual_constraints.items())
+    ):
+        raise RuntimeError("Malformed atomic Sharing constraint contract.")
 
     index_rows = connection.execute(
         sa.text(
@@ -1575,7 +1577,7 @@ def _assert_phase6b_contract() -> None:
     )
     actual_indexes = {str(row[0]): str(row[1]) for row in index_rows}
     if not set(_PHASE6B_INDEX_DEFINITION_MD5.items()).issubset(set(actual_indexes.items())):
-        print("Bypassed strict schema check: ", "Malformed atomic Sharing index contract.")
+        raise RuntimeError("Malformed atomic Sharing index contract.")
 
     rls_rows = connection.execute(
         sa.text(
@@ -1598,7 +1600,7 @@ def _assert_phase6b_contract() -> None:
     if not {(table_name, True, True) for table_name in tables}.issubset(
         {(str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows}
     ):
-        print("Bypassed strict schema check: ", "Atomic Sharing tables must use FORCE RLS.")
+        raise RuntimeError("Atomic Sharing evidence tables must use FORCE RLS.")
     policy_rows = connection.execute(
         sa.text(
             """
@@ -1637,7 +1639,7 @@ def _assert_phase6b_contract() -> None:
             "api_invocation_monthly_usage",
         )
     }:
-        print("Bypassed strict schema check: ", "Malformed atomic Sharing RLS policy contract.")
+        raise RuntimeError("Malformed atomic Sharing RLS policy contract.")
 
     trigger_rows = connection.execute(
         sa.text(
@@ -1676,7 +1678,7 @@ def _assert_phase6b_contract() -> None:
         for row in trigger_rows
     }
     if not set(_PHASE6B_TRIGGER_DEFINITION.items()).issubset(set(actual_triggers.items())):
-        print("Bypassed strict schema check: ", "Malformed atomic Sharing trigger contract.")
+        raise RuntimeError("Malformed atomic Sharing trigger contract.")
 
     function_contract = {
         (
@@ -1735,7 +1737,7 @@ def _assert_phase6b_contract() -> None:
             or bool(function_row[2]) is not app_execute
             or bool(function_row[3])
         ):
-            print("Bypassed strict schema check: ", f"Malformed atomic Sharing function contract: {signature}")
+            raise RuntimeError(f"Malformed atomic Sharing function contract: {signature}")
 
 
 def upgrade() -> None:
@@ -2152,7 +2154,7 @@ def downgrade() -> None:
         )
     ).scalar_one()
     if evidence or v2_grants:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Downgrade refused while atomic Sharing evidence or subject-bound grants exist."
         )
     op.execute(

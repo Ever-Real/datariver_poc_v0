@@ -17,9 +17,262 @@ down_revision: str | Sequence[str] | None = "0010"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_CANONICAL_TABLES = {
+    "authz.classification_access_generations": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "generation|bigint|int8||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+        ),
+        (
+            "ck_classification_access_generations_generation_nonnegative",
+            "fk_classification_access_generations_workspace_id_workspaces",
+            "pk_classification_access_generations",
+        ),
+        (),
+    ),
+    "integration.inference_provider_generations": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "generation|bigint|int8||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+        ),
+        (
+            "ck_inference_provider_generations_generation_nonnegative",
+            "fk_inference_provider_generations_workspace_id_workspaces",
+            "pk_inference_provider_generations",
+        ),
+        (),
+    ),
+    "authz.classification_access_policy_versions": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "policy_number|integer|int4||NO",
+            "required_jurisdiction|character varying|varchar|64|NO",
+            "restricted_search_grant_maximum_days|integer|int4||NO",
+            "payload_hash|character varying|varchar|64|NO",
+            "requester_id|uuid|uuid||NO",
+            "request_reason|character varying|varchar|4000|NO",
+            "request_policy_decision_id|uuid|uuid||NO",
+            "state|character varying|varchar|20|NO",
+            "checker_id|uuid|uuid||YES",
+            "decision_reason|character varying|varchar|4000|YES",
+            "decision_policy_decision_id|uuid|uuid||YES",
+            "decided_at|timestamp with time zone|timestamptz||YES",
+            "superseded_by|uuid|uuid||YES",
+            "supersede_reason|character varying|varchar|4000|YES",
+            "supersede_policy_decision_id|uuid|uuid||YES",
+            "superseded_at|timestamp with time zone|timestamptz||YES",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+            "version|integer|int4||NO",
+        ),
+        (
+            "ck_classification_access_policy_versions_grant_maximum_days",
+            "ck_classification_access_policy_versions_independent_checker",
+            "ck_classification_access_policy_versions_jurisdiction",
+            "ck_classification_access_policy_versions_payload_hash_sha256",
+            "ck_classification_access_policy_versions_policy_number_positive",
+            "ck_classification_access_policy_versions_reasons_nonempty",
+            "ck_classification_access_policy_versions_state",
+            "ck_classification_access_policy_versions_state_shape",
+            "ck_classification_access_policy_versions_version_positive",
+            "fk_classification_access_policy_versions_workspace_id_w_8bf9",
+            "fk_classification_policy_versions_checker_membership",
+            "fk_classification_policy_versions_requester_membership",
+            "fk_classification_policy_versions_superseder_membership",
+            "pk_classification_access_policy_versions",
+            "uq_classification_policy_versions_exact",
+            "uq_classification_policy_versions_number",
+            "uq_classification_policy_versions_workspace_id",
+        ),
+        (
+            "ix_classification_policy_versions_workspace_number",
+            "uq_classification_policy_versions_workspace_active",
+        ),
+    ),
+    "integration.inference_provider_profile_versions": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "profile_key|character varying|varchar|128|NO",
+            "profile_version|integer|int4||NO",
+            "server_route_key|character varying|varchar|128|NO",
+            "kind|character varying|varchar|20|NO",
+            "provider_identity|character varying|varchar|256|NO",
+            "model_identity|character varying|varchar|256|NO",
+            "deployment_identity|character varying|varchar|256|NO",
+            "jurisdiction|character varying|varchar|64|NO",
+            "region|character varying|varchar|64|NO",
+            "maximum_classification|integer|int4||NO",
+            "residency_attestation_fingerprint|character varying|varchar|64|NO",
+            "residency_attestation_observed_at|timestamp with time zone|timestamptz||NO",
+            "residency_attestation_expires_at|timestamp with time zone|timestamptz||NO",
+            "zero_retention_attestation_fingerprint|character varying|varchar|64|NO",
+            "zero_retention_attestation_observed_at|timestamp with time zone|timestamptz||NO",
+            "zero_retention_attestation_expires_at|timestamp with time zone|timestamptz||NO",
+            "payload_hash|character varying|varchar|64|NO",
+            "maker_id|uuid|uuid||NO",
+            "proposal_reason|character varying|varchar|1000|NO",
+            "proposal_policy_decision_id|uuid|uuid||NO",
+            "proposed_at|timestamp with time zone|timestamptz||NO",
+            "state|character varying|varchar|20|NO",
+            "checker_id|uuid|uuid||YES",
+            "decision_reason|character varying|varchar|1000|YES",
+            "decision_policy_decision_id|uuid|uuid||YES",
+            "decided_at|timestamp with time zone|timestamptz||YES",
+            "revoked_by|uuid|uuid||YES",
+            "revocation_reason|character varying|varchar|1000|YES",
+            "revocation_policy_decision_id|uuid|uuid||YES",
+            "revoked_at|timestamp with time zone|timestamptz||YES",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+            "version|integer|int4||NO",
+        ),
+        (
+            "ck_inference_provider_profile_versions_attestation_hashes",
+            "ck_inference_provider_profile_versions_attestation_windows",
+            "ck_inference_provider_profile_versions_classification",
+            "ck_inference_provider_profile_versions_external_classif_71fd",
+            "ck_inference_provider_profile_versions_independent_checker",
+            "ck_inference_provider_profile_versions_kind",
+            "ck_inference_provider_profile_versions_no_endpoint_values",
+            "ck_inference_provider_profile_versions_payload_hash_sha256",
+            "ck_inference_provider_profile_versions_profile_version_positive",
+            "ck_inference_provider_profile_versions_reasons_nonempty",
+            "ck_inference_provider_profile_versions_state",
+            "ck_inference_provider_profile_versions_state_shape",
+            "ck_inference_provider_profile_versions_version_positive",
+            "fk_inference_profile_versions_checker_membership",
+            "fk_inference_profile_versions_maker_membership",
+            "fk_inference_profile_versions_revoker_membership",
+            "fk_inference_provider_profile_versions_workspace_id_workspaces",
+            "pk_inference_provider_profile_versions",
+            "uq_inference_profile_versions_key_version",
+            "uq_inference_profile_versions_workspace_id",
+        ),
+        (
+            "ix_inference_profile_versions_workspace_order",
+            "ix_inference_profile_versions_workspace_state",
+        ),
+    ),
+    "authz.classification_access_policy_rules": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "policy_id|uuid|uuid||NO",
+            "policy_hash|character varying|varchar|64|NO",
+            "classification|integer|int4||NO",
+            "search_mode|character varying|varchar|30|NO",
+            "chat_mode|character varying|varchar|30|NO",
+            "provider_profile_version_id|uuid|uuid||YES",
+            "embedding_provider_profile_version_id|uuid|uuid||YES",
+            "reranker_provider_profile_version_id|uuid|uuid||YES",
+            "id|uuid|uuid||NO",
+        ),
+        (
+            "ck_classification_access_policy_rules_chat_mode",
+            "ck_classification_access_policy_rules_classification",
+            "ck_classification_access_policy_rules_confidential_chat_floor",
+            "ck_classification_access_policy_rules_provider_binding",
+            "ck_classification_access_policy_rules_restricted_floor",
+            "ck_classification_access_policy_rules_search_mode",
+            "fk_classification_access_policy_rules_workspace_id_workspaces",
+            "fk_classification_policy_rules_embedding_profile",
+            "fk_classification_policy_rules_policy",
+            "fk_classification_policy_rules_provider_profile",
+            "fk_classification_policy_rules_reranker_profile",
+            "pk_classification_access_policy_rules",
+            "uq_classification_policy_rules_classification",
+        ),
+        ("ix_classification_policy_rules_policy",),
+    ),
+    "authz.restricted_search_grants": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "classification_policy_id|uuid|uuid||NO",
+            "classification_policy_hash|character varying|varchar|64|NO",
+            "subject_id|uuid|uuid||NO",
+            "scope|character varying|varchar|20|NO",
+            "scope_id|uuid|uuid||NO",
+            "purpose|character varying|varchar|4000|NO",
+            "valid_from|timestamp with time zone|timestamptz||NO",
+            "expires_at|timestamp with time zone|timestamptz||NO",
+            "payload_hash|character varying|varchar|64|NO",
+            "requester_id|uuid|uuid||NO",
+            "request_reason|character varying|varchar|4000|NO",
+            "request_policy_decision_id|uuid|uuid||NO",
+            "state|character varying|varchar|20|NO",
+            "checker_id|uuid|uuid||YES",
+            "decision_reason|character varying|varchar|4000|YES",
+            "decision_policy_decision_id|uuid|uuid||YES",
+            "decided_at|timestamp with time zone|timestamptz||YES",
+            "revoked_by|uuid|uuid||YES",
+            "revocation_reason|character varying|varchar|4000|YES",
+            "revocation_policy_decision_id|uuid|uuid||YES",
+            "revoked_at|timestamp with time zone|timestamptz||YES",
+            "id|uuid|uuid||NO",
+            "created_at|timestamp with time zone|timestamptz||NO",
+            "updated_at|timestamp with time zone|timestamptz||NO",
+            "version|integer|int4||NO",
+        ),
+        (
+            "ck_restricted_search_grants_independent_checker",
+            "ck_restricted_search_grants_payload_hash_sha256",
+            "ck_restricted_search_grants_policy_hash_sha256",
+            "ck_restricted_search_grants_reasons_nonempty",
+            "ck_restricted_search_grants_scope",
+            "ck_restricted_search_grants_state",
+            "ck_restricted_search_grants_state_shape",
+            "ck_restricted_search_grants_subject_cannot_check",
+            "ck_restricted_search_grants_validity_window",
+            "ck_restricted_search_grants_version_positive",
+            "fk_restricted_search_grants_checker_membership",
+            "fk_restricted_search_grants_policy",
+            "fk_restricted_search_grants_requester_membership",
+            "fk_restricted_search_grants_revoker_membership",
+            "fk_restricted_search_grants_subject_membership",
+            "fk_restricted_search_grants_workspace_id_workspaces",
+            "pk_restricted_search_grants",
+            "uq_restricted_search_grants_workspace_id",
+        ),
+        (
+            "ix_restricted_search_grants_scope_active",
+            "ix_restricted_search_grants_subject_active",
+            "ix_restricted_search_grants_workspace_created_id",
+        ),
+    ),
+    "authz.restricted_search_grant_events": (
+        (
+            "workspace_id|uuid|uuid||NO",
+            "grant_id|uuid|uuid||NO",
+            "action|character varying|varchar|20|NO",
+            "actor_id|uuid|uuid||NO",
+            "reason|character varying|varchar|4000|NO",
+            "policy_decision_id|uuid|uuid||NO",
+            "occurred_at|timestamp with time zone|timestamptz||NO",
+            "grant_version|integer|int4||NO",
+            "payload_hash|character varying|varchar|64|NO",
+            "id|uuid|uuid||NO",
+        ),
+        (
+            "ck_restricted_search_grant_events_action",
+            "ck_restricted_search_grant_events_grant_version",
+            "ck_restricted_search_grant_events_payload_hash_sha256",
+            "ck_restricted_search_grant_events_reason_nonempty",
+            "fk_restricted_search_grant_events_actor_membership",
+            "fk_restricted_search_grant_events_grant",
+            "fk_restricted_search_grant_events_workspace_id_workspaces",
+            "pk_restricted_search_grant_events",
+            "uq_grant_events_version",
+        ),
+        ("ix_restricted_search_grant_events_grant",),
+    ),
+}
 
-def upgrade() -> None:
-    existing_tables = int(
+
+def _existing_object_count() -> int:
+    return int(
         op.get_bind()
         .execute(
             sa.text(
@@ -40,9 +293,86 @@ def upgrade() -> None:
         )
         .scalar_one()
     )
+
+
+def _table_contract_is_exact(
+    relation: str,
+    expected_columns: tuple[str, ...],
+    expected_constraints: tuple[str, ...],
+    expected_indexes: tuple[str, ...],
+) -> bool:
+    schema_name, table_name = relation.split(".", maxsplit=1)
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    ARRAY(
+                        SELECT column_name || '|' || data_type || '|' || udt_name
+                            || '|' || COALESCE(character_maximum_length::text, '')
+                            || '|' || is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = :schema_name AND table_name = :table_name
+                        ORDER BY ordinal_position
+                    ) AS columns,
+                    ARRAY(
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = to_regclass(:relation)
+                        ORDER BY conname
+                    ) AS constraints,
+                    ARRAY(
+                        SELECT index_class.relname
+                        FROM pg_index AS index_state
+                        JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
+                        WHERE index_state.indrelid = to_regclass(:relation)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM pg_constraint
+                              WHERE conindid = index_state.indexrelid
+                          )
+                        ORDER BY index_class.relname
+                    ) AS indexes,
+                    ARRAY(
+                        SELECT polname FROM pg_policy
+                        WHERE polrelid = to_regclass(:relation)
+                        ORDER BY polname
+                    ) AS policies,
+                    COALESCE((
+                        SELECT relrowsecurity AND relforcerowsecurity
+                        FROM pg_class WHERE oid = to_regclass(:relation)
+                    ), FALSE) AS force_rls
+                """
+            ),
+            {
+                "relation": relation,
+                "schema_name": schema_name,
+                "table_name": table_name,
+            },
+        )
+        .mappings()
+        .one()
+    )
+    return (
+        tuple(sorted(row["columns"])) == tuple(sorted(expected_columns))
+        and tuple(row["constraints"]) == expected_constraints
+        and tuple(row["indexes"]) == expected_indexes
+        and tuple(row["policies"]) == ("workspace_isolation",)
+        and bool(row["force_rls"])
+    )
+
+
+def _is_canonical_schema() -> bool:
+    return all(
+        _table_contract_is_exact(relation, *expected)
+        for relation, expected in _CANONICAL_TABLES.items()
+    )
+
+
+def upgrade() -> None:
+    existing_tables = _existing_object_count()
     if existing_tables:
-        if existing_tables != 7:
-            print("Bypassed strict schema check: ", "The governed classification schema is only partially present.")
+        if existing_tables != 7 or not _is_canonical_schema():
+            raise RuntimeError("The governed classification schema is only partially present.")
         _install_security_contract()
         return
     op.create_table(
@@ -746,8 +1076,7 @@ def _install_security_contract() -> None:
         """
     )
     op.execute(
-        "DROP TRIGGER IF EXISTS validate_restricted_search_grant "
-        "ON authz.restricted_search_grants"
+        "DROP TRIGGER IF EXISTS validate_restricted_search_grant ON authz.restricted_search_grants"
     )
     op.execute(
         """

@@ -69,9 +69,9 @@ _LEGACY_SHA256 = "9c89eaa41c1b4b5b60d358ac6416336a568f605a5f397d4a216485acd7e823
 
 def _pinned(sql: str, expected_sha256: str, *, label: str) -> str:
     if sql.count("CREATE OR REPLACE FUNCTION") != 1:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} function boundary changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} function boundary changed")
     if hashlib.sha256(sql.encode()).hexdigest() != expected_sha256:
-        print("Bypassed strict schema check: ", f"Knowledge Studio Proposal {label} function source changed")
+        raise RuntimeError(f"Knowledge Studio Proposal {label} function source changed")
     return sql
 
 
@@ -82,14 +82,14 @@ def current_authorization_function_sql() -> str:
         TBOX_PROPOSAL_JOB_SUPPORT_FUNCTION_SQL.count(_FUNCTION_START) != 1
         or TBOX_PROPOSAL_JOB_SUPPORT_FUNCTION_SQL.count(_FUNCTION_END) != 1
     ):
-        print("Bypassed strict schema check: ", "Knowledge Studio Proposal authorization function boundary changed")
+        raise RuntimeError("Knowledge Studio Proposal authorization function boundary changed")
     _prefix, _separator, remainder = TBOX_PROPOSAL_JOB_SUPPORT_FUNCTION_SQL.partition(
         _FUNCTION_START
     )
     body, _separator, _remainder = remainder.partition(_FUNCTION_END)
     function_sql = f"{_FUNCTION_START}{body}".strip()
     if function_sql.count(_MANAGED_ALLOWED_SYSTEM_SCOPE) != 1:
-        print("Bypassed strict schema check: ", "Knowledge Studio Proposal managed system scope boundary changed")
+        raise RuntimeError("Knowledge Studio Proposal managed system scope boundary changed")
     return _pinned(function_sql, _CURRENT_SHA256, label="0094 authorization")
 
 

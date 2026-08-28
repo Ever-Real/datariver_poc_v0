@@ -8200,6 +8200,56 @@ def verify_domain_independent_knowledge_projection() -> None:
                 )
 
 
+def verify_migration_fail_closed_integrity() -> None:
+    migration_root = ROOT / "backend" / "alembic" / "versions"
+    bypass_marker = "Bypassed strict schema check"
+    for path in migration_root.glob("*.py"):
+        if bypass_marker in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"fail-open migration marker found in {path.relative_to(ROOT)}")
+
+    forbidden_tools = tuple(
+        path
+        for path in ROOT.rglob("patch_migrations.py")
+        if not ({".git", ".venv", ".venv-wsl", "node_modules"} & set(path.parts))
+    )
+    if forbidden_tools:
+        rendered = ", ".join(str(path.relative_to(ROOT)) for path in forbidden_tools)
+        raise AssertionError(f"blanket migration patch tool is tracked or packaged: {rendered}")
+
+    rewrite_sources = (
+        path
+        for path in ROOT.rglob("*.py")
+        if not ({".git", ".venv", ".venv-wsl", "node_modules"} & set(path.parts))
+    )
+    for path in rewrite_sources:
+        source = path.read_text(encoding="utf-8")
+        if "raise RuntimeError" not in source or "print(" not in source:
+            continue
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else node.func.id
+                if isinstance(node.func, ast.Name)
+                else ""
+            )
+            if function_name not in {"replace", "sub", "subn"}:
+                continue
+            literal_arguments = " ".join(
+                argument.value
+                for argument in node.args
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            )
+            if "raise RuntimeError" in literal_arguments:
+                raise AssertionError(
+                    "blanket RuntimeError-to-print migration rewriting found in "
+                    f"{path.relative_to(ROOT)}"
+                )
+
+
 def main() -> None:
     verify_compose()
     verify_datahub_mac_capacity_contract()
@@ -8227,6 +8277,7 @@ def main() -> None:
     verify_governed_persistent_data_bind_probe_contract()
     verify_mac_level2_core_publication_contract()
     verify_domain_independent_knowledge_projection()
+    verify_migration_fail_closed_integrity()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
@@ -8234,7 +8285,8 @@ def main() -> None:
         "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
         "database roles, architecture, source integrity, tenant foreign keys, seed, "
-        "amd64 source readiness, domain-independent knowledge projection, documentation"
+        "amd64 source readiness, migration fail-closed integrity, "
+        "domain-independent knowledge projection, documentation"
     )
 
 

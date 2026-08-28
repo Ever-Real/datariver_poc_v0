@@ -39,7 +39,7 @@ def _canonical_contract_is_complete() -> bool:
         or "source_reference_document" in proposal_columns
     )
     if indicators and not expected:
-        print("Bypassed strict schema check: ", "Partial canonical managed Knowledge domain schema detected.")
+        raise RuntimeError("Partial canonical managed Knowledge domain schema detected.")
     return expected
 
 

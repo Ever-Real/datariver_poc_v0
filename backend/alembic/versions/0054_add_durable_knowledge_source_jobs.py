@@ -2038,23 +2038,23 @@ def _canonical_phase5_contract_exists() -> bool:
     )
     if not existing_tables:
         if bridge_columns_present:
-            print("Bypassed strict schema check: ", "Partial durable Knowledge canonical bridge detected.")
+            raise RuntimeError("Partial durable Knowledge canonical bridge detected.")
         return False
     if existing_tables != expected_tables:
-        print("Bypassed strict schema check: ", "Partial durable Knowledge table set detected.")
+        raise RuntimeError("Partial durable Knowledge table set detected.")
     for table_name, expected_columns in _PHASE5_COLUMNS.items():
         actual_columns = {
             column["name"]
             for column in inspector.get_columns(table_name, schema="knowledge")
         }
         if not expected_columns.issubset(actual_columns):
-            print("Bypassed strict schema check: ", f"Malformed durable Knowledge table: {table_name}")
+            raise RuntimeError(f"Malformed durable Knowledge table: {table_name}")
     if "source_analysis_job_id" not in changeset_columns or not {
         "source_analysis_job_id",
         "source_analysis_attempt_id",
         "contract_version",
     } <= extraction_columns:
-        print("Bypassed strict schema check: ", "Incomplete durable Knowledge provenance bridge.")
+        raise RuntimeError("Incomplete durable Knowledge provenance bridge.")
 
     constraints = {
         row[0]
@@ -2074,7 +2074,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if not _PHASE5_CONSTRAINTS.issubset(constraints):
-        print("Bypassed strict schema check: ", "Malformed durable Knowledge constraint contract.")
+        raise RuntimeError("Malformed durable Knowledge constraint contract.")
     bridge_constraints = {
         row[0]
         for row in connection.execute(
@@ -2095,7 +2095,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if not _PHASE5_BRIDGE_CONSTRAINTS.issubset(bridge_constraints):
-        print("Bypassed strict schema check: ", "Malformed durable Knowledge provenance constraints.")
+        raise RuntimeError("Malformed durable Knowledge provenance constraints.")
     indexes = {
         row[0]
         for row in connection.execute(
@@ -2110,7 +2110,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if not _PHASE5_INDEXES.issubset(indexes):
-        print("Bypassed strict schema check: ", "Malformed durable Knowledge index contract.")
+        raise RuntimeError("Malformed durable Knowledge index contract.")
     policies = {
         (row[0], row[1])
         for row in connection.execute(
@@ -2126,7 +2126,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if not _PHASE5_POLICIES.issubset(policies):
-        print("Bypassed strict schema check: ", "Malformed durable Knowledge RLS policy contract.")
+        raise RuntimeError("Malformed durable Knowledge RLS policy contract.")
     claim_policies = {
         (row[0], row[1], row[2])
         for row in connection.execute(
@@ -2145,7 +2145,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if claim_policies != _PHASE5_CLAIM_POLICIES:
-        print("Bypassed strict schema check: ", "Durable Knowledge claim-scoped RLS policies are incomplete.")
+        raise RuntimeError("Durable Knowledge claim-scoped RLS policies are incomplete.")
     subject_rls = connection.execute(
         sa.text(
             """
@@ -2158,7 +2158,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     ).one()
     if tuple(bool(value) for value in subject_rls) != (True, True):
-        print("Bypassed strict schema check: ", "IAM subjects must enforce the Knowledge claim scope.")
+        raise RuntimeError("IAM subjects must enforce the Knowledge claim scope.")
     rls_rows = connection.execute(
         sa.text(
             """
@@ -2174,7 +2174,7 @@ def _canonical_phase5_contract_exists() -> bool:
     if not {(table_name, True, True) for table_name in expected_tables}.issubset(
         {(str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows}
     ):
-        print("Bypassed strict schema check: ", "Durable Knowledge tables must use FORCE RLS.")
+        raise RuntimeError("Durable Knowledge tables must use FORCE RLS.")
     triggers = {
         (row[0], row[1])
         for row in connection.execute(
@@ -2191,7 +2191,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if not _PHASE5_TRIGGERS <= triggers:
-        print("Bypassed strict schema check: ", "Durable Knowledge write fences are incomplete.")
+        raise RuntimeError("Durable Knowledge write fences are incomplete.")
     shared_triggers = {
         (row[0], row[1], row[2])
         for row in connection.execute(
@@ -2208,7 +2208,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if shared_triggers != _PHASE5_SHARED_TRIGGERS:
-        print("Bypassed strict schema check: ", "Durable Knowledge shared evidence fences are incomplete.")
+        raise RuntimeError("Durable Knowledge shared evidence fences are incomplete.")
     functions = {
         row[0]
         for row in connection.execute(
@@ -2225,7 +2225,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     }
     if functions != _PHASE5_FUNCTIONS:
-        print("Bypassed strict schema check: ", "Durable Knowledge database functions are incomplete.")
+        raise RuntimeError("Durable Knowledge database functions are incomplete.")
     role_rows = {
         str(row[0]): tuple(bool(value) for value in row[1:])
         for row in connection.execute(
@@ -2245,7 +2245,7 @@ def _canonical_phase5_contract_exists() -> bool:
         "datariver_app": safe_role,
         "datariver_knowledge": safe_role,
     }:
-        print("Bypassed strict schema check: ", "Durable Knowledge principals must be unprivileged LOGIN roles.")
+        raise RuntimeError("Durable Knowledge principals must be unprivileged LOGIN roles.")
     worker_membership_exists = connection.scalar(
         sa.text(
             """
@@ -2259,7 +2259,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     )
     if bool(worker_membership_exists):
-        print("Bypassed strict schema check: ", "The Knowledge worker must not SET ROLE to another principal.")
+        raise RuntimeError("The Knowledge worker must not SET ROLE to another principal.")
     worker_assumer_exists = connection.scalar(
         sa.text(
             """
@@ -2274,7 +2274,7 @@ def _canonical_phase5_contract_exists() -> bool:
         )
     )
     if bool(worker_assumer_exists):
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "The Knowledge worker role must not be assumable by another non-superuser."
         )
     return True
@@ -2381,7 +2381,7 @@ def _assert_phase5_privileges() -> None:
         )
     )
     if not bool(privileges_ok):
-        print("Bypassed strict schema check: ", "Durable Knowledge least-privilege grants are incomplete.")
+        raise RuntimeError("Durable Knowledge least-privilege grants are incomplete.")
 
 
 def upgrade() -> None:
@@ -2858,7 +2858,7 @@ def downgrade() -> None:
         sa.text("SELECT count(*) FROM knowledge.source_analysis_jobs")
     )
     if int(durable_rows or 0) != 0:
-        print("Bypassed strict schema check: ", 
+        raise RuntimeError(
             "Downgrade would erase durable Knowledge job evidence; archive or explicitly "
             "invalidate the ledger before retrying."
         )
