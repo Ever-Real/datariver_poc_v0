@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  2a26dc43f1bac3242811c3803c80dc845884bc80
-Evidence b22ee182ec79795637e8f555f61b38d3d4e4667e
+Product  b0402d142cc3920cbe936e7b19d1426009b0cdf1
+Evidence 9114e9d8adec794d114502f5f163cb629a010607
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -99,6 +99,12 @@ distinct K9 service Subject, reconciles those exact policy pins in local Postgre
 initial shared-snapshot refresh into local Neo4j, and requires both graphs plus the semantic index
 to be DAILY and READY. No unrelated Studio database or extra container is required.
 
+A terminal refresh failure finalizes every unfinished canonical managed-graph policy with a
+durable typed `K9_*` error instead of leaving it indefinitely `PENDING`. The active last-known-good
+generation and promoted Neo4j projection remain unchanged. The semantic index reports READY only
+when it belongs to the active matching generation, and authenticated smoke fails immediately on a
+terminal Product error instead of waiting for the generic readiness timeout.
+
 The local Workspace is the Product's canonical target-local Workspace. MCP remains a built-in
 adapter with a generated target-local token and deterministic Subject, so it adds no operator
 secret. K9 and MCP use distinct deterministic Subjects; each requested
@@ -125,6 +131,26 @@ Kafka high watermark; a large retained backlog therefore continues in the backgr
 waiting for the next daily boundary. Shutdown finishes the current bounded batch and starts no
 new one. A checkpoint behind Kafka retention is `HISTORY_GAP_BLOCKED` and is never advanced or
 silently skipped.
+
+Capture failures persist only bounded classification, stage, and detail identifiers in the
+versioned runtime status. Raw exception text, provider response bodies, schema bodies, credentials,
+tokens, and connection strings are never diagnostic fields. The durable diagnostic write is
+awaited and version-verified; it does not reset the ledger, checkpoint, or discovered source
+identity.
+
+## Current hotfix evidence
+
+The accepted verification narrative is
+[`docs/evidence/prep-hotfix-migration-k9-mcl/README.md`](evidence/prep-hotfix-migration-k9-mcl/README.md).
+It records the one-time 54-file fail-open remediation, definition-level squashed-baseline
+compatibility, the exactly-once Audit 2 result and bounded correction, K9 terminal failure
+propagation, MCL durable diagnostics, exact linux/amd64 OCI fixtures, current `SMOKE_FAILED`
+descendant resume, and historical accepted upgrade.
+
+Accepted migration history is checksum-protected and immutable under
+[`docs/68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md`](68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md).
+An ordinary release with no migration-source change runs the integrity/static gate and a
+representative supported upgrade; it does not repeat the historical 54-file audit.
 
 Kafka bootstrap reachability does not prove that the cluster is usable: Kafka may advertise a
 broker DNS name or address that PREP cannot resolve or reach after the initial bootstrap
