@@ -90,7 +90,7 @@ receipts are preserved; no reset path was added.
 
 The exact Product image is `linux/amd64`, carries OCI revision
 `b0402d142cc3920cbe936e7b19d1426009b0cdf1`, and currently resolves to image ID
-`sha256:25e39a4d33eb3ea6b6ea20cbdb57f2b9e714320514ea7d45c4fd3e35a907aed7`.
+`sha256:5e12e7becf8a466200500b15d75ea281fa6cb6407f67f53a2eb2ec8d4ec8daf6`.
 Inside that exact image, the K9 success fixture completed `SUCCESS`; a shared semantic failure
 returned and persisted `K9_SEMANTIC_INDEX_FAILED` for both canonical managed-graph intents; and an
 MCL durable-append exception persisted only
@@ -108,6 +108,11 @@ password/schema text remained absent from the rendered diagnostic.
   return from `up --wait` although the services were healthy. Its exact disposable containers,
   volumes, and network were removed individually. A single clean rerun passed the complete fixture,
   so this transient tool behavior is not a remaining release blocker.
+- A separate auxiliary state-machine-only fixture was attempted after release assembly. Docker
+  Compose 5.3.1 did not return from its first `up --wait` and produced no test result in 217.84s.
+  The one exact disposable container, three volumes, and network were then removed individually.
+  This auxiliary attempt is not counted as PASS and does not replace the two complete full-deploy
+  recovery gates above.
 - Disposable Docker resources remaining after the gates: zero.
 - No test invoked `docker compose down -v`, deleted a PREP volume, reset a database, regenerated an
   accepted secret, or accessed actual PREP/OPS.
