@@ -8,6 +8,13 @@ Starting `origin/dev`: `5664dd00659d41c5987ed1c2cb30577dfa4f84ea`
 
 ## Verdict
 
+> Follow-up on 2026-08-28: the runtime-reachability verdict below remains valid, but the original
+> audit did not establish PREP GlossaryTerm acceptance coverage and its `29/29` result was local
+> smoke-process testing only. Product `3daf21e43830cc42411c15ed375042feadae661c` adds a read-only,
+> target-independent GlossaryTerm gate. Actual PREP validation of that descendant Product has not
+> yet been executed; readiness remains `HOLD_NOT_PROVEN`. See
+> `docs/evidence/prep-glossary-term-smoke/README.md`.
+
 `Wafer` is not a PREP deployment dependency in the audited Product. The case-insensitive
 inventory contains 795 `wafer` matches on 745 lines in 70 files, but there are zero occurrences
 in the PREP smoke, deploy entry point, deploy controller, or modules copied into the final POC
@@ -25,11 +32,15 @@ Accordingly, the operator-supplied observation that a separate lookup returned
 `entityExists=false` / `glossaryTerm.exists=false` for
 `urn:li:glossaryTerm:wafer` does not explain the failed smoke. That URN was not used by the
 audited smoke request path. The missing Term is normal target metadata absence, not evidence of an
-authorization failure. The exact historical failure substage remains unknown because the legacy
-wrapper discarded it.
+authorization failure. The legacy receipt discarded the substage, but preserved follow-up evidence
+and the failing Product call path recover it as administrator login: `POST /auth/login` returned
+HTTP 403 with bounded Product code `ORIGIN_FORBIDDEN` because loopback transport was also sent as
+the request Origin. It was not a GlossaryTerm, Wafer, or bulk-ingestion request.
 
-No Product correction is justified by this audit. Replacing the current bounded read smoke with a
-synthetic mutation fixture would add state and cleanup risk without fixing the observed failure.
+No Wafer-specific Product correction or synthetic mutation fixture is justified. A separate
+coverage correction is justified: the deployment acceptance contract did not explicitly verify a
+current GlossaryTerm. The correction discovers or configures one target Term and reads it without
+creating, mutating, or deleting metadata.
 
 ## Search accounting
 
@@ -249,7 +260,7 @@ No remaining hardcoded target-business-data dependency was found in a PREP-runti
 
 ## Verification
 
-Executed from the clean audit worktree:
+The original audit executed the following local-only checks:
 
 ```text
 node --test scripts/smoke_prep39083.test.mjs
@@ -271,16 +282,16 @@ Additional source/release proof:
   `poc-server.providers.test.mjs`, backend seeds, local GraphRAG fixture, or manual probes.
 - The Vite POC entry graph starts at `poc.html` / `src/poc/main.tsx`; test modules are not imported.
 - Repository-wide `entityExists` occurrence count: zero in current source and searched history.
-- No PREP, DataHub, Docker container, volume, secret, identity, or user metadata was accessed or
-  changed by this audit.
+- Those results are not Actual PREP validation. No PREP, DataHub, Docker container, volume, secret,
+  identity, or user metadata was accessed or changed by the original audit.
 
 ## Decision and next action
 
-Product files changed: none. The Product remains `80618b6039bf994585a2a3ff623b44c1e16efeb5`.
-There is no smoke fixture to rename or clean up, and no authorization boundary to widen.
+The original audit changed no Product files; this explains why its audited Product remained
+`80618b6039bf994585a2a3ff623b44c1e16efeb5` while its Evidence commit was a descendant of Handoff
+`5664dd00659d41c5987ed1c2cb30577dfa4f84ea`. The bounded follow-up Product is
+`3daf21e43830cc42411c15ed375042feadae661c`.
 
-PREP readiness is not asserted by this source audit. The exact next action is a read-only operator
-handoff of the preserved failing Product SHA plus the original smoke invocation/stderr or sanitized
-failure record that produced `PREP_RUNTIME_SMOKE_FAILED`. That evidence must identify which real
-smoke endpoint failed. Do not rerun deploy, create `Wafer` metadata, reset state, or modify
-authorization to manufacture a pass.
+PREP readiness is not asserted by either local source audit. Do not create `Wafer` metadata, reset
+state, or widen authorization to manufacture a pass. Actual PREP must run the exact descendant
+Handoff through the canonical same command before readiness can change from `HOLD_NOT_PROVEN`.
