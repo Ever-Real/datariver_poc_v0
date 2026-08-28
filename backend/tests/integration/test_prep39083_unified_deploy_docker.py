@@ -145,6 +145,67 @@ def _marker(path: Path, release: Any) -> None:
     )
 
 
+def _build_product_artifact(
+    runner: Any,
+    product: str,
+    target: Path,
+) -> Any:
+    image = f"datariver-poc:{product}"
+    runner.run(
+        [
+            "docker",
+            "buildx",
+            "build",
+            "--platform",
+            "linux/amd64",
+            "--pull=false",
+            "--load",
+            "--build-arg",
+            f"POC_SOURCE_COMMIT={product}",
+            "--file",
+            os.fspath(ROOT / "deploy/poc/Dockerfile.example"),
+            "--tag",
+            image,
+            os.fspath(ROOT),
+        ]
+    )
+    runner.run(
+        [
+            "docker",
+            "image",
+            "save",
+            "--platform",
+            "linux/amd64",
+            "--output",
+            os.fspath(target),
+            image,
+        ]
+    )
+    return deploy.inspect_web_archive(target)
+
+
+def _archive_existing_product(runner: Any, product: str, target: Path) -> Any:
+    image = f"datariver-poc:{product}"
+    inspected = json.loads(
+        runner.output(["docker", "image", "inspect", "--platform", "linux/amd64", image])
+    )[0]
+    labels = inspected.get("Config", {}).get("Labels", {})
+    assert labels.get("org.opencontainers.image.revision") == product
+    runner.run(
+        [
+            "docker",
+            "image",
+            "save",
+            "--platform",
+            "linux/amd64",
+            "--output",
+            os.fspath(target),
+            image,
+        ]
+    )
+    return deploy.inspect_web_archive(target)
+
+
 @pytest.mark.skipif(
     not _ENABLED,
     reason="explicit isolated PREP39083 Docker integration is required",
@@ -156,7 +217,18 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
     _pollute_parent_environment(monkeypatch)
     project = f"datariver-prep39083-doctor-{uuid4().hex[:10]}"
     product = f"{uuid4().hex}{uuid4().hex[:8]}"
-    release = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", 39083, project)
+    runner = deploy.Runner(environment=deploy.child_environment({}))
+    artifact_path = tmp_path / "exact-product.tar"
+    artifact = _build_product_artifact(runner, product, artifact_path)
+    release = deploy.ReleaseIdentity(
+        product,
+        "b" * 40,
+        "linux/amd64",
+        39083,
+        project,
+        artifact,
+    )
+    monkeypatch.setattr(deploy, "promoted_web_artifact_path", lambda _artifact: artifact_path)
     operator = tmp_path / ".env.prep"
     runtime = tmp_path / ".env.prep.runtime"
     attempt = tmp_path / "deploy-attempt.json"
@@ -174,7 +246,7 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
     assert not runtime.exists()
     bundle = _effective(bundle, project)
     bundle = replace(bundle, effective={**bundle.effective, "POC_PORT": "39083"})
-    runner = deploy.Runner(environment=deploy.child_environment(bundle.effective))
+    runner.environment = deploy.child_environment(bundle.effective)
     assert runner.environment["POC_IMAGE_TAG"] == product
     assert runner.environment["POC_BIND_HOST"] == WILDCARD_BIND_HOST
     assert runner.environment["POC_STATE_BIND_HOST"] == "127.0.0.1"
@@ -183,6 +255,7 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
     assert "DOCKER_DEFAULT_PLATFORM" not in runner.environment
     image = f"datariver-poc:{product}"
     try:
+        runner.run(["docker", "image", "rm", image])
         with deploy.private_effective_environment(bundle.effective) as env_file:
             prefix = deploy.compose_prefix(release, env_file)
             config = deploy.compose_config(runner, prefix)
@@ -194,10 +267,10 @@ def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_stat
                     runner,
                     prefix,
                     image,
-                    product,
+                    release,
                     doctor=True,
                 )
-                == "BUILT"
+                == "LOADED_EXACT_ARTIFACT"
             )
             matrix = deploy.collect_provider_preflight(
                 runner,
@@ -487,8 +560,22 @@ def test_current_v2_smoke_failed_resumes_across_descendant_without_duplicate_boo
         ).returncode
         == 0
     )
-    release_a = deploy.ReleaseIdentity(product_a, "a" * 40, "linux/amd64", port, project)
-    release_b = deploy.ReleaseIdentity(product_b, "b" * 40, "linux/amd64", port, project)
+    artifact_paths = {product: tmp_path / f"{product}.tar" for product in (product_a, product_b)}
+    artifacts = {
+        product: _build_product_artifact(runner, product, artifact_paths[product])
+        for product in (product_a, product_b)
+    }
+    release_a = deploy.ReleaseIdentity(
+        product_a, "a" * 40, "linux/amd64", port, project, artifacts[product_a]
+    )
+    release_b = deploy.ReleaseIdentity(
+        product_b, "b" * 40, "linux/amd64", port, project, artifacts[product_b]
+    )
+    monkeypatch.setattr(
+        deploy,
+        "promoted_web_artifact_path",
+        lambda artifact: artifact_paths[artifact.product_sha],
+    )
     operator = tmp_path / ".env.prep"
     optional = tmp_path / ".env.prep.optional"
     runtime = tmp_path / ".env.prep.runtime"
@@ -757,12 +844,20 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
     setup_contract_path = tmp_path / "env-contract.setup.json"
     setup_contract_path.write_text(json.dumps(setup_contract), encoding="utf-8")
 
+    artifact_paths = {
+        product: tmp_path / f"{product}.tar" for product in (previous_handoff, current_handoff)
+    }
+    artifacts = {
+        product: _build_product_artifact(runner, product, artifact_paths[product])
+        for product in (previous_handoff, current_handoff)
+    }
     release_a = deploy.ReleaseIdentity(
         previous_handoff,
         "a" * 40,
         "linux/amd64",
         port,
         project,
+        artifacts[previous_handoff],
     )
     release_b = deploy.ReleaseIdentity(
         current_handoff,
@@ -770,6 +865,12 @@ def test_legacy_smoke_failed_resumes_across_descendant_fixed_contract_change(
         "linux/amd64",
         port,
         project,
+        artifacts[current_handoff],
+    )
+    monkeypatch.setattr(
+        deploy,
+        "promoted_web_artifact_path",
+        lambda artifact: artifact_paths[artifact.product_sha],
     )
     operator = tmp_path / ".env.prep"
     optional = tmp_path / ".env.prep.optional"
@@ -1032,8 +1133,34 @@ def test_historical_deferred_accepted_release_upgrades_to_required_capabilities(
     historical_contract_path = tmp_path / "env-contract.historical-shape.json"
     historical_contract_path.write_text(json.dumps(historical_contract), encoding="utf-8")
 
-    release_a = deploy.ReleaseIdentity(historical_handoff, "a" * 40, "linux/amd64", port, project)
-    release_b = deploy.ReleaseIdentity(current_handoff, "b" * 40, "linux/amd64", port, project)
+    artifact_paths = {
+        product: tmp_path / f"{product}.tar" for product in (historical_handoff, current_handoff)
+    }
+    artifacts = {
+        product: _build_product_artifact(runner, product, artifact_paths[product])
+        for product in (historical_handoff, current_handoff)
+    }
+    release_a = deploy.ReleaseIdentity(
+        historical_handoff,
+        "a" * 40,
+        "linux/amd64",
+        port,
+        project,
+        artifacts[historical_handoff],
+    )
+    release_b = deploy.ReleaseIdentity(
+        current_handoff,
+        "b" * 40,
+        "linux/amd64",
+        port,
+        project,
+        artifacts[current_handoff],
+    )
+    monkeypatch.setattr(
+        deploy,
+        "promoted_web_artifact_path",
+        lambda artifact: artifact_paths[artifact.product_sha],
+    )
     operator = tmp_path / ".env.prep"
     optional = tmp_path / ".env.prep.optional"
     runtime = tmp_path / ".env.prep.runtime"

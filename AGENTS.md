@@ -27,19 +27,22 @@ authoritative; an agent may not silently relax a security invariant or productio
   by a fast-forward of an exact verified Product/Evidence/Handoff descendant from `dev`; never
   commit features directly, force-push, rebase published history, squash, or create a promotion-only
   merge commit on `main`.
-- PREP39083 updates application source only from `origin/main` and runs
-  `./scripts/prep39083 deploy`. Advancement of `origin/dev` alone never changes the PREP candidate.
+- PREP39083 updates its release contract only from `origin/main`, stages the separately approved
+  exact Product archive, and runs `./scripts/prep39083 deploy`. Advancement of `origin/dev` alone
+  never changes the PREP candidate.
   OPS continues to consume only the exact image accepted and exported on PREP, never a Git branch.
 - Direct-to-`dev` publication does not waive security, schema or production evidence requirements.
   Report incomplete gates honestly and do not use a branch-policy shortcut to bypass them.
 
 ## Preparation-PC delivery policy
 
-- Do not use Docker images, containers or registries to transfer or deploy the application between
-  the development PC and the preparation PC.
-- Transfer a verified PREP39083 source candidate through `origin/main`; transfer approved,
-  checksum-verified dependency artifacts separately when the preparation PC cannot reach an
-  external package index. Ongoing development remains on `origin/dev` until explicit promotion.
+- PREP consumes the exact verified Product image as the checksum-pinned OCI/Docker archive named
+  by `deploy/prep39083/release.json`; it never rebuilds application source or falls back to a
+  registry pull. Transfer that archive only through approved artifact media and stage it at the
+  ignored release path before the canonical deploy command.
+- Transfer a verified PREP39083 source/Handoff candidate through `origin/main`; transfer the exact
+  approved Product archive and checksum-verified dependency artifacts separately. Ongoing
+  development remains on `origin/dev` until explicit promotion.
 - Build platform-specific dependency artifacts on a connected host that matches the preparation
   PC's operating system, CPU architecture and pinned toolchain. Platform-independent wheels may be
   prepared on another host only when their lockfile hash and artifact checksum are verified.

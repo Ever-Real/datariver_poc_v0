@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Verify and export the exact PREP39083-tested POC image set for OPS.
+"""Promote exact PREP/OPS POC image artifacts without rebuilding them.
 
-This tool never builds, starts, stops, pulls, loads, or removes an image. PREP
-operators build and accept the candidate with Compose first; ``export`` then
-captures the immutable images used by those running containers. ``verify`` is
-artifact-only and performs no Docker mutation.
+This tool never builds, starts, stops, pulls, loads, or removes an image. DEV
+uses ``web-artifact-export`` after verifying one exact Product build. PREP
+consumes that checksum-pinned archive. ``export`` still captures the immutable
+images accepted on PREP for OPS; ``verify`` performs no Docker mutation.
 """
 
 from __future__ import annotations
@@ -24,9 +24,16 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+from prep39083_artifact import (
+    ArtifactError,
+    artifact_id,
+    inspect_web_archive,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMPOSE = ROOT / "deploy" / "poc" / "docker-compose.poc.yaml"
 OPS_COMPOSE = ROOT / "deploy" / "prep39083" / "docker-compose.ops.yaml"
+PREP_ARTIFACT_COMPOSE = ROOT / "deploy" / "prep39083" / "docker-compose.artifact.yaml"
 OPS_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.ops.example"
 PREP_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.prep.example"
 PREP_OPTIONAL_ENV_EXAMPLE = ROOT / "deploy" / "prep39083" / ".env.prep.optional.example"
@@ -37,6 +44,7 @@ OPS_GUIDE = ROOT / "docs" / "65_PREP_TO_OPS_PROMOTION.md"
 RELEASE_GUIDE = ROOT / "docs" / "66_RELEASE_CYCLE.md"
 RELEASE_TOOL = Path(__file__).resolve()
 DEPLOY_TOOL = ROOT / "scripts" / "prep39083_deploy.py"
+ARTIFACT_TOOL = ROOT / "scripts" / "prep39083_artifact.py"
 PREP_ENTRYPOINT = ROOT / "scripts" / "prep39083"
 SMOKE_TOOL = ROOT / "scripts" / "smoke_prep39083.mjs"
 RUNTIME_INPUTS = (
@@ -48,9 +56,11 @@ RUNTIME_INPUTS = (
     "deploy/prep39083/.env.prep.optional.example",
     "deploy/prep39083/.env.ops.example",
     "deploy/prep39083/docker-compose.ops.yaml",
+    "deploy/prep39083/docker-compose.artifact.yaml",
     "deploy/prep39083/env-contract.json",
     "scripts/prep39083",
     "scripts/prep39083_deploy.py",
+    "scripts/prep39083_artifact.py",
     "scripts/prep39083_release.py",
     "scripts/smoke_prep39083.mjs",
 )
@@ -152,6 +162,18 @@ def source_contract(product_sha: str, evidence_sha: str, *, clean: bool) -> dict
     }
 
 
+def exact_product_source(product_sha: str) -> str:
+    product_sha = require_sha(product_sha, "Product SHA")
+    if Path(output(["git", "rev-parse", "--show-toplevel"])).resolve() != ROOT:
+        raise ReleaseError("unexpected repository root")
+    git_commit_exists(product_sha, "Product SHA")
+    if output(["git", "rev-parse", "HEAD"]) != product_sha:
+        raise ReleaseError("web artifact export requires HEAD to equal the Product SHA")
+    if output(["git", "status", "--porcelain", "--untracked-files=all"]):
+        raise ReleaseError("web artifact export requires a clean committed Product worktree")
+    return product_sha
+
+
 def require_private_env(path: Path) -> Path:
     candidate = path.expanduser().absolute()
     metadata = candidate.lstat()
@@ -220,6 +242,103 @@ def inspect_running_images(project: str, env_file: Path, product_sha: str) -> li
     return images
 
 
+def export_web_artifact(arguments: argparse.Namespace) -> None:
+    product_sha = exact_product_source(arguments.product_sha)
+    image = f"datariver-poc:{product_sha}"
+    inspected_result = run(
+        ["docker", "image", "inspect", "--platform", "linux/amd64", image],
+        check=False,
+    )
+    if inspected_result.returncode != 0:
+        raise ReleaseError("the exact verified Product image is absent; do not rebuild implicitly")
+    try:
+        inspected = json.loads(inspected_result.stdout)[0]
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError) as error:
+        raise ReleaseError("Docker returned no bounded exact-image inspection contract") from error
+    descriptor = inspected.get("Descriptor") if isinstance(inspected, dict) else None
+    descriptor_platform = descriptor.get("platform") if isinstance(descriptor, dict) else None
+    labels = inspected.get("Config", {}).get("Labels", {}) if isinstance(inspected, dict) else {}
+    if (
+        not isinstance(descriptor, dict)
+        or descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+        or descriptor_platform != {"architecture": "amd64", "os": "linux"}
+        or inspected.get("Os") != "linux"
+        or inspected.get("Architecture") != "amd64"
+        or not isinstance(labels, dict)
+        or labels.get("org.opencontainers.image.revision") != product_sha
+    ):
+        raise ReleaseError("the verified Product image platform/revision/manifest is invalid")
+    manifest_digest = descriptor.get("digest")
+    if not isinstance(manifest_digest, str):
+        raise ReleaseError("the verified Product image manifest digest is unavailable")
+
+    output_dir = arguments.output_dir.expanduser().resolve()
+    if output_dir.exists():
+        raise ReleaseError(f"output directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, mode=0o755)
+    identifier = artifact_id(product_sha)
+    archive = output_dir / f"{identifier}.tar"
+    try:
+        run(
+            [
+                "docker",
+                "image",
+                "save",
+                "--platform",
+                "linux/amd64",
+                "--output",
+                os.fspath(archive),
+                image,
+            ]
+        )
+        observed = inspect_web_archive(archive)
+        if (
+            observed.product_sha != product_sha
+            or observed.image_reference != image
+            or observed.manifest_digest != manifest_digest
+        ):
+            raise ReleaseError("exported web artifact differs from the verified Product image")
+        checksum_path = output_dir / f"{archive.name}.sha256"
+        checksum_path.write_text(
+            f"{observed.archive_sha256}  {archive.name}\n",
+            encoding="ascii",
+        )
+        manifest = {
+            "contract": "DATARIVER_PREP39083_WEB_ARTIFACT_EXPORT_V1",
+            "product_sha": product_sha,
+            "artifact_id": observed.artifact_id,
+            "archive": archive.name,
+            "archive_sha256": observed.archive_sha256,
+            "image_reference": observed.image_reference,
+            "manifest_digest": observed.manifest_digest,
+            "config_digest": observed.config_digest,
+            "platform": observed.platform,
+            "oci_revision": observed.oci_revision,
+            "prep_target_path": observed.relative_path,
+            "release_json_web_artifact": observed.release_mapping(),
+        }
+        manifest_path = output_dir / "artifact-manifest.json"
+        manifest_path.write_text(
+            f"{json.dumps(manifest, indent=2, sort_keys=True)}\n",
+            encoding="utf-8",
+        )
+    except (ArtifactError, OSError, ReleaseError):
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise
+    print(
+        json.dumps(
+            {
+                "result": "EXACT_WEB_ARTIFACT_EXPORTED",
+                "artifact": os.fspath(archive),
+                "archive_sha256": observed.archive_sha256,
+                "manifest_digest": observed.manifest_digest,
+                "product_sha": product_sha,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def safe_archive_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     members = archive.getmembers()
     names: set[str] = set()
@@ -248,6 +367,7 @@ def export_release(arguments: argparse.Namespace) -> None:
         tracked = (
             BASE_COMPOSE,
             OPS_COMPOSE,
+            PREP_ARTIFACT_COMPOSE,
             OPS_ENV_EXAMPLE,
             ENV_CONTRACT,
             PREP_OPTIONAL_ENV_EXAMPLE,
@@ -256,6 +376,7 @@ def export_release(arguments: argparse.Namespace) -> None:
             RELEASE_GUIDE,
             PREP_ENTRYPOINT,
             DEPLOY_TOOL,
+            ARTIFACT_TOOL,
             RELEASE_TOOL,
             SMOKE_TOOL,
         )
@@ -284,7 +405,7 @@ def export_release(arguments: argparse.Namespace) -> None:
             "architecture": "linux/amd64",
             "build_timestamp": images[0]["created"],
             "export_timestamp": datetime.now(UTC).isoformat(),
-            "compose_revision": sha256_paths((BASE_COMPOSE, OPS_COMPOSE)),
+            "compose_revision": sha256_paths((BASE_COMPOSE, PREP_ARTIFACT_COMPOSE, OPS_COMPOSE)),
             "config_schema_version": "PREP39083_ENV_V5",
             "config_schema_sha256": sha256_paths(
                 (
@@ -349,6 +470,7 @@ def verify_release(arguments: argparse.Namespace) -> None:
             "release-manifest.json",
             BASE_COMPOSE.name,
             OPS_COMPOSE.name,
+            PREP_ARTIFACT_COMPOSE.name,
             OPS_ENV_EXAMPLE.name,
             ENV_CONTRACT.name,
             PREP_OPTIONAL_ENV_EXAMPLE.name,
@@ -358,6 +480,7 @@ def verify_release(arguments: argparse.Namespace) -> None:
             PREP_ENTRYPOINT.name,
             DEPLOY_TOOL.name,
             RELEASE_TOOL.name,
+            ARTIFACT_TOOL.name,
             SMOKE_TOOL.name,
             POSTGRES_INIT.name,
         }
@@ -402,6 +525,12 @@ def parse_arguments() -> argparse.Namespace:
     source.add_argument("--product-sha", required=True)
     source.add_argument("--evidence-sha", required=True)
     source.add_argument("--allow-dirty", action="store_true")
+    web_artifact = subparsers.add_parser(
+        "web-artifact-export",
+        help="export one already-verified Product web image without rebuilding",
+    )
+    web_artifact.add_argument("--product-sha", required=True)
+    web_artifact.add_argument("--output-dir", type=Path, required=True)
     export = subparsers.add_parser(
         "export", help="export exact running PREP-tested images without building"
     )
@@ -432,6 +561,8 @@ def main() -> None:
                 sort_keys=True,
             )
         )
+    elif arguments.action == "web-artifact-export":
+        export_web_artifact(arguments)
     elif arguments.action == "export":
         export_release(arguments)
     else:
@@ -441,6 +572,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, json.JSONDecodeError, ReleaseError) as error:
+    except (ArtifactError, OSError, ValueError, json.JSONDecodeError, ReleaseError) as error:
         print(f"PREP39083_RELEASE_ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from error

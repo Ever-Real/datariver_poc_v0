@@ -5,9 +5,10 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -17,18 +18,23 @@ DEPLOYMENT = ROOT / "deploy" / "prep39083"
 
 
 def _load_module() -> ModuleType:
-    specification = importlib.util.spec_from_file_location(
-        "prep39083_release_for_test",
-        MODULE_PATH,
-    )
-    assert specification is not None
-    assert specification.loader is not None
-    module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
-    return module
+    sys.path.insert(0, os.fspath(MODULE_PATH.parent))
+    try:
+        specification = importlib.util.spec_from_file_location(
+            "prep39083_release_for_test",
+            MODULE_PATH,
+        )
+        assert specification is not None
+        assert specification.loader is not None
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(os.fspath(MODULE_PATH.parent))
 
 
 release = _load_module()
+artifact_contract = sys.modules["prep39083_artifact"]
 
 
 def _git(
@@ -118,11 +124,15 @@ def test_compose_exposes_only_web_and_host_health_remains_loopback() -> None:
 
 def test_ops_override_removes_build_and_forbids_pull() -> None:
     override = (DEPLOYMENT / "docker-compose.ops.yaml").read_text(encoding="utf-8")
+    prep_override = (DEPLOYMENT / "docker-compose.artifact.yaml").read_text(encoding="utf-8")
 
     assert "build: !reset null" in override
     assert override.count("pull_policy: never") == 4
     assert "image:" not in override
     assert "volumes:" not in override
+    assert "build: !reset null" in prep_override
+    assert "pull_policy: never" in prep_override
+    assert "image: datariver-poc:${POC_IMAGE_TAG" in prep_override
 
 
 def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
@@ -140,6 +150,86 @@ def test_exporter_is_exact_running_image_capture_not_build_or_load() -> None:
     assert "docker volume rm" not in source
     assert "deploy/poc/.env" not in source
     assert '"config_schema_version": "PREP39083_ENV_V5"' in source
+
+
+def test_web_artifact_export_saves_verified_image_once_without_build_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product_sha = "a" * 40
+    manifest_digest = f"sha256:{'d' * 64}"
+    image = f"datariver-poc:{product_sha}"
+    output_dir = tmp_path / "export"
+    calls: list[list[str]] = []
+
+    def fake_run(arguments: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        del check
+        calls.append(arguments)
+        if arguments[:3] == ["docker", "image", "inspect"]:
+            document = {
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Descriptor": {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": manifest_digest,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                "Config": {"Labels": {"org.opencontainers.image.revision": product_sha}},
+            }
+            return subprocess.CompletedProcess(arguments, 0, json.dumps([document]), "")
+        assert arguments[:3] == ["docker", "image", "save"]
+        archive = Path(arguments[arguments.index("--output") + 1])
+        archive.write_bytes(b"exact-image-archive")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    observed = artifact_contract.WebArtifactIdentity(
+        product_sha=product_sha,
+        artifact_id=f"datariver-poc-{product_sha}-linux-amd64",
+        image_reference=image,
+        archive_sha256="c" * 64,
+        manifest_digest=manifest_digest,
+        config_digest=f"sha256:{'e' * 64}",
+        platform="linux/amd64",
+        oci_revision=product_sha,
+    )
+    monkeypatch.setattr(release, "exact_product_source", lambda value: value)
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(release, "inspect_web_archive", lambda _path: observed)
+
+    release.export_web_artifact(SimpleNamespace(product_sha=product_sha, output_dir=output_dir))
+
+    manifest = json.loads((output_dir / "artifact-manifest.json").read_text())
+    assert manifest["release_json_web_artifact"] == observed.release_mapping()
+    assert calls[0] == [
+        "docker",
+        "image",
+        "inspect",
+        "--platform",
+        "linux/amd64",
+        image,
+    ]
+    assert calls[1][:5] == ["docker", "image", "save", "--platform", "linux/amd64"]
+    assert not any("build" in call or "pull" in call or "load" in call for call in calls)
+
+
+def test_web_artifact_export_fails_closed_when_verified_image_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def absent(arguments: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        del check
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 1, "", "missing")
+
+    monkeypatch.setattr(release, "exact_product_source", lambda value: value)
+    monkeypatch.setattr(release, "run", absent)
+    with pytest.raises(release.ReleaseError, match="do not rebuild implicitly"):
+        release.export_web_artifact(
+            SimpleNamespace(product_sha="a" * 40, output_dir=tmp_path / "missing")
+        )
+    assert len(calls) == 1
 
 
 def test_product_image_contains_the_runtime_mcl_modules() -> None:
@@ -208,6 +298,11 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "docker load --input images.tar" in ops
     assert "up -d --no-build --wait" in ops
     assert "pull_policy: never" in ops
+    assert "stage archive at release.json path" in cycle
+    assert "web-artifact-export" in cycle
+    assert "never builds or pulls an image" in cycle
+    assert "archive checksum" in prep
+    assert "there is no build or pull fallback" in prep
     assert "DEV never claims PREP or OPS runtime acceptance" in cycle
     assert "Only one materializer" in cycle
     assert "./scripts/prep39083 deploy" in cycle
@@ -220,7 +315,8 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "git merge-base --is-ancestor origin/main" in cycle
     assert '"$CANDIDATE":refs/heads/main' in cycle
     assert "Development and feature pull requests normally target `dev`" in agents
-    assert "PREP39083 updates application source only from `origin/main`" in agents
+    assert "PREP39083 updates its release contract only from `origin/main`" in agents
+    assert "checksum-pinned OCI/Docker archive" in agents
     assert 'branches: [dev, main, "codex/**"]' in workflow
 
 
@@ -302,16 +398,20 @@ def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:
     assert "deploy/poc/postgres-init" in release.RUNTIME_INPUTS
     assert "scripts/prep39083" in release.RUNTIME_INPUTS
     assert "scripts/prep39083_deploy.py" in release.RUNTIME_INPUTS
+    assert "scripts/prep39083_artifact.py" in release.RUNTIME_INPUTS
+    assert "deploy/prep39083/docker-compose.artifact.yaml" in release.RUNTIME_INPUTS
     assert "deploy/prep39083/env-contract.json" in release.RUNTIME_INPUTS
     assert "deploy/prep39083/release.json" not in release.RUNTIME_INPUTS
     for path in (
         release.BASE_COMPOSE,
         release.OPS_COMPOSE,
+        release.PREP_ARTIFACT_COMPOSE,
         release.PREP_ENV_EXAMPLE,
         release.PREP_OPTIONAL_ENV_EXAMPLE,
         release.ENV_CONTRACT,
         release.PREP_ENTRYPOINT,
         release.DEPLOY_TOOL,
+        release.ARTIFACT_TOOL,
     ):
         assert Path(path).is_file()
     assert release.POSTGRES_INIT.is_dir()

@@ -6,6 +6,10 @@ OPS receives the exact Linux/amd64 images already running during PREP acceptance
 or pulls them. Operator/runtime environment files, credentials, PostgreSQL/Neo4j data and scheduler state are not in
 the release archive. DataHub, Airflow, MinIO and OpenAI-compatible providers remain external.
 
+The Web image accepted on PREP is itself the checksum-pinned Product archive produced once on the
+DEV release host and named by the PREP Handoff. PREP verifies, loads and starts that artifact with
+no build/pull fallback; this later PREP→OPS export therefore preserves the same build lineage.
+
 ## 1. Export only after PREP acceptance
 
 On PREP, keep the accepted `datariver-prep39083` containers running and the checkout clean. The

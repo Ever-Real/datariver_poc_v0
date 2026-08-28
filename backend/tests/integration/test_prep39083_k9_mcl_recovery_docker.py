@@ -453,8 +453,37 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
         ).returncode
         == 0
     )
-    release_a = deploy.ReleaseIdentity(parent_product, "a" * 40, "linux/amd64", port, project)
-    release_b = deploy.ReleaseIdentity(product, "b" * 40, "linux/amd64", port, project)
+    artifact_paths = {
+        parent_product: tmp_path / f"{parent_product}.tar",
+        product: tmp_path / f"{product}.tar",
+    }
+    artifacts = {
+        parent_product: support._archive_existing_product(
+            runner, parent_product, artifact_paths[parent_product]
+        ),
+        product: support._build_product_artifact(runner, product, artifact_paths[product]),
+    }
+    release_a = deploy.ReleaseIdentity(
+        parent_product,
+        "a" * 40,
+        "linux/amd64",
+        port,
+        project,
+        artifacts[parent_product],
+    )
+    release_b = deploy.ReleaseIdentity(
+        product,
+        "b" * 40,
+        "linux/amd64",
+        port,
+        project,
+        artifacts[product],
+    )
+    monkeypatch.setattr(
+        deploy,
+        "promoted_web_artifact_path",
+        lambda artifact: artifact_paths[artifact.product_sha],
+    )
     operator = tmp_path / ".env.prep"
     optional = tmp_path / ".env.prep.optional"
     runtime = tmp_path / ".env.prep.runtime"
@@ -513,32 +542,6 @@ def test_actual_prep_style_k9_failure_resumes_to_integrated_acceptance(
         preparation = deploy.DeploymentPreparation(runner, source_a, inventory, before_39080)
         monkeypatch.setattr(deploy, "verify_source_identity", lambda _release: source_a)
         monkeypatch.setattr(deploy, "require_prep_platform", lambda _runner: None)
-        canonical_prepare_exact_web_image = deploy.prepare_exact_web_image
-
-        def prepare_lineage_image(
-            image_runner: Any,
-            prefix: list[str],
-            image: str,
-            product_sha: str,
-            *,
-            doctor: bool,
-        ) -> str:
-            if product_sha != parent_product:
-                return canonical_prepare_exact_web_image(
-                    image_runner,
-                    prefix,
-                    image,
-                    product_sha,
-                    doctor=doctor,
-                )
-            inspected = deploy._read_web_image(image_runner, image, doctor=True)
-            assert inspected is not None, (
-                "build the parent Product from its exact Git archive before this fixture"
-            )
-            deploy.inspect_web_image(inspected, image, product_sha, doctor=True)
-            return "REUSED_EXACT_PARENT_ARCHIVE"
-
-        monkeypatch.setattr(deploy, "prepare_exact_web_image", prepare_lineage_image)
         monkeypatch.setattr(
             deploy,
             "run_provider_preflight",

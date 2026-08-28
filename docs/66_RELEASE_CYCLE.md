@@ -4,11 +4,13 @@
 
 ```text
 DEV macOS arm64
-  develop → verify → Product/Evidence closeout → git push origin/dev
+  develop → verify → Product checkpoint → build exact linux/amd64 image once
+  → export/checksum exact Product archive → Evidence closeout → git push origin/dev
   → exact verified Handoff → fast-forward promotion to origin/main
-       ↓ promoted source only
+       ↓ promoted Handoff plus approved checksum-pinned Product archive
 PREP WSL/Linux amd64
   git switch main → git pull --ff-only origin main
+  → stage archive at release.json path
   → ./scripts/prep39083 deploy
   → browser/explicit acceptance
   → ./scripts/prep39083 export
@@ -17,13 +19,15 @@ OPS Linux amd64
   verify bundle → docker load → Compose --no-build → smoke/browser
 ```
 
-DEV never claims PREP or OPS runtime acceptance. PREP never exports an untested build. OPS never
-rebuilds the release. The existing 39080 project is not stopped, overwritten or volume-shared by
+DEV never claims PREP or OPS runtime acceptance. PREP consumes the exact artifact already verified
+on DEV and never rebuilds it. PREP never exports an untested artifact. OPS never rebuilds the
+release. The existing 39080 project is not stopped, overwritten or volume-shared by
 PREP39083. DataHub, Airflow, MinIO and OpenAI-compatible inference remain external services.
 
 ## Stable PREP command
 
-After the one-time `.env.prep` configuration, normal release updates require only:
+After the one-time `.env.prep` configuration and staging the separately delivered archive at the
+exact ignored path in `release.json`, normal release updates require only:
 
 ```bash
 git switch main
@@ -42,7 +46,7 @@ Ambiguous or durable unaccepted state stops without deleting a volume.
 
 | Concern | Owner |
 |---|---|
-| runtime source | accepted Product Git SHA in `release.json` |
+| runtime source | accepted Product Git SHA and immutable archive/checksum/manifest identity in `release.json` |
 | verification narrative | accepted Evidence Git SHA in `release.json` |
 | development integration | `origin/dev` |
 | GitHub default / PREP promotion | `origin/main`, fast-forward only |
@@ -62,11 +66,14 @@ completed generation. No PREP setting disables this contract.
 
 ## Gates
 
-1. DEV: source gates, new Product/Evidence, exact DEV OCI/browser and clean secret scan.
+1. DEV: source gates, new Product checkpoint, exact linux/amd64 OCI/browser and clean secret scan;
+   save that already verified image once as the approved archive and bind its archive SHA-256,
+   child manifest digest, config digest, platform and revision in the Handoff.
 2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`; then
    fast-forward `origin/main` to that exact verified Handoff without rebuilding or modifying it.
-3. PREP deploy: native amd64, target-state classification, separate build/runtime proxy policy,
-   exact Product image, read-only provider preflight, attempt receipt, isolated Compose, idempotent
+3. PREP deploy: native amd64, target-state classification, separate runtime proxy policy, exact
+   archive checksum/content verification, exact Product image load/inspection, read-only provider
+   preflight, attempt receipt, isolated Compose, idempotent
    bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
    Assets and semantic index are strict built-in READY gates. MCL discovery/checkpoint readiness is
    also required; optional Airflow/MinIO capabilities report DEFERRED without adding containers.
@@ -75,10 +82,10 @@ completed generation. No PREP setting disables this contract.
    retained backlog to later daily boundaries. Read-only `doctor` collects all independent
    provider results in one matrix, while `deploy` still blocks before mutation on any required
    failure.
-   Doctor bootstraps only the missing exact Product OCI image, or reuses an exact platform/revision
-   match, before running its disposable collect-all container. This diagnostic image/cache action
-   never starts or mutates Product state services; deploy continues to rebuild and inspect the
-   exact image before its fail-closed provider gate.
+   Doctor verifies the same promoted archive and loads it only when the exact Product image is
+   absent, or reuses an exact manifest/platform/revision match, before running its disposable
+   collect-all container. This diagnostic load/cache action never starts or mutates Product state
+   services. Deploy never builds or pulls an image and has no rebuild fallback.
    Both paths discard ambient application and Compose variables from the interactive shell. The
    tracked environment contract and target-owned env files exclusively define Product, provider,
    image, platform, project, bind, and port values; only reviewed host/Docker connectivity keys are
@@ -98,6 +105,24 @@ receipt, runtime secret, container, database, or volume to apply a legitimate re
 4. PREP acceptance: browser, representative routes, Router 60, Boundary 8 and MCP/auth.
 5. Promotion: exact running image inspection, `images.tar`, manifest and bundle SHA-256.
 6. OPS: artifact-only verification, image-ID match, target config, `--no-build`, smoke and rollback.
+
+## Build-once Product artifact
+
+At the clean Product checkpoint, after the exact linux/amd64 image has passed its Product gates,
+export that existing image without rebuilding it:
+
+```bash
+uv run --frozen python scripts/prep39083_release.py web-artifact-export \
+  --product-sha <exact-product-sha> \
+  --output-dir dist/prep39083-web-<exact-product-sha>
+```
+
+The command requires `HEAD == Product`, a clean worktree, the exact local Product tag, linux/amd64
+platform and matching OCI revision. It uses `docker image save --platform linux/amd64`, validates
+the bounded OCI/Docker archive, and emits the archive, SHA-256 sidecar and manifest fields for
+`release.json`. It never builds, pulls or loads. The archive is transferred separately through the
+approved artifact medium and staged at its manifest-pinned ignored PREP path. Missing or mismatched
+artifacts are terminal pre-start failures; neither doctor nor deploy falls back to source build.
 
 ## Controlled `dev` → `main` promotion
 

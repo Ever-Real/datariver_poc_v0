@@ -8308,6 +8308,58 @@ def verify_accepted_migration_checksums() -> None:
             raise AssertionError(f"accepted migration checksum drifted: {filename}")
 
 
+def verify_prep_exact_artifact_contract() -> None:
+    release_path = ROOT / "deploy" / "prep39083" / "release.json"
+    release = json.loads(release_path.read_text(encoding="utf-8"))
+    product_sha = release.get("product_sha")
+    artifact = release.get("web_artifact")
+    if (
+        release.get("contract") != "DATARIVER_PREP39083_RELEASE_V3"
+        or not isinstance(product_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", product_sha)
+        or not isinstance(artifact, dict)
+        or artifact.get("contract") != "DATARIVER_PREP39083_WEB_ARTIFACT_V1"
+        or artifact.get("transport") != "APPROVED_DOCKER_ARCHIVE"
+        or artifact.get("image_reference") != f"datariver-poc:{product_sha}"
+        or artifact.get("platform") != "linux/amd64"
+        or artifact.get("oci_revision") != product_sha
+        or not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("archive_sha256", "")))
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("manifest_digest", "")))
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("config_digest", "")))
+    ):
+        raise AssertionError("PREP release does not pin one exact promoted web artifact")
+
+    override = (ROOT / "deploy" / "prep39083" / "docker-compose.artifact.yaml").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "build: !reset null",
+        "pull_policy: never",
+        "image: datariver-poc:${POC_IMAGE_TAG",
+    ):
+        if required not in override:
+            raise AssertionError(f"PREP exact-artifact Compose override drifted: {required}")
+
+    deploy_tree = ast.parse((ROOT / "scripts" / "prep39083_deploy.py").read_text(encoding="utf-8"))
+    prepare = next(
+        node
+        for node in deploy_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "prepare_exact_web_image"
+    )
+    literals = {
+        node.value
+        for node in ast.walk(prepare)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if "build" in literals or "pull" in literals:
+        raise AssertionError("PREP artifact preparation contains a build/pull fallback")
+    if not {"load", "--input"}.issubset(literals):
+        raise AssertionError("PREP artifact preparation no longer loads the verified archive")
+    deploy_source = ast.unparse(deploy_tree)
+    if "'up', '-d', '--no-build', '--wait', 'web'" not in deploy_source:
+        raise AssertionError("PREP Web startup lost its explicit --no-build gate")
+
+
 def main() -> None:
     verify_compose()
     verify_datahub_mac_capacity_contract()
@@ -8337,6 +8389,7 @@ def main() -> None:
     verify_domain_independent_knowledge_projection()
     verify_migration_fail_closed_integrity()
     verify_accepted_migration_checksums()
+    verify_prep_exact_artifact_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "

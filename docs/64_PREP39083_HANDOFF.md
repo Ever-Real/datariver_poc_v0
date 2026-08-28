@@ -1,4 +1,4 @@
-# PREP39083 one-command source deployment
+# PREP39083 one-command exact-artifact deployment
 
 ## Fixed release identity and boundary
 
@@ -46,7 +46,13 @@ install -m 0600 deploy/prep39083/.env.prep.example deploy/prep39083/.env.prep
 editor deploy/prep39083/.env.prep
 ```
 
-After the checkout is updated, the Product deployment itself remains exactly one command:
+Before the first deploy of a promoted Handoff, copy the separately delivered approved archive to
+the exact ignored path recorded by `release.json`, preserving its filename. The tracked manifest
+binds its SHA-256, image reference, linux/amd64 child manifest digest, config digest and OCI
+revision. Do not commit the archive or substitute a locally rebuilt image.
+
+After the checkout and exact archive are staged, the Product deployment itself remains exactly one
+command:
 
 ```bash
 ./scripts/prep39083 deploy
@@ -61,7 +67,8 @@ secrets still present in an older `.env.prep` are migrated without modifying tha
 match on later runs.
 
 The deploy command performs source validation, environment/proxy merge, native amd64 preflight,
-39080 observation, Compose validation, exact image build/inspection, read-only external-provider
+39080 observation, Compose validation, exact archive checksum/content inspection, image load and
+manifest/platform/revision inspection, read-only external-provider
 preflight, deployment-attempt ownership, local service health, idempotent schema initialization,
 DB credential verification, admin/requested-service bootstrap, web health, staged feature-aware
 authenticated smoke and final 39080 re-observation. The same command
@@ -75,9 +82,10 @@ Docker engine/context/TLS configuration) plus the canonical effective environmen
 the tracked contract, target-owned files, and `release.json`. Ambient `POC_*`, `DATAHUB_*`,
 `LLM_*`, `AIRFLOW_*`, `MINIO_*`, `S3_*`, `GRAFANA_*`, database, `COMPOSE_*`, and
 `DOCKER_DEFAULT_PLATFORM` values are ignored. Compose is invoked with an explicit project, file,
-and private env file. Before either doctor or deploy builds an image, the resolved project, exact
-Product tag/revision, linux/amd64 platform, Web/state port bindings, build arguments, and canonical
-provider environment are verified without printing their values.
+and private env file. Before either doctor or deploy loads an image, the resolved project, exact
+Product tag/revision, archive checksum, child manifest, linux/amd64 platform, Web/state port
+bindings, no-build policy, and canonical provider environment are verified without printing their
+values. Missing or mismatched artifacts fail closed; there is no build or pull fallback.
 
 If no administrator exists, the same command prompts for username, hidden password and confirmation.
 If an administrator exists, it prompts only for that administrator's hidden smoke password. The
@@ -92,7 +100,7 @@ Git, log or Evidence.
 | `.env.prep.runtime` | deployer | PostgreSQL/Neo4j/MCP secrets, Product image identity, fixed PREP topology, K9/MCP Subject and Workspace | generated/reused |
 | `.env.prep.optional` | PREP operator | optional existing Airflow/MinIO and Grafana settings | absent is valid |
 | `env-contract.json` | Product source | key ownership, defaults, fixed topology and required `NO_PROXY` entries | updated by Git |
-| `release.json` | release handoff | accepted Product/Evidence/platform/port/project | updated by Git |
+| `release.json` | release handoff | Product/Evidence/platform/port/project plus exact promoted archive/checksum/manifest/config identity | updated by Git |
 
 The two default K9 managed graphs are built-in Product policies. The deployer always bootstraps the
 distinct K9 service Subject, reconciles those exact policy pins in local PostgreSQL, performs the
@@ -222,11 +230,12 @@ Hyper-V policy or `netsh`; those host controls remain outside Product deployment
 
 ## Corporate proxy contract
 
-`HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are build/toolchain settings. The wrapper injects
-uppercase and lowercase variants into `uv`, Docker build and npm only. The deployer preserves the
-operator build `NO_PROXY`, adds `127.0.0.1`, `localhost`, `pgvector`, `redis`, `neo4j` and `web`, and
-performs the host health probe with an explicit proxy bypass. These generic build values are not
-injected into the running web service.
+`HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are toolchain settings retained for `uv` and host
+connectivity. PREP does not build the Product image. The DEV artifact build may pass bounded proxy
+arguments to Docker/npm, but they are not image runtime configuration. The deployer preserves the
+operator `NO_PROXY`, adds `127.0.0.1`, `localhost`, `pgvector`, `redis`, `neo4j` and `web`, and
+performs the host health probe with an explicit proxy bypass. These values are not injected into
+the running web service.
 
 Product provider routing is separate and explicit. Blank `POC_RUNTIME_HTTP_PROXY` and
 `POC_RUNTIME_HTTPS_PROXY` mean direct DataHub/Chat/Embedding/Reranker connections even when the
@@ -266,21 +275,21 @@ possible. Doctor exits nonzero when a required stage failed but never writes Pro
 checkpoints, receipts, secrets, or accepted markers. Deploy remains fail-closed before its first
 persistent mutation.
 
-Doctor does not assume that the candidate image already exists. It resolves only
-`datariver-poc:<Product SHA>` from the canonical Compose contract. If that exact tag is absent,
-doctor builds it with the same Dockerfile, linux/amd64 platform, Product revision argument and
-bounded build-proxy inputs used by deploy. If present, doctor reuses it only after the exact tag,
-platform and OCI revision pass inspection. Image build/cache is diagnostic preparation; doctor
-does not start PostgreSQL, Neo4j, Redis or the persistent Web service and does not write Product
-state. Doctor collect-all and deploy fail-fast provider checks both run the verified image through
+Doctor does not assume that the candidate image already exists, but it does require the promoted
+archive named by `release.json`. It verifies the archive checksum and bounded OCI/Docker contents.
+If the exact tag is absent, doctor loads that archive; if present, it reuses the tag only after the
+exact manifest, platform and OCI revision pass inspection. Doctor never builds or pulls a fallback
+image. Loading the approved archive does not start PostgreSQL, Neo4j, Redis or the persistent Web
+service and does not write Product state. Doctor collect-all and deploy fail-fast provider checks
+both run the verified image through
 one hardened disposable `docker run --rm` executor with the same mode-0600 canonical effective
 environment, linux/amd64 platform, non-root user, read-only root filesystem, dropped capabilities,
 no-new-privileges policy, and optional read-only runtime CA bind. Only the preflight mode differs.
 Neither path uses the Web Compose service or creates Compose volumes/state-service dependencies.
 
-Image preparation failures are separately typed as `PREP_DOCTOR_IMAGE_BUILD_FAILED`,
-`PREP_DOCTOR_IMAGE_MISSING`, `PREP_DOCTOR_IMAGE_IDENTITY_MISMATCH`,
-`PREP_DOCTOR_IMAGE_PLATFORM_MISMATCH` or `PREP_DOCTOR_IMAGE_REVISION_MISMATCH`. Ephemeral container
+Image preparation failures are separately typed for missing/unreadable artifacts, checksum or
+archive-contract mismatch, load failure, missing image, image/tag mismatch, manifest mismatch,
+platform mismatch and revision mismatch. Ephemeral container
 creation and the pinned Node/module launch are respectively
 `PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED` and
 `PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED`. Only a successfully launched child that emits no valid
@@ -361,7 +370,7 @@ container happens to be running:
 
 ## Provider preflight and smoke diagnostics
 
-The exact built image performs bounded DataHub, Chat, Embedding and Reranker requests before the
+The exact promoted image performs bounded DataHub, Chat, Embedding and Reranker requests before the
 attempt receipt and any Product-owned durable mutation. It also performs a read-only DataHub
 Assertion query, MCL source discovery, and optional existing Airflow/MinIO readiness. These checks
 use configured exact endpoints rather than assuming `/health` or `/models`.

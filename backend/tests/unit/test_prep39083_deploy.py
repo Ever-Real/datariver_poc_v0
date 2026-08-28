@@ -64,6 +64,55 @@ def _release() -> object:
     return deploy.ReleaseIdentity("a" * 40, "b" * 40, "linux/amd64", 39083, "datariver-prep39083")
 
 
+def _release_document() -> dict[str, object]:
+    artifact = deploy.WebArtifactIdentity(
+        product_sha="a" * 40,
+        artifact_id=f"datariver-poc-{'a' * 40}-linux-amd64",
+        image_reference=f"datariver-poc:{'a' * 40}",
+        archive_sha256="c" * 64,
+        manifest_digest=f"sha256:{'d' * 64}",
+        config_digest=f"sha256:{'e' * 64}",
+        platform="linux/amd64",
+        oci_revision="a" * 40,
+    )
+    return {
+        "contract": "DATARIVER_PREP39083_RELEASE_V3",
+        "product_sha": "a" * 40,
+        "evidence_sha": "b" * 40,
+        "handoff_commit_policy": "CURRENT_COMMITTED_HEAD",
+        "platform": "linux/amd64",
+        "port": 39083,
+        "project": "datariver-prep39083",
+        "web_artifact": artifact.release_mapping(),
+    }
+
+
+def test_release_identity_requires_exact_artifact_v3_contract(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps(_release_document()))
+
+    release = deploy.load_release_identity(path)
+
+    assert release.web_artifact is not None
+    assert release.web_artifact.product_sha == release.product_sha
+    assert release.web_artifact.platform == release.platform
+
+    legacy = _release_document()
+    legacy["contract"] = "DATARIVER_PREP39083_RELEASE_V2"
+    path.write_text(json.dumps(legacy))
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.load_release_identity(path)
+    assert captured.value.code == "PREP_RELEASE_CONTRACT_INVALID"
+
+    mismatched = _release_document()
+    artifact_mapping = cast(dict[str, object], mismatched["web_artifact"])
+    artifact_mapping["oci_revision"] = "f" * 40
+    path.write_text(json.dumps(mismatched))
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.load_release_identity(path)
+    assert captured.value.code == "PREP_WEB_ARTIFACT_IDENTITY_INVALID"
+
+
 def _runtime_values(*, fixed_timeout: str = "120000") -> dict[str, str]:
     contract = json.loads((ROOT / "deploy/prep39083/env-contract.json").read_text())
     runtime = {str(key): str(value) for key, value in contract["ownership"]["FIXED"].items()}
@@ -451,15 +500,7 @@ def _resolved_release_compose() -> tuple[dict[str, object], dict[str, str]]:
             "web": {
                 "image": f"datariver-poc:{'a' * 40}",
                 "platform": "linux/amd64",
-                "build": {
-                    "args": {
-                        "POC_SOURCE_COMMIT": "a" * 40,
-                        "NODE_IMAGE": effective["POC_NODE_IMAGE"],
-                        "HTTP_PROXY": "",
-                        "HTTPS_PROXY": "",
-                        "NO_PROXY": effective["NO_PROXY"],
-                    }
-                },
+                "pull_policy": "never",
                 "ports": [port(WILDCARD_BIND_HOST, 8080, "39083")],
                 "environment": {
                     "DATAHUB_GMS_URL": effective["DATAHUB_GMS_URL"],
@@ -494,6 +535,7 @@ def test_resolved_compose_release_contract_is_exact_and_sanitized() -> None:
         (("name",), "wrong-project"),
         (("services", "web", "image"), "datariver-poc:old"),
         (("services", "web", "platform"), "linux/arm64"),
+        (("services", "web", "pull_policy"), "build"),
         (("services", "web", "ports", 0, "host_ip"), "127.0.0.1"),
         (("services", "pgvector", "ports", 0, "host_ip"), WILDCARD_BIND_HOST),
     ),
@@ -513,17 +555,35 @@ def test_resolved_compose_release_contract_rejects_identity_and_binding_drift(
     assert captured.value.code == "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH"
 
 
+def test_resolved_compose_release_contract_rejects_any_build_fallback() -> None:
+    config, effective = _resolved_release_compose()
+    services = cast(dict[str, object], config["services"])
+    web = cast(dict[str, object], services["web"])
+    web["build"] = {"context": "../.."}
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.validate_compose_release_contract(config, _release(), effective)
+    assert captured.value.code == "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH"
+
+
 def _web_image_document(
     *,
     product_sha: str = "a" * 40,
     architecture: str = "amd64",
+    manifest_digest: str | None = None,
 ) -> dict[str, object]:
     image = f"datariver-poc:{'a' * 40}"
+    manifest_digest = manifest_digest or f"sha256:{'d' * 64}"
     return {
         "Id": "sha256:bounded-test-image",
         "Os": "linux",
         "Architecture": architecture,
         "RepoTags": [image],
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_digest,
+            "platform": {"architecture": architecture, "os": "linux"},
+        },
         "Config": {
             "Env": ["POC_SERVER_PORT=8080"],
             "Labels": {"org.opencontainers.image.revision": product_sha},
@@ -536,10 +596,10 @@ class DoctorImageRunner:
         self,
         inspections: Sequence[dict[str, object] | None],
         *,
-        build_fails: bool = False,
+        load_fails: bool = False,
     ) -> None:
         self.inspections = list(inspections)
-        self.build_fails = build_fails
+        self.load_fails = load_fails
         self.calls: list[list[str]] = []
 
     def run(
@@ -558,27 +618,66 @@ class DoctorImageRunner:
                 json.dumps([inspection]) if inspection is not None else "",
                 "",
             )
-        assert values[-3:] == ["build", "--pull=false", "web"]
-        completed = subprocess.CompletedProcess(values, 1 if self.build_fails else 0, "", "")
+        assert values[:3] == ["docker", "image", "load"]
+        completed = subprocess.CompletedProcess(values, 1 if self.load_fails else 0, "", "")
         if check and completed.returncode:
             raise deploy.CommandFailure(values, completed)
         return completed
 
 
-def test_doctor_builds_exact_image_when_absent_and_reuses_valid_present_image() -> None:
+def _artifact_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    archive_sha256: str | None = None,
+    manifest_digest: str | None = None,
+) -> object:
+    monkeypatch.setattr(deploy, "ROOT", tmp_path)
+    identity = deploy.WebArtifactIdentity(
+        product_sha="a" * 40,
+        artifact_id=f"datariver-poc-{'a' * 40}-linux-amd64",
+        image_reference=f"datariver-poc:{'a' * 40}",
+        archive_sha256=archive_sha256 or "",
+        manifest_digest=manifest_digest or f"sha256:{'d' * 64}",
+        config_digest=f"sha256:{'e' * 64}",
+        platform="linux/amd64",
+        oci_revision="a" * 40,
+    )
+    archive = tmp_path / identity.relative_path
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b"bounded promoted artifact")
+    if archive_sha256 is None:
+        identity = replace(identity, archive_sha256=deploy.sha256_file(archive))
+    monkeypatch.setattr(deploy, "inspect_web_archive", lambda _path: identity)
+    return deploy.ReleaseIdentity(
+        "a" * 40,
+        "b" * 40,
+        "linux/amd64",
+        39083,
+        "datariver-prep39083",
+        identity,
+    )
+
+
+def test_doctor_loads_exact_artifact_when_absent_and_reuses_valid_present_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image = f"datariver-poc:{'a' * 40}"
+    release = _artifact_release(tmp_path, monkeypatch)
     absent = DoctorImageRunner([None, _web_image_document()])
     assert (
         deploy.prepare_exact_web_image(
             absent,
             ["docker", "compose"],
             image,
-            "a" * 40,
+            release,
             doctor=True,
         )
-        == "BUILT"
+        == "LOADED_EXACT_ARTIFACT"
     )
-    assert ["docker", "compose", "build", "--pull=false", "web"] in absent.calls
+    assert any(call[:3] == ["docker", "image", "load"] for call in absent.calls)
+    assert not any("build" in call or "pull" in call for call in absent.calls)
 
     present = DoctorImageRunner([_web_image_document()])
     assert (
@@ -586,12 +685,12 @@ def test_doctor_builds_exact_image_when_absent_and_reuses_valid_present_image() 
             present,
             ["docker", "compose"],
             image,
-            "a" * 40,
+            release,
             doctor=True,
         )
-        == "REUSED"
+        == "REUSED_EXACT_ARTIFACT"
     )
-    assert not any("build" in call for call in present.calls)
+    assert not any("build" in call or "load" in call or "pull" in call for call in present.calls)
 
     deploy_runner = DoctorImageRunner([_web_image_document()])
     assert (
@@ -599,12 +698,18 @@ def test_doctor_builds_exact_image_when_absent_and_reuses_valid_present_image() 
             deploy_runner,
             ["docker", "compose"],
             image,
-            "a" * 40,
+            release,
             doctor=False,
         )
-        == "BUILT"
+        == "REUSED_EXACT_ARTIFACT"
     )
-    assert deploy_runner.calls[0][-3:] == ["build", "--pull=false", "web"]
+    assert deploy_runner.calls[0][:5] == [
+        "docker",
+        "image",
+        "inspect",
+        "--platform",
+        "linux/amd64",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -618,37 +723,77 @@ def test_doctor_builds_exact_image_when_absent_and_reuses_valid_present_image() 
             _web_image_document(architecture="arm64"),
             "PREP_DOCTOR_IMAGE_PLATFORM_MISMATCH",
         ),
+        (
+            _web_image_document(manifest_digest=f"sha256:{'f' * 64}"),
+            "PREP_DOCTOR_IMAGE_MANIFEST_MISMATCH",
+        ),
     ),
 )
 def test_doctor_rejects_wrong_revision_or_platform(
     document: dict[str, object],
     code: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    release = _artifact_release(tmp_path, monkeypatch)
     runner = DoctorImageRunner([document])
     with pytest.raises(deploy.PrepError) as captured:
         deploy.prepare_exact_web_image(
             runner,
             ["docker", "compose"],
             f"datariver-poc:{'a' * 40}",
-            "a" * 40,
+            release,
             doctor=True,
         )
     assert captured.value.code == code
     assert not any("build" in call for call in runner.calls)
 
 
-def test_doctor_classifies_image_build_failure_and_post_build_absence() -> None:
+def test_doctor_classifies_artifact_missing_checksum_load_and_post_load_absence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image = f"datariver-poc:{'a' * 40}"
-    failed = DoctorImageRunner([None], build_fails=True)
+    release = _artifact_release(tmp_path, monkeypatch)
+    archive = tmp_path / release.web_artifact.relative_path
+    archive.unlink()
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            DoctorImageRunner([]),
+            ["docker", "compose"],
+            image,
+            release,
+            doctor=True,
+        )
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_ARTIFACT_MISSING"
+
+    checksum_release = _artifact_release(
+        tmp_path,
+        monkeypatch,
+        archive_sha256="0" * 64,
+    )
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prepare_exact_web_image(
+            DoctorImageRunner([]),
+            ["docker", "compose"],
+            image,
+            checksum_release,
+            doctor=True,
+        )
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_ARTIFACT_CHECKSUM_MISMATCH"
+
+    release = _artifact_release(tmp_path, monkeypatch)
+    failed = DoctorImageRunner([None], load_fails=True)
     with pytest.raises(deploy.PrepError) as captured:
         deploy.prepare_exact_web_image(
             failed,
             ["docker", "compose"],
             image,
-            "a" * 40,
+            release,
             doctor=True,
         )
-    assert captured.value.code == "PREP_DOCTOR_IMAGE_BUILD_FAILED"
+    assert captured.value.code == "PREP_DOCTOR_IMAGE_ARTIFACT_LOAD_FAILED"
+    assert not any("build" in call or "pull" in call for call in failed.calls)
 
     missing = DoctorImageRunner([None, None])
     with pytest.raises(deploy.PrepError) as captured:
@@ -656,7 +801,7 @@ def test_doctor_classifies_image_build_failure_and_post_build_absence() -> None:
             missing,
             ["docker", "compose"],
             image,
-            "a" * 40,
+            release,
             doctor=True,
         )
     assert captured.value.code == "PREP_DOCTOR_IMAGE_MISSING"
@@ -667,7 +812,7 @@ def test_doctor_classifies_image_build_failure_and_post_build_absence() -> None:
             unexpected,
             ["docker", "compose"],
             "datariver-poc:latest",
-            "a" * 40,
+            release,
             doctor=True,
         )
     assert captured.value.code == "PREP_DOCTOR_IMAGE_IDENTITY_MISMATCH"
@@ -1316,13 +1461,17 @@ def test_doctor_uses_matrix_invalid_only_after_child_launches_successfully() -> 
     assert runner.calls[-1][-1] == "--collect-all"
 
 
-def test_doctor_image_and_collect_all_commands_do_not_touch_product_state() -> None:
+def test_doctor_image_and_collect_all_commands_do_not_touch_product_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _artifact_release(tmp_path, monkeypatch)
     image_runner = DoctorImageRunner([None, _web_image_document()])
     deploy.prepare_exact_web_image(
         image_runner,
         ["docker", "compose"],
         f"datariver-poc:{'a' * 40}",
-        "a" * 40,
+        release,
         doctor=True,
     )
     preflight_runner = DoctorPreflightRunner(_doctor_matrix())
@@ -1338,6 +1487,8 @@ def test_doctor_image_and_collect_all_commands_do_not_touch_product_state() -> N
         "deploy-attempt.json",
         "accepted.json",
         "volume rm",
+        " build ",
+        " pull ",
     ):
         assert forbidden not in f" {serialized} "
     for call in preflight_runner.calls:

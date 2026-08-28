@@ -28,11 +28,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, NoReturn
 
+from prep39083_artifact import (
+    ArtifactError,
+    WebArtifactIdentity,
+    identity_from_release_mapping,
+    inspect_web_archive,
+    require_expected_identity,
+    sha256_file,
+)
 from prep39083_release import ReleaseError, source_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOYMENT = ROOT / "deploy" / "prep39083"
 BASE_COMPOSE = ROOT / "deploy" / "poc" / "docker-compose.poc.yaml"
+PREP_ARTIFACT_COMPOSE = DEPLOYMENT / "docker-compose.artifact.yaml"
 OPERATOR_ENV = DEPLOYMENT / ".env.prep"
 OPTIONAL_ENV = DEPLOYMENT / ".env.prep.optional"
 RUNTIME_ENV = DEPLOYMENT / ".env.prep.runtime"
@@ -188,6 +197,7 @@ class ReleaseIdentity:
     platform: str
     port: int
     project: str
+    web_artifact: WebArtifactIdentity | None = None
 
 
 class TargetState(str, Enum):
@@ -297,6 +307,13 @@ def load_release_identity(path: Path = RELEASE_IDENTITY) -> ReleaseIdentity:
             "The tracked Evidence identity is invalid.",
             "Pull the accepted origin/dev handoff and retry.",
         )
+    if value.get("contract") != "DATARIVER_PREP39083_RELEASE_V3":
+        raise PrepError(
+            "RELEASE_IDENTITY",
+            "PREP_RELEASE_CONTRACT_INVALID",
+            "The tracked release contract is not the build-once artifact contract.",
+            "Restore deploy/prep39083/release.json from the exact approved Handoff.",
+        )
     if value.get("handoff_commit_policy") != "CURRENT_COMMITTED_HEAD":
         raise PrepError(
             "RELEASE_IDENTITY",
@@ -319,7 +336,26 @@ def load_release_identity(path: Path = RELEASE_IDENTITY) -> ReleaseIdentity:
             "The tracked PREP port is not 39083.",
             "Restore deploy/prep39083/release.json from origin/dev.",
         )
-    return ReleaseIdentity(product_sha, evidence_sha, "linux/amd64", port, value["project"])
+    try:
+        web_artifact = identity_from_release_mapping(
+            value.get("web_artifact"),
+            product_sha=product_sha,
+        )
+    except ArtifactError as error:
+        raise PrepError(
+            "RELEASE_IDENTITY",
+            "PREP_WEB_ARTIFACT_IDENTITY_INVALID",
+            "The tracked promoted web artifact identity is invalid.",
+            "Restore release.json from the exact approved Handoff; do not rebuild on PREP.",
+        ) from error
+    return ReleaseIdentity(
+        product_sha,
+        evidence_sha,
+        "linux/amd64",
+        port,
+        value["project"],
+        web_artifact,
+    )
 
 
 def _private_regular_file(path: Path, label: str) -> None:
@@ -956,6 +992,8 @@ def compose_prefix(release: ReleaseIdentity, env_file: Path) -> list[str]:
         os.fspath(env_file),
         "--file",
         os.fspath(BASE_COMPOSE),
+        "--file",
+        os.fspath(PREP_ARTIFACT_COMPOSE),
     ]
 
 
@@ -1015,25 +1053,17 @@ def validate_compose_release_contract(
     expected_image = f"datariver-poc:{release.product_sha}"
     web = _compose_service(config, "web")
     build = web.get("build")
-    build_args = build.get("args") if isinstance(build, dict) else None
-    expected_build_args = {
-        "POC_SOURCE_COMMIT": release.product_sha,
-        "NODE_IMAGE": effective.get("POC_NODE_IMAGE", ""),
-        "HTTP_PROXY": effective.get("HTTP_PROXY", ""),
-        "HTTPS_PROXY": effective.get("HTTPS_PROXY", ""),
-        "NO_PROXY": effective.get("NO_PROXY", ""),
-    }
     if (
         config.get("name") != release.project
         or resolve_web_image(config) != expected_image
         or web.get("platform") != release.platform
-        or not isinstance(build_args, dict)
-        or any(str(build_args.get(key, "")) != value for key, value in expected_build_args.items())
+        or build is not None
+        or web.get("pull_policy") != "never"
     ):
         raise PrepError(
             "COMPOSE_CONFIG",
             "PREP_COMPOSE_RELEASE_CONTRACT_MISMATCH",
-            "Compose project, Product image, platform, or build identity differs "
+            "Compose project, Product image, platform, or no-build identity differs "
             "from release.json.",
             "Use the tracked environment files; parent-shell Product values are not supported.",
         )
@@ -1470,13 +1500,20 @@ def _image_code(doctor: bool, suffix: str) -> str:
     return f"PREP_DOCTOR_IMAGE_{suffix}" if doctor else f"PREP_WEB_IMAGE_{suffix}"
 
 
+def promoted_web_artifact_path(artifact: WebArtifactIdentity) -> Path:
+    return ROOT / artifact.relative_path
+
+
 def _read_web_image(
     runner: Runner,
     image: str,
     *,
     doctor: bool,
 ) -> Mapping[str, Any] | None:
-    completed = runner.run(["docker", "image", "inspect", image], check=False)
+    completed = runner.run(
+        ["docker", "image", "inspect", "--platform", "linux/amd64", image],
+        check=False,
+    )
     if completed.returncode != 0:
         return None
     try:
@@ -1502,7 +1539,7 @@ def _read_web_image(
 def inspect_web_image(
     inspected: Mapping[str, Any],
     image: str,
-    product_sha: str,
+    artifact: WebArtifactIdentity,
     *,
     doctor: bool,
 ) -> None:
@@ -1534,15 +1571,29 @@ def inspect_web_image(
         raise PrepError(
             "IMAGE_IDENTITY",
             _image_code(doctor, "PLATFORM_MISMATCH"),
-            "The built web image is not linux/amd64.",
-            "Use the approved native amd64 PREP Docker engine.",
+            "The promoted web image is not linux/amd64.",
+            "Restore the exact approved artifact; PREP does not rebuild images.",
         )
-    if labels.get("org.opencontainers.image.revision") != product_sha:
+    if labels.get("org.opencontainers.image.revision") != artifact.product_sha:
         raise PrepError(
             "IMAGE_IDENTITY",
             _image_code(doctor, "REVISION_MISMATCH"),
-            "The built web OCI revision does not equal the tracked Product SHA.",
-            "Preserve PREP state and rebuild only the exact tracked Product image.",
+            "The promoted web OCI revision does not equal the tracked Product SHA.",
+            "Restore the exact approved artifact; PREP does not rebuild images.",
+        )
+    descriptor = inspected.get("Descriptor")
+    descriptor_platform = descriptor.get("platform") if isinstance(descriptor, dict) else None
+    if (
+        not isinstance(descriptor, dict)
+        or descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+        or descriptor.get("digest") != artifact.manifest_digest
+        or descriptor_platform != {"architecture": "amd64", "os": "linux"}
+    ):
+        raise PrepError(
+            "IMAGE_IDENTITY",
+            _image_code(doctor, "MANIFEST_MISMATCH"),
+            "The loaded web image manifest does not equal the promoted immutable identity.",
+            "Restore the exact approved artifact and rerun the same command without rebuilding.",
         )
     serialized = json.dumps({"Env": config.get("Env"), "Labels": labels}, sort_keys=True)
     if re.search(r"https?://[^\s\"']+@", serialized):
@@ -1558,12 +1609,21 @@ def prepare_exact_web_image(
     runner: Runner,
     prefix: Sequence[str],
     image: str,
-    product_sha: str,
+    release: ReleaseIdentity,
     *,
     doctor: bool,
 ) -> str:
-    expected_image = f"datariver-poc:{product_sha}"
-    if image != expected_image:
+    del prefix  # Compose build is intentionally unavailable on this release path.
+    artifact = release.web_artifact
+    if artifact is None:
+        raise PrepError(
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_IDENTITY_INVALID"),
+            "release.json does not bind one promoted web artifact.",
+            "Restore release.json from the exact approved Handoff; do not rebuild on PREP.",
+        )
+    expected_image = f"datariver-poc:{release.product_sha}"
+    if image != expected_image or image != artifact.image_reference:
         raise PrepError(
             "IMAGE_IDENTITY",
             _image_code(doctor, "IDENTITY_MISMATCH"),
@@ -1571,30 +1631,65 @@ def prepare_exact_web_image(
             "Restore release.json and the canonical Compose image contract.",
         )
 
-    inspected = _read_web_image(runner, image, doctor=True) if doctor else None
+    archive = promoted_web_artifact_path(artifact)
+    if not archive.exists():
+        raise PrepError(
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_MISSING"),
+            "The checksum-pinned promoted web image archive is missing.",
+            "Stage the approved archive at its release.json path; do not rebuild on PREP.",
+        )
+    try:
+        observed_checksum = sha256_file(archive)
+    except OSError as error:
+        raise PrepError(
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_UNREADABLE"),
+            "The checksum-pinned promoted web image archive cannot be read.",
+            "Restore the approved archive and rerun the same command without rebuilding.",
+        ) from error
+    if observed_checksum != artifact.archive_sha256:
+        raise PrepError(
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_CHECKSUM_MISMATCH"),
+            "The promoted web image archive checksum differs from release.json.",
+            "Replace it with the approved archive; do not load or rebuild this candidate.",
+        )
+    try:
+        observed_artifact = inspect_web_archive(archive)
+        require_expected_identity(observed_artifact, artifact)
+    except ArtifactError as error:
+        raise PrepError(
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_CONTRACT_MISMATCH"),
+            "The promoted web image archive identity differs from release.json.",
+            "Restore the approved archive; do not load or rebuild this candidate.",
+        ) from error
+
+    inspected = _read_web_image(runner, image, doctor=doctor)
     if inspected is not None:
-        inspect_web_image(inspected, image, product_sha, doctor=True)
-        return "REUSED"
+        inspect_web_image(inspected, image, artifact, doctor=doctor)
+        return "REUSED_EXACT_ARTIFACT"
 
     try:
-        runner.run([*prefix, "build", "--pull=false", "web"])
+        runner.run(["docker", "image", "load", "--input", os.fspath(archive)])
     except CommandFailure as error:
         raise PrepError(
-            "IMAGE_BUILD",
-            _image_code(doctor, "BUILD_FAILED"),
-            "The exact linux/amd64 Product image build did not complete.",
-            "Correct the bounded build/toolchain failure and rerun the same command.",
+            "IMAGE_ARTIFACT",
+            _image_code(doctor, "ARTIFACT_LOAD_FAILED"),
+            "Docker could not load the checksum-verified promoted web image archive.",
+            "Preserve PREP state, correct the local Docker load failure, and retry.",
         ) from error
     inspected = _read_web_image(runner, image, doctor=doctor)
     if inspected is None:
         raise PrepError(
             "IMAGE_IDENTITY",
             _image_code(doctor, "MISSING"),
-            "The exact Product image is absent after its canonical build completed.",
-            "Preserve PREP state and inspect the local Docker builder before retrying.",
+            "The exact Product image is absent after its approved archive was loaded.",
+            "Preserve PREP state and inspect the bounded Docker load result before retrying.",
         )
-    inspect_web_image(inspected, image, product_sha, doctor=doctor)
-    return "BUILT"
+    inspect_web_image(inspected, image, artifact, doctor=doctor)
+    return "LOADED_EXACT_ARTIFACT"
 
 
 def snapshot_39080(runner: Runner) -> tuple[str, ...]:
@@ -2484,12 +2579,12 @@ def deploy(
         validate_compose_release_contract(config, release, bundle.effective)
         image = resolve_web_image(config)
         volume_identities = compose_volume_identities(config)
-        runner.note("Build exact linux/amd64 Product image with bounded proxy configuration")
+        runner.note("Verify and load the checksum-pinned linux/amd64 Product artifact")
         prepare_exact_web_image(
             runner,
             prefix,
             image,
-            release.product_sha,
+            release,
             doctor=False,
         )
         runner.note("Run read-only external provider preflight before persistent mutation")
@@ -2730,12 +2825,12 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         validate_compose_release_contract(config, release, bundle.effective)
         prefix = compose_prefix(release, env_file)
         image = resolve_web_image(config)
-        runner.note("Prepare or reuse the exact read-only doctor Product image")
+        runner.note("Verify and load the exact read-only doctor Product artifact")
         image_preparation = prepare_exact_web_image(
             runner,
             prefix,
             image,
-            release.product_sha,
+            release,
             doctor=True,
         )
         runner.note("Run collect-all provider diagnostics in an ephemeral Product container")

@@ -1,0 +1,8 @@
+name: datariver-poc
+
+services:
+  web:
+    image: datariver-poc:${POC_IMAGE_TAG:?POC_IMAGE_TAG is required}
+    platform: ${POC_PLATFORM:?POC_PLATFORM is required}
+    build: !reset null
+    pull_policy: never
