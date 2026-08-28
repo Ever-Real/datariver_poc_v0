@@ -48,7 +48,10 @@ after(async () => {
 })
 
 test('binds graph and semantic projections to one deterministic DataHub source snapshot', async () => {
-  const { buildDatahubKnowledgeSourceSnapshot } = await import('./poc-server.mjs?kg2-source-snapshot-contract')
+  const {
+    buildDatahubKnowledgeSourceFingerprint,
+    buildDatahubKnowledgeSourceSnapshot,
+  } = await import('./poc-server.mjs?kg2-source-snapshot-contract')
   const generation = '1'.repeat(64)
   const bindingHash = '2'.repeat(64)
   const input = {
@@ -67,11 +70,13 @@ test('binds graph and semantic projections to one deterministic DataHub source s
     semanticIndex: { bindingHash, generation },
   }
   const first = buildDatahubKnowledgeSourceSnapshot(input)
+  const firstFingerprint = buildDatahubKnowledgeSourceFingerprint(input)
   const observedLater = buildDatahubKnowledgeSourceSnapshot({
     ...input,
     inventoryProjection: { ...input.inventoryProjection, observed_at: '2026-08-24T01:00:00.000Z' },
   })
   assert.equal(first.source_snapshot_id, observedLater.source_snapshot_id)
+  assert.equal(first.source_fingerprint_id, firstFingerprint.source_fingerprint_id)
   assert.notEqual(first.observed_at, observedLater.observed_at)
   assert.equal(first.semantic_index_generation, generation)
   assert.equal(first.semantic_index_binding_hash, bindingHash)
@@ -79,10 +84,48 @@ test('binds graph and semantic projections to one deterministic DataHub source s
     ...input,
     metadataSource: { ...input.metadataSource, tags: [{ urn: 'urn:li:tag:new' }] },
   }).source_snapshot_id, first.source_snapshot_id)
+  assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
+    ...input,
+    inventoryProjection: { ...input.inventoryProjection, source_generation: '4'.repeat(64) },
+  }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
+  assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
+    ...input,
+    lineageSource: { ...input.lineageSource, edges: [{ source_asset_id: 'a', target_asset_id: 'b' }] },
+  }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
+  assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
+    ...input,
+    metadataSource: { ...input.metadataSource, tags: [{ urn: 'urn:li:tag:generic' }] },
+  }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
   assert.throws(() => buildDatahubKnowledgeSourceSnapshot({
     ...input,
     semanticIndex: { bindingHash, generation: '3'.repeat(64) },
   }), /semantic index is not bound/)
+})
+
+test('fingerprints a stable large generic source without fixed cardinality assumptions', async () => {
+  const { buildDatahubKnowledgeSourceFingerprint } = await import('./poc-server.mjs?large-source-fingerprint-contract')
+  const nodes = Array.from({ length: 1_001 }, (_value, index) => ({ id: `urn:synthetic:${index}` }))
+  const edges = Array.from({ length: 1_951 }, (_value, index) => ({
+    source_asset_id: nodes[index % nodes.length].id,
+    target_asset_id: nodes[(index + 1) % nodes.length].id,
+  }))
+  const input = {
+    inventoryProjection: { source_generation: '5'.repeat(64) },
+    datahubIdentity: { version: 'v1.6.0', commit: null },
+    lineageSource: { nodes, edges, completeness_metadata: { stable: true } },
+    metadataSource: {
+      table_nodes: nodes, column_nodes: [], table_column_edges: [], terms: [], parent_nodes: [],
+      term_parent_edges: [], node_parent_edges: [], glossary_relationships: [],
+      table_assignments: [], column_assignments: [], tags: [], domains: [], containers: [],
+      platform_instances: [], table_tag_assignments: [], column_tag_assignments: [],
+      table_domain_assignments: [], table_container_assignments: [],
+      table_platform_instance_assignments: [], completeness_metadata: { stable: true },
+    },
+  }
+  const first = buildDatahubKnowledgeSourceFingerprint(input)
+  const second = buildDatahubKnowledgeSourceFingerprint(structuredClone(input))
+  assert.match(first.source_fingerprint_id, /^[0-9a-f]{64}$/)
+  assert.equal(first.source_fingerprint_id, second.source_fingerprint_id)
 })
 
 test('managed K9 failure status preserves LKG and never exposes an unbound semantic index as READY', async () => {

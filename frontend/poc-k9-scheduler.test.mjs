@@ -84,6 +84,7 @@ function k9RefreshFixture(overrides = {}) {
     collectMetadata: mock.fn(async () => ({ terms: [] })),
     runtimeIdentity: mock.fn(async () => ({ version: '1.0.0' })),
     ensureSemanticIndex: mock.fn(async () => ({ generation: 'a'.repeat(64), bindingHash: 'b'.repeat(64) })),
+    sourceFingerprint: mock.fn(() => ({ source_fingerprint_id: 'd'.repeat(64) })),
     buildSourceSnapshot: mock.fn(() => ({ source_snapshot_id: 'c'.repeat(64) })),
     sourceRetryWait: mock.fn(async () => undefined),
     managedGraphs,
@@ -405,7 +406,7 @@ test('K9 source retries one transient HTTP 5xx and then publishes both managed g
   const result = await task()
 
   assert.equal(result.status, 'SUCCESS')
-  assert.equal(currentInventory.mock.calls.length, 2)
+  assert.equal(currentInventory.mock.calls.length, 3)
   assert.deepEqual(dependencies.sourceRetryWait.mock.calls[0].arguments, [
     1_000,
     { failureStage: 'INVENTORY', failureDetailCode: 'HTTP_5XX', attempt: 1 },
@@ -413,6 +414,77 @@ test('K9 source retries one transient HTTP 5xx and then publishes both managed g
   assert.equal(managedGraphs.recordRefreshFailure.mock.calls.length, 0)
   assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 1)
   assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 1)
+})
+
+test('K9 source fence retries one mixed observation and publishes only a stable successor', async () => {
+  const fingerprints = ['1'.repeat(64), '2'.repeat(64), '2'.repeat(64)]
+  const sourceFingerprint = mock.fn(() => ({
+    source_fingerprint_id: fingerprints.shift(),
+  }))
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({ sourceFingerprint })
+
+  const result = await task()
+
+  assert.equal(result.status, 'SUCCESS')
+  assert.equal(dependencies.currentInventory.mock.calls.length, 3)
+  assert.equal(sourceFingerprint.mock.calls.length, 3)
+  assert.deepEqual(dependencies.sourceRetryWait.mock.calls[0].arguments, [
+    1_000,
+    { failureStage: 'SOURCE_CONSISTENCY', failureDetailCode: 'SOURCE_DRIFT', attempt: 1 },
+  ])
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 1)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 1)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 1)
+})
+
+test('K9 source fence fails typed after repeated drift without semantic or graph promotion', async () => {
+  const fingerprints = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)]
+  const sourceFingerprint = mock.fn(() => ({
+    source_fingerprint_id: fingerprints.shift(),
+  }))
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({ sourceFingerprint })
+
+  const result = await task()
+
+  assert.deepEqual(result, {
+    status: 'FAILURE',
+    reason: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+    failureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+    lineage: undefined,
+    glossary: undefined,
+  })
+  assert.equal(dependencies.currentInventory.mock.calls.length, 3)
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
+  assert.equal(dependencies.buildSourceSnapshot.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 0)
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
+    'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+    ['metadata-lineage', 'data-glossary'],
+  ])
+})
+
+test('K9 scheduler records source drift separately from collector pagination failures and preserves LKG', async () => {
+  const priorSuccessfulSchedule = '2026-08-23T17:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: priorSuccessfulSchedule,
+    completed_at: '2026-08-23T17:00:01.000Z',
+    trigger: 'scheduled',
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const scheduledFor = '2026-08-24T17:00:00.000Z'
+
+  await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1', scheduledFor, trigger: 'scheduled',
+  }, async () => ({
+    status: 'FAILURE',
+    failureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+  }))
+
+  assert.equal(database.readValue().last_successful_schedule, priorSuccessfulSchedule)
+  assert.equal(database.readValue().last_attempt.reason, 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED')
+  assert.notEqual(database.readValue().last_attempt.reason, 'K9_DATAHUB_SOURCE_FAILED')
 })
 
 test('K9 source successful refresh completes source reads before semantic promotion', async () => {
@@ -453,6 +525,7 @@ test('K9 refresh task finalizes both PENDING managed graphs when a shared pre-pu
     collectMetadata: async () => ({ terms: [] }),
     runtimeIdentity: async () => ({ version: 'test' }),
     ensureSemanticIndex: async () => { throw semanticFailure },
+    sourceFingerprint: () => ({ source_fingerprint_id: 'd'.repeat(64) }),
     buildSourceSnapshot: () => { throw new Error('must not run after semantic failure') },
     managedGraphs,
   })

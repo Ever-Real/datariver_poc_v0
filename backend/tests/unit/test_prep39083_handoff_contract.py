@@ -240,7 +240,10 @@ def test_product_image_contains_the_runtime_mcl_modules() -> None:
 
 def test_product_image_contains_the_postgres_owned_schema_integrity_module() -> None:
     dockerfile = (ROOT / "deploy" / "poc" / "Dockerfile.example").read_text(encoding="utf-8")
-    assert "COPY frontend/poc-postgres-schema-integrity.mjs ./poc-postgres-schema-integrity.mjs" in dockerfile
+    assert (
+        "COPY frontend/poc-postgres-schema-integrity.mjs "
+        "./poc-postgres-schema-integrity.mjs"
+    ) in dockerfile
 
 
 def test_release_archive_path_validation_rejects_escape(tmp_path: Path) -> None:
@@ -386,6 +389,7 @@ def test_smoke_uses_opaque_login_and_checks_managed_graphs() -> None:
     assert "--request-origin" in smoke
     assert "requestOrigin" in smoke
     assert "PREP_SMOKE_ADMIN_ORIGIN_FAILED" in smoke
+    assert "PREP_SMOKE_K9_SOURCE_DRIFT_RETRY_EXHAUSTED" in smoke
     assert "k9Mode === 'REQUIRED'" in smoke
     assert "'DEFERRED'" in smoke
     assert "PREP_SMOKE_GENERAL_PROVIDER_FAILED" in smoke

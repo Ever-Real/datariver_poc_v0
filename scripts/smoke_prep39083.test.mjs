@@ -304,6 +304,26 @@ test('PREP smoke preserves bounded K9 source diagnostics without provider detail
   })
 })
 
+test('PREP smoke fails immediately on terminal K9 cross-source drift', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+      },
+    ],
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.stage, 'K9_INITIAL_REFRESH')
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_SOURCE_DRIFT_RETRY_EXHAUSTED')
+  assert.equal(result.failure.diagnostic.product_error_code, 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED')
+  assert.ok(result.failure.elapsed_ms < 5_000)
+})
+
 test('PREP smoke distinguishes MCL runtime discovery, capture, and retention failures', async (context) => {
   const cases = [
     ['DISCOVERY_FAILED', 'PREP_MCL_DISCOVERY_KAFKA_CLUSTER_FAILED', 'DISCOVERY_KAFKA_CLUSTER', 'CLUSTER_ID_UNAVAILABLE', 'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED'],

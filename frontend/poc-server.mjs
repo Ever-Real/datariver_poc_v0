@@ -2426,31 +2426,21 @@ function canonicalHash(value) {
   return sha256(canonicalJson(value))
 }
 
-export function buildDatahubKnowledgeSourceSnapshot({
+export function buildDatahubKnowledgeSourceFingerprint({
   inventoryProjection,
   datahubIdentity,
   lineageSource,
   metadataSource,
-  semanticIndex,
 }) {
   const catalogGeneration = inventoryProjection?.source_generation
   if (typeof catalogGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(catalogGeneration)) {
     throw new Error('The shared DataHub Catalog generation is unavailable for K9 refresh')
   }
-  if (semanticIndex?.generation !== catalogGeneration
-    || typeof semanticIndex?.bindingHash !== 'string'
-    || !/^[0-9a-f]{64}$/.test(semanticIndex.bindingHash)) {
-    throw new Error('The semantic index is not bound to the shared DataHub Catalog generation')
-  }
-  const snapshotDocument = {
-    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_SNAPSHOT_V2',
+  const fingerprintDocument = {
+    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_FINGERPRINT_V1',
     datahub_version: datahubIdentity?.version || null,
     datahub_commit: datahubIdentity?.commit || null,
     catalog_generation: catalogGeneration,
-    semantic_index_contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
-    semantic_index_binding_hash: semanticIndex.bindingHash,
-    semantic_index_generation: semanticIndex.generation,
-    metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
     lineage_hash: canonicalHash({
       nodes: lineageSource?.nodes,
       edges: lineageSource?.edges,
@@ -2478,6 +2468,43 @@ export function buildDatahubKnowledgeSourceSnapshot({
       table_platform_instance_assignments: metadataSource?.table_platform_instance_assignments,
       completeness_metadata: metadataSource?.completeness_metadata,
     }),
+  }
+  return {
+    ...fingerprintDocument,
+    source_fingerprint_id: canonicalHash(fingerprintDocument),
+  }
+}
+
+export function buildDatahubKnowledgeSourceSnapshot({
+  inventoryProjection,
+  datahubIdentity,
+  lineageSource,
+  metadataSource,
+  semanticIndex,
+}) {
+  const sourceFingerprint = buildDatahubKnowledgeSourceFingerprint({
+    inventoryProjection,
+    datahubIdentity,
+    lineageSource,
+    metadataSource,
+  })
+  if (semanticIndex?.generation !== sourceFingerprint.catalog_generation
+    || typeof semanticIndex?.bindingHash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(semanticIndex.bindingHash)) {
+    throw new Error('The semantic index is not bound to the shared DataHub Catalog generation')
+  }
+  const snapshotDocument = {
+    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_SNAPSHOT_V2',
+    datahub_version: sourceFingerprint.datahub_version,
+    datahub_commit: sourceFingerprint.datahub_commit,
+    catalog_generation: sourceFingerprint.catalog_generation,
+    semantic_index_contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+    semantic_index_binding_hash: semanticIndex.bindingHash,
+    semantic_index_generation: semanticIndex.generation,
+    metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
+    lineage_hash: sourceFingerprint.lineage_hash,
+    metadata_hash: sourceFingerprint.metadata_hash,
+    source_fingerprint_id: sourceFingerprint.source_fingerprint_id,
   }
   return {
     ...snapshotDocument,
@@ -3218,7 +3245,8 @@ async function currentDatahubInventory({ signal = serverBackgroundAbortControlle
   if (!datahub) {
     throw Object.assign(new Error('DataHub is not configured for current Table identity validation.'), { statusCode: 503 })
   }
-  return (await startDatahubInventoryRefresh({ signal })).items
+  if (inventoryRefreshPromise) await inventoryRefreshPromise
+  return (await startDatahubInventoryRefresh({ signal, deferSemanticIndex: true })).items
 }
 
 async function datahubEmbeddingInventory(options) {
@@ -3379,7 +3407,10 @@ function stableInventoryItemHash(item) {
   return canonicalHash(stable)
 }
 
-export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortController?.signal } = {}) {
+export function startDatahubInventoryRefresh({
+  signal = serverBackgroundAbortController?.signal,
+  deferSemanticIndex = false,
+} = {}) {
   if (inventoryRefreshPromise) return inventoryRefreshPromise
   if (backgroundLaunchesStopped) {
     return Promise.reject(Object.assign(new Error('The POC background lifecycle is stopping.'), { name: 'AbortError' }))
@@ -3483,7 +3514,7 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       try {
         await pocStateStore.cacheSet(datahubInventoryCacheKey, projection, datahubInventoryTtlMs / 1_000)
       } catch { /* Redis is optional. */ }
-      if (llm.embedding) {
+      if (llm.embedding && !deferSemanticIndex) {
         catalogEmbeddingSnapshot = undefined
         catalogEmbeddingRefreshStartedAt = 0
         queueCatalogEmbeddingRefresh()
@@ -11643,6 +11674,7 @@ export async function startPocServer({ stateStore } = {}) {
       serverBackgroundAbortController?.signal,
       { inventory, inventoryProjection },
     ),
+    sourceFingerprint: buildDatahubKnowledgeSourceFingerprint,
     buildSourceSnapshot: buildDatahubKnowledgeSourceSnapshot,
     managedGraphs: k9,
   })

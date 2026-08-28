@@ -35,6 +35,8 @@ const supportedSourceFailureDetails = new Set([
 const retryableSourceFailureDetails = new Set(['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'])
 const SOURCE_RETRY_DELAY_MS = 1_000
 const SOURCE_MAX_ATTEMPTS = 2
+const SOURCE_CONSISTENCY_MAX_COMPARISONS = 2
+const SOURCE_CONSISTENCY_RETRY_DELAY_MS = 1_000
 const supportedK9FailureCodes = new Set([
   'K9_DATAHUB_SOURCE_FAILED',
   'K9_FAILURE_STATE_PERSISTENCE_FAILED',
@@ -46,6 +48,7 @@ const supportedK9FailureCodes = new Set([
   'K9_REFRESH_FAILED',
   'K9_SEMANTIC_INDEX_FAILED',
   'K9_SOURCE_SNAPSHOT_FAILED',
+  'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
   'K9_SYSTEM_SUBJECT_FAILED',
 ])
 
@@ -166,6 +169,7 @@ export function createPocK9RefreshTask({
   collectMetadata,
   runtimeIdentity,
   ensureSemanticIndex,
+  sourceFingerprint,
   buildSourceSnapshot,
   managedGraphs,
   sourceRetryWait = defaultSourceRetryWait,
@@ -178,6 +182,7 @@ export function createPocK9RefreshTask({
     collectMetadata,
     runtimeIdentity,
     ensureSemanticIndex,
+    sourceFingerprint,
     buildSourceSnapshot,
     managedGraphs?.recordRefreshFailure,
     managedGraphs?.triggerLineagePublish,
@@ -230,21 +235,72 @@ export function createPocK9RefreshTask({
 
     try {
       const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
-      const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
-      const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
-      const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
-        datahubSourceStage(
-          'LINEAGE_COLLECTION',
-          () => collectLineage(liveAuth.authorityPin, inventory),
-          sourceRetryWait,
-        ),
-        datahubSourceStage(
-          'METADATA_COLLECTION',
-          () => collectMetadata(liveAuth.authorityPin, inventory),
-          sourceRetryWait,
-        ),
-        datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
-      ])
+      const collectCandidate = async () => {
+        const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
+        const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
+        const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+          datahubSourceStage(
+            'LINEAGE_COLLECTION',
+            () => collectLineage(liveAuth.authorityPin, inventory),
+            sourceRetryWait,
+          ),
+          datahubSourceStage(
+            'METADATA_COLLECTION',
+            () => collectMetadata(liveAuth.authorityPin, inventory),
+            sourceRetryWait,
+          ),
+          datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
+        ])
+        const fingerprint = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceFingerprint({
+          inventoryProjection: projection,
+          datahubIdentity,
+          lineageSource,
+          metadataSource,
+        }))
+        if (!fingerprint || typeof fingerprint.source_fingerprint_id !== 'string'
+          || !/^[0-9a-f]{64}$/.test(fingerprint.source_fingerprint_id)) {
+          throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
+            k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
+          })
+        }
+        return { inventory, projection, lineageSource, metadataSource, datahubIdentity, fingerprint }
+      }
+
+      let priorCandidate = await collectCandidate()
+      let stableCandidate
+      for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
+        const nextCandidate = await collectCandidate()
+        if (priorCandidate.fingerprint.source_fingerprint_id
+          === nextCandidate.fingerprint.source_fingerprint_id) {
+          stableCandidate = nextCandidate
+          break
+        }
+        priorCandidate = nextCandidate
+        if (comparison < SOURCE_CONSISTENCY_MAX_COMPARISONS) {
+          try {
+            await sourceRetryWait(SOURCE_CONSISTENCY_RETRY_DELAY_MS, {
+              failureStage: 'SOURCE_CONSISTENCY',
+              failureDetailCode: 'SOURCE_DRIFT',
+              attempt: comparison,
+            })
+          } catch {
+            // Retry-clock failures never expose provider details or permit a
+            // mixed candidate to be promoted.
+          }
+        }
+      }
+      if (!stableCandidate) {
+        throw Object.assign(new Error('K9_SOURCE_DRIFT_RETRY_EXHAUSTED'), {
+          k9FailureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+        })
+      }
+      const {
+        inventory,
+        projection,
+        lineageSource,
+        metadataSource,
+        datahubIdentity,
+      } = stableCandidate
       // A failed source read must not promote a semantic generation that the
       // managed graph LKG cannot reference. Promote only after every fixed
       // DataHub source stage has completed successfully.
