@@ -140,12 +140,21 @@ identity.
 
 ## Current hotfix evidence
 
-The accepted verification narrative is
+The current verification narrative is
+[`docs/evidence/prep-k9-source-diagnostic-hotfix/README.md`](evidence/prep-k9-source-diagnostic-hotfix/README.md).
+It preserves the prior Migration/MCL closure and records the bounded K9-only correction: five
+DataHub source substages, sanitized durable detail, deterministic retry only for transient failure
+families, semantic/LKG preservation, focused source/server/smoke gates, and the exact linux/amd64
+Product. The disposable descendant-resume fixture is explicitly recorded as Docker Compose
+`TOOL_BLOCKED` before Product assertions rather than as a false PASS. The unchanged operator command
+is the target acceptance step.
+
+The previous one-time Migration/K9/MCL closure evidence remains at
 [`docs/evidence/prep-hotfix-migration-k9-mcl/README.md`](evidence/prep-hotfix-migration-k9-mcl/README.md).
-It records the one-time 54-file fail-open remediation, definition-level squashed-baseline
-compatibility, the same exactly-once Audit 2 final PASS after bounded correction, K9 terminal failure
-propagation, MCL durable diagnostics, exact linux/amd64 OCI fixtures, current `SMOKE_FAILED`
-descendant resume, and historical accepted upgrade.
+It records the 54-file fail-open remediation, definition-level squashed-baseline compatibility,
+the same exactly-once Audit 2 final PASS, terminal K9 failure propagation, MCL durable diagnostics,
+historical accepted upgrade, and its completed isolated Docker fixtures. This K9-only release does
+not reopen or repeat that broad Migration audit.
 
 Accepted migration history is checksum-protected and immutable under
 [`docs/68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md`](68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md).
