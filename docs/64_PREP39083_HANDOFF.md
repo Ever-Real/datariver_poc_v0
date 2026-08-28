@@ -7,7 +7,7 @@ The machine-readable accepted release is
 
 ```text
 Product  b0402d142cc3920cbe936e7b19d1426009b0cdf1
-Evidence bf557a724d455f8fa3db1f11952582b15a2760bb
+Evidence a40bdd06f55ba9556719f8d52d56d42e84268c29
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -143,7 +143,7 @@ identity.
 The accepted verification narrative is
 [`docs/evidence/prep-hotfix-migration-k9-mcl/README.md`](evidence/prep-hotfix-migration-k9-mcl/README.md).
 It records the one-time 54-file fail-open remediation, definition-level squashed-baseline
-compatibility, the exactly-once Audit 2 result and bounded correction, K9 terminal failure
+compatibility, the same exactly-once Audit 2 final PASS after bounded correction, K9 terminal failure
 propagation, MCL durable diagnostics, exact linux/amd64 OCI fixtures, current `SMOKE_FAILED`
 descendant resume, and historical accepted upgrade.
 
