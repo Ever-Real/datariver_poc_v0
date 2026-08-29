@@ -9542,10 +9542,10 @@ function mcpAuthorizationFingerprint(context) {
   })
 }
 
-function assertMcpReadToolAuthorized(context, toolName) {
+function mcpReadToolAuthorized(context, toolName) {
   const capability = mcpReadToolCapabilities[toolName]
   if (!capability || !context.principal.capabilitySet.has(capability)) {
-    throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
+    return false
   }
   if (capability === 'knowledge.read' && context.knowledgeAdapter !== 'MCP') {
     const maximumRank = securityGradeRank(context.principal.maxSecurityGrade)
@@ -9555,8 +9555,15 @@ function assertMcpReadToolAuthorized(context, toolName) {
         tablePolicyCellKey('knowledge', context.principal.role, grade),
       ))
     if (!knowledgePolicyAllows) {
-      throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
+      return false
     }
+  }
+  return true
+}
+
+function assertMcpReadToolAuthorized(context, toolName) {
+  if (!mcpReadToolAuthorized(context, toolName)) {
+    throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
   }
 }
 
@@ -10039,8 +10046,8 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
       ]
       const visibleTools = userContext
         ? tools.filter((tool) => (
-            requestContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
-              && userContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
+            mcpReadToolAuthorized(requestContext, tool.name)
+              && mcpReadToolAuthorized(userContext, tool.name)
           )).map((tool) => {
             if (tool.name === 'metadata_search') return {
               ...tool,

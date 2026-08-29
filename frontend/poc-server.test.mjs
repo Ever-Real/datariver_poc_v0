@@ -3377,6 +3377,12 @@ test('MCP adapter bounded implementation', async () => {
     }
     const deniedScopeCallsBefore = knowledgeScopeCalls.length
     const deniedSnapshotCallsBefore = knowledgeSnapshotCalls.length
+    const policyDeniedTools = await postJson('/api/v1/mcp/user', {
+      jsonrpc: '2.0', method: 'tools/list', id: 28,
+    }, userAuthHeaders)
+    assert.deepEqual(policyDeniedTools.body.result.tools.map((tool) => tool.name), [
+      'metadata_search',
+    ])
     const policyDenied = await postJson('/api/v1/mcp/user', {
       jsonrpc: '2.0', method: 'tools/call',
       params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'authorization-filtered', release_id: 'r1' } }, id: 29,
