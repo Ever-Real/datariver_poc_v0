@@ -13,6 +13,8 @@ from datariver.infrastructure.db.models.catalog import (
     AssetProjectionModel,
     CatalogExportModel,
     CatalogProjectionWatermarkModel,
+    CatalogRecommendationEventModel,
+    CatalogRecommendationModel,
     CatalogSyncRunModel,
     ColumnProfileMetricModel,
 )
@@ -195,6 +197,8 @@ __all__ = [
     "AssistantRunModel",
     "CatalogExportModel",
     "CatalogProjectionWatermarkModel",
+    "CatalogRecommendationEventModel",
+    "CatalogRecommendationModel",
     "CatalogSyncRunModel",
     "ChangeHistoryCheckpointModel",
     "ChangeHistoryCrLinkEventModel",

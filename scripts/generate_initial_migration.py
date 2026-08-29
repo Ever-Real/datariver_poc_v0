@@ -557,6 +557,26 @@ def _load_change_history_revision() -> ModuleType:
     return module
 
 
+def _load_catalog_recommendation_revision() -> ModuleType:
+    """Load the DQ-02 protected recommendation SQL into the canonical baseline."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0101_catalog_metadata_recommendations.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_catalog_recommendation_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the DQ-02 recommendation contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -911,6 +931,10 @@ def build_upgrade() -> ops.UpgradeOps:
         for constraint in _deferred_foreign_keys()
     )
     operations.append(ops.ExecuteSQLOp(_runtime_grants_sql()))
+    catalog_recommendations = _load_catalog_recommendation_revision()
+    catalog_recommendations.install_guards(
+        lambda statement: operations.append(ops.ExecuteSQLOp(statement))
+    )
     change_history = _load_change_history_revision()
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in change_history.security_statements()
@@ -1187,6 +1211,13 @@ BEGIN
             catalog.sync_runs, catalog.projection_watermarks TO datariver_app;
         GRANT SELECT ON catalog.asset_profile_snapshots,
             catalog.column_profile_metrics TO datariver_app;
+        GRANT SELECT, INSERT ON catalog.metadata_recommendations TO datariver_app;
+        GRANT UPDATE (
+            state, version, updated_at, change_request_id, decision_key_hash,
+            decision_request_hash, decision_kind, decision_expected_version,
+            decision_actor_id
+        ) ON catalog.metadata_recommendations TO datariver_app;
+        GRANT SELECT, INSERT ON catalog.metadata_recommendation_events TO datariver_app;
         GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
         GRANT SELECT, INSERT ON quality.common_rule_templates,
             quality.common_rule_template_mappings TO datariver_app;

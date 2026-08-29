@@ -519,6 +519,240 @@ class CatalogVocabularyEntryModel(Base, UuidPrimaryKeyMixin):
     )
 
 
+class CatalogRecommendationModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    """Durable, decision-required controlled metadata recommendation."""
+
+    __tablename__ = "metadata_recommendations"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "asset_id",
+            "field_path_key",
+            "vocabulary_id",
+            "kind",
+            "source_version",
+            name="uq_metadata_recommendations_semantic_key",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "asset_id"),
+            ("catalog.assets_projection.workspace_id", "catalog.assets_projection.id"),
+            name="fk_metadata_recommendations_asset",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "vocabulary_id", "kind"),
+            (
+                "catalog.vocabulary_entries.workspace_id",
+                "catalog.vocabulary_entries.id",
+                "catalog.vocabulary_entries.kind",
+            ),
+            name="fk_metadata_recommendations_vocabulary",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_metadata_recommendations_creator",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            name="fk_metadata_recommendations_change_request",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "decision_actor_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_metadata_recommendations_decision_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("kind IN ('TAG', 'TERM')", name="kind_vocabulary"),
+        CheckConstraint(
+            "(kind = 'TAG' AND aspect_name = 'globalTags') OR "
+            "(kind = 'TERM' AND aspect_name = 'glossaryTerms')",
+            name="kind_aspect",
+        ),
+        CheckConstraint(
+            "state IN ('NEEDS_DECISION', 'APPROVED', 'REJECTED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "char_length(field_path_key) <= 2000 "
+            "AND (field_path_key = '' OR field_path_key = btrim(field_path_key))",
+            name="field_path_key_bounded",
+        ),
+        CheckConstraint(
+            "char_length(source_version) BETWEEN 1 AND 255 "
+            "AND char_length(provider_source_version) BETWEEN 1 AND 255 "
+            "AND char_length(vocabulary_source_version) BETWEEN 1 AND 255 "
+            "AND char_length(aspect_source_version) BETWEEN 1 AND 255",
+            name="source_versions_bounded",
+        ),
+        CheckConstraint(
+            "aspect_content_hash ~ '^[0-9a-f]{64}$' "
+            "AND target_binding_hash ~ '^[0-9a-f]{64}$' "
+            "AND input_context_hash ~ '^[0-9a-f]{64}$'",
+            name="binding_hashes_sha256",
+        ),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="confidence_range"),
+        CheckConstraint(
+            "char_length(reason) BETWEEN 1 AND 2000 AND reason = btrim(reason)",
+            name="reason_bounded",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(evidence) = 'array' AND jsonb_array_length(evidence) BETWEEN 1 AND 10 "
+            "AND NOT jsonb_path_exists(evidence, '$[*] ? (@.type() != \"string\")')",
+            name="evidence_bounded_array",
+        ),
+        CheckConstraint(
+            "char_length(provider) BETWEEN 1 AND 128 "
+            "AND char_length(model) BETWEEN 1 AND 128 "
+            "AND char_length(prompt_version) BETWEEN 1 AND 128 "
+            "AND char_length(rule_version) BETWEEN 1 AND 128",
+            name="provider_provenance_bounded",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "(decision_actor_id IS NULL AND decision_key_hash IS NULL "
+            "AND decision_request_hash IS NULL AND decision_kind IS NULL "
+            "AND decision_expected_version IS NULL) OR "
+            "(decision_key_hash ~ '^[0-9a-f]{64}$' "
+            "AND decision_request_hash ~ '^[0-9a-f]{64}$' "
+            "AND decision_actor_id IS NOT NULL "
+            "AND decision_kind IN ('APPROVE', 'REJECT') "
+            "AND decision_expected_version >= 1)",
+            name="decision_reservation_shape",
+        ),
+        CheckConstraint(
+            "(state = 'NEEDS_DECISION' AND change_request_id IS NULL "
+            "AND decision_actor_id IS NULL AND decision_kind IS NULL) OR "
+            "(state = 'APPROVED' AND change_request_id IS NOT NULL "
+            "AND decision_kind = 'APPROVE') OR "
+            "(state = 'REJECTED' AND change_request_id IS NULL "
+            "AND decision_kind = 'REJECT')",
+            name="decision_state_shape",
+        ),
+        Index(
+            "ix_metadata_recommendations_workspace_state_created",
+            "workspace_id",
+            "state",
+            "created_at",
+            "id",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    field_path_key: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    vocabulary_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    vocabulary_source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    aspect_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    aspect_source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    aspect_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[float] = mapped_column(Numeric(6, 5), nullable=False)
+    reason: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    evidence: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    decision_actor_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    change_request_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    decision_key_hash: Mapped[str | None] = mapped_column(String(64))
+    decision_request_hash: Mapped[str | None] = mapped_column(String(64))
+    decision_kind: Mapped[str | None] = mapped_column(String(16))
+    decision_expected_version: Mapped[int | None] = mapped_column(Integer)
+
+
+class CatalogRecommendationEventModel(Base, UuidPrimaryKeyMixin):
+    """Append-only preview and human decision audit."""
+
+    __tablename__ = "metadata_recommendation_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "recommendation_id",
+            "recommendation_version",
+            name="uq_metadata_recommendation_events_version",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "recommendation_id"),
+            (
+                "catalog.metadata_recommendations.workspace_id",
+                "catalog.metadata_recommendations.id",
+            ),
+            name="fk_metadata_recommendation_events_recommendation",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "actor_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_metadata_recommendation_events_actor",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            name="fk_metadata_recommendation_events_change_request",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "decision IN ('PREVIEWED', 'APPROVED', 'REJECTED')",
+            name="decision_vocabulary",
+        ),
+        CheckConstraint("recommendation_version >= 1", name="version_positive"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_sha256"),
+        CheckConstraint(
+            "reason IS NULL OR (char_length(reason) BETWEEN 1 AND 2000 AND reason = btrim(reason))",
+            name="reason_bounded",
+        ),
+        CheckConstraint(
+            "(decision = 'APPROVED' AND change_request_id IS NOT NULL) OR "
+            "(decision <> 'APPROVED' AND change_request_id IS NULL)",
+            name="change_request_shape",
+        ),
+        Index(
+            "ix_metadata_recommendation_events_workspace_recommendation",
+            "workspace_id",
+            "recommendation_id",
+            "occurred_at",
+            "id",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recommendation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    recommendation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(2_000))
+    change_request_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
 class CatalogVocabularySyncRunModel(Base):
     """Durable per-kind reconciliation cursor and verified snapshot evidence."""
 

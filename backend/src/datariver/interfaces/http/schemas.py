@@ -372,6 +372,110 @@ class CatalogControlledMetadataPreviewResponse(BaseModel):
     observed_at: datetime
 
 
+class CatalogRecommendationPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_version: str = Field(min_length=1, max_length=255)
+    field_path: str | None = Field(default=None, min_length=1, max_length=2_000)
+    vocabulary_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+    @field_validator("source_version", "field_path")
+    @classmethod
+    def reject_recommendation_text_nul(cls, value: str | None) -> str | None:
+        if value is not None and (value != value.strip() or not value or "\x00" in value):
+            raise ValueError("Recommendation source fields must contain bounded visible text.")
+        return value
+
+    @field_validator("vocabulary_ids")
+    @classmethod
+    def require_unique_vocabulary_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Recommendation vocabulary identities must be unique.")
+        return value
+
+
+class CatalogRecommendationResponse(BaseModel):
+    recommendation_id: UUID
+    asset_id: UUID
+    field_path: str | None
+    vocabulary_id: UUID
+    kind: Literal["TAG", "TERM"]
+    source_version: str
+    confidence: float = Field(ge=0, le=1)
+    reason: str = Field(min_length=1, max_length=2_000)
+    evidence: list[str] = Field(min_length=1, max_length=10)
+    provider: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1, max_length=128)
+    prompt_version: str = Field(min_length=1, max_length=128)
+    rule_version: str = Field(min_length=1, max_length=128)
+    state: Literal["NEEDS_DECISION", "APPROVED", "REJECTED"]
+    version: int = Field(ge=1)
+    change_request_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CatalogRecommendationPreviewResponse(BaseModel):
+    items: list[CatalogRecommendationResponse] = Field(max_length=100)
+    auto_application: Literal["DISABLED_NEEDS_DECISION"] = "DISABLED_NEEDS_DECISION"
+
+
+class CatalogRecommendationApprovalTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation_id: UUID
+    expected_version: int = Field(ge=1)
+
+
+class CatalogRecommendationApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targets: list[CatalogRecommendationApprovalTargetRequest] = Field(
+        min_length=1,
+        max_length=100,
+    )
+    title: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("title", "reason")
+    @classmethod
+    def require_recommendation_decision_text(cls, value: str) -> str:
+        if value != value.strip() or not value or "\x00" in value:
+            raise ValueError("Recommendation decision text must be visible and bounded.")
+        return value
+
+    @field_validator("targets")
+    @classmethod
+    def require_unique_recommendation_targets(
+        cls,
+        value: list[CatalogRecommendationApprovalTargetRequest],
+    ) -> list[CatalogRecommendationApprovalTargetRequest]:
+        identities = [item.recommendation_id for item in value]
+        if len(identities) != len(set(identities)):
+            raise ValueError("Recommendation approval targets must be unique.")
+        return value
+
+
+class CatalogRecommendationRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("reason")
+    @classmethod
+    def require_recommendation_rejection_text(cls, value: str) -> str:
+        if value != value.strip() or not value or "\x00" in value:
+            raise ValueError("Recommendation rejection text must be visible and bounded.")
+        return value
+
+
+class CatalogRecommendationApprovalResponse(BaseModel):
+    change_request_id: UUID
+    items: list[CatalogRecommendationResponse] = Field(min_length=1, max_length=100)
+    auto_application: Literal["DISABLED_NEEDS_DECISION"] = "DISABLED_NEEDS_DECISION"
+
+
 class CatalogSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

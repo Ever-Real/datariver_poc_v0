@@ -177,12 +177,61 @@ class SqlCatalogMetadataVocabularyResolver:
                 kind=model.kind,
                 provider_ref=model.provider_ref,
                 source_version=model.source_version,
+                display_name=model.display_name,
             )
             for model in models
         }
         if set(values) != set(unique_ids):
             raise ConflictError(
                 "The controlled vocabulary evidence is ambiguous.",
+                details={"code": "CATALOG_VOCABULARY_DRIFT"},
+            )
+        return values
+
+    async def resolve_any(
+        self,
+        *,
+        workspace_id: UUID,
+        vocabulary_ids: tuple[UUID, ...],
+    ) -> Mapping[UUID, CatalogMetadataVocabularyReference]:
+        """Resolve a bounded mixed TAG/TERM set without exposing provider references to HTTP."""
+
+        unique_ids = tuple(dict.fromkeys(vocabulary_ids))
+        if not unique_ids or len(unique_ids) != len(vocabulary_ids) or len(unique_ids) > 100:
+            raise ConflictError(
+                "The controlled recommendation vocabulary is invalid.",
+                details={"code": "CATALOG_VOCABULARY_DRIFT"},
+            )
+        models = tuple(
+            (
+                await self._session.scalars(
+                    select(CatalogVocabularyEntryModel).where(
+                        CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                        CatalogVocabularyEntryModel.id.in_(unique_ids),
+                        CatalogVocabularyEntryModel.kind.in_(("TAG", "TERM")),
+                        CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                    )
+                )
+            ).all()
+        )
+        if len(models) != len(unique_ids):
+            raise ConflictError(
+                "The controlled recommendation vocabulary is unavailable.",
+                details={"code": "CATALOG_VOCABULARY_DRIFT"},
+            )
+        values = {
+            model.id: CatalogMetadataVocabularyReference(
+                vocabulary_id=model.id,
+                kind=model.kind,
+                provider_ref=model.provider_ref,
+                source_version=model.source_version,
+                display_name=model.display_name,
+            )
+            for model in models
+        }
+        if set(values) != set(unique_ids):
+            raise ConflictError(
+                "The controlled recommendation vocabulary is ambiguous.",
                 details={"code": "CATALOG_VOCABULARY_DRIFT"},
             )
         return values

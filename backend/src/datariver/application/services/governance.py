@@ -100,6 +100,16 @@ class ChangeTargetAuthorizer(Protocol):
     ) -> frozenset[UUID]: ...
 
 
+class CatalogRecommendationApprovalFinalizer(Protocol):
+    """Narrow transaction extension for one governed Catalog approval."""
+
+    async def finalize_catalog_recommendation_approval(
+        self,
+        *,
+        change_request: ChangeRequest,
+    ) -> None: ...
+
+
 class ChangeRequestNotFound(NotFoundError):
     code = "change_request_not_found"
 
@@ -649,6 +659,104 @@ class GovernanceService:
         request_content: str = "",
         selected_system_id: UUID | None = None,
     ) -> ChangeRequest:
+        """Create a normal governed request; unrelated callers have no commit extension point."""
+
+        return await self._create_change_request(
+            workspace_id=workspace_id,
+            number=number,
+            request_type=request_type,
+            title=title,
+            description=description,
+            requester_id=requester_id,
+            items=items,
+            subject=subject,
+            classification=classification,
+            environment=environment,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            require_raw_operator_gate=require_raw_operator_gate,
+            registration_candidate_binding=registration_candidate_binding,
+            registration_metadata_binding=registration_metadata_binding,
+            requested_due_date=requested_due_date,
+            priority=priority,
+            urgency=urgency,
+            request_date=request_date,
+            request_department=request_department,
+            request_reason=request_reason,
+            request_content=request_content,
+            selected_system_id=selected_system_id,
+            catalog_recommendation_finalizer=None,
+        )
+
+    async def create_catalog_recommendation_change_request(
+        self,
+        *,
+        workspace_id: UUID,
+        number: str,
+        request_type: str,
+        title: str,
+        description: str,
+        requester_id: UUID,
+        items: list[ChangeItem],
+        subject: SubjectAttributes,
+        classification: Classification,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+        require_raw_operator_gate: bool,
+        recommendation_finalizer: CatalogRecommendationApprovalFinalizer,
+    ) -> ChangeRequest:
+        """Atomically bind one Catalog recommendation decision to its governed request."""
+
+        return await self._create_change_request(
+            workspace_id=workspace_id,
+            number=number,
+            request_type=request_type,
+            title=title,
+            description=description,
+            requester_id=requester_id,
+            items=items,
+            subject=subject,
+            classification=classification,
+            environment=environment,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            require_raw_operator_gate=require_raw_operator_gate,
+            catalog_recommendation_finalizer=recommendation_finalizer,
+        )
+
+    async def _create_change_request(
+        self,
+        *,
+        workspace_id: UUID,
+        number: str,
+        request_type: str,
+        title: str,
+        description: str,
+        requester_id: UUID,
+        items: list[ChangeItem],
+        subject: SubjectAttributes,
+        classification: Classification,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+        require_raw_operator_gate: bool = True,
+        catalog_recommendation_finalizer: CatalogRecommendationApprovalFinalizer | None = None,
+        registration_candidate_binding: RegistrationCandidateBindingCommand | None = None,
+        registration_metadata_binding: CatalogMetadataBindingCommand | None = None,
+        requested_due_date: date | None = None,
+        priority: ChangePriority | None = None,
+        urgency: ChangeUrgency | None = None,
+        request_date: date | None = None,
+        request_department: str = "",
+        request_reason: str | None = None,
+        request_content: str = "",
+        selected_system_id: UUID | None = None,
+    ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
         if registration_candidate_binding is not None and registration_metadata_binding is not None:
@@ -730,6 +838,11 @@ class GovernanceService:
                     strict_binding=True,
                 ):
                     raise ForbiddenError("The change target is not available.")
+                if catalog_recommendation_finalizer is not None:
+                    await catalog_recommendation_finalizer.finalize_catalog_recommendation_approval(
+                        change_request=existing_request
+                    )
+                    await uow.commit()
                 return existing_request
             change_request = ChangeRequest.create(
                 workspace_id=workspace_id,
@@ -776,6 +889,10 @@ class GovernanceService:
                     "requester_id": str(subject.subject_id),
                 },
             )
+            if catalog_recommendation_finalizer is not None:
+                await catalog_recommendation_finalizer.finalize_catalog_recommendation_approval(
+                    change_request=change_request
+                )
             await uow.commit()
         change_request.events.clear()
         return change_request

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 import orjson
@@ -17,15 +17,24 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.catalog_description import CatalogDescriptionService
 from datariver.application.services.catalog_export import CatalogExportService
+from datariver.application.services.catalog_recommendations import (
+    CatalogRecommendationApprovalTarget,
+    CatalogRecommendationProvider,
+    CatalogRecommendationService,
+    UnavailableCatalogRecommendationProvider,
+)
 from datariver.application.services.catalog_sync import CatalogSyncService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import BuiltinPolicyEngine
+from datariver.domain.catalog_recommendations import CatalogRecommendation
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance import ChangePriority, ChangeUrgency
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
 from datariver.infrastructure.db.catalog_export import SqlCatalogExportStore
+from datariver.infrastructure.db.catalog_metadata import SqlCatalogMetadataVocabularyResolver
+from datariver.infrastructure.db.catalog_recommendations import SqlCatalogRecommendationStore
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
@@ -60,6 +69,12 @@ from datariver.interfaces.http.schemas import (
     CatalogLineageResponse,
     CatalogMatchFragmentResponse,
     CatalogPolicyMeta,
+    CatalogRecommendationApprovalResponse,
+    CatalogRecommendationApproveRequest,
+    CatalogRecommendationPreviewRequest,
+    CatalogRecommendationPreviewResponse,
+    CatalogRecommendationRejectRequest,
+    CatalogRecommendationResponse,
     CatalogSearchResponse,
     CatalogSuggestionResponse,
     CatalogSuggestionsResponse,
@@ -161,6 +176,79 @@ def _export_service(request: Request, session: SessionDep) -> CatalogExportServi
         access_ttl_seconds=container.settings.catalog_export_access_ttl_seconds,
         download_ttl_seconds=container.settings.catalog_export_download_ttl_seconds,
         worker_enabled=container.settings.catalog_export_worker_enabled,
+    )
+
+
+def _recommendation_service(
+    request: Request,
+    session: SessionDep,
+) -> CatalogRecommendationService:
+    container = get_container(request)
+    # The Catalog-specific Governance extension and recommendation store intentionally receive
+    # this exact request-scoped AsyncSession. Their row locks, CR/idempotency/outbox writes and
+    # decision/event finalization therefore share one PostgreSQL transaction and rollback boundary.
+    transaction_session = session
+    index = SqlCatalogIndexReader(transaction_session)
+    classification_access = ClassificationAccessResolver(
+        SqlClassificationAccessSnapshotReader(session)
+    )
+    authorization = AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    )
+    governance = GovernanceService(
+        lambda: SqlGovernanceUnitOfWork(
+            container.database.session_factory,
+            session=transaction_session,
+        ),
+        authorization,
+        target_authorizer=CatalogChangeTargetAuthorizer(
+            index=index,
+            classification_access=classification_access,
+            authorization=authorization,
+        ),
+    )
+    provider = cast(
+        CatalogRecommendationProvider,
+        getattr(
+            request.app.state,
+            "catalog_recommendation_provider",
+            UnavailableCatalogRecommendationProvider(),
+        ),
+    )
+    return CatalogRecommendationService(
+        index=index,
+        classification_access=classification_access,
+        authorization=authorization,
+        datahub=container.datahub,
+        vocabulary=SqlCatalogMetadataVocabularyResolver(transaction_session),
+        provider=provider,
+        store=SqlCatalogRecommendationStore(transaction_session),
+        governance=governance,
+    )
+
+
+def _recommendation_response(
+    recommendation: CatalogRecommendation,
+) -> CatalogRecommendationResponse:
+    return CatalogRecommendationResponse(
+        recommendation_id=recommendation.recommendation_id,
+        asset_id=recommendation.asset_id,
+        field_path=recommendation.field_path,
+        vocabulary_id=recommendation.vocabulary_id,
+        kind=recommendation.kind.value,
+        source_version=recommendation.source_version,
+        confidence=recommendation.confidence,
+        reason=recommendation.reason,
+        evidence=list(recommendation.evidence),
+        provider=recommendation.provider,
+        model=recommendation.model,
+        prompt_version=recommendation.prompt_version,
+        rule_version=recommendation.rule_version,
+        state=recommendation.state.value,
+        version=recommendation.version,
+        change_request_id=recommendation.change_request_id,
+        created_at=recommendation.created_at,
+        updated_at=recommendation.updated_at,
     )
 
 
@@ -1017,6 +1105,149 @@ async def create_asset_controlled_metadata_change_request(
         request_hash=request_hash,
     )
     return change_request_response(change_request)
+
+
+@router.post(
+    "/assets/{asset_id}/metadata-recommendation-previews",
+    response_model=CatalogRecommendationPreviewResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def preview_catalog_metadata_recommendations(
+    asset_id: UUID,
+    payload: CatalogRecommendationPreviewRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> CatalogRecommendationPreviewResponse:
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "operation": "catalog.metadata-recommendation-preview.v1",
+                "workspace_id": str(context.workspace_id),
+                "asset_id": str(asset_id),
+                "field_path": payload.field_path,
+                "source_version": payload.source_version,
+                "vocabulary_ids": [str(value) for value in payload.vocabulary_ids],
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    values = await _recommendation_service(request, session).preview(
+        workspace_id=context.workspace_id,
+        asset_id=asset_id,
+        field_path=payload.field_path,
+        source_version=payload.source_version,
+        vocabulary_ids=tuple(payload.vocabulary_ids),
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return CatalogRecommendationPreviewResponse(
+        items=[_recommendation_response(value) for value in values]
+    )
+
+
+@router.post(
+    "/metadata-recommendations/approve",
+    response_model=CatalogRecommendationApprovalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def approve_catalog_metadata_recommendations(
+    payload: CatalogRecommendationApproveRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> CatalogRecommendationApprovalResponse:
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "operation": "catalog.metadata-recommendation-approve.v1",
+                "workspace_id": str(context.workspace_id),
+                "targets": [
+                    {
+                        "recommendation_id": str(value.recommendation_id),
+                        "expected_version": value.expected_version,
+                    }
+                    for value in payload.targets
+                ],
+                "title": payload.title,
+                "reason": payload.reason,
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    result = await _recommendation_service(request, session).approve(
+        workspace_id=context.workspace_id,
+        targets=tuple(
+            CatalogRecommendationApprovalTarget(
+                recommendation_id=value.recommendation_id,
+                expected_version=value.expected_version,
+            )
+            for value in payload.targets
+        ),
+        title=payload.title,
+        reason=payload.reason,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return CatalogRecommendationApprovalResponse(
+        change_request_id=result.change_request_id,
+        items=[_recommendation_response(value) for value in result.recommendations],
+    )
+
+
+@router.post(
+    "/metadata-recommendations/{recommendation_id}/reject",
+    response_model=CatalogRecommendationResponse,
+)
+async def reject_catalog_metadata_recommendation(
+    recommendation_id: UUID,
+    payload: CatalogRecommendationRejectRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> CatalogRecommendationResponse:
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "operation": "catalog.metadata-recommendation-reject.v1",
+                "workspace_id": str(context.workspace_id),
+                "recommendation_id": str(recommendation_id),
+                "expected_version": payload.expected_version,
+                "reason": payload.reason,
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    value = await _recommendation_service(request, session).reject(
+        workspace_id=context.workspace_id,
+        recommendation_id=recommendation_id,
+        expected_version=payload.expected_version,
+        reason=payload.reason,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return _recommendation_response(value)
 
 
 @router.get("/assets/{asset_id}/lineage", response_model=CatalogLineageResponse)

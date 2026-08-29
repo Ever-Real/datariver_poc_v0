@@ -26,6 +26,7 @@ class CatalogMetadataVocabularyReference:
     kind: str
     provider_ref: str
     source_version: str
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "algorithm": "sha256",
-  "accepted_through_revision": "0100",
+  "accepted_through_revision": "0101",
   "files": {
-    "0001_initial_schema.py": "91e09a29df200570c611bba8e2fa037808d43d3a1b4f550bd1054e87e5b660b0",
+    "0001_initial_schema.py": "d012df7ec199a4e2bd2f5962c08bfb3f8849611f4d2abe762859d5934b73a07e",
     "0002_p0_read_safety_compat.py": "ac69098fdcf99f954d9435c2b91214f746e8bdf5e00c341d9ffa5d56a3d3da5d",
     "0003_monotonic_catalog_projection_watermark.py": "76581eede7e1a6b9589ff9378cc2b8e280d7d485d054de24fe43ad822730e903",
     "0004_schema_readiness_grant.py": "2230ba51bbbe16928323f0b3000741d935342ed26275a4dd20bb57f9a9f173c7",
@@ -102,6 +102,7 @@
     "0097_managed_studio_intents.py": "017acede97c26b5171a339e6ed894536c526742357d26e0980fd6d65a6176721",
     "0098_tbox_baseline_grant_compatibility.py": "f85a5f56a86272aa1ace24f3464efb6a57920b50c5d58248f524ae98b023ef35",
     "0099_tbox_lifecycle_grant_compatibility.py": "f0ddb9a0ee955c978a8e376e869a6b4f73cdfd3533d87eedf534c21dbac15bf5",
-    "0100_k9_intranet_distinct_principal.py": "f0b557b3baa42092e77df36556dd6330705166a18355445d7513ff6c8495e021"
+    "0100_k9_intranet_distinct_principal.py": "f0b557b3baa42092e77df36556dd6330705166a18355445d7513ff6c8495e021",
+    "0101_catalog_metadata_recommendations.py": "afd8e563d27d57010595f83e9c5ca636b8901d4c95c365b8c2ec2ec6f6746cb1"
   }
 }
