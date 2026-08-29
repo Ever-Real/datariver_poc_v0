@@ -52,6 +52,7 @@ def _claim(
     snapshot_valid: bool = True,
     format_name: str = "CSV",
     filters: dict[str, str] | None = None,
+    query: str = "wafer",
 ) -> CatalogExportClaim:
     subject = _subject()
     access = static_classification_access_floor()
@@ -63,7 +64,7 @@ def _claim(
             job_id=uuid4(),
             requested_by=SUBJECT_ID,
             request=CatalogExportRequest(
-                query="wafer",
+                query=query,
                 filters=filters or {},
                 format=format_name,
             ),
@@ -241,6 +242,7 @@ async def test_worker_exports_every_authorized_page_in_canonical_cursor_order(
         _claim(
             format_name=format_name,
             filters={"platform": "generic-platform", "schema_name": "generic-schema"},
+            query="synthetic-asset",
         ),
         pages=(
             CatalogPage(items=(_asset("first"),), next_cursor="next-page", observed_at=NOW),
@@ -254,7 +256,7 @@ async def test_worker_exports_every_authorized_page_in_canonical_cursor_order(
     assert store.read_cursors == [None, "next-page"]
     assert [request.document() for request in store.read_requests] == [
         {
-            "query": "wafer",
+            "query": "synthetic-asset",
             "filters": {"platform": "generic-platform", "schema_name": "generic-schema"},
             "sort": "NAME_ASC",
             "format": format_name,
