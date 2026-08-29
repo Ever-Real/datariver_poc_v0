@@ -188,7 +188,6 @@ export function MonitoringPage({
     <section className="monitoring-page">
       <PageTitle
         icon="MO"
-        eyebrow="Infrastructure monitoring"
         title="Infrastructure Monitoring"
         description="서버가 검증한 Monitoring Dashboard 탭과 관측성 링크를 표시합니다."
       />

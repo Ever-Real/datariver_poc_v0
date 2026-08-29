@@ -119,7 +119,7 @@ export function SharingPage({
 
   return (
     <section>
-      <PageTitle icon="API" eyebrow="Release-pinned contracts" title="API 공유 관리" description="불변 release와 명시 scope·분류·쿼터에 고정된 공유 계약을 운영합니다." />
+      <PageTitle icon="API" title="API 공유 관리" description="불변 release와 명시 scope·분류·쿼터에 고정된 공유 계약을 운영합니다." />
       <div className="panel-grid governance-grid">
         <form className="form-stack panel" onSubmit={(event) => void createProduct(event)}>
           <h3>API Product 초안</h3>

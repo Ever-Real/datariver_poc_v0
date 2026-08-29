@@ -367,7 +367,6 @@ describe('application shell contracts', () => {
     render(
       <PageTitle
         icon="SR"
-        eyebrow="Catalog"
         title="데이터 검색"
         description="인가된 projection을 검색합니다."
         actions={<button type="button">새로고침</button>}

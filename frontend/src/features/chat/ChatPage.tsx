@@ -598,7 +598,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
           <header>
             <div className="chat-panel-heading">
               <History aria-hidden="true" size={16} />
-              {!historyCollapsed && <div><span className="eyebrow">My history</span><h2>내 대화</h2></div>}
+              {!historyCollapsed && <div><h2>내 대화</h2></div>}
             </div>
             <button
               aria-label={historyCollapsed ? '대화 이력 펼치기' : '대화 이력 숨기기'}

@@ -119,7 +119,6 @@ export function DashboardPage({
     <section className="dashboard-page">
       <PageTitle
         icon="OP"
-        eyebrow="Governance dashboard"
         title="Governance Dashboard"
         description="데이터 자산 현황과 운영 상태를 현재 Workspace의 서버 검증 결과로 표시합니다."
         actions={(

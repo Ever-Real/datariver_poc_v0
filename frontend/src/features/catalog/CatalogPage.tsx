@@ -459,7 +459,7 @@ export function CatalogPage({
   }
 
   return <section className="catalog-page">
-    <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
+    <PageTitle icon="SR" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
     <div className="catalog-search-panel panel">
       <div className="catalog-search-toolbar">
         <form className="catalog-search-form" role="search" aria-label="카탈로그 상세 검색" onSubmit={submit}>

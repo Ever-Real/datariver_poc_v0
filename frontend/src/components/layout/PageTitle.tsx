@@ -10,7 +10,7 @@ const titleIcons: Record<string, ReactNode> = {
 
 interface PageTitleProps {
   icon: string
-  eyebrow: string
+  eyebrow?: string
   title: string
   description: string
   actions?: ReactNode
@@ -21,7 +21,7 @@ export function PageTitle({ icon, eyebrow, title, description, actions }: PageTi
     <header className="page-title">
       <span className="page-title-icon" aria-hidden="true">{titleIcons[icon] ?? icon}</span>
       <div className="page-title-copy">
-        <p className="eyebrow">{eyebrow}</p>
+        {eyebrow && <p className="eyebrow">{eyebrow}</p>}
         <h1>{title}</h1>
         <p title={description}>{description}</p>
       </div>

@@ -101,7 +101,6 @@ export function AppShell({
         )}
         <div className="page-content" key={securityBoundaryKey}>{children}</div>
       </main>
-      <footer className="deployment-footer">{deploymentTier === 'SINGLE_NODE_PILOT' ? '[Environment: Single-node Pilot]' : `[Environment: ${deploymentTier === 'HA_CANDIDATE' ? 'HA Candidate' : 'HA Accepted'}]`}</footer>
     </div>
   )
 }

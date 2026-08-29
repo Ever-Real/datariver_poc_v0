@@ -56,11 +56,13 @@ vi.mock('./components/layout/AppShell', () => ({
   AppShell: ({
     adminMenuItems = [],
     adminContextStatus,
+    onNavigate,
     onNavigateAdmin,
     children,
   }: {
     adminMenuItems?: Array<{ id: string; label: string }>
     adminContextStatus?: string
+    onNavigate?: (page: 'dashboard' | 'catalog') => void
     onNavigateAdmin?: (section: string) => void
     children: ReactNode
   }) => (
@@ -75,6 +77,8 @@ vi.mock('./components/layout/AppShell', () => ({
       </div>
       <button type="button" onClick={() => onNavigateAdmin?.('systems')}>Open systems admin</button>
       <button type="button" onClick={() => onNavigateAdmin?.('metadataLogs')}>Open metadata logs</button>
+      <button type="button" onClick={() => onNavigate?.('dashboard')}>Navigate dashboard</button>
+      <button type="button" onClick={() => onNavigate?.('catalog')}>Navigate catalog</button>
       {children}
     </div>
   ),
@@ -98,6 +102,12 @@ vi.mock('./features/admin/AdminPage', () => ({
 
 vi.mock('./features/dashboard/DashboardPage', () => ({
   DashboardPage: () => <section aria-label="Dashboard route" />,
+}))
+
+vi.mock('./features/catalog/CatalogPage', () => ({
+  CatalogPage: ({ initialQuery }: { initialQuery: string }) => (
+    <section aria-label="Catalog route" data-query={initialQuery} />
+  ),
 }))
 
 vi.mock('./features/knowledge/KnowledgeWorkspacePage', () => ({
@@ -397,6 +407,36 @@ describe('App authentication-bound Admin orchestration', () => {
     expect(await screen.findByRole('region', {
       name: 'Knowledge workspace route',
     })).toHaveTextContent('knowledge-studio')
+  })
+
+  it('preserves an explicit catalog query across menu navigation while clearing transient detail state', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=catalog&q=retained&catalogAsset=transient-detail&workspace=${WORKSPACE_ONE}`,
+    )
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') return Promise.resolve(adminContext())
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+
+    expect(await screen.findByRole('region', { name: 'Catalog route' })).toHaveAttribute('data-query', 'retained')
+    fireEvent.click(screen.getByRole('button', { name: 'Navigate dashboard' }))
+    expect(await screen.findByRole('region', { name: 'Dashboard route' })).toBeInTheDocument()
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('retained')
+    expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Navigate catalog' }))
+    expect(await screen.findByRole('region', { name: 'Catalog route' })).toHaveAttribute('data-query', 'retained')
   })
 
   it('renders the local credential form and clears its controlled password after submit', () => {

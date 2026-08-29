@@ -23,11 +23,6 @@
   line-height: 1;
 }
 
-.poc-app .deployment-footer {
-  color: #674b00;
-  background: #fff4ca;
-}
-
 @media (max-width: 860px) {
   .top-navigation-profile-slot { grid-area: profile; }
 }

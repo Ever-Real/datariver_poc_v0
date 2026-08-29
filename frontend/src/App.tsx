@@ -296,13 +296,16 @@ export function App() {
 
   const navigate = useCallback((next: Page) => {
     if (pocMode && !hasPocPageAccess(next)) {
-      window.history.replaceState({}, '', pageUrl('dashboard'))
+      const fallback = new URL(pageUrl('dashboard'), window.location.origin)
+      fallback.searchParams.delete('q')
+      window.history.replaceState({}, '', `${fallback.pathname}${fallback.search}${fallback.hash}`)
       setCatalogQuery('')
       setPage('dashboard')
       return
     }
-    window.history.pushState({}, '', pageUrl(next))
-    setCatalogQuery('')
+    const destination = pageUrl(next)
+    window.history.pushState({}, '', destination)
+    setCatalogQuery(new URL(destination, window.location.origin).searchParams.get('q') ?? '')
     setPage(next)
   }, [hasPocPageAccess, pocMode])
 
