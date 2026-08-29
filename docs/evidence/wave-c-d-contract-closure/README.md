@@ -2,13 +2,15 @@
 
 ## Boundary
 
-This local checkpoint records cumulative source Product
+This Evidence records cumulative source Product
 `72fde0af0601a04a819eaffbd891e1f1f1788471` after the published Wave C
 Handoff `f9c9d7595c70b70d41728e01ce66cc0406e92f28`.
 
-It is not a final release Handoff. TEST PC transport is unavailable, no fresh
-cumulative OCI has been built, `origin/main` remains frozen, and Actual PREP
-and Actual OPS were not executed.
+It is not the final release Handoff. TEST PC transport recovered after local
+source closure and a fresh cumulative OCI was built and exported exactly once.
+The accepted-state redeploy remains pending the Handoff commit and exact
+artifact transfer. `origin/main` remains frozen, and Actual PREP and Actual OPS
+were not executed.
 
 The previous Wave C archive `dec34d0d...` is immutable evidence for Product
 `1ad090d084b34906438e281ee208f9ec49d9a95f` only. Current source-check rejects
@@ -104,17 +106,27 @@ above.
 
 ## Release and runtime state
 
-- final cumulative OCI: NOT BUILT;
-- final Product/Evidence/Handoff: NOT RELEASED;
+- cumulative Product image:
+  `datariver-poc:72fde0af0601a04a819eaffbd891e1f1f1788471`;
+- archive SHA-256:
+  `1fd0435939fa82b9aeeeed27d8d6226f0d1a10883bff66bd5e9516f81f591aec`;
+- child manifest:
+  `sha256:95795af695be38667a531aa36dc098d2bb969ad8c03f6533b49363648266975c`;
+- config digest:
+  `sha256:3f51431e95e77a683711d3e13958ebc014fc4f41e07974b19a62d4d58282c0e1`;
+- platform: `linux/amd64`;
+- OCI revision: exact Product SHA;
+- build count: one; export did not build, pull, or load;
+- final Handoff and TEST acceptance: PENDING;
 - `origin/dev`: remains the last published intermediate Handoff `f9c9d75`;
 - `origin/main`: `17f32a52de79077c433bf0beaabac81a48e46062`, unchanged;
-- TEST PC: `BLOCKED_EXTERNAL`; prior accepted state preserved;
+- TEST PC: transport reachable; prior accepted state preserved; redeploy not yet
+  executed at this Evidence commit;
 - user DataHub metadata modified: NO;
 - Actual PREP: NOT EXECUTED;
 - Actual OPS: NOT EXECUTED.
 
-When TEST transport recovers, source closure is rechecked first. A fresh exact
-linux/amd64 OCI is built from the then-current cumulative Product, exported and
-pinned by checksum/manifest/config/revision, and deployed through the canonical
-accepted-state `./scripts/prep39083 deploy` path with no build, reset, or
-resecret. The intermediate Wave C OCI is never reused.
+The next Handoff pins the identities above in `release.json` and transfers that
+exact archive through the existing approved transport. TEST then uses the
+canonical accepted-state `./scripts/prep39083 deploy` path with no build, reset,
+or resecret. The intermediate Wave C OCI is never reused.
