@@ -23,10 +23,11 @@ routes do not invent a DataHub Catalog discovery result. Request timing reports
 routing, retrieval, optional reranking, composition, and total latency without
 persisting provider timing or discovery payloads into Chat history.
 
-CH-01, CH-02, and CH-03 remain `IN_PROGRESS` at this Evidence checkpoint.
-They may close only after the exact Product is deployed to the preserved TEST
-accepted state and the first and next authorized Catalog pages plus measured
-stage timings are verified end to end.
+At the local Evidence checkpoint CH-01, CH-02, and CH-03 remained
+`IN_PROGRESS`. The TEST evidence below closes their full-result runtime
+contract at `TEST_PC_ACCEPTED`: the exact Product was deployed to the preserved
+accepted state, and the first and next authorized Catalog pages plus measured
+stage timings were verified end to end.
 
 Quality, Airflow, and MCP safety holds remain `NEEDS_DECISION` or
 `BLOCKED_EXTERNAL`; this release does not represent those holds as completed.
@@ -90,3 +91,56 @@ Product.
 The next Handoff pins only the artifact identities above, pushes the exact
 Handoff to `origin/dev`, and performs the canonical same-command TEST
 accepted-state redeploy with no reset, resecret, rebuild, or mutable pull.
+
+## TEST accepted-state runtime evidence
+
+The exact Handoff `462639897f79bffd15244419e5e2f03bcae84d37` was
+fast-forwarded on TEST and consumed the checksum-pinned archive above.
+
+- doctor: PASS; exact artifact loaded; no build or mutable pull;
+- initial state: `EXISTING_ACCEPTED_RUNNING`;
+- canonical deploy: `6/6` PASS in 566 seconds;
+- same-command rerun: `6/6` PASS in 206 seconds;
+- Web: healthy, runtime user `1000:1000`, restart count 0, OOM false;
+- K9 Default Lineage and Metadata Master: READY;
+- semantic index: READY;
+- MCL source/checkpoint contract: PASS;
+- GENERAL provider route: PASS;
+- GlossaryTerm: runtime-discovered
+  `urn:li:glossaryTerm:active_indicator`, `entityExists=true`,
+  `glossaryTerm.exists=true`, basic metadata read true, mutation false;
+- credentials: 3 rows / 3 subjects / 3 usernames;
+- K9 policies: 2 rows / 2 graph identities;
+- MCL: 1 source identity / 1 checkpoint;
+- archive transfer residue: 0 partial files;
+- remote worktree: clean.
+
+The TEST Chat VECTOR request then proved the runtime discovery and Catalog
+handoff without logging business identities:
+
+| Check | Result |
+| --- | --- |
+| selected mode | `VECTOR` |
+| authorized discovery window | 20 |
+| bounded answer context | 5 |
+| Chat exact-total claim | none (`total_exact=false`) |
+| Catalog handoff scope | full authorized inventory |
+| authorized Catalog total | 2,003, exact |
+| first page | 1 item, next cursor present |
+| second page | 1 item, next cursor present |
+| page identities | distinct |
+| routing | 0 ms |
+| retrieval | 2,428 ms |
+| reranking | 1,361 ms |
+| composition | 17,904 ms |
+| total | 21,814 ms |
+
+This proves that the UI is not limited to the five answer citations or the
+twenty-item discovery window: the existing Catalog API owns the complete,
+cursor-paginated authorized result set. The UI navigation and wording are
+covered by the full 731-test component suite. No controllable browser surface
+was connected for this run, so no manual click/visual PASS is claimed.
+
+Actual PREP and Actual OPS remain NOT EXECUTED. The following Evidence-only and
+Handoff-only successors do not change Product runtime inputs; TEST performs one
+final same-command accepted rerun after the final Handoff is published.

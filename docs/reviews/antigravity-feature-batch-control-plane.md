@@ -1,17 +1,17 @@
 # DataRiver continuous feature program control-plane handoff
 
-Updated: 2026-08-29T14:52:00+09:00
+Updated: 2026-08-29T15:46:27+09:00
 
 ## Live cumulative source state
 
 - canonical worktree: `/Users/everreal/orca/workspaces/datariver-k9-implementation/CHAT-KG-Router-GPT56-Sol`
-- cumulative source HEAD: `72fde0af0601a04a819eaffbd891e1f1f1788471`
+- Product: `567da6ba6e11f5b72126dffa3ccf7dac9621ef58`
+- current Evidence candidate: this documentation successor (final SHA pending commit)
 - worktree: clean
-- source closure: `LOCAL_VERIFIED`
-- Evidence: `43eb60f408d18b2ce28256b6ec911a079ac0a2c7`
-- TEST PC: transport reachable; exact accepted-state redeploy pending
-- final cumulative OCI: built/exported once; Handoff pin pending
-- `origin/dev`: `f9c9d7595c70b70d41728e01ce66cc0406e92f28`
+- source closure: `TEST_PC_ACCEPTED`
+- TEST PC: exact accepted-state deploy and same-command rerun `6/6` PASS
+- exact cumulative OCI: built/exported once and consumed on TEST
+- current published Handoff / `origin/dev`: `462639897f79bffd15244419e5e2f03bcae84d37`
 - `origin/main`: `17f32a52de79077c433bf0beaabac81a48e46062` (frozen)
 - Actual PREP: NOT EXECUTED
 - Actual OPS: NOT EXECUTED
@@ -34,8 +34,8 @@ the current cumulative HEAD fails closed for this expected drift.
 ## Verification at the cumulative checkpoint
 
 - UI: `731/731` PASS
-- Node Product: `200/200` PASS
-- release/deploy/handoff/migration-integrity: `148/148` PASS
+- Node Product: `201/201` PASS
+- release/deploy/handoff/migration-integrity: `138/138` PASS
 - PREP smoke: `34/34` PASS
 - Chat focused backend: `90/90` PASS
 - Chat/Catalog/Admin focused UI: `78/78` PASS
@@ -43,18 +43,19 @@ the current cumulative HEAD fails closed for this expected drift.
   static/source contract: PASS
 - Product→Evidence runtime input diff: `NONE`
 - exact OCI: `linux/amd64`; revision equals Product; archive SHA-256
-  `1fd0435939fa82b9aeeeed27d8d6226f0d1a10883bff66bd5e9516f81f591aec`
-- TEST PC cumulative runtime/browser acceptance: pending
+  `2c8246d5bab1cb52c956eba95f11c325dcf855a79f901d7f022dee79d6f13df6`
+- TEST PC cumulative API/runtime acceptance: PASS; no connected browser surface,
+  so no manual visual PASS is claimed
 
 ## Active workstreams and ownership
 
 | Workstream | Owner/model | Worktree | Base | State | Exact next action |
 | --- | --- | --- | --- | --- | --- |
-| CH-01~03 | Gemini 3.1 Pro High read-only audit; GPT-5.6 Sol High controlled implementation | `wave-c-chat-full-results-k9` | `d0273c4` | IN_PROGRESS | TEST first/next-page candidate-scope exploration and target timing capture |
+| CH-01~03 | Gemini 3.1 Pro High read-only audit; GPT-5.6 Sol High controlled implementation; Control Plane runtime closure | canonical | `567da6b` | TEST_PC_ACCEPTED | preserve full-result handoff contract; manual visual check awaits a connected browser surface |
 | DQ-01/02 | GPT-5.6 Sol High controlled audit | clean read-only lane | `d0273c4` | NEEDS_DECISION | approve authoritative nullability plus durable recommendation/provenance aggregate; do not infer |
 | AF-02~04 | GPT-5.6 Sol High controlled implementation/audit | integrated through `8d26fdd` | `d0273c4` | NEEDS_DECISION | approve durable trigger receipt/recovery, browser secret ownership, and exact System↔DAG contract |
 | MP-01~06 | GPT-5.6 Sol High controlled audit | integrated through `d0273c4` | prior Wave C | NEEDS_DECISION / BLOCKED_EXTERNAL | approve delegation/tool-audit contract; perform exact TEST runtime acceptance |
-| Control Plane | Codex | canonical | `43eb60f` | IN_PROGRESS | pin exact artifact in Handoff, push origin/dev, then canonical TEST accepted-state redeploy |
+| Control Plane | Codex | canonical | `4626398` | IN_PROGRESS | publish runtime Evidence/final Handoff and run one compatible accepted-state rerun |
 
 Claude is not configured on this Orca host. Antigravity Gemini 3.1 Pro High was
 started for CH-01~03 but reported an individual quota reset wait. The task and
@@ -63,9 +64,10 @@ not restarted from the feature-batch beginning.
 
 ## Canonical decisions and blockers
 
-- CH-01/02/03 remain `IN_PROGRESS`. Bounded Chat answer/evidence and the exact
-  Catalog candidate-scope handoff are locally verified, but complete
-  first/next-page TEST exploration and target performance measurements are not.
+- CH-01/02/03 are `TEST_PC_ACCEPTED`. TEST proved 20 discovery candidates vs
+  5 answer items, exact authorized Catalog total 2,003, distinct first/next
+  pages, and routing/retrieval/reranking/composition/total timings. No connected
+  browser surface was available, so manual visual acceptance is not claimed.
 - DQ-01/02 remain `NEEDS_DECISION`. Safe authorized preview and idempotency
   slices are locally verified; canonical nullability metadata and an approved
   durable recommendation/audit aggregate do not exist.
@@ -82,8 +84,8 @@ not restarted from the feature-batch beginning.
   classification-fenced cross-graph materialization contract exists.
 - AC-01 immutable audit-event sink and HM-03 historical trend read model remain
   `NEEDS_DECISION`; implemented safe portions stay locally verified.
-- TEST PC transport is reachable; runtime/browser verification is pending the
-  exact Handoff and artifact transfer.
+- TEST PC exact artifact deploy and same-command rerun are accepted; final
+  Evidence/Handoff-only successor rerun remains in progress.
 - No origin/main move, Actual PREP/OPS execution, state reset/resecret,
   authorization widening or user metadata mutation is authorized.
 
@@ -93,14 +95,13 @@ not restarted from the feature-batch beginning.
   `/Users/everreal/.local/state/datariver/status-dashboard/status.json`
 - dashboard URL: `http://127.0.0.1:39090`
 - last HTTP check: `200`
-- current status: `WAVE_C_D_CONTRACT_CLOSURE`
-- release readiness: `EXACT_HANDOFF_AND_TEST_ACCEPTANCE_IN_PROGRESS`
+- current status: `CHAT_FULL_RESULT_TEST_ACCEPTED`
+- release readiness: `FINAL_EVIDENCE_HANDOFF_IN_PROGRESS`
 - old Wave C OCI: `SUPERSEDED_INTERMEDIATE`
-- final OCI: `BUILT_EXACT_LOCAL`
-- TEST runtime acceptance: `PENDING`
+- final OCI: `EXACT_TEST_CONSUMED`
+- TEST runtime acceptance: `6/6 PASS + same-command rerun PASS`
 
-The next step is to pin the exact cumulative artifact in the Handoff, prove
-Product→Evidence→Handoff with `runtime_input_diff=NONE`, push that exact Handoff
-to `origin/dev`, and transfer the same archive to TEST. The canonical
-accepted-state redeploy then supplies first/next-page Chat exploration and
-target timing evidence. The Wave C intermediate remains prohibited.
+The next step is to commit the runtime Evidence, update only its Handoff pin,
+prove `runtime_input_diff=NONE`, push the exact final Handoff to `origin/dev`,
+and run one compatible accepted-state TEST rerun. The Wave C intermediate
+remains prohibited, while Quality/Airflow/MCP safety decisions remain open.
