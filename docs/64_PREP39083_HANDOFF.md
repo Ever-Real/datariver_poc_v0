@@ -3,23 +3,21 @@
 ## Fixed release identity and boundary
 
 The machine-readable manifest is `deploy/prep39083/release.json`. At this
-development checkpoint it identifies the most recently published intermediate
-artifact, not the final cumulative feature artifact and not an Actual PREP/OPS
-acceptance claim:
+development checkpoint it identifies the cumulative exact artifact. This is a
+TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  1ad090d084b34906438e281ee208f9ec49d9a95f
-Evidence 32af64f84bb0140cc53bdae1674acff489570c69
+Product  72fde0af0601a04a819eaffbd891e1f1f1788471
+Evidence 43eb60f408d18b2ce28256b6ec911a079ac0a2c7
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
-Descendant development commits have changed runtime build inputs. This archive
-is therefore valid only for Product
-`1ad090d084b34906438e281ee208f9ec49d9a95f` and must not be reused, retagged, or
-promoted for the cumulative descendant source. `release.json` remains unchanged
-until a fresh exact cumulative Product artifact is built and verified.
+The pinned archive is valid only for Product
+`72fde0af0601a04a819eaffbd891e1f1f1788471`. Its SHA-256, child manifest,
+config digest, platform, and OCI revision are exact. A descendant runtime-input
+change invalidates this identity and requires another fresh artifact.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
@@ -163,16 +161,21 @@ tokens, and connection strings are never diagnostic fields. The durable diagnost
 awaited and version-verified; it does not reset the ledger, checkpoint, or discovered source
 identity.
 
-## Published intermediate Wave C artifact and historical evidence
+## Current cumulative evidence and historical checkpoints
 
-The most recently published intermediate development Handoff adds the locally verified Wave C knowledge workflows recorded
-in [`docs/evidence/wave-c-knowledge-workflows/README.md`](evidence/wave-c-knowledge-workflows/README.md).
-Its exact ignored archive is pinned by `release.json`; TEST PC validation is
-`BLOCKED_EXTERNAL`, and this development Handoff does not claim Actual PREP or
-OPS execution. The canonical deployment command and all existing no-build,
-ownership, schema-integrity, provider, smoke, and non-destructive resume
-contracts remain unchanged. It excludes descendant Chat, Quality, Airflow,
-Admin, and MCP changes now present only in the cumulative development source.
+The cumulative local Evidence is
+[`docs/evidence/wave-c-d-contract-closure/README.md`](evidence/wave-c-d-contract-closure/README.md).
+It records the exact Chat Catalog candidate-scope handoff, Quality/Airflow/MCP
+safety dispositions, integrated regression, and the fresh exact cumulative OCI.
+TEST PC accepted-state runtime/browser validation is pending. This Handoff does
+not claim Actual PREP or OPS execution. The canonical no-build, ownership,
+schema-integrity, provider, smoke, and non-destructive resume contracts remain
+unchanged.
+
+The preceding published Wave C evidence remains at
+[`docs/evidence/wave-c-knowledge-workflows/README.md`](evidence/wave-c-knowledge-workflows/README.md).
+Its archive is exact for Product `1ad090d...` only and is a superseded
+intermediate that must not be reused for this cumulative Product.
 
 The preceding Wave B core user-workflow evidence remains at
 [`docs/evidence/wave-b-core-user-workflows/README.md`](evidence/wave-b-core-user-workflows/README.md).

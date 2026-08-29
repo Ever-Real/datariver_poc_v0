@@ -1,15 +1,16 @@
 # DataRiver continuous feature program control-plane handoff
 
-Updated: 2026-08-29T14:35:00+09:00
+Updated: 2026-08-29T14:52:00+09:00
 
 ## Live cumulative source state
 
 - canonical worktree: `/Users/everreal/orca/workspaces/datariver-k9-implementation/CHAT-KG-Router-GPT56-Sol`
 - cumulative source HEAD: `72fde0af0601a04a819eaffbd891e1f1f1788471`
 - worktree: clean
-- source closure: `IN_PROGRESS`
-- TEST PC: `BLOCKED_EXTERNAL`
-- final cumulative OCI: `NOT BUILT`
+- source closure: `LOCAL_VERIFIED`
+- Evidence: `43eb60f408d18b2ce28256b6ec911a079ac0a2c7`
+- TEST PC: transport reachable; exact accepted-state redeploy pending
+- final cumulative OCI: built/exported once; Handoff pin pending
 - `origin/dev`: `f9c9d7595c70b70d41728e01ce66cc0406e92f28`
 - `origin/main`: `17f32a52de79077c433bf0beaabac81a48e46062` (frozen)
 - Actual PREP: NOT EXECUTED
@@ -30,18 +31,20 @@ inputs changed after that Product checkpoint, so it must not be reused,
 relabeled, or promoted as the final cumulative artifact. A source check against
 the current cumulative HEAD fails closed for this expected drift.
 
-## Verification at the Wave C checkpoint
+## Verification at the cumulative checkpoint
 
-- UI: `723/723` PASS
-- Node Product: `198/198` PASS
-- release/deploy/migration-integrity: `133/133` PASS
-- Chat focused: `87/87` PASS
-- provider/server/K9: `80/80` PASS
-- build, POC build, typecheck, ESLint, Ruff and static/source contract: PASS
-- independent Wave C authorization/CSP audit: PASS
-- complete backend baseline: `4105` PASS, `121` SKIP, `19` pre-existing
-  unrelated failures; full strict mypy retains six pre-existing PREP-test errors
-- TEST PC Wave C runtime/browser acceptance: `BLOCKED_EXTERNAL`
+- UI: `731/731` PASS
+- Node Product: `200/200` PASS
+- release/deploy/handoff/migration-integrity: `148/148` PASS
+- PREP smoke: `34/34` PASS
+- Chat focused backend: `90/90` PASS
+- Chat/Catalog/Admin focused UI: `78/78` PASS
+- build, POC build, typecheck, full ESLint, changed-source Ruff/strict mypy and
+  static/source contract: PASS
+- Product→Evidence runtime input diff: `NONE`
+- exact OCI: `linux/amd64`; revision equals Product; archive SHA-256
+  `1fd0435939fa82b9aeeeed27d8d6226f0d1a10883bff66bd5e9516f81f591aec`
+- TEST PC cumulative runtime/browser acceptance: pending
 
 ## Active workstreams and ownership
 
@@ -51,7 +54,7 @@ the current cumulative HEAD fails closed for this expected drift.
 | DQ-01/02 | GPT-5.6 Sol High controlled audit | clean read-only lane | `d0273c4` | NEEDS_DECISION | approve authoritative nullability plus durable recommendation/provenance aggregate; do not infer |
 | AF-02~04 | GPT-5.6 Sol High controlled implementation/audit | integrated through `8d26fdd` | `d0273c4` | NEEDS_DECISION | approve durable trigger receipt/recovery, browser secret ownership, and exact System↔DAG contract |
 | MP-01~06 | GPT-5.6 Sol High controlled audit | integrated through `d0273c4` | prior Wave C | NEEDS_DECISION / BLOCKED_EXTERNAL | approve delegation/tool-audit contract; perform exact TEST runtime acceptance |
-| Control Plane | Codex | canonical | `72fde0a` | IN_PROGRESS | bounded integrated regression, evidence closeout, then fresh artifact only after cumulative closure |
+| Control Plane | Codex | canonical | `43eb60f` | IN_PROGRESS | pin exact artifact in Handoff, push origin/dev, then canonical TEST accepted-state redeploy |
 
 Claude is not configured on this Orca host. Antigravity Gemini 3.1 Pro High was
 started for CH-01~03 but reported an individual quota reset wait. The task and
@@ -79,7 +82,8 @@ not restarted from the feature-batch beginning.
   classification-fenced cross-graph materialization contract exists.
 - AC-01 immutable audit-event sink and HM-03 historical trend read model remain
   `NEEDS_DECISION`; implemented safe portions stay locally verified.
-- TEST PC transport/runtime/browser verification is `BLOCKED_EXTERNAL`.
+- TEST PC transport is reachable; runtime/browser verification is pending the
+  exact Handoff and artifact transfer.
 - No origin/main move, Actual PREP/OPS execution, state reset/resecret,
   authorization widening or user metadata mutation is authorized.
 
@@ -90,14 +94,13 @@ not restarted from the feature-batch beginning.
 - dashboard URL: `http://127.0.0.1:39090`
 - last HTTP check: `200`
 - current status: `WAVE_C_D_CONTRACT_CLOSURE`
-- release readiness: `CUMULATIVE_SOURCE_NOT_CLOSED`
+- release readiness: `EXACT_HANDOFF_AND_TEST_ACCEPTANCE_IN_PROGRESS`
 - old Wave C OCI: `SUPERSEDED_INTERMEDIATE`
-- final OCI: `NOT BUILT`
-- TEST runtime acceptance: `BLOCKED_EXTERNAL`
+- final OCI: `BUILT_EXACT_LOCAL`
+- TEST runtime acceptance: `PENDING`
 
-The next step is bounded integrated regression and evidence closeout. Only the
-then-current cumulative Product may produce a fresh exact linux/amd64 artifact.
-When TEST transport recovers, that artifact—not the Wave C intermediate—is used
-for the canonical accepted-state redeploy, first/next-page Chat exploration and
-target timing capture. TEST unavailability remains explicit rather than being
-treated as a runtime PASS.
+The next step is to pin the exact cumulative artifact in the Handoff, prove
+Product→Evidence→Handoff with `runtime_input_diff=NONE`, push that exact Handoff
+to `origin/dev`, and transfer the same archive to TEST. The canonical
+accepted-state redeploy then supplies first/next-page Chat exploration and
+target timing evidence. The Wave C intermediate remains prohibited.
