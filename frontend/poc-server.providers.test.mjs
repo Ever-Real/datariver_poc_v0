@@ -933,6 +933,8 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.ok(payload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
   assert.ok(payload.performance.total_ms >= 0)
   assert.ok(payload.performance.routing_ms >= 0)
+  assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
+  assert.equal(Number.isInteger(payload.performance.vector_ms), true)
   assert.ok(payload.performance.retrieval_ms >= 0)
   assert.ok(payload.performance.reranking_ms >= 0)
   assert.ok(payload.performance.composition_ms >= 0)
@@ -955,6 +957,30 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(classifierPayload.max_tokens, 640)
 })
 
+test('emits null Catalog and vector timings when clarification skips both phases', async () => {
+  forcedClassifierResponse = JSON.stringify({
+    mode: 'VECTOR', confidence: 0.4, intent: 'AMBIGUOUS',
+    entity_resolution_required: false, graph_traversal_required: false,
+    semantic_retrieval_required: true, fallback_mode: null,
+    primary_concepts: ['ambiguous request'], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'SEMANTIC',
+  })
+  try {
+    const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '찾아줘', mode: 'AUTO' }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.discovery, null)
+    assert.equal(payload.performance.catalog_discovery_ms, null)
+    assert.equal(payload.performance.vector_ms, null)
+  } finally {
+    forcedClassifierResponse = undefined
+  }
+})
+
 test('counts the complete DataHub table inventory and returns the requested list cardinality', async () => {
   const completionsBefore = requests.filter((request) => request.path.endsWith('/chat/completions')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
@@ -972,6 +998,8 @@ test('counts the complete DataHub table inventory and returns the requested list
   assert.match(payload.answer, /테이블 2개/)
   assert.match(payload.answer, /inspection_results/)
   assert.match(payload.answer, /wafer_events/)
+  assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
+  assert.equal(payload.performance.vector_ms, null)
   assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore + 1)
 })
 
@@ -1000,6 +1028,8 @@ test('streams approved answer deltas before the persisted final provider result'
   assert.equal(resultPayload.discovery.catalog_search_query, 'wafer_events')
   assert.deepEqual(resultPayload.discovery.catalog_search_fields, ['TABLE'])
   assert.ok(resultPayload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
+  assert.equal(Number.isInteger(resultPayload.performance.catalog_discovery_ms), true)
+  assert.equal(resultPayload.performance.vector_ms, null)
   assert.ok(resultPayload.performance.total_ms >= 0)
   const sessionsResponse = await fetch(`${pocOrigin}/poc-api/chat/sessions`)
   assert.equal(sessionsResponse.status, 200)
@@ -1115,7 +1145,10 @@ test('hands an identifier-scoped vector result to the exact authorized Catalog c
     'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)',
   ])
   assert.equal(payload.discovery.total, null)
+  assert.equal(payload.discovery.total_exact, false)
   assert.equal(payload.discovery.next_cursor, null)
+  assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
+  assert.equal(payload.performance.vector_ms, null)
 })
 
 test('retrieves Knowledge Graph Asset metadata from the authorized managed registry instead of DataHub tables', async () => {
@@ -1310,7 +1343,10 @@ test('routes general Korean conversation without probing DataHub as arbitrary as
   })
   forcedClassifierResponse = undefined
   assert.equal(response.status, 200)
-  assert.equal((await response.json()).route.selected_mode, 'GENERAL')
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'GENERAL')
+  assert.equal(payload.performance.catalog_discovery_ms, null)
+  assert.equal(payload.performance.vector_ms, null)
   assert.equal(requests.filter((request) => request.path === '/api/graphql').length, graphqlBefore)
 })
 

@@ -90,9 +90,17 @@ class _RouteClassifier:
 class _PerformanceObserver:
     def __init__(self) -> None:
         self.values: dict[ChatPerformanceMetric, int] = {}
+        self.events: list[str] = []
 
     def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
         self.values[metric] = duration_ms
+        self.events.append(metric.value)
+
+
+class _RaisingPerformanceObserver:
+    def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
+        del metric, duration_ms
+        raise RuntimeError("observer unavailable")
 
 
 async def test_router_preserves_explicit_modes_and_uses_no_keyword_fallback() -> None:
@@ -414,7 +422,9 @@ class _MalformedEmbedding:
         )
 
 
-async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
+async def test_vector_reader_times_catalog_then_complete_scoring_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workspace_id = uuid4()
     first = _asset(workspace_id, name="First")
     second = _asset(workspace_id, name="Second")
@@ -430,6 +440,13 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
         deployment_configuration_hash="a" * 64,
     )
     performance = _PerformanceObserver()
+    original_cosine = BoundedCatalogVectorReader._cosine
+
+    def observed_cosine(left: Sequence[float], right: Sequence[float]) -> float:
+        performance.events.append("scoring")
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(BoundedCatalogVectorReader, "_cosine", staticmethod(observed_cosine))
     reader = BoundedCatalogVectorReader(
         catalog_index=index,
         embedding=_Embedding(),
@@ -455,6 +472,9 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
         ChatPerformanceMetric.VECTOR,
     }
     assert all(value >= 0 for value in performance.values.values())
+    assert performance.events[0] == ChatPerformanceMetric.CATALOG_DISCOVERY.value
+    assert "scoring" in performance.events[1:-1]
+    assert performance.events[-1] == ChatPerformanceMetric.VECTOR.value
 
 
 async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> None:
@@ -491,6 +511,37 @@ async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> N
     assert result.catalog_search_scope.query == "capital_project_ai_accelerator"
     assert result.catalog_search_scope.search_fields == ("TABLE",)
     assert index.searches == [("capital_project_ai_accelerator", {"search_fields": "TABLE"})]
+
+
+async def test_vector_reader_observer_failure_preserves_ranked_recall() -> None:
+    workspace_id = uuid4()
+    first = _asset(workspace_id, name="First")
+    second = _asset(workspace_id, name="Second")
+    reader = BoundedCatalogVectorReader(
+        catalog_index=_CatalogIndex((first, second)),
+        embedding=_Embedding(),
+        binding=ModelBinding.activated(
+            provider="test-provider",
+            model="operator-selected-embedding",
+            prompt_version="embedding-v1",
+            tool_schema_version="openai-embeddings-v1",
+            configuration_version=None,
+            configuration_hash=None,
+            adapter_contract="openai-compatible-embeddings-v1",
+            deployment_configuration_hash="a" * 64,
+        ),
+        performance_observer=_RaisingPerformanceObserver(),
+    )
+
+    result = await reader.search(
+        subject=_subject(workspace_id),
+        access=static_classification_access_floor(),
+        question="find a matching description",
+        limit=2,
+    )
+
+    assert result.items == (second, first)
+    assert result.provider_invoked is True
 
 
 async def test_vector_reader_prefers_a_mixed_language_table_name_fragment() -> None:
@@ -576,6 +627,7 @@ async def test_vector_reader_marks_only_failures_after_embedding_invocation() ->
         catalog_index=index,
         embedding=_FailingEmbedding(),
         binding=binding,
+        performance_observer=_RaisingPerformanceObserver(),
     )
 
     with pytest.raises(ChatExternalAdapterInvocationError) as captured:

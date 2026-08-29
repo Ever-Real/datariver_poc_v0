@@ -123,5 +123,5 @@ def test_chat_request_timing_observer_measures_only_server_observed_stages() -> 
     assert performance.routing_ms == 25
     assert performance.retrieval_ms is None
     assert performance.catalog_discovery_ms == 7
-    assert performance.vector_ms == 11
+    assert performance.vector_ms == 20
     assert performance.total_ms == 200

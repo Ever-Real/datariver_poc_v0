@@ -99,6 +99,8 @@ def test_query_discovery_full_result_fields_remain_exact() -> None:
     assert payload["returned_count"] == payload["retrieved_count"] == 3
     assert payload["limit"] == 8
     assert payload["truncated"] is False
+    assert payload["catalog_search_query"] == "authorized"
+    assert payload["catalog_search_fields"] == []
     assert payload["total"] is None
     assert payload["total_exact"] is False
     assert payload["next_cursor"] is None

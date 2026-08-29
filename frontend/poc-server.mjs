@@ -5965,13 +5965,23 @@ function inventoryEvidenceAnswer(request, evidence) {
   return lines.join('\n')
 }
 
-async function datahubChatEvidence(question, route, evidenceLimit, principal, signal) {
+function recordChatPerformance(timings, metric, started) {
+  if (!timings) return
+  const elapsed = Math.max(0, Math.round(performance.now() - started))
+  // One request may make several sequential Catalog calls; expose their bounded sum.
+  timings[metric] = Math.min(3_600_000, (timings[metric] ?? 0) + elapsed)
+}
+
+async function datahubChatEvidence(question, route, evidenceLimit, principal, signal, timings) {
+  const exactStarted = performance.now()
   const exact = await exactCatalogEvidence(question, 3, principal)
+  recordChatPerformance(timings, 'catalog_discovery_ms', exactStarted)
   if (exact.length) return exact
   const entityResolutionLimit = route.entity_resolution_required
     ? Math.min(evidenceLimit, Math.max(1, Math.min(20, Number(route.entity_resolution_candidate_limit) || 3)))
     : evidenceLimit
   if (llm.embedding && (route.semantic_retrieval_required || route.entity_resolution_required)) {
+    const vectorStarted = performance.now()
     try {
       const semantic = await semanticCatalogEvidence(
         question, entityResolutionLimit, { summaryOnly: evidenceLimit > 5 }, principal, signal,
@@ -5982,13 +5992,17 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal, si
       // The bounded DataHub lexical search below remains an honest fallback.
       // The composer sees only live provider evidence and cannot invent a
       // result when the embedding projection is temporarily unavailable.
+    } finally {
+      recordChatPerformance(timings, 'vector_ms', vectorStarted)
     }
   }
   const results = new Map()
   for (const query of chatRetrievalQueries(question)) {
+    const catalogStarted = performance.now()
     const catalog = await datahubCatalog(
       new URLSearchParams({ q: query, limit: String(evidenceLimit) }), principal, 'chat',
     )
+    recordChatPerformance(timings, 'catalog_discovery_ms', catalogStarted)
     for (const item of catalog.items) results.set(item.id, item)
     if (results.size >= evidenceLimit) break
   }
@@ -6532,7 +6546,7 @@ async function metadataMasterResolutionContext(context, candidates, lineageScope
   }
 }
 
-async function resolveManagedGraphStart(question, route, scope, principal, context, signal) {
+async function resolveManagedGraphStart(question, route, scope, principal, context, signal, timings) {
   if (!scope.managed) return { startNodeId: null, entities: [] }
   const resolutionQuestion = route.primary_concepts[0] || question
   const candidates = await datahubChatEvidence(resolutionQuestion, {
@@ -6540,7 +6554,7 @@ async function resolveManagedGraphStart(question, route, scope, principal, conte
     entity_resolution_required: true,
     semantic_retrieval_required: true,
     entity_resolution_candidate_limit: 20,
-  }, 20, principal, signal)
+  }, 20, principal, signal, timings)
   const metadataResolution = await metadataMasterResolutionContext(context, candidates, scope)
   const resolvedCandidates = metadataResolution.available
     ? metadataResolution.matches.map((match) => ({
@@ -6759,6 +6773,7 @@ async function writeApprovedAnswerStream(response, answer, signal) {
 
 async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context, signal) {
   const totalStarted = performance.now()
+  const retrievalPerformance = { catalog_discovery_ms: null, vector_ms: null }
   const principal = context.principal
   const progress = (stage, status, detailCode) => {
     onWorkflow?.({ stage, status, detail_code: detailCode })
@@ -6807,6 +6822,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       discovery: null,
       performance: {
         routing_ms: route.latency_ms.routing,
+        catalog_discovery_ms: null,
+        vector_ms: null,
         retrieval_ms: null,
         reranking_ms: null,
         composition_ms: null,
@@ -6832,6 +6849,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
   if (knowledgeSelection) {
     const resolution = await resolveManagedGraphStart(
       resolvedQuestion, route, knowledgeSelection.scope, principal, context, signal,
+      retrievalPerformance,
     )
     route = { ...route, resolved_entities: resolution.entities }
     compositionLlmCalls = 1
@@ -6850,11 +6868,15 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     evidence = await managedK9AssetMetadataEvidence(route, context, discoveryLimit)
   } else if (datahub && route.selected_mode !== 'GENERAL') {
     if (route.intent === 'CATALOG_INVENTORY') {
+      const catalogStarted = performance.now()
       const inventory = await datahubInventoryEvidence(resolvedQuestion, principal)
+      recordChatPerformance(retrievalPerformance, 'catalog_discovery_ms', catalogStarted)
       inventoryRequest = inventory.request
       evidence = inventory.evidence
     } else {
-      evidence = await datahubChatEvidence(resolvedQuestion, route, discoveryLimit, principal, signal)
+      evidence = await datahubChatEvidence(
+        resolvedQuestion, route, discoveryLimit, principal, signal, retrievalPerformance,
+      )
     }
   }
   if (!knowledgeSelection && route.selected_mode === 'GRAPH' && datahub) {
@@ -7014,6 +7036,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     discovery,
     performance: {
       routing_ms: route.latency_ms.routing,
+      catalog_discovery_ms: retrievalPerformance.catalog_discovery_ms,
+      vector_ms: retrievalPerformance.vector_ms,
       retrieval_ms: route.selected_mode === 'GENERAL' ? null : route.latency_ms.retrieval,
       reranking_ms: rerankingMilliseconds,
       composition_ms: compositionMilliseconds,

@@ -1345,10 +1345,14 @@ class ChatService:
     def _record_performance(self, *, metric: ChatPerformanceMetric, started: float) -> None:
         if self._performance_observer is None:
             return
-        self._performance_observer.record(
-            metric=metric,
-            duration_ms=max(0, round((perf_counter() - started) * 1_000)),
-        )
+        try:
+            self._performance_observer.record(
+                metric=metric,
+                duration_ms=max(0, round((perf_counter() - started) * 1_000)),
+            )
+        except Exception:
+            # Request timing is observational; it must never change authorization or evidence.
+            return
 
     @staticmethod
     def _discovery_limit(maximum_evidence: int) -> int:

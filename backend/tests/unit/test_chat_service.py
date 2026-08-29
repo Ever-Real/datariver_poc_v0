@@ -59,6 +59,7 @@ from datariver.domain.chat import (
     MAXIMUM_CHAT_VECTOR_CANDIDATES,
     MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS,
     ChatAdapterState,
+    ChatPerformanceMetric,
     ChatRetrievalMode,
     ChatRouteReason,
     ChatWorkflowStage,
@@ -246,6 +247,12 @@ def chat_service(**kwargs: Any) -> ChatService:
         subject_access=PassthroughSubjectAccess(),
         **kwargs,
     )
+
+
+class RaisingPerformanceObserver:
+    def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
+        del metric, duration_ms
+        raise RuntimeError("observer unavailable")
 
 
 class FixedClassificationAccess:
@@ -1318,7 +1325,7 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
 
 
-async def test_general_catalog_handoff_reuses_the_exact_lexical_search_term() -> None:
+async def test_general_catalog_handoff_survives_observer_failure_without_changing_results() -> None:
     workspace_id = uuid4()
     index = FakeIndex(asset(workspace_id))
     exchange = await chat_service(
@@ -1326,6 +1333,7 @@ async def test_general_catalog_handoff_reuses_the_exact_lexical_search_term() ->
         composer=SelectingComposer((0,)),
         uow_factory=chat_uow_factory(FakeChatStore()),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        performance_observer=RaisingPerformanceObserver(),
     ).query(
         workspace_id=workspace_id,
         subject=chat_subject(workspace_id),
@@ -1341,6 +1349,12 @@ async def test_general_catalog_handoff_reuses_the_exact_lexical_search_term() ->
     assert exchange.discovery is not None
     assert exchange.discovery.catalog_search_query == index.search_query
     assert exchange.discovery.catalog_search_fields == ()
+    assert exchange.discovery.total is None
+    assert exchange.discovery.total_exact is False
+    assert exchange.discovery.next_cursor is None
+    assert tuple(item.chunk_id for item in exchange.evidence) == tuple(
+        item.chunk_id for item in exchange.discovery.items
+    )
 
 
 async def test_reranker_top_n_limits_answer_context_without_truncating_discovery() -> None:
@@ -2245,6 +2259,7 @@ async def test_chat_persists_only_evidence_that_passes_catalog_read_abac() -> No
         catalog_index=FakeIndex(asset(workspace_id)),
         uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        performance_observer=RaisingPerformanceObserver(),
     )
 
     exchange = await service.query(

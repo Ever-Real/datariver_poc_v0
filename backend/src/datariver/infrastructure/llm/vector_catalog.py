@@ -70,6 +70,7 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             ChatPerformanceMetric.CATALOG_DISCOVERY,
             catalog_started,
         )
+        vector_started = perf_counter()
         # The catalog port is expected to honor its limit, but keep the provider batch bounded
         # even if an implementation returns an oversized page.
         candidates = tuple(page.items[:candidate_limit])
@@ -90,12 +91,10 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             ),
         )
         try:
-            vector_started = perf_counter()
             batch = await self._embedding.embed_pages(
                 pages=pages,
                 binding=self._binding,
             )
-            self._record(ChatPerformanceMetric.VECTOR, vector_started)
             if batch.binding.to_document() != self._binding.to_document():
                 raise ValidationError("The vector adapter returned a different embedding binding.")
             if len(batch.embeddings) != len(pages):
@@ -116,19 +115,25 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             scored.sort(key=lambda item: (-item[0], item[1].asset_id.int))
         except Exception as error:
             raise ChatExternalAdapterInvocationError(stage="embedding") from error
-        return ChatVectorSearchResult(
+        result = ChatVectorSearchResult(
             items=tuple(candidate for _score, candidate in scored[:limit]),
             provider_invoked=True,
             catalog_search_scope=catalog_search_scope,
         )
+        self._record(ChatPerformanceMetric.VECTOR, vector_started)
+        return result
 
     def _record(self, metric: ChatPerformanceMetric, started: float) -> None:
         if self._performance_observer is None:
             return
-        self._performance_observer.record(
-            metric=metric,
-            duration_ms=max(0, round((perf_counter() - started) * 1_000)),
-        )
+        try:
+            self._performance_observer.record(
+                metric=metric,
+                duration_ms=max(0, round((perf_counter() - started) * 1_000)),
+            )
+        except Exception:
+            # Telemetry must not be classified as an embedding-provider failure.
+            return
 
     async def _candidate_page(
         self,

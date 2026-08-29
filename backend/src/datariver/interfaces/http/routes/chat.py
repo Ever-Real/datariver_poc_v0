@@ -88,6 +88,8 @@ from datariver.interfaces.http.schemas import (
 
 router = APIRouter(prefix="/chat", tags=["assistant"])
 
+_MAXIMUM_CHAT_TIMING_MS = 3_600_000
+
 
 class _ChatRequestTimingObserver:
     """Measure server-observed request stages without changing persisted workflow evidence."""
@@ -125,9 +127,11 @@ class _ChatRequestTimingObserver:
             self._delegate.publish(event=event)
 
     def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
-        self._metric_ms[metric] = max(
-            self._metric_ms.get(metric, 0),
-            max(0, duration_ms),
+        # A phase may contain multiple sequential calls; report their bounded wall-clock sum.
+        self._metric_ms[metric] = min(
+            _MAXIMUM_CHAT_TIMING_MS,
+            self._metric_ms.get(metric, 0)
+            + min(_MAXIMUM_CHAT_TIMING_MS, max(0, duration_ms)),
         )
 
     def response(self) -> ChatRequestPerformanceResponse:
