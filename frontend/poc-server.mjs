@@ -4159,19 +4159,12 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
     throw Object.assign(new Error('Glossary target_type must be TABLE or COLUMN.'), { statusCode: 400 })
   }
   const limit = Math.min(50, Math.max(1, Number(searchParameters.get('limit')) || 25))
-  const start = Math.min(100_000, Math.max(0, Number(searchParameters.get('cursor')) || 0))
-  const relationshipType = targetType === 'TABLE' ? 'TermedWith' : 'SchemaFieldWithGlossaryTerm'
-  const data = await datahubGraphql(datahubGlossaryAssignmentsQuery, {
-    urn,
-    input: {
-      types: [relationshipType], direction: 'INCOMING', start, count: limit,
-      includeSoftDelete: false,
-    },
-  })
-  const relationships = data.entity?.relationships
-  if (!relationships) {
-    throw Object.assign(new Error('DataHub Glossary Term was not found.'), { statusCode: 404 })
+  const rawCursor = searchParameters.get('cursor') ?? '0'
+  if (!/^\d+$/.test(rawCursor) || Number(rawCursor) > 100_000) {
+    throw Object.assign(new Error('Glossary assignment cursor is invalid.'), { statusCode: 400 })
   }
+  const start = Number(rawCursor)
+  const relationshipType = targetType === 'TABLE' ? 'TermedWith' : 'SchemaFieldWithGlossaryTerm'
   const items = []
   const observed = new Set()
   const add = (asset, fieldPath) => {
@@ -4194,28 +4187,57 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
       schema_name: asset.schema_name,
     })
   }
-  for (const relationship of relationships.relationships || []) {
-    const entity = relationship.entity
-    if (!entity?.urn || entity.type !== 'DATASET') continue
-    const asset = datasetAsset(entity)
-    if (!canReadAsset(principal, asset, 'governance')) continue
-    if (targetType === 'TABLE') {
-      add(asset)
-      continue
+  let providerStart = 0
+  let providerTotal
+  for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
+    const data = await datahubGraphql(datahubGlossaryAssignmentsQuery, {
+      urn,
+      input: {
+        types: [relationshipType], direction: 'INCOMING', start: providerStart, count: 100,
+        includeSoftDelete: false,
+      },
+    })
+    const relationships = data.entity?.relationships
+    if (!relationships) {
+      throw Object.assign(new Error('DataHub Glossary Term was not found.'), { statusCode: 404 })
     }
-    for (const field of datahubSchemaFields(entity)) {
-      const applied = (field.glossaryTerms?.terms || []).some((reference) => reference.term?.urn === urn)
-      if (applied) add(asset, field.fieldPath)
+    if (!Number.isSafeInteger(relationships.total) || relationships.total < 0
+      || (providerTotal !== undefined && relationships.total !== providerTotal)
+      || relationships.start !== providerStart || !Array.isArray(relationships.relationships)) {
+      throw Object.assign(new Error('DataHub glossary assignments changed during the bounded read.'), { statusCode: 502 })
+    }
+    providerTotal = relationships.total
+    for (const relationship of relationships.relationships) {
+      const entity = relationship.entity
+      if (!entity?.urn || entity.type !== 'DATASET') continue
+      const asset = datasetAsset(entity)
+      if (!canReadAsset(principal, asset, 'governance')) continue
+      if (targetType === 'TABLE') {
+        add(asset)
+        continue
+      }
+      for (const field of datahubSchemaFields(entity)) {
+        const applied = (field.glossaryTerms?.terms || []).some((reference) => reference.term?.urn === urn)
+        if (applied) add(asset, field.fieldPath)
+      }
+    }
+    const fetched = relationships.relationships.length
+    providerStart += fetched
+    if (providerStart >= providerTotal) break
+    if (fetched === 0) {
+      throw Object.assign(new Error('DataHub glossary assignment pagination stalled.'), { statusCode: 502 })
     }
   }
-  const total = principal.role === 'admin'
-    ? Math.max(0, Number(relationships.total) || 0)
-    : items.length
-  const nextOffset = start + limit
+  if (providerTotal === undefined || providerStart < providerTotal) {
+    throw Object.assign(new Error('DataHub glossary assignment pagination exceeded its bound.'), { statusCode: 502 })
+  }
+  items.sort((left, right) => left.qualified_name.localeCompare(right.qualified_name) || left.id.localeCompare(right.id))
+  const pageItems = items.slice(start, start + limit)
+  const nextOffset = start + pageItems.length
   return {
-    items,
-    total,
-    page: { next_cursor: principal.role === 'admin' && nextOffset < total ? String(nextOffset) : null, limit },
+    items: pageItems,
+    total: items.length,
+    page: { next_cursor: nextOffset < items.length ? String(nextOffset) : null, limit },
   }
 }
 
@@ -4223,6 +4245,16 @@ async function datahubGlossary(searchParameters, principal) {
   const normalizeGlossarySearch = (value) => boundedString(value, 500)
     .normalize('NFKC').toLocaleLowerCase().replace(/[_.-]+/g, ' ').replace(/\s+/g, ' ').trim()
   const query = normalizeGlossarySearch(searchParameters.get('q'))
+  const rawLimit = searchParameters.get('limit') ?? '50'
+  const rawCursor = searchParameters.get('cursor') ?? '0'
+  if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100) {
+    throw Object.assign(new Error('Glossary limit must be between 1 and 100.'), { statusCode: 400 })
+  }
+  if (!/^\d+$/.test(rawCursor) || Number(rawCursor) > 100_000) {
+    throw Object.assign(new Error('Glossary cursor is invalid.'), { statusCode: 400 })
+  }
+  const limit = Number(rawLimit)
+  const start = Number(rawCursor)
   const terms = []
   const observed = new Set()
   let providerCursor
@@ -4250,10 +4282,26 @@ async function datahubGlossary(searchParameters, principal) {
       )).reverse()
       const tableAssetCount = principal.role === 'admin'
         ? Math.max(0, Number(entity.tableAssignments?.total) || 0)
-        : 0
+        : null
       const columnAssetCount = principal.role === 'admin'
         ? Math.max(0, Number(entity.columnAssignments?.total) || 0)
-        : 0
+        : null
+      const outgoing = entity.outgoingRelationships
+      const relationshipTotal = Math.max(0, Number(outgoing?.total) || 0)
+      const relationshipKeys = new Set()
+      const relationships = (outgoing?.relationships || []).flatMap((relationship) => {
+        if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship?.entity?.type)
+          || typeof relationship.entity.urn !== 'string') return []
+        const key = `${relationship.type}\u0000${relationship.direction}\u0000${relationship.entity.urn}`
+        if (relationshipKeys.has(key)) return []
+        relationshipKeys.add(key)
+        return [{
+          type: relationship.type,
+          direction: relationship.direction,
+          target_urn: relationship.entity.urn,
+          target_type: relationship.entity.type,
+        }]
+      })
       terms.push({
         urn,
         name,
@@ -4264,10 +4312,15 @@ async function datahubGlossary(searchParameters, principal) {
         // child terms when the provider model has no term-to-term hierarchy.
         child_terms: [],
         hierarchy_kind: 'LEAF_TERM',
-        asset_count: tableAssetCount + columnAssetCount,
+        asset_count: tableAssetCount === null || columnAssetCount === null
+          ? null
+          : tableAssetCount + columnAssetCount,
         table_asset_count: tableAssetCount,
         column_asset_count: columnAssetCount,
         assets: [],
+        relationship_count: relationshipTotal,
+        relationships,
+        relationships_truncated: relationships.length < relationshipTotal,
       })
     }
     const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
@@ -4279,8 +4332,20 @@ async function datahubGlossary(searchParameters, principal) {
     }
     providerCursor = nextProviderCursor
   }
+  const sorted = terms.sort((left, right) => (
+    left.name.localeCompare(right.name) || left.urn.localeCompare(right.urn)
+  ))
+  const items = sorted.slice(start, start + limit)
+  const nextOffset = start + items.length
   return {
-    items: terms.sort((left, right) => left.name.localeCompare(right.name)),
+    items,
+    total: sorted.length,
+    page: { next_cursor: nextOffset < sorted.length ? String(nextOffset) : null, limit },
+    currentness: {
+      source: 'DATAHUB_GMS_LIVE',
+      observed_at: new Date().toISOString(),
+      atomic_snapshot: false,
+    },
   }
 }
 

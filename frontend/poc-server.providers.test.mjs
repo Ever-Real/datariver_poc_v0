@@ -421,6 +421,13 @@ function providerHandler(request, response) {
                 { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
                 { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
               ] },
+              outgoingRelationships: {
+                total: 2,
+                relationships: [{
+                  type: 'RelatedTo', direction: 'OUTGOING',
+                  entity: { urn: 'urn:li:glossaryTerm:substrate', type: 'GLOSSARY_TERM' },
+                }],
+              },
             } },
             { entity: {
               urn: 'urn:li:glossaryTerm:identifier', type: 'GLOSSARY_TERM', hierarchicalName: 'shared.identifier',
@@ -807,6 +814,22 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(glossary.items[0].table_asset_count, 1)
   assert.equal(glossary.items[0].column_asset_count, 1)
   assert.deepEqual(glossary.items[0].assets, [])
+  assert.equal(glossary.total, 1)
+  assert.deepEqual(glossary.page, { next_cursor: null, limit: 50 })
+  assert.equal(glossary.currentness.atomic_snapshot, false)
+  assert.equal(glossary.items[0].relationship_count, 2)
+  assert.equal(glossary.items[0].relationships.length, 1)
+  assert.equal(glossary.items[0].relationships_truncated, true)
+  const glossaryPageOne = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?limit=1`)).json()
+  assert.equal(glossaryPageOne.items.length, 1)
+  assert.equal(glossaryPageOne.total, 2)
+  assert.equal(glossaryPageOne.page.next_cursor, '1')
+  const glossaryPageTwo = await (await fetch(
+    `${pocOrigin}/poc-api/datahub/glossary?limit=1&cursor=${glossaryPageOne.page.next_cursor}`,
+  )).json()
+  assert.equal(glossaryPageTwo.items.length, 1)
+  assert.notEqual(glossaryPageTwo.items[0].urn, glossaryPageOne.items[0].urn)
+  assert.equal(glossaryPageTwo.page.next_cursor, null)
   const smokeTargetResponse = await fetch(`${pocOrigin}/poc-api/datahub/glossary/smoke-target`)
   assert.equal(smokeTargetResponse.status, 200)
   assert.deepEqual(await smokeTargetResponse.json(), {
