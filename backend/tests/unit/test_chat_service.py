@@ -1263,12 +1263,100 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     )
     assert exchange.discovery.returned_count == 8
     assert exchange.discovery.limit == 8
+    assert exchange.discovery.retrieved_count == 8
+    assert exchange.discovery.reranked_count == 0
+    assert exchange.discovery.answer_context_count == 2
     assert exchange.discovery.truncated is True
     assert exchange.discovery.total is None
     assert exchange.discovery.total_exact is False
     assert exchange.discovery.next_cursor is None
     assert tuple(item.rank for item in exchange.discovery.rankings) == tuple(range(1, 9))
     assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
+
+
+async def test_reranker_top_n_limits_answer_context_without_truncating_discovery() -> None:
+    workspace_id = uuid4()
+    first = asset(workspace_id)
+    candidates = tuple(
+        replace(
+            first,
+            asset_id=uuid4(),
+            external_urn=f"urn:li:dataset:generic-{index}",
+            name=f"Generic candidate {index}",
+        )
+        for index in range(8)
+    )
+
+    class CandidateWindow:
+        async def search(self, **values: Any) -> ChatVectorSearchResult:
+            del values
+            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+
+    class TopTwoReranker:
+        async def rerank(
+            self,
+            *,
+            question: str,
+            evidence: Sequence[ChatEvidence],
+        ) -> tuple[UUID, ...]:
+            del question
+            return (evidence[3].chunk_id, evidence[1].chunk_id)
+
+    composer = CapturingComposer()
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    reranker_binding = inference_binding(InferenceStage.RERANKER, uuid4())
+    exchange = await chat_service(
+        catalog_index=MultiFakeIndex(candidates),
+        vector_catalog=CandidateWindow(),
+        reranker=TopTwoReranker(),
+        composer=composer,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(
+                governed_chat_access(embedding_binding, reranker_binding)
+            ),
+        ),
+        inference_runtime_bindings=(embedding_binding, reranker_binding),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="인가된 후보를 순서대로 보여줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-reranker-top-n-discovery",
+        requested_mode=ChatRetrievalMode.VECTOR,
+    )
+
+    assert tuple(item.resource_id for item in composer.evidence) == (
+        candidates[3].asset_id,
+        candidates[1].asset_id,
+    )
+    assert exchange.discovery is not None
+    assert tuple(item.resource_id for item in exchange.discovery.items) == (
+        candidates[3].asset_id,
+        candidates[1].asset_id,
+        candidates[0].asset_id,
+        candidates[2].asset_id,
+        candidates[4].asset_id,
+        candidates[5].asset_id,
+        candidates[6].asset_id,
+        candidates[7].asset_id,
+    )
+    assert exchange.discovery.retrieved_count == 8
+    assert exchange.discovery.reranked_count == 2
+    assert exchange.discovery.answer_context_count == 2
+    assert exchange.discovery.returned_count == 8
+    assert [item.retrieval_method for item in exchange.discovery.rankings[:2]] == [
+        "LOCAL_RERANKER_V1",
+        "LOCAL_RERANKER_V1",
+    ]
+    assert all(
+        item.retrieval_method == "VECTOR_RETRIEVAL_V1"
+        for item in exchange.discovery.rankings[2:]
+    )
 
 
 async def test_vector_discovery_is_omitted_when_an_uncited_candidate_drifts() -> None:

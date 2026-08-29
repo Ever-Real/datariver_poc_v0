@@ -713,6 +713,7 @@ class ChatService:
                     rankings,
                     rerank_failed,
                     reranker_invoked,
+                    reranked_count,
                 ) = await self._rank(
                     question=retrieval_question,
                     evidence=evidence,
@@ -726,6 +727,9 @@ class ChatService:
                         rankings=rankings,
                         returned_count=len(ranked_evidence),
                         limit=discovery_limit,
+                        retrieved_count=len(evidence),
+                        reranked_count=reranked_count,
+                        answer_context_count=min(len(ranked_evidence), maximum_evidence),
                         truncated=(
                             len(ranked_evidence) < len(evidence) or len(evidence) >= discovery_limit
                         ),
@@ -1496,6 +1500,7 @@ class ChatService:
         tuple[ChatEvidenceRanking, ...],
         bool,
         bool,
+        int,
     ]:
         if not evidence:
             workflow.append(
@@ -1505,7 +1510,7 @@ class ChatService:
                     "NO_RETRIEVED_EVIDENCE",
                 )
             )
-            return (), (), False, False
+            return (), (), False, False, 0
         if self._reranker is None:
             workflow.append(
                 self._event(
@@ -1527,6 +1532,7 @@ class ChatService:
                 ),
                 False,
                 False,
+                0,
             )
         try:
             ordered_ids = await self._reranker.rerank(
@@ -1548,8 +1554,14 @@ class ChatService:
                     "RERANKER_FAILED",
                 )
             )
-            return (), (), True, True
-        ranked = tuple(by_id[chunk_id] for chunk_id in ordered_ids)
+            return (), (), True, True, 0
+        selected_ids = set(ordered_ids)
+        selected = tuple(by_id[chunk_id] for chunk_id in ordered_ids)
+        # A reranker is allowed to return only its configured top-N.  Those rows own the
+        # answer-context prefix; the remaining already-authorized retrieval rows stay visible
+        # in deterministic retrieval order in the wider, request-only discovery window.
+        remainder = tuple(item for item in evidence if item.chunk_id not in selected_ids)
+        ranked = (*selected, *remainder)
         workflow.append(
             self._event(
                 ChatWorkflowStage.RERANKING,
@@ -1563,12 +1575,17 @@ class ChatService:
                 ChatEvidenceRanking(
                     chunk_id=item.chunk_id,
                     rank=index,
-                    retrieval_method="LOCAL_RERANKER_V1",
+                    retrieval_method=(
+                        "LOCAL_RERANKER_V1"
+                        if item.chunk_id in selected_ids
+                        else f"{route.selected_mode.value}_RETRIEVAL_V1"
+                    ),
                 )
                 for index, item in enumerate(ranked, start=1)
             ),
             False,
             True,
+            len(selected),
         )
 
     @staticmethod

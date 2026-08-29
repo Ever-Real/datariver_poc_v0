@@ -60,6 +60,13 @@ const response: ChatResponse = {
     { stage: 'CITATION_VALIDATION', status: 'COMPLETED', detail_code: 'CITATIONS_VALID' },
     { stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'PERSISTED' },
   ],
+  performance: {
+    routing_ms: 12,
+    retrieval_ms: 34,
+    reranking_ms: 8,
+    composition_ms: 120,
+    total_ms: 190,
+  },
   evidence: [{
     chunk_id: 'chunk-1',
     resource_id: 'asset-orders',
@@ -326,6 +333,9 @@ describe('ChatPage', () => {
         returned_count: 7,
         limit: 8,
         truncated: true,
+        retrieved_count: 7,
+        reranked_count: 5,
+        answer_context_count: 5,
         total: null,
         total_exact: false,
         next_cursor: null,
@@ -342,7 +352,10 @@ describe('ChatPage', () => {
     fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '인가된 자산 후보를 찾아줘' } })
     fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
 
-    expect(await screen.findByText('상위 7개 조회 · 추가 결과 가능')).toBeInTheDocument()
+    expect(await screen.findByText(/상위 7개 조회 · 추가 결과 가능/)).toHaveTextContent(
+      '검색 7 · 재정렬 5 · 답변 5',
+    )
+    expect(screen.getByLabelText('현재 응답 처리 시간')).toHaveTextContent('전체190 ms')
     expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')
     expect(screen.queryByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()
@@ -355,6 +368,10 @@ describe('ChatPage', () => {
     expect(screen.getByLabelText('검색 후보 7 authorized_asset_7')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '검색 후보 7 authorized_asset_7 상세 열기' })).not.toBeInTheDocument()
     expect(screen.getByText('거버넌스 문서')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '같은 문구로 전체 카탈로그 검색' }))
+    expect(new URL(window.location.href).searchParams.get('page')).toBe('catalog')
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('인가된 자산 후보를 찾아줘')
   })
 
   it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {

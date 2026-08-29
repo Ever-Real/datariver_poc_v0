@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from uuid import UUID
 
@@ -35,6 +36,7 @@ from datariver.application.services.chat_history import ChatHistoryService
 from datariver.application.services.chat_routing import SemanticChatQuestionRouter
 from datariver.application.services.governance_documents import GovernanceDocumentService
 from datariver.application.services.knowledge_assets import KnowledgeGraphScopeService
+from datariver.domain.chat import ChatWorkflowStage, ChatWorkflowStatus
 from datariver.infrastructure.db.authz import SqlDecisionWriter, SqlSubjectReader
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.chat import (
@@ -74,12 +76,57 @@ from datariver.interfaces.http.schemas import (
     ChatMessageResponse,
     ChatQueryRequest,
     ChatQueryResponse,
+    ChatRequestPerformanceResponse,
     ChatRouteResponse,
     ChatSessionResponse,
     ChatWorkflowEventResponse,
 )
 
 router = APIRouter(prefix="/chat", tags=["assistant"])
+
+
+class _ChatRequestTimingObserver:
+    """Measure server-observed request stages without changing persisted workflow evidence."""
+
+    _MEASURED_STAGES = frozenset(
+        {
+            ChatWorkflowStage.ROUTING,
+            ChatWorkflowStage.RETRIEVAL,
+            ChatWorkflowStage.RERANKING,
+            ChatWorkflowStage.COMPOSITION,
+        }
+    )
+
+    def __init__(
+        self,
+        delegate: ChatWorkflowProgressObserver | None,
+        *,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._delegate = delegate
+        self._clock = clock
+        self._request_started = clock()
+        self._stage_started: dict[ChatWorkflowStage, float] = {}
+        self._duration_ms: dict[ChatWorkflowStage, int] = {}
+
+    def publish(self, *, event: ChatWorkflowEvent) -> None:
+        now = self._clock()
+        if event.stage in self._MEASURED_STAGES:
+            if event.status is ChatWorkflowStatus.IN_PROGRESS:
+                self._stage_started.setdefault(event.stage, now)
+            elif (started := self._stage_started.get(event.stage)) is not None:
+                self._duration_ms[event.stage] = max(0, round((now - started) * 1_000))
+        if self._delegate is not None:
+            self._delegate.publish(event=event)
+
+    def response(self) -> ChatRequestPerformanceResponse:
+        return ChatRequestPerformanceResponse(
+            routing_ms=self._duration_ms.get(ChatWorkflowStage.ROUTING),
+            retrieval_ms=self._duration_ms.get(ChatWorkflowStage.RETRIEVAL),
+            reranking_ms=self._duration_ms.get(ChatWorkflowStage.RERANKING),
+            composition_ms=self._duration_ms.get(ChatWorkflowStage.COMPOSITION),
+            total_ms=max(0, round((self._clock() - self._request_started) * 1_000)),
+        )
 
 
 def _development_composer(
@@ -174,6 +221,7 @@ async def _query_response(
     session: SessionDep,
     workflow_observer: ChatWorkflowProgressObserver | None = None,
 ) -> ChatQueryResponse:
+    timing = _ChatRequestTimingObserver(workflow_observer)
     container = get_container(request)
     settings = container.settings
     catalog_index = SqlCatalogIndexReader(session)
@@ -301,7 +349,7 @@ async def _query_response(
         request_id=context.request_id,
         requested_mode=payload.mode,
         requested_graph_id=payload.graph_id,
-        workflow_observer=workflow_observer,
+        workflow_observer=timing,
     )
     rankings = {item.chunk_id: item for item in exchange.evidence_ranking}
     return ChatQueryResponse(
@@ -334,6 +382,7 @@ async def _query_response(
         discovery=(
             _discovery_response(exchange.discovery) if exchange.discovery is not None else None
         ),
+        performance=timing.response(),
     )
 
 
@@ -632,6 +681,9 @@ def _discovery_response(
         returned_count=discovery.returned_count,
         limit=discovery.limit,
         truncated=discovery.truncated,
+        retrieved_count=discovery.retrieved_count,
+        reranked_count=discovery.reranked_count,
+        answer_context_count=discovery.answer_context_count,
         total=discovery.total,
         total_exact=discovery.total_exact,
         next_cursor=discovery.next_cursor,

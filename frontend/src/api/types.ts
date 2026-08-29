@@ -1417,9 +1417,20 @@ export interface ChatAuthorizedDiscovery {
   returned_count: number
   limit: number
   truncated: boolean
+  retrieved_count: number
+  reranked_count: number
+  answer_context_count: number
   total: number | null
   total_exact: boolean
   next_cursor: string | null
+}
+
+export interface ChatRequestPerformance {
+  routing_ms: number | null
+  retrieval_ms: number | null
+  reranking_ms: number | null
+  composition_ms: number | null
+  total_ms: number
 }
 
 export interface ChatMessage {
@@ -1443,6 +1454,7 @@ export interface ChatResponse {
   workflow: ChatWorkflowStep[]
   evidence: ChatEvidence[]
   discovery: ChatAuthorizedDiscovery | null
+  performance: ChatRequestPerformance
 }
 
 export interface ApiProductVersion {

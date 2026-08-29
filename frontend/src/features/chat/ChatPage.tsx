@@ -31,6 +31,7 @@ import type {
   ChatEvidence,
   ChatMessage,
   ChatMode,
+  ChatRequestPerformance,
   ChatResponse,
   ChatRouteDecision,
   ChatSession,
@@ -99,6 +100,8 @@ interface ChatViewMessage {
   discovery?: ChatAuthorizedDiscovery
   route?: ChatRouteDecision
   workflow?: ChatWorkflowStep[]
+  performance?: ChatRequestPerformance
+  discoveryQuery?: string
 }
 
 const workflowStages: ReadonlySet<ChatWorkflowProgressStep['stage']> = new Set([
@@ -330,6 +333,11 @@ export function ChatPage({ client }: { client: ApiClient }) {
     : visibleEvidence.slice(0, evidencePreviewLimit)
   const evidencePreviewTruncated = visibleEvidence.length > displayedEvidence.length
   const visibleDiscovery = visibleAssistant?.discovery
+  const visiblePerformance = visibleAssistant?.performance
+  const canExploreCatalog = Boolean(
+    visibleAssistant?.discoveryQuery
+    && visibleDiscovery?.items.some((item) => canOpenCatalogEvidence(item)),
+  )
   const displayedDiscovery = discoveryExpanded
     ? visibleDiscovery?.items ?? []
     : visibleDiscovery?.items.slice(0, evidencePreviewLimit) ?? []
@@ -558,6 +566,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
             discovery: result.discovery ?? undefined,
             route: result.route,
             workflow: result.workflow,
+            performance: result.performance,
+            discoveryQuery: text,
           }
           return message
         })
@@ -569,6 +579,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
           discovery: result.discovery ?? undefined,
           route: result.route,
           workflow: result.workflow,
+          performance: result.performance,
+          discoveryQuery: text,
         }]
       })
       await refreshSessions()
@@ -931,6 +943,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 </div>
                 <ChatWorkflowRail isStreaming={loading} steps={visibleWorkflow} />
               </section>
+              {visiblePerformance && (
+                <dl className="chat-performance-summary" aria-label="현재 응답 처리 시간">
+                  <div><dt>경로 선택</dt><dd>{visiblePerformance.routing_ms ?? '—'} ms</dd></div>
+                  <div><dt>검색</dt><dd>{visiblePerformance.retrieval_ms ?? '—'} ms</dd></div>
+                  <div><dt>재정렬</dt><dd>{visiblePerformance.reranking_ms ?? '—'} ms</dd></div>
+                  <div><dt>답변 생성</dt><dd>{visiblePerformance.composition_ms ?? '—'} ms</dd></div>
+                  <div><dt>전체</dt><dd>{visiblePerformance.total_ms} ms</dd></div>
+                </dl>
+              )}
               {visibleEvidenceGraph && (
                 <section className="chat-graph-evidence" aria-label="답변에 사용된 인가 그래프 근거">
                   <div className="chat-evidence-section-heading">
@@ -960,6 +981,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                         ? `전체 ${visibleDiscovery.total}개 중 ${visibleDiscovery.returned_count}개 조회`
                         : `상위 ${visibleDiscovery.returned_count}개 조회`}
                       {visibleDiscovery.truncated ? ' · 추가 결과 가능' : ' · 현재 범위 완료'}
+                      {` · 검색 ${visibleDiscovery.retrieved_count} · 재정렬 ${visibleDiscovery.reranked_count} · 답변 ${visibleDiscovery.answer_context_count}`}
                     </small>
                     {visibleDiscovery.items.length > evidencePreviewLimit && (
                       discoveryExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
@@ -1005,6 +1027,25 @@ export function ChatPage({ client }: { client: ApiClient }) {
                       {discoveryExpanded
                         ? '검색 후보 처음 5개만 보기'
                         : `검색 후보 나머지 ${visibleDiscovery.items.length - evidencePreviewLimit}개 보기`}
+                    </button>
+                  )}
+                  {canExploreCatalog && (
+                    <button
+                      className="chat-discovery-catalog-link"
+                      onClick={() => {
+                        const destination = new URL(window.location.href)
+                        destination.searchParams.set('page', 'catalog')
+                        destination.searchParams.set(
+                          'q',
+                          visibleAssistant?.discoveryQuery?.slice(0, 500) ?? '',
+                        )
+                        destination.searchParams.delete('catalogAsset')
+                        window.history.pushState({}, '', destination)
+                        window.dispatchEvent(new PopStateEvent('popstate'))
+                      }}
+                      type="button"
+                    >
+                      같은 문구로 전체 카탈로그 검색
                     </button>
                   )}
                 </section>

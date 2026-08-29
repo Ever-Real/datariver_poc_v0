@@ -1134,6 +1134,51 @@
   background: #fff;
 }
 
+.chat-performance-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  border-bottom: 1px solid #dce4ea;
+  padding: 8px 12px;
+  background: #f8fafb;
+}
+
+.chat-performance-summary div {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.chat-performance-summary dt,
+.chat-performance-summary dd {
+  margin: 0;
+  color: #617486;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.chat-discovery-catalog-link {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid #dce4ea;
+  padding: 9px 12px;
+  color: var(--blue-700);
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.chat-discovery-catalog-link:focus-visible {
+  outline: 3px solid rgba(0, 75, 135, .18);
+  outline-offset: -3px;
+}
+
+.chat-performance-summary dd {
+  color: var(--navy-900);
+  font-weight: 700;
+}
+
 .chat-citation-header {
   width: 100%;
   min-height: 38px;

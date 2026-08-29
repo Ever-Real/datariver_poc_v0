@@ -48,6 +48,9 @@ def test_query_discovery_envelope_is_bounded_without_invented_cardinality() -> N
         returned_count=20,
         limit=20,
         truncated=True,
+        retrieved_count=20,
+        reranked_count=5,
+        answer_context_count=5,
     )
 
     payload = _discovery_response(discovery).model_dump(mode="json")
@@ -55,6 +58,9 @@ def test_query_discovery_envelope_is_bounded_without_invented_cardinality() -> N
     assert payload["returned_count"] == len(payload["items"]) == 20
     assert payload["limit"] == 20
     assert payload["truncated"] is True
+    assert payload["retrieved_count"] == 20
+    assert payload["reranked_count"] == 5
+    assert payload["answer_context_count"] == 5
     assert payload["total"] is None
     assert payload["total_exact"] is False
     assert payload["next_cursor"] is None
@@ -77,3 +83,4 @@ def test_history_keeps_citations_and_omits_unpersisted_discovery() -> None:
     assert [item["chunk_id"] for item in payload["evidence_json"]] == [str(citation.chunk_id)]
     assert payload["evidence_json"][0]["retrieval_method"] == "PERSISTED_CITATION_ORDER"
     assert payload["discovery_json"] is None
+    assert "performance" not in payload

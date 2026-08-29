@@ -3649,6 +3649,9 @@ class ChatAuthorizedDiscoveryResponse(BaseModel):
     returned_count: int = Field(ge=0, le=20)
     limit: int = Field(ge=1, le=20)
     truncated: bool
+    retrieved_count: int = Field(ge=0, le=20)
+    reranked_count: int = Field(ge=0, le=20)
+    answer_context_count: int = Field(ge=0, le=10)
     total: int | None = Field(default=None, ge=0)
     total_exact: bool = False
     next_cursor: str | None = None
@@ -3659,6 +3662,12 @@ class ChatAuthorizedDiscoveryResponse(BaseModel):
             raise ValueError("returned_count must equal the number of discovery items.")
         if self.returned_count > self.limit:
             raise ValueError("Discovery items must remain within the declared limit.")
+        if self.retrieved_count < self.returned_count:
+            raise ValueError("retrieved_count cannot be smaller than returned_count.")
+        if self.reranked_count > self.returned_count:
+            raise ValueError("reranked_count cannot exceed returned_count.")
+        if self.answer_context_count > self.returned_count:
+            raise ValueError("answer_context_count cannot exceed returned_count.")
         if self.total_exact and self.total is None:
             raise ValueError("An exact discovery total requires a provider-proven total.")
         if self.total is not None and self.total < self.returned_count:
@@ -3679,6 +3688,16 @@ class ChatWorkflowEventResponse(BaseModel):
     detail_code: str = Field(min_length=1, max_length=100)
 
 
+class ChatRequestPerformanceResponse(BaseModel):
+    """Request-only server timings; these values are never written to Chat history."""
+
+    routing_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    retrieval_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    reranking_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    composition_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    total_ms: int = Field(ge=0, le=3_600_000)
+
+
 class ChatQueryResponse(BaseModel):
     session_id: UUID
     request_message_id: UUID
@@ -3689,6 +3708,7 @@ class ChatQueryResponse(BaseModel):
     workflow: list[ChatWorkflowEventResponse] = Field(max_length=20)
     evidence: list[ChatEvidenceResponse]
     discovery: ChatAuthorizedDiscoveryResponse | None = None
+    performance: ChatRequestPerformanceResponse
 
 
 class ChatSessionResponse(BaseModel):

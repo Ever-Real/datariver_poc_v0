@@ -1797,6 +1797,9 @@ class ChatAuthorizedDiscovery:
     returned_count: int
     limit: int
     truncated: bool
+    retrieved_count: int
+    reranked_count: int
+    answer_context_count: int
     total: int | None = None
     total_exact: bool = False
     next_cursor: str | None = None
