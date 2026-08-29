@@ -77,8 +77,9 @@ describe('navigation contract', () => {
       'knowledge.read', 'monitoring.read',
     ], 'viewer').map(({ id }) => id)).toEqual([
       'catalog', 'change-management', 'monitoring',
-      'governance', 'chat',
+      'governance', 'glossary', 'chat',
     ])
+    expect(pocCapabilityForPage('glossary')).toBe('catalog.read')
     expect(pocCapabilityForPage('registration')).toBe('catalog.read')
     expect(pocCapabilityForPage('knowledge-studio')).toBe('knowledge.manage')
     expect(pocCapabilityForPage('admin')).toBe('admin.manage')
@@ -88,11 +89,11 @@ describe('navigation contract', () => {
   it('keeps Registration out of top navigation while preserving its direct-page role gate', () => {
     const managerCapabilities = ['catalog.read', 'catalog.execute', 'catalog.manage'] as const
     expect(pocNavigationForCapabilities(managerCapabilities, 'manager').map(({ id }) => id))
-      .toEqual(['catalog'])
+      .toEqual(['catalog', 'glossary'])
     expect(pocNavigationForCapabilities(managerCapabilities, 'data_steward').map(({ id }) => id))
-      .toEqual(['catalog'])
+      .toEqual(['catalog', 'glossary'])
     expect(pocNavigationForCapabilities(managerCapabilities, 'admin').map(({ id }) => id))
-      .toEqual(['catalog'])
+      .toEqual(['catalog', 'glossary'])
     expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'manager')).toBe(true)
     expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'data_steward')).toBe(true)
     expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'admin')).toBe(true)

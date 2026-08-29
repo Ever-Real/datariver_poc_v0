@@ -5,6 +5,7 @@ export const primaryNavigation = [
   { id: 'change-management', label: '변경관리', badge: undefined },
   { id: 'monitoring', label: '모니터링', badge: undefined },
   { id: 'governance', label: '거버넌스', badge: undefined },
+  { id: 'glossary', label: '용어사전', badge: undefined },
   { id: 'chat', label: 'Chat', badge: 'Beta' },
 ] as const
 
@@ -21,7 +22,6 @@ export type Page =
   | 'knowledge-instances'
   | 'knowledge-profiles'
   | 'knowledge-studio'
-  | 'glossary'
   | 'profile'
 
 const pageIds = new Set<Page>([
@@ -57,7 +57,7 @@ const pocPageCapabilities: Partial<Record<Page, PocCapability>> = {
   'knowledge-instances': 'knowledge.read',
   'knowledge-profiles': 'knowledge.read',
   'knowledge-studio': 'knowledge.manage',
-  glossary: 'catalog.manage',
+  glossary: 'catalog.read',
   monitoring: 'monitoring.read',
   governance: 'knowledge.read',
   chat: 'chat.query',
