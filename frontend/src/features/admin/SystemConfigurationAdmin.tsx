@@ -664,7 +664,11 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               </div>
               {renderTestResult(selected)}
               {selected.system_id === 'AIRFLOW' && (
-                <AirflowDagStatusPanel api={api} requestConfirmation={requestConfirmation} />
+                <AirflowDagStatusPanel
+                  api={api}
+                  configuration={selected}
+                  requestConfirmation={requestConfirmation}
+                />
               )}
               <small className="muted">
                 전체 옵션 설명: <code>docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md</code>

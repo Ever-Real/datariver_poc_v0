@@ -11,7 +11,6 @@ import { createPocStateStore } from './poc-state-store.mjs'
 import {
   AIRFLOW_SYSTEM_ID,
   ALLOWED_AIRFLOW_DAGS,
-  airflowConnectionProjection,
   collectAllowedAirflowDagStatuses,
   createAirflowControlStore,
   normalizeAirflowDagStatus,
@@ -5035,11 +5034,32 @@ async function triggerControlledAirflowDag(dagId, runId) {
   const payload = version === 'v2'
     ? { dag_run_id: runId, logical_date: null, conf: {} }
     : { dag_run_id: runId, conf: {} }
-  const response = await airflowFetch(
-    `/api/${version}/dags/${encodeURIComponent(dagId)}/dagRuns`,
-    { method: 'POST', body: JSON.stringify(payload) },
-  )
-  if (response.ok) return normalizeAirflowRun(await response.json(), dagId, runId)
+  let response
+  try {
+    response = await airflowFetch(
+      `/api/${version}/dags/${encodeURIComponent(dagId)}/dagRuns`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    )
+  } catch (error) {
+    throw Object.assign(new Error('Airflow trigger transport outcome is unknown.'), {
+      statusCode: 502,
+      code: 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+      outcomeUnknown: true,
+      cause: error,
+    })
+  }
+  if (response.ok) {
+    try {
+      return normalizeAirflowRun(await response.json(), dagId, runId)
+    } catch (error) {
+      throw Object.assign(new Error('Airflow accepted the trigger but its response could not be verified.'), {
+        statusCode: 502,
+        code: 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+        outcomeUnknown: true,
+        cause: error,
+      })
+    }
+  }
   if (response.status === 409) {
     const reconciled = await readAirflowDagRun(dagId, runId, version)
     if (reconciled) return reconciled
@@ -5050,6 +5070,18 @@ async function triggerControlledAirflowDag(dagId, runId) {
     code: outcomeUnknown ? 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN' : 'AIRFLOW_TRIGGER_REJECTED',
     outcomeUnknown,
   })
+}
+
+function isAirflowTriggerOutcomeUnknown(error) {
+  return error?.outcomeUnknown === true
+    || ['AbortError', 'TimeoutError', 'SyntaxError', 'TypeError'].includes(error?.name)
+    || error?.code === 'AIRFLOW_RUN_CONTRACT_INVALID'
+}
+
+function isAirflowDagTransitionOutcomeUnknown(error) {
+  return error?.outcomeUnknown === true
+    || ['AbortError', 'TimeoutError', 'SyntaxError', 'TypeError'].includes(error?.name)
+    || error?.code === 'AIRFLOW_DAG_CONTRACT_INVALID'
 }
 
 // Registration owns this separate service-only execution contract. It is not
@@ -5102,7 +5134,7 @@ async function setAirflowDagPaused(dagId, paused) {
       code: 'AIRFLOW_DAG_READ_FAILED',
     })
   }
-  const current = normalizeAirflowDagStatus(await currentResponse.json(), dagId)
+  const current = normalizeAirflowDagStatus(await currentResponse.json(), dagId, version)
   if (current.paused === paused) return current
   let response
   try {
@@ -5129,11 +5161,22 @@ async function setAirflowDagPaused(dagId, paused) {
       outcomeUnknown,
     })
   }
-  const transitioned = normalizeAirflowDagStatus(await response.json(), dagId)
+  let transitioned
+  try {
+    transitioned = normalizeAirflowDagStatus(await response.json(), dagId, version)
+  } catch (error) {
+    throw Object.assign(new Error('Airflow accepted the DAG transition but its response could not be verified.'), {
+      statusCode: 502,
+      code: 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
+      outcomeUnknown: true,
+      cause: error,
+    })
+  }
   if (transitioned.paused !== paused) {
     throw Object.assign(new Error('Airflow did not apply the requested pause transition.'), {
       statusCode: 502,
-      code: 'AIRFLOW_PAUSE_TRANSITION_MISMATCH',
+      code: 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
+      outcomeUnknown: true,
     })
   }
   return transitioned
@@ -11608,14 +11651,6 @@ async function api(request, response, url, context) {
     }
     return response.end()
   }
-  if (request.method === 'GET' && url.pathname === '/poc-api/airflow/connection') {
-    if (url.search) return problem(response, 400, 'AIRFLOW_CONNECTION_QUERY_INVALID', 'Airflow connection projection does not accept query parameters.')
-    const projection = await context.airflowProvider.connection()
-    if (projection.system_id !== AIRFLOW_SYSTEM_ID) {
-      throw accessError(503, 'AIRFLOW_SYSTEM_IDENTITY_INVALID', 'Airflow is not bound to its stable System identity.')
-    }
-    return json(response, 200, projection)
-  }
   if (request.method === 'GET' && url.pathname === '/poc-api/airflow/operations') {
     if (!context.stateStore.configured?.postgres) {
       throw accessError(503, 'AIRFLOW_RECEIPT_STORE_REQUIRED', 'Durable PostgreSQL Airflow receipts are required.')
@@ -11684,18 +11719,18 @@ async function api(request, response, url, context) {
         receipt,
       })
     } catch (error) {
-      if (error?.outcomeUnknown) {
+      if (isAirflowTriggerOutcomeUnknown(error)) {
         await control.requireReconciliation(
           claim.receipt.operation_id,
-          error?.code || 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+          'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
         )
-      } else {
-        await control.failTrigger(
-          claim.receipt.operation_id,
-          error?.code || 'AIRFLOW_TRIGGER_REJECTED',
-        )
+        throw accessError(502, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN', 'The Airflow trigger outcome requires reconciliation.')
       }
-      throw error
+      await control.failTrigger(
+        claim.receipt.operation_id,
+        'AIRFLOW_TRIGGER_REJECTED',
+      )
+      throw accessError(502, 'AIRFLOW_TRIGGER_REJECTED', 'The Airflow trigger was rejected.')
     }
   }
   const airflowDagMatch = url.pathname.match(/^\/poc-api\/airflow\/dags\/([^/]+)$/)
@@ -11741,18 +11776,18 @@ async function api(request, response, url, context) {
         receipt,
       })
     } catch (error) {
-      if (error?.outcomeUnknown) {
+      if (isAirflowDagTransitionOutcomeUnknown(error)) {
         await control.requireDagTransitionReconciliation(
           claim.receipt.operation_id,
-          error?.code || 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
+          'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
         )
-      } else {
-        await control.failDagTransition(
-          claim.receipt.operation_id,
-          error?.code || 'AIRFLOW_DAG_TRANSITION_REJECTED',
-        )
+        throw accessError(502, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN', 'The Airflow DAG transition requires reconciliation.')
       }
-      throw error
+      await control.failDagTransition(
+        claim.receipt.operation_id,
+        'AIRFLOW_DAG_TRANSITION_REJECTED',
+      )
+      throw accessError(502, 'AIRFLOW_DAG_TRANSITION_REJECTED', 'The Airflow DAG transition was rejected.')
     }
   }
   const minioPart = url.pathname.match(/^\/poc-api\/minio\/uploads\/([a-zA-Z0-9_-]+)\/parts\/(\d+)$/)
@@ -11875,9 +11910,6 @@ function serveStatic(request, response, url) {
 
 function defaultAirflowControlProvider() {
   return Object.freeze({
-    connection() {
-      return airflowConnectionProjection(airflow, airflowApiVersion ?? null)
-    },
     inventory: airflowDagInventory,
     readRun: readAirflowDagRun,
     setPaused: setAirflowDagPaused,

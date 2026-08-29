@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
+import type { SystemConfigurationEntry } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import type {
   AdminApi,
-  AirflowConnectionProjection,
   AirflowDagInventory,
   AirflowDagStatus,
 } from './adminApi'
@@ -22,12 +22,13 @@ function operationKey(action: string, dagId: string) {
 
 export function AirflowDagStatusPanel({
   api,
+  configuration,
   requestConfirmation,
 }: {
   api: AdminApi
+  configuration: SystemConfigurationEntry
   requestConfirmation: (mutation: PendingAdminMutation) => void
 }) {
-  const [connection, setConnection] = useState<AirflowConnectionProjection>()
   const [inventory, setInventory] = useState<AirflowDagInventory>()
   const [loading, setLoading] = useState(true)
   const [activeOperation, setActiveOperation] = useState<string>()
@@ -35,6 +36,7 @@ export function AirflowDagStatusPanel({
   const [error, setError] = useState<unknown>()
   const request = useRef<{ generation: number; controller?: AbortController }>({ generation: 0 })
   const retryKeys = useRef(new Map<string, string>())
+  const inFlightOperations = useRef(new Set<string>())
 
   const load = useCallback(async () => {
     request.current.controller?.abort()
@@ -44,17 +46,12 @@ export function AirflowDagStatusPanel({
     setLoading(true)
     setError(undefined)
     try {
-      const [nextConnection, nextInventory] = await Promise.all([
-        api.getAirflowConnection(controller.signal),
-        api.getAirflowDagInventory(controller.signal),
-      ])
+      const nextInventory = await api.getAirflowDagInventory(controller.signal)
       if (!controller.signal.aborted && request.current.generation === generation) {
-        setConnection(nextConnection)
         setInventory(nextInventory)
       }
     } catch (next) {
       if (!controller.signal.aborted && request.current.generation === generation) {
-        setConnection(undefined)
         setInventory(undefined)
         setError(next)
       }
@@ -75,6 +72,8 @@ export function AirflowDagStatusPanel({
     action: 'TRIGGER' | 'PAUSE' | 'UNPAUSE',
   ) => {
     const operation = `${action}:${dag.dag_id}`
+    if (inFlightOperations.current.has(operation)) return
+    inFlightOperations.current.add(operation)
     const key = retryKeys.current.get(operation) ?? operationKey(action, dag.dag_id)
     retryKeys.current.set(operation, key)
     setActiveOperation(operation)
@@ -93,6 +92,7 @@ export function AirflowDagStatusPanel({
     } catch (next) {
       setError(next)
     } finally {
+      inFlightOperations.current.delete(operation)
       setActiveOperation(undefined)
     }
   }, [api, load])
@@ -105,14 +105,14 @@ export function AirflowDagStatusPanel({
     requestConfirmation({
       title: `Airflow DAG ${actionLabel}`,
       summary: [
-        `System ID: AIRFLOW`,
+        `System configuration ID: ${configuration.system_id}`,
         `검토된 DAG: ${dag.dag_id}`,
         `작업: ${action}`,
         '확인 후 동일한 멱등성 키로 내구성 있는 작업 receipt를 기록합니다.',
       ],
       execute: () => applyOperation(dag, action),
     })
-  }, [applyOperation, requestConfirmation])
+  }, [applyOperation, configuration.system_id, requestConfirmation])
 
   const columns = useMemo<ColumnDef<AirflowDagStatus>[]>(() => [
     {
@@ -151,9 +151,16 @@ export function AirflowDagStatusPanel({
     },
     {
       accessorKey: 'next_run_at',
-      header: '다음 실행',
-      size: 165,
-      cell: ({ row }) => timestamp(row.original.next_run_at),
+      header: '다음 실행 / 논리 시각',
+      size: 210,
+      cell: ({ row }) => (
+        <span>
+          {timestamp(row.original.next_run_at)}
+          {row.original.next_logical_date && (
+            <small className="block text-slate-500">논리 {timestamp(row.original.next_logical_date)}</small>
+          )}
+        </span>
+      ),
     },
     {
       id: 'operations',
@@ -196,26 +203,22 @@ export function AirflowDagStatusPanel({
           <span className="eyebrow">Bounded Airflow control</span>
           <h5 className="m-0 text-sm font-black text-navy-900">Airflow DAG 상태</h5>
           <p className="m-0 text-xs leading-5 text-slate-600">
-            서버가 검토한 DAG와 고정 System ID만 조회·관리합니다. 자격증명 값과 임의 DAG ID는 브라우저에 노출하지 않습니다.
+            canonical 시스템 구성에서 선택한 Airflow와 검토된 DAG만 관리합니다. 자격증명 값과 임의 DAG ID는 브라우저에 노출하지 않습니다.
           </p>
         </div>
         <button className="button button-secondary" disabled={loading || Boolean(activeOperation)} onClick={() => void load()} type="button">
           {loading ? 'DAG 상태 확인 중…' : 'DAG 상태 새로고침'}
         </button>
       </header>
-      {connection && (
-        <dl className="summary-list" aria-label="Airflow 연결 읽기 모델">
-          <div><dt>System ID</dt><dd><code>{connection.system_id}</code></dd></div>
-          <div><dt>연결</dt><dd>{connection.state === 'CONFIGURED' ? connection.base_url : '미구성'}</dd></div>
-          <div>
-            <dt>인증 원천</dt>
-            <dd>{connection.auth.secret_references.map((reference) => <code key={reference}>{reference} </code>)}</dd>
-          </div>
-        </dl>
-      )}
+      <dl className="summary-list" aria-label="Canonical Airflow 시스템 구성">
+        <div><dt>구성 ID</dt><dd><code>{configuration.system_id}</code></dd></div>
+        <div><dt>관리 원천</dt><dd><code>/admin/system-configuration</code></dd></div>
+        <div><dt>버전</dt><dd>{configuration.version}</dd></div>
+        <div><dt>활성화</dt><dd>{configuration.activation_state}</dd></div>
+      </dl>
       {inventory && (
         <div className="flex flex-wrap gap-2" role="status" aria-label="Airflow DAG 조회 정보">
-          <span className="badge">System {inventory.system_id}</span>
+          <span className="badge">Config {inventory.system_id}</span>
           <span className="badge">API {inventory.api_mode}</span>
           <span className="badge badge-soft">확인 시각 {timestamp(inventory.observed_at)}</span>
         </div>

@@ -1315,7 +1315,8 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
     return new Response(JSON.stringify({
       dag_id: dagId,
       is_paused: dagId === 'datariver_manual_metadata_apply',
-      next_dagrun: '2026-08-30T02:00:00+09:00',
+      next_dagrun_logical_date: '2026-08-30T02:00:00+09:00',
+      next_dagrun_run_after: '2026-08-30T02:01:00+09:00',
       last_parsed_time: '2026-08-29T12:00:00Z',
       provider_only_field: 'ignored',
     }), { status: 200 })
@@ -1332,25 +1333,26 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
   ])
   assert.deepEqual(observed.items.find((item) => item.dag_id === 'datariver_catalog_probe'), {
     system_id: 'AIRFLOW', dag_id: 'datariver_catalog_probe', state: 'MISSING', paused: null,
-    next_run_at: null, last_parsed_at: null, latest_run: null,
+    next_logical_date: null, next_run_at: null, last_parsed_at: null, latest_run: null,
   })
   assert.equal(
     observed.items.find((item) => item.dag_id === 'datariver_manual_metadata_apply').paused,
     true,
   )
-  assert.equal(observed.items[0].next_run_at, '2026-08-29T17:00:00.000Z')
+  assert.equal(observed.items[0].next_logical_date, '2026-08-29T17:00:00.000Z')
+  assert.equal(observed.items[0].next_run_at, '2026-08-29T17:01:00.000Z')
   assert.equal(observed.items[0].last_parsed_at, '2026-08-29T12:00:00.000Z')
   assert.throws(
     () => normalizeAirflowDagStatus(
       { dag_id: 'unexpected', is_paused: false },
-      'datariver_catalog_sync',
+      'datariver_catalog_sync', 'v2',
     ),
     { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
   )
   assert.throws(
     () => normalizeAirflowDagStatus(
-      { dag_id: 'datariver_catalog_sync', is_paused: false, next_dagrun: 1 },
-      'datariver_catalog_sync',
+      { dag_id: 'datariver_catalog_sync', is_paused: false, next_dagrun_run_after: 1 },
+      'datariver_catalog_sync', 'v2',
     ),
     { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
   )

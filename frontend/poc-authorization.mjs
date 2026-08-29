@@ -170,7 +170,6 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('knowledge.chat.releases', 'GET', /^\/poc-api\/knowledge\/graphs\/[^/]+\/releases$/, 'CAPABILITY_PROTECTED', 'knowledge.read'),
   route('knowledge.chat.snapshot', 'GET', /^\/poc-api\/knowledge\/graphs\/[^/]+\/releases\/[^/]+\/snapshot$/, 'CAPABILITY_PROTECTED', 'knowledge.read'),
   route('knowledge.chat.graphrag', 'POST', /^\/poc-api\/knowledge\/graphs\/[^/]+\/releases\/[^/]+\/graphrag$/, 'CAPABILITY_PROTECTED', 'knowledge.read'),
-  route('provider.airflow.connection', 'GET', /^\/poc-api\/airflow\/connection$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('provider.airflow.operations', 'GET', /^\/poc-api\/airflow\/operations$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('provider.airflow.dags', 'GET', /^\/poc-api\/airflow\/dags$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('provider.airflow.dag-transition', 'PATCH', /^\/poc-api\/airflow\/dags\/[^/]+$/, 'CAPABILITY_PROTECTED', 'admin.manage'),

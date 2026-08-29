@@ -119,17 +119,13 @@ describe('AdminApi', () => {
     const { api, request } = mockClient()
     request.mockResolvedValue({})
 
-    await api.getAirflowConnection()
     await api.triggerAirflowDag('datariver_quality_dispatch', 'airflow-trigger-key-0001')
     await api.transitionAirflowDag('datariver_quality_dispatch', 'PAUSE', 'airflow-pause-key-0001')
 
-    expect(request).toHaveBeenNthCalledWith(1, '/poc-api/airflow/connection', {
-      cache: 'no-store', signal: undefined,
-    })
-    expect(request).toHaveBeenNthCalledWith(2, '/poc-api/airflow/dags/datariver_quality_dispatch/runs', {
+    expect(request).toHaveBeenNthCalledWith(1, '/poc-api/airflow/dags/datariver_quality_dispatch/runs', {
       method: 'POST', idempotencyKey: 'airflow-trigger-key-0001', body: '{}',
     })
-    expect(request).toHaveBeenNthCalledWith(3, '/poc-api/airflow/dags/datariver_quality_dispatch', {
+    expect(request).toHaveBeenNthCalledWith(2, '/poc-api/airflow/dags/datariver_quality_dispatch', {
       method: 'PATCH', idempotencyKey: 'airflow-pause-key-0001', body: '{"action":"PAUSE"}',
     })
   })

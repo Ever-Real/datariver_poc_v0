@@ -307,6 +307,9 @@ describe('SystemConfigurationAdmin', () => {
       ...deploymentEntry,
       system_id: 'AIRFLOW' as const,
       label: 'Airflow',
+      effective_configuration_yaml: 'base_url: https://canonical-airflow.example.internal\n',
+      version: 4,
+      activation_state: 'DEPLOYMENT_MANAGED' as const,
     }
     let inventoryCall = 0
     let triggerCall = 0
@@ -314,13 +317,6 @@ describe('SystemConfigurationAdmin', () => {
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
       if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
-      if (path === '/poc-api/airflow/connection') return Promise.resolve({
-        system_id: 'AIRFLOW', state: 'CONFIGURED', base_url: 'https://airflow.example.internal',
-        api_mode: 'V2', auth: {
-          mode: 'SERVER_OWNED_PASSWORD',
-          secret_references: ['env:AIRFLOW_USERNAME', 'env:AIRFLOW_PASSWORD'],
-        },
-      })
       if (path === '/poc-api/airflow/dags/datariver_catalog_sync/runs') {
         triggerCall += 1
         return Promise.resolve({
@@ -346,6 +342,7 @@ describe('SystemConfigurationAdmin', () => {
               dag_id: 'datariver_catalog_sync',
               state: 'READY',
               paused: false,
+              next_logical_date: '2026-08-30T02:00:00Z',
               next_run_at: '2026-08-30T02:00:00Z',
               last_parsed_at: '2026-08-29T11:59:00Z',
               latest_run: {
@@ -359,6 +356,7 @@ describe('SystemConfigurationAdmin', () => {
               dag_id: 'datariver_quality_dispatch',
               state: 'MISSING',
               paused: null,
+              next_logical_date: null,
               next_run_at: null,
               last_parsed_at: null,
               latest_run: null,
@@ -379,19 +377,20 @@ describe('SystemConfigurationAdmin', () => {
     expect(table).toHaveTextContent('찾을 수 없음')
     expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('API V2')
     expect(screen.getByRole('note')).toHaveTextContent('멱등성·감사·실패 조정 receipt')
-    expect(screen.getByText('System ID')).toBeVisible()
-    expect(screen.getByText('env:AIRFLOW_PASSWORD')).toBeVisible()
+    expect(screen.getByLabelText('Canonical Airflow 시스템 구성')).toHaveTextContent('구성 IDAIRFLOW')
+    expect(screen.getByText('/admin/system-configuration')).toBeVisible()
+    expect(screen.getByText('DEPLOYMENT_MANAGED')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'DAG 실행' }))
     expect(triggerCall).toBe(0)
     expect(pending?.summary).toEqual(expect.arrayContaining([
-      'System ID: AIRFLOW',
+      'System configuration ID: AIRFLOW',
       '검토된 DAG: datariver_catalog_sync',
       '작업: TRIGGER',
     ]))
     if (!pending) throw new Error('Airflow confirmation was not requested')
     const confirmed = pending
-    await act(async () => { await confirmed.execute() })
+    await act(async () => { await Promise.all([confirmed.execute(), confirmed.execute()]) })
     await waitFor(() => expect(triggerCall).toBe(1))
     expect(await screen.findByText(/실행이 접수되었습니다/)).toBeVisible()
 
@@ -412,10 +411,6 @@ describe('SystemConfigurationAdmin', () => {
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
       if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
-      if (path === '/poc-api/airflow/connection') return Promise.resolve({
-        system_id: 'AIRFLOW', state: 'CONFIGURED', base_url: 'https://airflow.example.internal',
-        api_mode: 'V2', auth: { mode: 'SERVER_OWNED_PASSWORD', secret_references: [] },
-      })
       if (path === '/poc-api/airflow/dags') throw new Error('Airflow DAG 상태를 불러오지 못했습니다.')
       throw new Error(`unexpected request: ${path}`)
     })

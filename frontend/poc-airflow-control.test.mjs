@@ -6,9 +6,9 @@ import { test } from 'node:test'
 import {
   AIRFLOW_DAGS,
   AIRFLOW_SYSTEM_ID,
-  airflowConnectionProjection,
   collectAllowedAirflowDagStatuses,
   createAirflowControlStore,
+  normalizeAirflowDagStatus,
 } from './poc-airflow-control.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
@@ -65,26 +65,15 @@ async function close(server) {
   )))
 }
 
-test('projects one exact Airflow System identity and secret references without raw credentials', () => {
-  const provider = {
-    url: 'https://airflow.example.internal',
-    username: 'raw-airflow-user',
-    password: 'raw-airflow-password',
-  }
-  const projection = airflowConnectionProjection(provider, 'v2')
-  assert.deepEqual(projection, {
-    system_id: AIRFLOW_SYSTEM_ID,
-    state: 'CONFIGURED',
-    base_url: 'https://airflow.example.internal',
-    api_mode: 'V2',
-    auth: {
-      mode: 'SERVER_OWNED_PASSWORD',
-      secret_references: ['env:AIRFLOW_USERNAME', 'env:AIRFLOW_PASSWORD'],
-    },
-  })
-  const encoded = JSON.stringify(projection)
-  assert.equal(encoded.includes(provider.username), false)
-  assert.equal(encoded.includes(provider.password), false)
+test('keeps the runtime contract bounded to the canonical Airflow configuration identifier', () => {
+  assert.equal(AIRFLOW_SYSTEM_ID, 'AIRFLOW')
+  assert.deepEqual(AIRFLOW_DAGS, [
+    'datariver_bulk_registration_prepare',
+    'datariver_catalog_probe',
+    'datariver_catalog_sync',
+    'datariver_manual_metadata_apply',
+    'datariver_quality_dispatch',
+  ])
 })
 
 test('collects only the protocol DAG allowlist and one bounded latest run without provider transport', async () => {
@@ -98,7 +87,8 @@ test('collects only the protocol DAG allowlist and one bounded latest run withou
       return response({
         dag_id: dagId,
         is_paused: false,
-        next_dagrun: '2026-08-30T00:00:00Z',
+        next_dagrun_logical_date: '2026-08-30T00:00:00Z',
+        next_dagrun_run_after: '2026-08-30T00:01:00Z',
         provider_secret: 'ignored',
       })
     },
@@ -123,9 +113,23 @@ test('collects only the protocol DAG allowlist and one bounded latest run withou
     'dag_id', 'ended_at', 'logical_date', 'run_id', 'started_at', 'state', 'system_id',
   ])
   assert.equal(JSON.stringify(inventory).includes('secret'), false)
+  assert.equal(inventory.items[0].next_logical_date, '2026-08-30T00:00:00.000Z')
+  assert.equal(inventory.items[0].next_run_at, '2026-08-30T00:01:00.000Z')
+  assert.deepEqual(normalizeAirflowDagStatus({
+    dag_id: 'datariver_catalog_sync',
+    is_paused: false,
+  }, 'datariver_catalog_sync', 'v1'), {
+    system_id: AIRFLOW_SYSTEM_ID,
+    dag_id: 'datariver_catalog_sync',
+    state: 'READY',
+    paused: false,
+    next_logical_date: null,
+    next_run_at: null,
+    last_parsed_at: null,
+  })
 })
 
-test('durably binds trigger replay, conflict, failure and reconciliation to subject and fixed System', async () => {
+test('durably binds trigger replay, conflict, failure and reconciliation to subject and configuration', async () => {
   let instant = Date.parse('2026-08-29T00:00:00Z')
   const stateStore = await configuredStore()
   const control = createAirflowControlStore(stateStore, {
@@ -210,7 +214,11 @@ test('durably binds trigger replay, conflict, failure and reconciliation to subj
   assert.equal(pause.action, 'TRANSITION')
   assert.equal(pause.receipt.target_paused, true)
   assert.equal(pause.receipt.run_id, null)
-  await control.acceptDagTransition(pause.receipt.operation_id)
+  const acceptedPause = await control.acceptDagTransition(pause.receipt.operation_id)
+  assert.deepEqual(acceptedPause.audit_events.map((event) => event.event), [
+    'REQUEST_ACCEPTED',
+    'PROVIDER_ACCEPTED',
+  ])
   assert.equal((await control.claimDagTransition({
     subjectId: 'airflow-admin',
     dagId: 'datariver_quality_dispatch',
@@ -231,19 +239,20 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
   })
   const { createPocServer } = await import('./poc-server.mjs?airflow-control-route-contract')
   const stateStore = await configuredStore()
-  const calls = { connection: 0, inventory: 0, readRun: 0, setPaused: 0, trigger: 0 }
+  const calls = { inventory: 0, readRun: 0, setPaused: 0, trigger: 0 }
+  const transitionAttempts = new Map()
   const provider = {
-    async connection() {
-      calls.connection += 1
-      return airflowConnectionProjection({ url: 'https://airflow.example.internal' }, 'v2')
-    },
     async inventory() {
       calls.inventory += 1
       throw new Error('inventory must not be called by deny/replay tests')
     },
     async readRun(dagId, runId) {
       calls.readRun += 1
-      if (dagId !== 'datariver_catalog_sync') throw new Error('accepted replay must not reconcile')
+      if (![
+        'datariver_bulk_registration_prepare',
+        'datariver_catalog_sync',
+        'datariver_manual_metadata_apply',
+      ].includes(dagId)) throw new Error('accepted replay must not reconcile')
       return {
         system_id: AIRFLOW_SYSTEM_ID,
         dag_id: dagId,
@@ -256,6 +265,11 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
     },
     async setPaused(dagId, paused) {
       calls.setPaused += 1
+      const attempt = (transitionAttempts.get(dagId) ?? 0) + 1
+      transitionAttempts.set(dagId, attempt)
+      if (dagId === 'datariver_manual_metadata_apply' && attempt === 1) {
+        throw new SyntaxError('sanitized accepted-response parse failure')
+      }
       return {
         system_id: AIRFLOW_SYSTEM_ID,
         dag_id: dagId,
@@ -268,10 +282,14 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
     async trigger(dagId, runId) {
       calls.trigger += 1
       if (dagId === 'datariver_catalog_sync') {
-        throw Object.assign(new Error('sanitized unknown outcome'), {
+        throw Object.assign(new TypeError('sanitized network failure'), { statusCode: 502 })
+      }
+      if (dagId === 'datariver_manual_metadata_apply') {
+        throw Object.assign(new Error('sanitized timeout'), { name: 'TimeoutError', statusCode: 502 })
+      }
+      if (dagId === 'datariver_bulk_registration_prepare') {
+        throw Object.assign(new SyntaxError('sanitized accepted-response parse failure'), {
           statusCode: 502,
-          code: 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
-          outcomeUnknown: true,
         })
       }
       if (dagId === 'datariver_catalog_probe') {
@@ -305,7 +323,11 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
     })
     assert.equal(arbitrary.status, 400)
     assert.equal((await arbitrary.json()).code, 'DAG_NOT_ALLOWED')
-    assert.deepEqual(calls, { connection: 0, inventory: 0, readRun: 0, setPaused: 0, trigger: 0 })
+    assert.deepEqual(calls, { inventory: 0, readRun: 0, setPaused: 0, trigger: 0 })
+
+    const discardedConnectionSource = await fetch(`${origin}/poc-api/airflow/connection`)
+    assert.equal(discardedConnectionSource.status, 404)
+    assert.deepEqual(calls, { inventory: 0, readRun: 0, setPaused: 0, trigger: 0 })
 
     const headers = { 'Content-Type': 'application/json', 'Idempotency-Key': 'airflow-replay-key-0001' }
     const first = await fetch(`${origin}/poc-api/airflow/dags/datariver_quality_dispatch/runs`, {
@@ -355,6 +377,25 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
     assert.equal(calls.trigger, 3)
     assert.equal(calls.readRun, 1)
 
+    for (const [dagId, key] of [
+      ['datariver_manual_metadata_apply', 'airflow-timeout-key-0001'],
+      ['datariver_bulk_registration_prepare', 'airflow-parse-key-0001'],
+    ]) {
+      const outcomeHeaders = { 'Content-Type': 'application/json', 'Idempotency-Key': key }
+      const unknown = await fetch(`${origin}/poc-api/airflow/dags/${dagId}/runs`, {
+        method: 'POST', headers: outcomeHeaders, body: '{}',
+      })
+      assert.equal(unknown.status, 502)
+      assert.equal((await unknown.json()).code, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN')
+      const recovered = await fetch(`${origin}/poc-api/airflow/dags/${dagId}/runs`, {
+        method: 'POST', headers: outcomeHeaders, body: '{}',
+      })
+      assert.equal(recovered.status, 200)
+      assert.equal((await recovered.json()).reconciled, true)
+    }
+    assert.equal(calls.trigger, 5)
+    assert.equal(calls.readRun, 3)
+
     const transition = await fetch(`${origin}/poc-api/airflow/dags/datariver_quality_dispatch`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'airflow-pause-key-0001' },
@@ -379,6 +420,27 @@ test('denies arbitrary DAGs and replays accepted triggers without provider conta
     assert.equal(transitionTamper.status, 409)
     assert.equal((await transitionTamper.json()).code, 'AIRFLOW_IDEMPOTENCY_CONFLICT')
     assert.equal(calls.setPaused, 1)
+
+    const unknownTransitionHeaders = {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'airflow-pause-unknown-key-0001',
+    }
+    const unknownTransition = await fetch(`${origin}/poc-api/airflow/dags/datariver_manual_metadata_apply`, {
+      method: 'PATCH', headers: unknownTransitionHeaders, body: JSON.stringify({ action: 'PAUSE' }),
+    })
+    assert.equal(unknownTransition.status, 502)
+    assert.equal((await unknownTransition.json()).code, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN')
+    const reconciledTransition = await fetch(`${origin}/poc-api/airflow/dags/datariver_manual_metadata_apply`, {
+      method: 'PATCH', headers: unknownTransitionHeaders, body: JSON.stringify({ action: 'PAUSE' }),
+    })
+    assert.equal(reconciledTransition.status, 200)
+    assert.equal((await reconciledTransition.json()).reconciled, true)
+    const replayedTransition = await fetch(`${origin}/poc-api/airflow/dags/datariver_manual_metadata_apply`, {
+      method: 'PATCH', headers: unknownTransitionHeaders, body: JSON.stringify({ action: 'PAUSE' }),
+    })
+    assert.equal(replayedTransition.status, 200)
+    assert.equal((await replayedTransition.json()).replayed, true)
+    assert.equal(calls.setPaused, 3)
   } finally {
     await close(server)
     await stateStore.close()

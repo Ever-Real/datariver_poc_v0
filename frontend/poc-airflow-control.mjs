@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { URL } from 'node:url'
 
+// This is the canonical SystemConfigurationId, not an AF-04 domain System UUID linkage.
 export const AIRFLOW_SYSTEM_ID = 'AIRFLOW'
 export const AIRFLOW_CONTROL_SCOPE = 'airflow-control-v1'
 
@@ -76,47 +76,28 @@ function normalizedRunState(value) {
   return value.trim().toUpperCase()
 }
 
-export function airflowConnectionProjection(provider, apiMode = null) {
-  if (!provider) {
-    return Object.freeze({
-      system_id: AIRFLOW_SYSTEM_ID,
-      state: 'NOT_CONFIGURED',
-      base_url: null,
-      api_mode: null,
-      auth: { mode: 'SERVER_OWNED_PASSWORD', secret_references: [] },
-    })
-  }
-  const url = new URL(provider.url)
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
-    throw controlError(500, 'AIRFLOW_CONFIGURATION_INVALID', 'The Airflow connection URL is invalid.')
-  }
-  if (apiMode !== null && !['v1', 'v2'].includes(apiMode)) {
-    throw controlError(500, 'AIRFLOW_CONFIGURATION_INVALID', 'The Airflow API mode is invalid.')
-  }
-  return Object.freeze({
-    system_id: AIRFLOW_SYSTEM_ID,
-    state: 'CONFIGURED',
-    base_url: url.toString().replace(/\/$/, ''),
-    api_mode: apiMode?.toUpperCase() ?? null,
-    auth: {
-      mode: 'SERVER_OWNED_PASSWORD',
-      secret_references: ['env:AIRFLOW_USERNAME', 'env:AIRFLOW_PASSWORD'],
-    },
-  })
-}
-
-export function normalizeAirflowDagStatus(payload, expectedDagId) {
+export function normalizeAirflowDagStatus(payload, expectedDagId, version) {
   const dagId = allowedDagId(expectedDagId)
+  if (!['v1', 'v2'].includes(version)) {
+    throw new TypeError('Airflow DAG status requires an explicit supported API version.')
+  }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
     || payload.dag_id !== dagId || typeof payload.is_paused !== 'boolean') {
     throw controlError(502, 'AIRFLOW_DAG_CONTRACT_INVALID', 'Airflow returned an incompatible DAG status document.')
   }
+  const nextLogicalDate = version === 'v2'
+    ? timestamp(payload.next_dagrun_logical_date, 'next DAG logical date')
+    : null
+  const nextRunAfter = version === 'v2'
+    ? timestamp(payload.next_dagrun_run_after, 'next DAG run-after time')
+    : null
   return {
     system_id: AIRFLOW_SYSTEM_ID,
     dag_id: dagId,
     state: 'READY',
     paused: payload.is_paused,
-    next_run_at: timestamp(payload.next_dagrun ?? payload.next_dagrun_create_after, 'next run'),
+    next_logical_date: nextLogicalDate,
+    next_run_at: nextRunAfter,
     last_parsed_at: timestamp(payload.last_parsed_time ?? payload.last_parsed, 'last parsed time'),
   }
 }
@@ -167,13 +148,14 @@ export async function collectAllowedAirflowDagStatuses(version, fetchDag, fetchL
         dag_id: dagId,
         state: 'MISSING',
         paused: null,
+        next_logical_date: null,
         next_run_at: null,
         last_parsed_at: null,
         latest_run: null,
       }
     }
     if (!response.ok) throw controlError(502, 'AIRFLOW_DAG_READ_FAILED', 'Airflow DAG status is unavailable.')
-    const status = normalizeAirflowDagStatus(await response.json(), dagId)
+    const status = normalizeAirflowDagStatus(await response.json(), dagId, version)
     const runResponse = await fetchLatestRun(dagId, version)
     if (!runResponse.ok) throw controlError(502, 'AIRFLOW_RUN_READ_FAILED', 'Airflow run status is unavailable.')
     return { ...status, latest_run: normalizeAirflowLatestRunPage(await runResponse.json(), dagId) }
