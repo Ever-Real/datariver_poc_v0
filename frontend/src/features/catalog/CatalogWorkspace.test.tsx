@@ -190,14 +190,18 @@ describe('catalog workspace', () => {
     const headings = within(table).getAllByRole('columnheader').map((heading) => heading.textContent)
     expect(headings.indexOf('Terms ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
     expect(headings.indexOf('Tags ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
+    const tableColumns = Array.from(table.querySelectorAll('col'))
     for (const [label, width] of [
-      ['No', '36px'], ['Platform', '84px'], ['Database', '92px'], ['Schema', '68px'],
-      ['Quality', '80px'], ['Terms', '104px'], ['Tags', '104px'], ['Owner', '86px'], ['Domain', '80px'],
-    ]) {
-      expect(within(table).getByRole('columnheader', { name: new RegExp(`^${label}`) })).toHaveStyle({ width })
+      ['No', '36'], ['Platform', '84'], ['Database', '92'], ['Schema', '68'],
+      ['Quality', '80'], ['Terms', '104'], ['Tags', '104'], ['Owner', '86'], ['Domain', '80'],
+    ] as const) {
+      const columnIndex = headings.findIndex((heading) => heading?.startsWith(label))
+      expect(columnIndex).toBeGreaterThanOrEqual(0)
+      expect(tableColumns[columnIndex]).toHaveAttribute('width', width)
     }
     expect(table.closest('.dense-table-frame')).toHaveAttribute('aria-label', '카탈로그 검색 결과 스크롤 영역')
-    expect(Number.parseFloat(table.style.width)).toBeGreaterThan(840)
+    expect(table).toHaveClass('dense-data-table-sized')
+    expect(table).not.toHaveAttribute('style')
     const toolbar = document.querySelector('.catalog-search-toolbar')
     expect(toolbar).not.toBeNull()
     expect(within(toolbar as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual([

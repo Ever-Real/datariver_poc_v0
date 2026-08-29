@@ -21,6 +21,8 @@
 .app-dialog-footer { display: flex; justify-content: flex-end; gap: 7px; border-top: 1px solid var(--line-300); padding: 10px 14px; background: #f4f5f3; }
 .dense-table-frame { width: 100%; min-width: 0; overflow: auto; border: 1px solid var(--line-300); border-radius: var(--radius); background: white; scrollbar-gutter: stable; }
 .dense-data-table { width: 100%; min-width: 840px; border-collapse: collapse; table-layout: fixed; color: var(--text-900); font-size: 12px; }
+.dense-data-table-sized { width: max-content; }
+.dense-data-table-fit { width: 100%; }
 .dense-data-table th { position: sticky; z-index: 2; top: 0; height: 30px; border-right: 1px solid #d9dde1; border-bottom: 1px solid #aeb7c0; padding: 0 7px; color: #405268; text-align: left; font-size: 10px; font-weight: 900; letter-spacing: .025em; text-transform: uppercase; background: #edf0f2; }
 .dense-data-table th.dense-column-menu-open { z-index: 14; }
 .dense-data-table th:last-child, .dense-data-table td:last-child { border-right: 0; }

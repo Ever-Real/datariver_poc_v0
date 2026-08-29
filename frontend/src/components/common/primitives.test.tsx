@@ -31,6 +31,9 @@ describe('enterprise UI primitives', () => {
       />,
     )
     const table = screen.getByRole('table', { name: '자산 목록' })
+    expect(table).not.toHaveAttribute('style')
+    expect(within(table).getAllByRole('columnheader').every((header) => !header.hasAttribute('style'))).toBe(true)
+    expect(Array.from(table.querySelectorAll('col')).map((column) => column.getAttribute('width'))).toEqual(['150', '150'])
     expect(within(table).getByRole('row', { name: /Beta 2/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('Beta 상세')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /이름/ }))

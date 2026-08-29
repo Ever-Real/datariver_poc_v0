@@ -79,8 +79,13 @@ export function DenseDataTable<T>({
 
   return (
     <div className={['dense-table-frame', className].filter(Boolean).join(' ')} aria-busy={loading} aria-label={`${caption} 스크롤 영역`} tabIndex={0}>
-      <table className="dense-data-table" style={{ width: fitContainer ? '100%' : table.getTotalSize() }}>
+      <table className={`dense-data-table ${fitContainer ? 'dense-data-table-fit' : 'dense-data-table-sized'}`}>
         <caption className="sr-only">{caption}</caption>
+        <colgroup>
+          {table.getVisibleLeafColumns().map((column) => (
+            <col key={column.id} width={column.getSize()} />
+          ))}
+        </colgroup>
         <thead>
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
@@ -104,7 +109,6 @@ export function DenseDataTable<T>({
                   <th
                     key={header.id}
                     colSpan={header.colSpan}
-                    style={{ width: header.getSize() }}
                     aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none'}
                   >
                     {header.isPlaceholder ? null : canSort ? (
