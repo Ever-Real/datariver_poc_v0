@@ -98,8 +98,9 @@ test('source contracts declare exact Product routes and future private server-ow
   assert.match(lineageBoundary.required_product_seam, /reject repeated\/nonterminal-at-bound cursors/);
 
   const glossaryBoundary = docSourceGlossary.selection_boundary;
-  assert.match(glossaryBoundary.endpoints[0], /GET \/poc-api\/datahub\/glossary.*-> \{items\}/);
-  assert.match(glossaryBoundary.endpoints[0], /INSUFFICIENT for provider-scroll completeness/);
+  assert.match(glossaryBoundary.endpoints[0], /GET \/poc-api\/datahub\/glossary.*page:\{next_cursor,limit\}/);
+  assert.match(glossaryBoundary.endpoints[0], /atomic_snapshot:false/);
+  assert.match(glossaryBoundary.endpoints[0], /INSUFFICIENT for one atomic K9 refresh snapshot/);
   assert.match(glossaryBoundary.endpoints[1], /page:\{next_cursor,limit\}/);
   assert.match(glossaryBoundary.endpoints[2], /\{id, external_urn, \.\.\., classification\}/);
   assert.equal(glossaryBoundary.hierarchy_cycle_policy, 'REJECT_TERM_OR_NODE_PARENT_CYCLE');
@@ -118,8 +119,8 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /async function datahubCatalog[\s\S]*?Math\.min\(100,[\s\S]*?return \{[\s\S]*?total_exact: true,[\s\S]*?match_mode: 'ALL'/);
   assert.match(product, /async function datahubLineage[\s\S]*?count: 100[\s\S]*?truncated:[\s\S]*?meta: catalogMeta\(\)/);
   assert.match(product, /function datasetAsset[\s\S]*?id: entity\.urn,[\s\S]*?external_urn: entity\.urn,[\s\S]*?classification/);
-  assert.match(product, /async function datahubGlossary[\s\S]*?return \{\s*items: terms\.sort/);
-  assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?Math\.min\(50,[\s\S]*?Math\.min\(100_000,[\s\S]*?page: \{ next_cursor:/);
+  assert.match(product, /async function datahubGlossary[\s\S]*?atomic_snapshot: false/);
+  assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?providerStart[\s\S]*?items: pageItems,[\s\S]*?page: \{ next_cursor:/);
   assert.match(product, /async function datahubRefreshGraphql[\s\S]*?datahubGraphql\(query, variables, 60_000, signal\)/);
   assert.match(product, /DataRiverPocCatalogEmbeddingInventory[\s\S]*?\.\.\. on Dataset \{\s*exists\s*status \{ removed \}/);
   assert.match(product, /collectLineageInventorySeam[\s\S]*?authorizedByUrn\.has\(k9AssetUrn\(relAsset\)\)[\s\S]*?registerLineageEdge/);

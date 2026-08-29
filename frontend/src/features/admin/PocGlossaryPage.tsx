@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type FormEvent } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import type { ApiClient } from '../../api/client'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -34,10 +34,29 @@ interface PocGlossaryTerm {
   parent_terms: PocGlossaryHierarchyItem[]
   child_terms: PocGlossaryHierarchyItem[]
   hierarchy_kind: 'LEAF_TERM'
-  asset_count: number
-  table_asset_count: number
-  column_asset_count: number
+  asset_count: number | null
+  table_asset_count: number | null
+  column_asset_count: number | null
   assets: PocGlossaryAsset[]
+  relationship_count: number
+  relationships: Array<{
+    type: string
+    direction: string
+    target_urn: string
+    target_type: 'GLOSSARY_TERM' | 'GLOSSARY_NODE'
+  }>
+  relationships_truncated: boolean
+}
+
+interface PocGlossaryPage {
+  items: PocGlossaryTerm[]
+  total: number
+  page: { next_cursor: string | null; limit: number }
+  currentness: {
+    source: 'DATAHUB_GMS_LIVE'
+    observed_at: string
+    atomic_snapshot: false
+  }
 }
 
 interface PocGlossaryAssignmentPage {
@@ -103,17 +122,27 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
   const [selectedTermUrn, setSelectedTermUrn] = useState<string>()
   const [tablesExpanded, setTablesExpanded] = useState(true)
   const [columnsExpanded, setColumnsExpanded] = useState(true)
-  const terms = useQuery({
+  const terms = useInfiniteQuery({
     queryKey: ['poc', 'glossary', query],
-    queryFn: ({ signal }) => client.request<{ items: PocGlossaryTerm[] }>(
-      `/poc/glossary?${new URLSearchParams(query ? { q: query } : {})}`,
+    queryFn: ({ signal, pageParam }) => client.request<PocGlossaryPage>(
+      `/poc/glossary?${new URLSearchParams({
+        limit: '50',
+        ...(query ? { q: query } : {}),
+        ...(pageParam ? { cursor: pageParam } : {}),
+      })}`,
       { signal },
     ),
+    initialPageParam: '',
+    getNextPageParam: (lastPage) => lastPage.page.next_cursor ?? undefined,
     staleTime: 30_000,
   })
+  const loadedTerms = useMemo(
+    () => terms.data?.pages.flatMap((page) => page.items) ?? [],
+    [terms.data?.pages],
+  )
   const selectedTerm = useMemo(
-    () => terms.data?.items.find((item) => item.urn === selectedTermUrn),
-    [selectedTermUrn, terms.data?.items],
+    () => loadedTerms.find((item) => item.urn === selectedTermUrn),
+    [loadedTerms, selectedTermUrn],
   )
   const tableAssignments = useInfiniteQuery({
     queryKey: ['poc', 'glossary', 'assignments', selectedTermUrn, 'TABLE'],
@@ -145,7 +174,7 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
   })
   const appliedTables = tableAssignments.data?.pages.flatMap((page) => page.items) ?? []
   const appliedColumns = columnAssignments.data?.pages.flatMap((page) => page.items) ?? []
-  const treeRows = useMemo(() => glossaryTree(terms.data?.items ?? []), [terms.data?.items])
+  const treeRows = useMemo(() => glossaryTree(loadedTerms), [loadedTerms])
   const selectTerm = useCallback((term: PocGlossaryTerm) => {
     setSelectedTermUrn(term.urn)
     setTablesExpanded(true)
@@ -164,27 +193,28 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
       <span className={`badge ${row.original.kind === 'NODE' ? 'badge-soft' : ''}`}>{row.original.kind === 'NODE' ? '분류' : '용어'}</span>
     </div> },
     { accessorKey: 'description', header: '뜻/설명', size: 360, cell: ({ row }) => row.original.description || (row.original.kind === 'NODE' ? 'DataHub에 분류 설명이 없습니다.' : 'DataHub에 정의가 등록되지 않았습니다.') },
-    { id: 'table_count', accessorFn: (row) => row.term?.table_asset_count ?? 0, header: '적용 테이블', size: 105, cell: ({ row }) => row.original.term ? <button
+    { id: 'table_count', accessorFn: (row) => row.term?.table_asset_count ?? -1, header: '적용 테이블', size: 105, cell: ({ row }) => row.original.term ? <button
       type="button"
       className="poc-glossary-asset-count"
-      aria-label={`${row.original.name} 적용 테이블 ${row.original.term.table_asset_count}개 보기`}
+      aria-label={`${row.original.name} 적용 테이블 ${row.original.term.table_asset_count === null ? '권한 범위 조회' : `${row.original.term.table_asset_count}개 보기`}`}
       onClick={(event) => {
         event.stopPropagation()
         selectTerm(row.original.term!)
       }}
-    >{row.original.term.table_asset_count}</button> : '—' },
-    { id: 'column_count', accessorFn: (row) => row.term?.column_asset_count ?? 0, header: '적용 컬럼', size: 105, cell: ({ row }) => row.original.term ? <button
+    >{row.original.term.table_asset_count ?? '조회'}</button> : '—' },
+    { id: 'column_count', accessorFn: (row) => row.term?.column_asset_count ?? -1, header: '적용 컬럼', size: 105, cell: ({ row }) => row.original.term ? <button
       type="button"
       className="poc-glossary-asset-count"
-      aria-label={`${row.original.name} 적용 컬럼 ${row.original.term.column_asset_count}개 보기`}
+      aria-label={`${row.original.name} 적용 컬럼 ${row.original.term.column_asset_count === null ? '권한 범위 조회' : `${row.original.term.column_asset_count}개 보기`}`}
       onClick={(event) => {
         event.stopPropagation()
         selectTerm(row.original.term!)
       }}
-    >{row.original.term.column_asset_count}</button> : '—' },
+    >{row.original.term.column_asset_count ?? '조회'}</button> : '—' },
   ], [selectTerm])
   const submit = (event: FormEvent) => {
     event.preventDefault()
+    setSelectedTermUrn(undefined)
     setQuery(input.trim())
   }
   return <section className="admin-page">
@@ -211,18 +241,40 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
             if (item.term) selectTerm(item.term)
           }}
         />
+        <div className="poc-glossary-page-state" aria-live="polite">
+          <span>
+            현재 DataHub에서 {loadedTerms.length.toLocaleString()} / {(terms.data?.pages[0]?.total ?? 0).toLocaleString()}개 용어를 불러왔습니다.
+            페이지 사이 provider 변경은 하나의 atomic snapshot으로 간주하지 않습니다.
+          </span>
+          {terms.hasNextPage && <button
+            type="button"
+            className="button button-secondary"
+            disabled={terms.isFetchingNextPage}
+            onClick={() => void terms.fetchNextPage()}
+          >{terms.isFetchingNextPage ? '불러오는 중…' : '용어 더 보기'}</button>}
+        </div>
         <aside className="poc-glossary-detail" aria-label="선택 용어 상세와 적용 자산">
           {selectedTerm ? <>
             <header><span className="eyebrow">Glossary context</span><h2>{selectedTerm.name}</h2><p>{selectedTerm.description || 'DataHub에 정의가 등록되지 않았습니다.'}</p></header>
             <dl>
               <div><dt>상위 용어/분류</dt><dd>{selectedTerm.parent_terms.map((item) => item.name).join(' › ') || '—'}</dd></div>
               <div><dt>하위 용어</dt><dd>{selectedTerm.child_terms.map((item) => item.name).join(', ') || '없음 · DataHub Glossary Term은 leaf입니다.'}</dd></div>
+              <div><dt>DataHub 직접 관계</dt><dd>{selectedTerm.relationship_count.toLocaleString()}개{selectedTerm.relationships_truncated ? ' · 현재 응답 일부' : ''}</dd></div>
             </dl>
+            {selectedTerm.relationships.length > 0 && <section aria-label="선택 용어의 DataHub 직접 관계">
+              <h3>직접 관계</h3>
+              <ul className="poc-glossary-assets">{selectedTerm.relationships.map((relationship) => <li key={`${relationship.type}:${relationship.direction}:${relationship.target_urn}`}>
+                <strong>{relationship.type}</strong>
+                <span><span className="badge badge-soft">{relationship.direction}</span>{relationship.target_type}</span>
+                <small>{relationship.target_urn}</small>
+              </li>)}</ul>
+              {selectedTerm.relationships_truncated && <p className="poc-glossary-empty">전체 관계는 K9 collector의 bounded provider pagination에서 검증하며, 이 화면은 현재 DataHub 응답에 포함된 관계만 표시합니다.</p>}
+            </section>}
             <ErrorNotice error={tableAssignments.error ?? columnAssignments.error} />
             <AccordionItem
               itemId="applied-tables"
               title="적용된 DataHub 테이블"
-              summary={`${selectedTerm.table_asset_count}개`}
+              summary={`${tableAssignments.data?.pages[0]?.total ?? selectedTerm.table_asset_count ?? '권한 범위 조회'}${tableAssignments.data?.pages[0]?.total !== undefined || selectedTerm.table_asset_count !== null ? '개' : ''}`}
               expanded={tablesExpanded}
               onToggle={() => setTablesExpanded((current) => !current)}
             >
@@ -235,7 +287,7 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
             <AccordionItem
               itemId="applied-columns"
               title="적용된 DataHub 컬럼"
-              summary={`${selectedTerm.column_asset_count}개`}
+              summary={`${columnAssignments.data?.pages[0]?.total ?? selectedTerm.column_asset_count ?? '권한 범위 조회'}${columnAssignments.data?.pages[0]?.total !== undefined || selectedTerm.column_asset_count !== null ? '개' : ''}`}
               expanded={columnsExpanded}
               onToggle={() => setColumnsExpanded((current) => !current)}
             >

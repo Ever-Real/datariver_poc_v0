@@ -205,7 +205,7 @@ export const docSourceGlossary = deepFreeze({
   },
   selection_boundary: {
     endpoints: [
-      "GET /poc-api/datahub/glossary (no query parameters) -> {items} // INSUFFICIENT for provider-scroll completeness",
+      "GET /poc-api/datahub/glossary?limit={1..100}&cursor={offset}&q={query} -> {items,total,page:{next_cursor,limit},currentness:{source,observed_at,atomic_snapshot:false}} // authorized live Product pagination; INSUFFICIENT for one atomic K9 refresh snapshot",
       "GET /poc-api/datahub/glossary/assignments?urn={urn}&target_type={TABLE|COLUMN}&limit=50&cursor={cursor} -> {items, total, page:{next_cursor,limit}}",
       "GET /poc-api/datahub/asset?urn={urn} -> {id, external_urn, ..., classification}"
     ],

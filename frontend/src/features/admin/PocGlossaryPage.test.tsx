@@ -21,6 +21,12 @@ describe('PocGlossaryPage', () => {
         table_asset_count: 1,
         column_asset_count: 1,
         assets: [],
+        relationship_count: 1,
+        relationships: [{
+          type: 'RelatedTo', direction: 'OUTGOING',
+          target_urn: 'urn:li:glossaryTerm:substrate', target_type: 'GLOSSARY_TERM',
+        }],
+        relationships_truncated: false,
       }
     const table = {
           id: 'urn:li:dataset:wafer-events',
@@ -51,7 +57,12 @@ describe('PocGlossaryPage', () => {
       if (path.includes('/assignments?') && path.includes('target_type=COLUMN')) {
         return Promise.resolve({ items: [column], total: 1, page: { next_cursor: null, limit: 25 } })
       }
-      return Promise.resolve({ items: [term] })
+      return Promise.resolve({
+        items: [term], total: 1, page: { next_cursor: null, limit: 50 },
+        currentness: {
+          source: 'DATAHUB_GMS_LIVE', observed_at: '2026-08-29T00:00:00.000Z', atomic_snapshot: false,
+        },
+      })
     })
     const client = { request } as unknown as ApiClient
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -73,5 +84,7 @@ describe('PocGlossaryPage', () => {
     expect(await screen.findByText('wafer_events.wafer_id')).toBeInTheDocument()
     expect(await screen.findByText('postgres.MANUFACTURING.QUALITY.wafer_events.wafer_id')).toBeInTheDocument()
     expect(screen.getByText(/DataHub Glossary Term은 leaf/)).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '선택 용어의 DataHub 직접 관계' })).toHaveTextContent('RelatedTo')
+    expect(screen.getByText(/atomic snapshot으로 간주하지 않습니다/)).toBeInTheDocument()
   })
 })

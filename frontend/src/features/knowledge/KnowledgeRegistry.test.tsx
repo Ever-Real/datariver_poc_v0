@@ -287,25 +287,14 @@ describe('KnowledgeRegistry', () => {
       <KnowledgeRegistry client={client} onCreate={onCreate} onEdit={vi.fn()} canManage />,
     )
     const normalAdds = await screen.findAllByRole('button', { name: /일반 에셋 추가/ })
-    const metadataAdds = await screen.findAllByRole('button', { name: /Metadata Lineage 생성/ })
-    const glossaryAdds = await screen.findAllByRole('button', { name: /Data Glossary 생성/ })
-
     const normalAdd = normalAdds.at(0)
-    const metadataAdd = metadataAdds.at(0)
-    const glossaryAdd = glossaryAdds.at(0)
-
-    if (!normalAdd || !metadataAdd || !glossaryAdd) {
-      throw new Error('expected all three create actions')
-    }
+    if (!normalAdd) throw new Error('expected the general asset create action')
 
     fireEvent.click(normalAdd)
     expect(onCreate).toHaveBeenCalledWith()
-
-    fireEvent.click(metadataAdd)
-    expect(onCreate).toHaveBeenCalledWith('metadata-lineage')
-
-    fireEvent.click(glossaryAdd)
-    expect(onCreate).toHaveBeenCalledWith('data-glossary')
+    expect(screen.queryByRole('button', { name: /Metadata Lineage 생성/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Data Glossary 생성/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/managed policy bootstrap이 동일 identity로 생성/)).toBeInTheDocument()
   })
 
   it('shows the admin-only managed V2 snapshot and typed graph quality receipt', async () => {

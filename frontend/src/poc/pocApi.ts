@@ -2056,7 +2056,13 @@ class PocApiClient {
     if (path === '/poc/glossary') {
       return runtimeFlags().datahub
         ? gatewayRequest(`/poc-api/datahub/glossary?${url.searchParams.toString()}`, { signal: options.signal })
-        : { items: [] }
+        : {
+            items: [], total: 0,
+            page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 50) },
+            currentness: {
+              source: 'DATAHUB_GMS_LIVE', observed_at: new Date().toISOString(), atomic_snapshot: false,
+            },
+          }
     }
     if (path === '/operations/dashboard') {
       if (runtimeFlags().datahub) {
