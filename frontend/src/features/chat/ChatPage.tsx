@@ -27,6 +27,7 @@ import {
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type {
+  ChatAuthorizedDiscovery,
   ChatEvidence,
   ChatMessage,
   ChatMode,
@@ -95,6 +96,7 @@ interface ChatViewMessage {
   role: 'user' | 'assistant'
   text: string
   evidence?: ChatEvidence[]
+  discovery?: ChatAuthorizedDiscovery
   route?: ChatRouteDecision
   workflow?: ChatWorkflowStep[]
 }
@@ -159,6 +161,7 @@ function historyMessage(message: ChatMessage): ChatViewMessage {
     role: message.role,
     text: message.content,
     evidence: message.evidence_json ?? undefined,
+    discovery: message.discovery_json ?? undefined,
     route: message.route ?? undefined,
     workflow: message.workflow,
   }
@@ -237,6 +240,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>()
   const [historyTab, setHistoryTab] = useState<'RECENT' | 'FAVORITES'>('RECENT')
   const [historyCollapsed, setHistoryCollapsed] = useState(false)
+  const [discoveryExpanded, setDiscoveryExpanded] = useState(false)
   const [evidenceExpanded, setEvidenceExpanded] = useState(false)
   const [selectedAssistantMessageId, setSelectedAssistantMessageId] = useState<string>()
   const [selectedEvidenceAssetId, setSelectedEvidenceAssetId] = useState<string>()
@@ -266,6 +270,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSessionId(undefined)
     setMessages([])
     setLiveWorkflow([])
+    setDiscoveryExpanded(false)
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setPersistence(undefined)
@@ -315,6 +320,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
     ? visibleEvidence
     : visibleEvidence.slice(0, evidencePreviewLimit)
   const evidencePreviewTruncated = visibleEvidence.length > displayedEvidence.length
+  const visibleDiscovery = visibleAssistant?.discovery
+  const displayedDiscovery = discoveryExpanded
+    ? visibleDiscovery?.items ?? []
+    : visibleDiscovery?.items.slice(0, evidencePreviewLimit) ?? []
   const visibleEvidenceGraph = useMemo(
     () => visibleAssistant?.route?.selected_mode === 'GRAPH'
       ? authorizedEvidenceGraph(visibleEvidence)
@@ -341,6 +350,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setSessionId(id)
       setMessages(restored)
       setSelectedAssistantMessageId(lastAssistant(restored)?.id)
+      setDiscoveryExpanded(false)
       setEvidenceExpanded(false)
       setStreamingAssistantMessageId(undefined)
       answerFocusEnabledRef.current = false
@@ -362,6 +372,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setLiveWorkflow([])
     setPersistence(undefined)
     setSelectedAssistantMessageId(undefined)
+    setDiscoveryExpanded(false)
+    setEvidenceExpanded(false)
     setSelectedEvidenceAssetId(undefined)
     setCopyFeedback(undefined)
     setStreamingAssistantMessageId(undefined)
@@ -433,6 +445,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const selectAssistantEvidence = (message: ChatViewMessage) => {
     if (message.role !== 'assistant') return
     setSelectedAssistantMessageId(message.id)
+    setDiscoveryExpanded(false)
     setEvidenceExpanded(false)
   }
 
@@ -479,6 +492,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setCopyFeedback(undefined)
     setPersistence(undefined)
     setSelectedAssistantMessageId(undefined)
+    setDiscoveryExpanded(false)
     setEvidenceExpanded(false)
     setSelectedEvidenceAssetId(undefined)
     setLiveWorkflow([])
@@ -532,6 +546,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
             id: result.response_message_id,
             text: result.answer,
             evidence: result.evidence,
+            discovery: result.discovery ?? undefined,
             route: result.route,
             workflow: result.workflow,
           }
@@ -542,6 +557,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
           role: 'assistant' as const,
           text: result.answer,
           evidence: result.evidence,
+          discovery: result.discovery ?? undefined,
           route: result.route,
           workflow: result.workflow,
         }]
@@ -918,6 +934,63 @@ export function ChatPage({ client }: { client: ApiClient }) {
                     graph={visibleEvidenceGraph}
                     height={250}
                   />
+                </section>
+              )}
+              {visibleDiscovery && (
+                <section className="chat-citation-section" aria-label="인가된 검색 후보">
+                  <button
+                    aria-expanded={visibleDiscovery.items.length > evidencePreviewLimit ? discoveryExpanded : undefined}
+                    className="chat-citation-header"
+                    disabled={visibleDiscovery.items.length <= evidencePreviewLimit}
+                    onClick={() => setDiscoveryExpanded((value) => !value)}
+                    type="button"
+                  >
+                    <span>인가된 검색 후보</span>
+                    <small>
+                      {visibleDiscovery.total_exact && visibleDiscovery.total !== null
+                        ? `전체 ${visibleDiscovery.total}개 중 ${visibleDiscovery.returned_count}개 조회`
+                        : `상위 ${visibleDiscovery.returned_count}개 조회`}
+                      {visibleDiscovery.truncated ? ' · 추가 결과 가능' : ' · 현재 범위 완료'}
+                    </small>
+                    {visibleDiscovery.items.length > evidencePreviewLimit && (
+                      discoveryExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+                    )}
+                  </button>
+                  <ol className="chat-evidence-list">
+                    {displayedDiscovery.map((item) => {
+                      const knowledgeEvidence = isKnowledgeEvidence(item)
+                      return <li key={item.chunk_id}>
+                        <button
+                          aria-label={`검색 후보 ${item.rank} ${item.name} 상세 열기`}
+                          disabled={knowledgeEvidence}
+                          onClick={(event) => {
+                            if (knowledgeEvidence) return
+                            evidenceTriggerRef.current = event.currentTarget
+                            setSelectedEvidenceAssetId(item.resource_id)
+                          }}
+                          type="button"
+                        >
+                          <span className="chat-evidence-rank">#{item.rank}</span>
+                          <span className="chat-evidence-copy">
+                            <strong>{item.name}</strong>
+                            <small>{knowledgeEvidence ? '지식 그래프 후보' : evidenceKindLabel(item.asset_kind)}</small>
+                          </span>
+                        </button>
+                      </li>
+                    })}
+                  </ol>
+                  {visibleDiscovery.items.length > evidencePreviewLimit && (
+                    <button
+                      aria-expanded={discoveryExpanded}
+                      className="chat-citation-header"
+                      onClick={() => setDiscoveryExpanded((value) => !value)}
+                      type="button"
+                    >
+                      {discoveryExpanded
+                        ? '검색 후보 처음 5개만 보기'
+                        : `검색 후보 나머지 ${visibleDiscovery.items.length - evidencePreviewLimit}개 보기`}
+                    </button>
+                  )}
                 </section>
               )}
               <section className="chat-citation-section">

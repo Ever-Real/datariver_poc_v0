@@ -308,6 +308,46 @@ describe('ChatPage', () => {
     expect(screen.queryByRole('button', { name: '근거 6 table_6 상세 열기' })).not.toBeInTheDocument()
   })
 
+  it('keeps bounded discovery results separate from citations without inventing a total', async () => {
+    const discoveryItems = Array.from({ length: 7 }, (_, index) => ({
+      ...response.evidence[0]!,
+      chunk_id: `discovery-${index + 1}`,
+      resource_id: `discovery-asset-${index + 1}`,
+      name: `authorized_asset_${index + 1}`,
+      rank: index + 1,
+    }))
+    const discoveryResponse: ChatResponse = {
+      ...response,
+      discovery: {
+        items: discoveryItems,
+        returned_count: 7,
+        limit: 8,
+        truncated: true,
+        total: null,
+        total_exact: false,
+        next_cursor: null,
+      },
+    }
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn(() => Promise.resolve(discoveryResponse))
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+
+    await screen.findByText('주문 데이터')
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '인가된 자산 후보를 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+
+    expect(await screen.findByText('상위 7개 조회 · 추가 결과 가능')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '검색 후보 나머지 2개 보기' }))
+    expect(screen.getByRole('button', { name: '검색 후보 7 authorized_asset_7 상세 열기' })).toBeInTheDocument()
+  })
+
   it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {
     let resolveResult: ((value: ChatResponse) => void) | undefined
     const { client: baseClient } = chatClient()
