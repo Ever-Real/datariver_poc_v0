@@ -238,6 +238,11 @@ def test_product_image_contains_the_runtime_mcl_modules() -> None:
     assert "COPY frontend/poc-mcl-runtime-failure.mjs ./poc-mcl-runtime-failure.mjs" in dockerfile
 
 
+def test_product_image_contains_the_airflow_control_runtime_module() -> None:
+    dockerfile = (ROOT / "deploy" / "poc" / "Dockerfile.example").read_text(encoding="utf-8")
+    assert "COPY frontend/poc-airflow-control.mjs ./poc-airflow-control.mjs" in dockerfile
+
+
 def test_product_image_contains_the_site_branding_runtime_module() -> None:
     dockerfile = (ROOT / "deploy" / "poc" / "Dockerfile.example").read_text(encoding="utf-8")
     assert "COPY frontend/poc-site-branding.mjs ./poc-site-branding.mjs" in dockerfile
