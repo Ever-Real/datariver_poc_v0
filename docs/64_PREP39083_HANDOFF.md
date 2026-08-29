@@ -2,8 +2,10 @@
 
 ## Fixed release identity and boundary
 
-The machine-readable accepted release is
-`deploy/prep39083/release.json`. At this checkpoint it identifies:
+The machine-readable manifest is `deploy/prep39083/release.json`. At this
+development checkpoint it identifies the most recently published intermediate
+artifact, not the final cumulative feature artifact and not an Actual PREP/OPS
+acceptance claim:
 
 ```text
 Product  1ad090d084b34906438e281ee208f9ec49d9a95f
@@ -12,6 +14,12 @@ Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
+
+Descendant development commits have changed runtime build inputs. This archive
+is therefore valid only for Product
+`1ad090d084b34906438e281ee208f9ec49d9a95f` and must not be reused, retagged, or
+promoted for the cumulative descendant source. `release.json` remains unchanged
+until a fresh exact cumulative Product artifact is built and verified.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
@@ -155,25 +163,27 @@ tokens, and connection strings are never diagnostic fields. The durable diagnost
 awaited and version-verified; it does not reset the ledger, checkpoint, or discovered source
 identity.
 
-## Current hotfix evidence
+## Published intermediate Wave C artifact and historical evidence
 
-The current development Handoff adds the locally verified Wave C knowledge workflows recorded
+The most recently published intermediate development Handoff adds the locally verified Wave C knowledge workflows recorded
 in [`docs/evidence/wave-c-knowledge-workflows/README.md`](evidence/wave-c-knowledge-workflows/README.md).
 Its exact ignored archive is pinned by `release.json`; TEST PC validation is
 `BLOCKED_EXTERNAL`, and this development Handoff does not claim Actual PREP or
 OPS execution. The canonical deployment command and all existing no-build,
 ownership, schema-integrity, provider, smoke, and non-destructive resume
-contracts remain unchanged.
+contracts remain unchanged. It excludes descendant Chat, Quality, Airflow,
+Admin, and MCP changes now present only in the cumulative development source.
 
 The preceding Wave B core user-workflow evidence remains at
 [`docs/evidence/wave-b-core-user-workflows/README.md`](evidence/wave-b-core-user-workflows/README.md).
 
-The current hotfix evidence is
+The predecessor portability evidence is
 [`docs/evidence/prep-unknown-state-portability-correction/README.md`](evidence/prep-unknown-state-portability-correction/README.md).
 It records accepted-state provenance, Product-owned PostgreSQL integrity, non-current Dataset
 exclusion, the K9 source-consistency fence, focused/source gates, the exact Product artifact, and
 the preserved TEST accepted-state redeploy result. The target is a TEST PC, not Actual PREP; this
-Handoff does not claim Actual PREP or OPS execution.
+Handoff does not claim current cumulative runtime acceptance, Actual PREP, or
+OPS execution.
 
 The preceding root-operator bootstrap evidence remains at
 [`docs/evidence/prep-root-operator-bootstrap-portability/README.md`](evidence/prep-root-operator-bootstrap-portability/README.md).

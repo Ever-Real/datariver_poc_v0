@@ -134,6 +134,29 @@ the bounded OCI/Docker archive, and emits the archive, SHA-256 sidecar and manif
 approved artifact medium and staged at its manifest-pinned ignored PREP path. Missing or mismatched
 artifacts are terminal pre-start failures; neither doctor nor deploy falls back to source build.
 
+## Cumulative Product closure and artifact invalidation
+
+An OCI artifact is exact only for its Product SHA. Any descendant change to a
+runtime input makes that earlier artifact ineligible for the descendant release,
+even when the original archive checksum and OCI identity remain valid. Never
+reuse, retag, or copy an earlier `release.json` identity onto a newer Product.
+
+For the continuous feature program, the final artifact is created only after:
+
+1. cumulative Product source closure;
+2. Chat full authorized-result exploration contract closure;
+3. Quality, Airflow, and MCP safety holds are recorded as `NEEDS_DECISION`
+   rather than falsely completed;
+4. required local integration and static gates pass;
+5. the Product checkpoint is clean and immutable; and
+6. TEST PC transport is available.
+
+Then build and verify one fresh linux/amd64 image, export its exact archive,
+create Evidence and Handoff-only commits with `runtime_input_diff=NONE`, push
+the exact Handoff to `origin/dev`, and perform the canonical accepted-state TEST
+redeploy. The previously published Wave C artifact is intermediate evidence only
+and is never reused as this final artifact.
+
 ## Controlled `dev` → `main` promotion
 
 Feature and Product development stays on `dev`; development pull requests normally target `dev`.

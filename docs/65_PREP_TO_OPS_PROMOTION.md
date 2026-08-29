@@ -10,6 +10,10 @@ The Web image accepted on PREP is itself the checksum-pinned Product archive pro
 DEV release host and named by the PREP Handoff. PREP verifies, loads and starts that artifact with
 no build/pull fallback; this later PREP→OPS export therefore preserves the same build lineage.
 
+An intermediate DEV archive is never OPS promotion authority. If runtime inputs
+changed after its Product checkpoint, it cannot be used for a descendant PREP
+or OPS release; a fresh exact artifact is required.
+
 ## 1. Export only after PREP acceptance
 
 On PREP, keep the accepted `datariver-prep39083` containers running and the checkout clean. The
