@@ -1789,6 +1789,20 @@ class ChatEvidenceRanking:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatAuthorizedDiscovery:
+    """One bounded, already-authorized retrieval window, separate from citations."""
+
+    items: tuple[ChatEvidence, ...]
+    rankings: tuple[ChatEvidenceRanking, ...]
+    returned_count: int
+    limit: int
+    truncated: bool
+    total: int | None = None
+    total_exact: bool = False
+    next_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChatVectorSearchResult:
     items: tuple[CatalogAssetIndex, ...]
     provider_invoked: bool
@@ -1834,6 +1848,7 @@ class ChatExchange:
     route: ChatRouteDecision = field(default_factory=default_chat_route)
     workflow: tuple[ChatWorkflowEvent, ...] = ()
     evidence_ranking: tuple[ChatEvidenceRanking, ...] = ()
+    discovery: ChatAuthorizedDiscovery | None = None
 
 
 @dataclass(frozen=True, slots=True)

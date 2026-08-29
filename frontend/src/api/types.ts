@@ -1399,12 +1399,23 @@ export interface ChatEvidence {
   }>
 }
 
+export interface ChatAuthorizedDiscovery {
+  items: ChatEvidence[]
+  returned_count: number
+  limit: number
+  truncated: boolean
+  total: number | null
+  total_exact: boolean
+  next_cursor: string | null
+}
+
 export interface ChatMessage {
   id: string
   session_id: string
   role: 'user' | 'assistant'
   content: string
   evidence_json: ChatEvidence[] | null
+  discovery_json: ChatAuthorizedDiscovery | null
   created_at: string
   route: ChatRouteDecision | null
   workflow: ChatWorkflowStep[]
@@ -1418,6 +1429,7 @@ export interface ChatResponse {
   route: ChatRouteDecision
   workflow: ChatWorkflowStep[]
   evidence: ChatEvidence[]
+  discovery: ChatAuthorizedDiscovery | null
 }
 
 export interface ApiProductVersion {

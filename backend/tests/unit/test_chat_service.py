@@ -1209,6 +1209,17 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     assert vector.limit == 8
     assert len(composer.evidence) == 2
     assert exchange.evidence == (composer.evidence[0],)
+    assert exchange.discovery is not None
+    assert tuple(item.name for item in exchange.discovery.items) == tuple(
+        item.name for item in candidates
+    )
+    assert exchange.discovery.returned_count == 8
+    assert exchange.discovery.limit == 8
+    assert exchange.discovery.truncated is True
+    assert exchange.discovery.total is None
+    assert exchange.discovery.total_exact is False
+    assert exchange.discovery.next_cursor is None
+    assert tuple(item.rank for item in exchange.discovery.rankings) == tuple(range(1, 9))
     assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
 
 

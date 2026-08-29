@@ -3616,7 +3616,7 @@ class ChatQueryRequest(BaseModel):
     graph_id: UUID | None = None
 
 
-class ChatEvidenceResponse(BaseModel):
+class ChatEvidencePayloadResponse(BaseModel):
     chunk_id: UUID
     resource_id: UUID
     classification: str
@@ -3632,8 +3632,38 @@ class ChatEvidenceResponse(BaseModel):
     effective_from: datetime
     effective_until: datetime | None
     extraction_method: str
+
+
+class ChatEvidenceResponse(ChatEvidencePayloadResponse):
     rank: int = Field(ge=1, le=10)
     retrieval_method: str = Field(min_length=1, max_length=100)
+
+
+class ChatAuthorizedDiscoveryItemResponse(ChatEvidencePayloadResponse):
+    rank: int = Field(ge=1, le=20)
+    retrieval_method: str = Field(min_length=1, max_length=100)
+
+
+class ChatAuthorizedDiscoveryResponse(BaseModel):
+    items: list[ChatAuthorizedDiscoveryItemResponse] = Field(max_length=20)
+    returned_count: int = Field(ge=0, le=20)
+    limit: int = Field(ge=1, le=20)
+    truncated: bool
+    total: int | None = Field(default=None, ge=0)
+    total_exact: bool = False
+    next_cursor: str | None = None
+
+    @model_validator(mode="after")
+    def validate_discovery_envelope(self) -> ChatAuthorizedDiscoveryResponse:
+        if self.returned_count != len(self.items):
+            raise ValueError("returned_count must equal the number of discovery items.")
+        if self.returned_count > self.limit:
+            raise ValueError("Discovery items must remain within the declared limit.")
+        if self.total_exact and self.total is None:
+            raise ValueError("An exact discovery total requires a provider-proven total.")
+        if self.total is not None and self.total < self.returned_count:
+            raise ValueError("Discovery total cannot be smaller than returned_count.")
+        return self
 
 
 class ChatRouteResponse(BaseModel):
@@ -3658,6 +3688,7 @@ class ChatQueryResponse(BaseModel):
     route: ChatRouteResponse
     workflow: list[ChatWorkflowEventResponse] = Field(max_length=20)
     evidence: list[ChatEvidenceResponse]
+    discovery: ChatAuthorizedDiscoveryResponse | None = None
 
 
 class ChatSessionResponse(BaseModel):
@@ -3676,6 +3707,7 @@ class ChatMessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     evidence_json: list[ChatEvidenceResponse] | None
+    discovery_json: ChatAuthorizedDiscoveryResponse | None = None
     created_at: datetime
     route: ChatRouteResponse | None = None
     workflow: list[ChatWorkflowEventResponse] = Field(default_factory=list, max_length=20)

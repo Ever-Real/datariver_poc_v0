@@ -18,6 +18,7 @@ from datariver.application.classification_access import (
 )
 from datariver.application.dto import (
     CatalogAssetIndex,
+    ChatAuthorizedDiscovery,
     ChatCompositionAudit,
     ChatConversationContextDraft,
     ChatConversationHistory,
@@ -500,6 +501,7 @@ class ChatService:
             external_stages=(),
         )
         graph_scope: KnowledgeGraphChatScope | None = None
+        discovery: ChatAuthorizedDiscovery | None = None
         external_stages: list[str] = []
         if context_compressor_invoked and self._composition_audit.external_service_used:
             external_stages.append("composition")
@@ -717,6 +719,17 @@ class ChatService:
                     route=route,
                     workflow=workflow,
                 )
+                if not rerank_failed:
+                    discovery_limit = self._discovery_limit(maximum_evidence)
+                    discovery = ChatAuthorizedDiscovery(
+                        items=ranked_evidence,
+                        rankings=rankings,
+                        returned_count=len(ranked_evidence),
+                        limit=discovery_limit,
+                        truncated=(
+                            len(ranked_evidence) < len(evidence) or len(evidence) >= discovery_limit
+                        ),
+                    )
                 # Discovery recall and answer context are separate bounds.  Every item in the
                 # wider candidate window has already passed the route's authorization checks;
                 # only this request-bounded prefix may reach composition or citation validation.
@@ -979,6 +992,7 @@ class ChatService:
                         route=route,
                         workflow=ephemeral_workflow,
                         evidence_ranking=rankings,
+                        discovery=discovery,
                     )
                 raise ConflictError(
                     "An active retention policy is required to persist Chat content."
@@ -1018,7 +1032,9 @@ class ChatService:
             )
             await uow.commit()
             workflow.append(persistence_event)
-            return exchange
+            # The wider discovery window is intentionally immediate-response state only.
+            # Citation persistence remains separate until a bounded durable contract is reviewed.
+            return replace(exchange, discovery=discovery)
 
     async def _read_conversation_context(
         self,

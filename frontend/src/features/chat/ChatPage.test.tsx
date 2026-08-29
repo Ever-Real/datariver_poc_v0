@@ -80,6 +80,7 @@ const response: ChatResponse = {
     rank: 1,
     retrieval_method: 'VECTOR',
   }],
+  discovery: null,
 }
 
 function chatClient() {
@@ -93,6 +94,7 @@ function chatClient() {
         role: 'user',
         content: '저장된 질문',
         evidence_json: null,
+        discovery_json: null,
         created_at: '2026-07-26T01:00:00Z',
         route: null,
         workflow: [],
@@ -103,6 +105,7 @@ function chatClient() {
         role: 'assistant',
         content: '저장된 답변',
         evidence_json: response.evidence,
+        discovery_json: null,
         created_at: '2026-07-26T01:00:01Z',
         route: response.route,
         workflow: response.workflow,

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import (
+    ChatAuthorizedDiscovery,
     ChatCompositionAudit,
     ChatEvidence,
     ChatEvidenceRanking,
@@ -66,6 +67,8 @@ from datariver.infrastructure.secrets import SecretResolver
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
+    ChatAuthorizedDiscoveryItemResponse,
+    ChatAuthorizedDiscoveryResponse,
     ChatEvidenceResponse,
     ChatFavoriteRequest,
     ChatMessageResponse,
@@ -328,6 +331,9 @@ async def _query_response(
             )
             for item in exchange.evidence
         ],
+        discovery=(
+            _discovery_response(exchange.discovery) if exchange.discovery is not None else None
+        ),
     )
 
 
@@ -590,6 +596,8 @@ def _message_response(item: ChatMessageRecord) -> ChatMessageResponse:
             )
             for index, evidence in enumerate(item.evidence, start=1)
         ],
+        # Citation rows are not a durable copy of the wider authorized discovery window.
+        discovery_json=None,
         created_at=item.created_at,
         route=(
             ChatRouteResponse(
@@ -609,6 +617,50 @@ def _message_response(item: ChatMessageRecord) -> ChatMessageResponse:
             )
             for event in item.workflow
         ],
+    )
+
+
+def _discovery_response(
+    discovery: ChatAuthorizedDiscovery,
+) -> ChatAuthorizedDiscoveryResponse:
+    rankings = {item.chunk_id: item for item in discovery.rankings}
+    return ChatAuthorizedDiscoveryResponse(
+        items=[
+            _discovery_item_response(item, ranking=rankings[item.chunk_id])
+            for item in discovery.items
+        ],
+        returned_count=discovery.returned_count,
+        limit=discovery.limit,
+        truncated=discovery.truncated,
+        total=discovery.total,
+        total_exact=discovery.total_exact,
+        next_cursor=discovery.next_cursor,
+    )
+
+
+def _discovery_item_response(
+    item: ChatEvidence,
+    *,
+    ranking: ChatEvidenceRanking,
+) -> ChatAuthorizedDiscoveryItemResponse:
+    return ChatAuthorizedDiscoveryItemResponse(
+        chunk_id=item.chunk_id,
+        resource_id=item.resource_id,
+        classification=item.classification.name,
+        system_id=item.system_id,
+        domain_id=item.domain_id,
+        owner_department_id=item.owner_department_id,
+        name=item.name,
+        description=item.description,
+        source_type=item.source_type,
+        source_locator=item.source_locator,
+        source_version=item.source_version,
+        content_hash=item.content_hash,
+        effective_from=item.effective_from,
+        effective_until=item.effective_until,
+        extraction_method=item.extraction_method,
+        rank=ranking.rank,
+        retrieval_method=ranking.retrieval_method,
     )
 
 
