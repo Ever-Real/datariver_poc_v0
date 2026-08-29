@@ -52,6 +52,7 @@ const modeOptions: ChatRouteOption[] = [
 ]
 
 const maximumQuestionCharacters = 12_000
+const evidencePreviewLimit = 5
 
 const modeLabels: Record<ChatMode, string> = {
   AUTO: '자동',
@@ -236,7 +237,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>()
   const [historyTab, setHistoryTab] = useState<'RECENT' | 'FAVORITES'>('RECENT')
   const [historyCollapsed, setHistoryCollapsed] = useState(false)
-  const [evidenceExpanded, setEvidenceExpanded] = useState(true)
+  const [evidenceExpanded, setEvidenceExpanded] = useState(false)
   const [selectedAssistantMessageId, setSelectedAssistantMessageId] = useState<string>()
   const [selectedEvidenceAssetId, setSelectedEvidenceAssetId] = useState<string>()
   const [streamingAssistantMessageId, setStreamingAssistantMessageId] = useState<string>()
@@ -310,6 +311,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
     () => [...(visibleAssistant?.evidence ?? [])].sort((left, right) => left.rank - right.rank),
     [visibleAssistant],
   )
+  const displayedEvidence = evidenceExpanded
+    ? visibleEvidence
+    : visibleEvidence.slice(0, evidencePreviewLimit)
+  const evidencePreviewTruncated = visibleEvidence.length > displayedEvidence.length
   const visibleEvidenceGraph = useMemo(
     () => visibleAssistant?.route?.selected_mode === 'GRAPH'
       ? authorizedEvidenceGraph(visibleEvidence)
@@ -336,6 +341,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setSessionId(id)
       setMessages(restored)
       setSelectedAssistantMessageId(lastAssistant(restored)?.id)
+      setEvidenceExpanded(false)
       setStreamingAssistantMessageId(undefined)
       answerFocusEnabledRef.current = false
       setPersistence(undefined)
@@ -427,6 +433,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const selectAssistantEvidence = (message: ChatViewMessage) => {
     if (message.role !== 'assistant') return
     setSelectedAssistantMessageId(message.id)
+    setEvidenceExpanded(false)
   }
 
   const cancelAnswerFocus = useCallback(() => {
@@ -472,6 +479,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setCopyFeedback(undefined)
     setPersistence(undefined)
     setSelectedAssistantMessageId(undefined)
+    setEvidenceExpanded(false)
     setSelectedEvidenceAssetId(undefined)
     setLiveWorkflow([])
     setStreamingAssistantMessageId(undefined)
@@ -914,18 +922,24 @@ export function ChatPage({ client }: { client: ApiClient }) {
               )}
               <section className="chat-citation-section">
                 <button
-                  aria-expanded={evidenceExpanded}
+                  aria-expanded={visibleEvidence.length > evidencePreviewLimit ? evidenceExpanded : undefined}
                   className="chat-citation-header"
+                  disabled={visibleEvidence.length <= evidencePreviewLimit}
                   onClick={() => setEvidenceExpanded((value) => !value)}
                   type="button"
                 >
                   <span>인가된 인용 근거</span>
-                  <small>{visibleEvidence.length} items</small>
-                  {evidenceExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <small>
+                    {evidencePreviewTruncated
+                      ? `총 ${visibleEvidence.length}개 중 ${displayedEvidence.length}개 표시 · 더 있음`
+                      : `총 ${visibleEvidence.length}개 모두 표시`}
+                  </small>
+                  {visibleEvidence.length > evidencePreviewLimit && (
+                    evidenceExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+                  )}
                 </button>
-                {evidenceExpanded && (
                 <ol className="chat-evidence-list">
-                  {visibleEvidence.map((item) => {
+                  {displayedEvidence.map((item) => {
                     const description = evidenceDescriptionForDisplay(item.description)
                     const knowledgeEvidence = isKnowledgeEvidence(item)
                     return (
@@ -961,6 +975,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
                     </li>
                   )}
                 </ol>
+                {visibleEvidence.length > evidencePreviewLimit && (
+                  <button
+                    aria-expanded={evidenceExpanded}
+                    className="chat-citation-header"
+                    onClick={() => setEvidenceExpanded((value) => !value)}
+                    type="button"
+                  >
+                    {evidenceExpanded ? '처음 5개만 보기' : `나머지 ${visibleEvidence.length - evidencePreviewLimit}개 보기`}
+                  </button>
                 )}
               </section>
           </div>

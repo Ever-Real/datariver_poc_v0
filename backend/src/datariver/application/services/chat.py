@@ -78,6 +78,7 @@ CONTEXT_DEGRADED_PREFIX = (
 )
 _MAXIMUM_CHAT_ANSWER_CHARACTERS = 4_000
 _MAXIMUM_CHAT_CONTEXT_USER_TURNS = 100
+_MINIMUM_CHAT_DISCOVERY_CANDIDATES = 8
 _MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS = 4_000
 _MAXIMUM_CATALOG_EVIDENCE_DESCRIPTION_CHARACTERS = 1_000
 _INTERNAL_EVIDENCE_MARKUP = re.compile(r"\[\[[^\]\r\n]*\]\]")
@@ -716,6 +717,11 @@ class ChatService:
                     route=route,
                     workflow=workflow,
                 )
+                # Discovery recall and answer context are separate bounds.  Every item in the
+                # wider candidate window has already passed the route's authorization checks;
+                # only this request-bounded prefix may reach composition or citation validation.
+                ranked_evidence = ranked_evidence[:maximum_evidence]
+                rankings = rankings[:maximum_evidence]
                 if reranker_invoked:
                     external_stages.append("reranker")
                 if rerank_failed:
@@ -1157,13 +1163,14 @@ class ChatService:
         tuple[str, ...],
         KnowledgeGraphChatScope | None,
     ]:
+        discovery_limit = self._discovery_limit(maximum_evidence)
         if route.selected_mode is ChatRetrievalMode.GRAPH:
             evidence, scope = await self._retrieve_graph(
                 workspace_id=workspace_id,
                 subject=subject,
                 allowed_classifications=allowed_classifications,
                 question=question,
-                maximum_evidence=maximum_evidence,
+                maximum_evidence=discovery_limit,
                 environment=environment,
                 request_id=request_id,
                 parent_resource_id=parent_resource_id,
@@ -1179,7 +1186,7 @@ class ChatService:
                     subject=retrieval_subject,
                     access=access,
                     question=question,
-                    limit=maximum_evidence,
+                    limit=discovery_limit,
                 )
                 catalog_items = vector_result.items
                 if vector_result.provider_invoked:
@@ -1190,7 +1197,7 @@ class ChatService:
                     environment=environment,
                     request_id=f"{request_id}:governance-retrieval",
                     question=question,
-                    limit=maximum_evidence,
+                    limit=discovery_limit,
                 )
                 retrieval_stages = ("embedding",)
         else:
@@ -1201,7 +1208,7 @@ class ChatService:
                 query=self._search_term(question),
                 filters={},
                 cursor=None,
-                limit=maximum_evidence,
+                limit=discovery_limit,
             )
             catalog_items = page.items
         catalog_evidence = await self._authorize_catalog_items(
@@ -1221,10 +1228,19 @@ class ChatService:
             self._fuse_evidence(
                 catalog_evidence,
                 eligible_governance,
-                limit=maximum_evidence,
+                limit=discovery_limit,
             ),
             retrieval_stages,
             None,
+        )
+
+    @staticmethod
+    def _discovery_limit(maximum_evidence: int) -> int:
+        """Return a bounded recall window independent from the answer-context limit."""
+
+        return min(
+            max(maximum_evidence * 4, _MINIMUM_CHAT_DISCOVERY_CANDIDATES),
+            MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
 
     @staticmethod
@@ -1234,7 +1250,7 @@ class ChatService:
         *,
         limit: int,
     ) -> tuple[ChatEvidence, ...]:
-        """Interleave unique evidence without expanding the request evidence bound."""
+        """Interleave unique authorized evidence without expanding the discovery bound."""
 
         if limit <= 0:
             return ()

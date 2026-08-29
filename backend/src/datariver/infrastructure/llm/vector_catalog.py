@@ -52,7 +52,9 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             question=question,
             candidate_limit=candidate_limit,
         )
-        candidates = tuple(page.items)
+        # The catalog port is expected to honor its limit, but keep the provider batch bounded
+        # even if an implementation returns an oversized page.
+        candidates = tuple(page.items[:candidate_limit])
         if not candidates:
             return ChatVectorSearchResult(items=(), provider_invoked=False)
         pages = (

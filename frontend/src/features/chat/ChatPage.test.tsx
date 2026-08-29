@@ -270,6 +270,41 @@ describe('ChatPage', () => {
     })
   })
 
+  it('previews five authorized citations and states the truthful total before expansion', async () => {
+    const expandedResponse: ChatResponse = {
+      ...response,
+      evidence: Array.from({ length: 7 }, (_, index) => ({
+        ...response.evidence[0]!,
+        chunk_id: `chunk-${index + 1}`,
+        resource_id: `asset-${index + 1}`,
+        name: `table_${index + 1}`,
+        rank: index + 1,
+      })),
+    }
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn(() => Promise.resolve(expandedResponse))
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+
+    await screen.findByText('주문 데이터')
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '인가된 테이블을 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+
+    expect(await screen.findByText('총 7개 중 5개 표시 · 더 있음')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '근거 5 table_5 상세 열기' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '근거 6 table_6 상세 열기' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '나머지 2개 보기' }))
+    expect(screen.getByText('총 7개 모두 표시')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '근거 7 table_7 상세 열기' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '처음 5개만 보기' }))
+    expect(screen.getByText('총 7개 중 5개 표시 · 더 있음')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '근거 6 table_6 상세 열기' })).not.toBeInTheDocument()
+  })
+
   it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {
     let resolveResult: ((value: ChatResponse) => void) | undefined
     const { client: baseClient } = chatClient()
@@ -789,7 +824,7 @@ describe('ChatPage', () => {
     expect(screen.getByLabelText('질문 응답 Workflow')).toHaveTextContent(
       '사내 근거와 분리된 일반 지식 답변을 작성했습니다.',
     )
-    expect(screen.getByText('0 items')).toBeInTheDocument()
+    expect(screen.getByText('총 0개 모두 표시')).toBeInTheDocument()
   })
 
   it.each([

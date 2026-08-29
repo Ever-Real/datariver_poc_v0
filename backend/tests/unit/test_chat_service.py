@@ -999,6 +999,7 @@ class CapturingVectorCatalog:
         self.access: ClassificationAccessSnapshot | None = None
         self.calls = 0
         self.question: str | None = None
+        self.limit: int | None = None
 
     async def search(
         self,
@@ -1008,10 +1009,11 @@ class CapturingVectorCatalog:
         question: str,
         limit: int,
     ) -> ChatVectorSearchResult:
-        del subject, limit
+        del subject
         self.calls += 1
         self.access = access
         self.question = question
+        self.limit = limit
         return ChatVectorSearchResult(
             items=(self.item,),
             provider_invoked=self.provider_invoked,
@@ -1150,6 +1152,66 @@ def test_chat_fusion_fills_the_bound_from_the_remaining_source() -> None:
     assert ChatService._fuse_evidence((), governance, limit=3) == governance[:3]
 
 
+def test_chat_discovery_window_is_separate_and_globally_bounded() -> None:
+    assert ChatService._discovery_limit(1) == 8
+    assert ChatService._discovery_limit(2) == 8
+    assert ChatService._discovery_limit(5) == MAXIMUM_CHAT_VECTOR_CANDIDATES
+    assert ChatService._discovery_limit(10) == MAXIMUM_CHAT_VECTOR_CANDIDATES
+
+
+async def test_vector_discovery_window_is_broader_than_bounded_answer_context() -> None:
+    workspace_id = uuid4()
+    first = asset(workspace_id)
+    candidates = tuple(
+        replace(
+            first,
+            asset_id=uuid4(),
+            external_urn=f"urn:li:dataset:test-{index}",
+            name=f"Generic asset {index}",
+        )
+        for index in range(8)
+    )
+    candidates = (first, *candidates[1:])
+
+    class CandidateWindow:
+        def __init__(self) -> None:
+            self.limit: int | None = None
+
+        async def search(self, **values: Any) -> ChatVectorSearchResult:
+            self.limit = cast(int, values["limit"])
+            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+
+    vector = CandidateWindow()
+    composer = CapturingComposer()
+    binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    exchange = await chat_service(
+        catalog_index=FakeIndex(first),
+        vector_catalog=vector,
+        composer=composer,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(binding)),
+        ),
+        inference_runtime_bindings=(binding,),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="인가된 자산 후보를 찾아줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-separated-discovery-context",
+        requested_mode=ChatRetrievalMode.VECTOR,
+    )
+
+    assert vector.limit == 8
+    assert len(composer.evidence) == 2
+    assert exchange.evidence == (composer.evidence[0],)
+    assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
+
+
 async def test_vector_provider_receives_only_exact_profile_bound_classifications() -> None:
     workspace_id = uuid4()
     profile_id = uuid4()
@@ -1201,6 +1263,7 @@ async def test_vector_provider_receives_only_exact_profile_bound_classifications
     )
 
     assert vector.access is not None
+    assert vector.limit == 8
     assert vector.access.rule_for(Classification.CONFIDENTIAL).search_mode is SearchMode.DENY
     assert exchange.evidence
     assert store.saved_composition_audit is not None
