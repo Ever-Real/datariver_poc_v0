@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events'
 import process from 'node:process'
 import { after, before, test } from 'node:test'
 import { URL, URLSearchParams } from 'node:url'
+import { approvedDefaultFeatureSecurityPolicy } from './poc-feature-security-policy.mjs'
 
 let server
 let origin
@@ -2769,14 +2770,17 @@ test('MCP adapter bounded implementation', async () => {
   const projection = makeChangeHistoryProjection({ sourceHashes: [], configuredCheckpointHash: null })
   projection.access.value.active_subject_id = 'admin-sub'
   projection.access.value.users.push({ subject_id: mcpSubjectId, role: 'developer', active: true, provider_owner_refs: [] })
-  projection.access.value.users.push({ subject_id: 'mcp-human-subject', role: 'developer', active: true, provider_owner_refs: [] })
+  projection.access.value.users.push({ subject_id: 'mcp-human-subject', role: 'data_steward', active: true, provider_owner_refs: [] })
   projection.access.value.users.push({ subject_id: 'other', role: 'developer', active: true, provider_owner_refs: [] })
   const grantedTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.authorized_table,PROD)'
+  const serviceOnlyTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.service_only_table,PROD)'
+  const userOnlyTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.user_only_table,PROD)'
   const deniedTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.denied_identity_must_not_leak,PROD)'
   const deniedMarker = 'mcp-denied-identity-must-not-leak'
   const managedGraphId = '01a02d2a-f8a0-7658-b5da-890eccdccf44'
   let mcpGrants = [{ active: true, tableUrn: grantedTableUrn }]
   let humanGrants = [{ active: true, tableUrn: grantedTableUrn }]
+  let featureSecurityPolicyValue = null
   let writeCalled = false
   let managedAssetsFailure = null
   const mcpReadReceipts = new Map()
@@ -2817,7 +2821,9 @@ test('MCP adapter bounded implementation', async () => {
         active_manifest: { node_count: 3, edge_count: 2, model_version: 2 },
       }]
     },
-    async readFeatureSecurityPolicy() { return null },
+    async readFeatureSecurityPolicy() {
+      return { value: structuredClone(featureSecurityPolicyValue), version: featureSecurityPolicyValue ? 1 : 0 }
+    },
     async readLocalCredentialForSubject(subjectId) { return mcpCredentials.get(subjectId) || null },
     async readMcpReadReceipt(receiptId) { return structuredClone(mcpReadReceipts.get(receiptId) || null) },
     async appendMcpReadReceipt(receipt) {
@@ -2882,7 +2888,18 @@ test('MCP adapter bounded implementation', async () => {
 
   let lastScope = null
   let lastArgs = null
-  const mcpKnowledgeChatScope = async (ctx, g, r) => {
+  const knowledgeScopeCalls = []
+  const knowledgeSnapshotCalls = []
+  let knowledgeScopeAbortObserved = false
+  let knowledgeSnapshotAbortObserved = false
+  const mcpKnowledgeChatScope = async (ctx, g, r, signal) => {
+    knowledgeScopeCalls.push({ subjectId: ctx.principal.subjectId, graphId: g })
+    if (g === 'scope-timeout') {
+      return new Promise((resolve, reject) => signal?.addEventListener('abort', () => {
+        knowledgeScopeAbortObserved = true
+        reject(Object.assign(new Error('aborted scope'), { name: 'AbortError' }))
+      }, { once: true }))
+    }
     lastScope = { principal: ctx.principal, knowledgeAdapter: ctx.knowledgeAdapter, graphId: g, studioReleaseId: r }
     if (g === 'unauth') throw Object.assign(new Error('Nope'), { statusCode: 404, code: 'NOT_FOUND' })
     if (g === 'fail' || g === 'graph-provider-unavailable') throw new Error(`Provider unavailable: ${providerBody}; ${providerToken}; ${mcpToken}`)
@@ -2900,7 +2917,14 @@ test('MCP adapter bounded implementation', async () => {
     }
     return { graphId: g, studioReleaseId: r }
   }
-  const mcpKnowledgeChatSnapshot = async (s) => {
+  const mcpKnowledgeChatSnapshot = async (s, maximumNodes, _seed, _hops, _visualization, signal) => {
+    knowledgeSnapshotCalls.push({ graphId: s.graphId, maximumNodes })
+    if (s.graphId === 'snapshot-timeout') {
+      return new Promise((resolve, reject) => signal?.addEventListener('abort', () => {
+        knowledgeSnapshotAbortObserved = true
+        reject(Object.assign(new Error('aborted snapshot'), { name: 'AbortError' }))
+      }, { once: true }))
+    }
     if (s.graphId === 'authorization-filtered') return authorizedSnapshot(s)
     if (s.graphId === 'extra') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false, extraKey: providerToken }
     if (s.graphId === 'mismatch') return { release: releaseFixture({ graphId: 'wrong' }), nodes: nodeFixture, edges: edgeFixture, filtered: false }
@@ -3119,6 +3143,8 @@ test('MCP adapter bounded implementation', async () => {
       'knowledge_release_graphrag',
     ])
     assert.ok(list.body.result.tools.every((tool) => tool.outputSchema.additionalProperties === false))
+    assert.equal(list.body.result.tools[0].description, 'Authorization-filtered metadata entity resolution and semantic search through the shared DataHub core service')
+    assert.equal(list.body.result.tools[3].inputSchema.properties.maximum_nodes.maximum, 200)
     const relSchema0 = list.body.result.tools[3].outputSchema.properties.release
     const nodeSchema0 = list.body.result.tools[3].outputSchema.properties.nodes.items
     const edgeSchema0 = list.body.result.tools[3].outputSchema.properties.edges.items
@@ -3210,6 +3236,7 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(snap.body.result.structuredContent.release.graph_id, 'g1')
     assert.equal(snap.body.result.structuredContent.release.content_hash, 'hash1')
     assert.equal(snap.body.result.structuredContent.nodes[0].provenance[0].source_version, 'sv1')
+    assert.equal(knowledgeSnapshotCalls.at(-1).maximumNodes, 200)
 
     const traversal = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_lineage_traversal', arguments: { graph_id: 'g1', release_id: 'r1', start_node_id: 'n1' } }, id: 11 }, h)
     assert.equal(traversal.status, 200)
@@ -3336,20 +3363,64 @@ test('MCP adapter bounded implementation', async () => {
       'knowledge_release_snapshot',
       'knowledge_release_graphrag',
     ])
+    assert.match(userTools.body.result.tools[0].description, /at most 20/)
+    assert.equal(userTools.body.result.tools[3].inputSchema.properties.maximum_nodes.maximum, 20)
+
+    const deniedPolicy = approvedDefaultFeatureSecurityPolicy()
+    featureSecurityPolicyValue = {
+      ...deniedPolicy,
+      cells: deniedPolicy.cells.map((cell) => (
+        cell.feature === 'knowledge' && cell.role === 'data_steward' && cell.grade === 'normal'
+          ? { ...cell, allow: false }
+          : cell
+      )),
+    }
+    const deniedScopeCallsBefore = knowledgeScopeCalls.length
+    const deniedSnapshotCallsBefore = knowledgeSnapshotCalls.length
+    const policyDenied = await postJson('/api/v1/mcp/user', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'authorization-filtered', release_id: 'r1' } }, id: 29,
+    }, { ...userAuthHeaders, 'Idempotency-Key': 'mcp-user-policy-denied' })
+    assert.equal(policyDenied.status, 403)
+    assert.equal((policyDenied.error || policyDenied.body).code, 'MCP_TOOL_FORBIDDEN')
+    assert.equal(knowledgeScopeCalls.length, deniedScopeCallsBefore)
+    assert.equal(knowledgeSnapshotCalls.length, deniedSnapshotCallsBefore)
+    featureSecurityPolicyValue = null
+
+    const overBoundScopeCallsBefore = knowledgeScopeCalls.length
+    const overBoundSnapshotCallsBefore = knowledgeSnapshotCalls.length
+    const overBoundSnapshot = await postJson('/api/v1/mcp/user', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'authorization-filtered', release_id: 'r1', maximum_nodes: 21 } }, id: 28,
+    }, { ...userAuthHeaders, 'Idempotency-Key': 'mcp-user-snapshot-over-bound' })
+    assert.equal(overBoundSnapshot.body?.error?.code, -32602, JSON.stringify(overBoundSnapshot))
+    assert.equal(knowledgeScopeCalls.length, overBoundScopeCallsBefore)
+    assert.equal(knowledgeSnapshotCalls.length, overBoundSnapshotCallsBefore)
 
     const userRequest = {
       jsonrpc: '2.0', method: 'tools/call',
       params: { name: 'metadata_search', arguments: { query: 'authorized table', limit: 3 } }, id: 31,
     }
+    mcpGrants = [
+      { active: true, tableUrn: grantedTableUrn },
+      { active: true, tableUrn: serviceOnlyTableUrn },
+    ]
+    humanGrants = [
+      { active: true, tableUrn: grantedTableUrn },
+      { active: true, tableUrn: userOnlyTableUrn },
+    ]
+    const userSearchCallsBefore = metadataSearchCalls.length
     const userHeaders = { ...userAuthHeaders, 'Idempotency-Key': 'mcp-user-read-1' }
     const userRead = await postJson('/api/v1/mcp/user', userRequest, userHeaders)
     assert.equal(userRead.status, 200)
     assert.deepEqual(userRead.body.result.structuredContent.items.map((item) => item.id), [grantedTableUrn])
     assert.equal(Object.hasOwn(userRead.body.result.structuredContent, 'total'), false)
-    assert.deepEqual(metadataSearchCalls.slice(-2).map((call) => [call.principal.subjectId, call.limit]), [
-      [mcpSubjectId, 20],
-      ['mcp-human-subject', 20],
-    ])
+    assert.equal(metadataSearchCalls.length, userSearchCallsBefore + 1)
+    assert.equal(metadataSearchCalls.at(-1).principal.subjectId, 'mcp-human-subject')
+    assert.equal(metadataSearchCalls.at(-1).limit, 20)
+    assert.deepEqual([...metadataSearchCalls.at(-1).principal.activeTableGrantUrns], [grantedTableUrn])
+    assert.equal(metadataSearchCalls.at(-1).principal.activeTableGrantUrns.has(serviceOnlyTableUrn), false)
+    assert.equal(metadataSearchCalls.at(-1).principal.activeTableGrantUrns.has(userOnlyTableUrn), false)
     assert.equal(userRead.body.result._meta.audit_receipt.outcome, 'SUCCEEDED')
     assert.equal(userRead.body.result._meta.audit_receipt.replayed, false)
     const receipt = [...mcpReadReceipts.values()][0]
@@ -3372,6 +3443,7 @@ test('MCP adapter bounded implementation', async () => {
       'table-allowed', 'column-allowed', 'semantic-shared',
     ])
     assert.deepEqual(userSnapshot.body.result.structuredContent.edges.map((edge) => edge.id), ['allowed-to-hub'])
+    assert.equal(knowledgeSnapshotCalls.at(-1).maximumNodes, 20)
     assertNoSensitiveLeak(userSnapshot)
 
     const userRag = await postJson('/api/v1/mcp/user', {
@@ -3390,10 +3462,24 @@ test('MCP adapter bounded implementation', async () => {
     assertInternalError(citationLeak)
     assertNoSensitiveLeak(citationLeak)
 
+    const scopeTimeout = await postJson('/api/v1/mcp/user', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'scope-timeout', release_id: 'r1' } }, id: 42,
+    }, { ...userAuthHeaders, 'Idempotency-Key': 'mcp-user-scope-timeout' })
+    assertInternalError(scopeTimeout)
+    assert.equal(knowledgeScopeAbortObserved, true)
+
+    const snapshotTimeout = await postJson('/api/v1/mcp/user', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'snapshot-timeout', release_id: 'r1' } }, id: 43,
+    }, { ...userAuthHeaders, 'Idempotency-Key': 'mcp-user-snapshot-timeout' })
+    assertInternalError(snapshotTimeout)
+    assert.equal(knowledgeSnapshotAbortObserved, true)
+
     const replayCallsBefore = metadataSearchCalls.length
     const replay = await postJson('/api/v1/mcp/user', userRequest, userHeaders)
     assert.equal(replay.body.result._meta.audit_receipt.replayed, true)
-    assert.equal(metadataSearchCalls.length, replayCallsBefore + 2)
+    assert.equal(metadataSearchCalls.length, replayCallsBefore + 1)
 
     humanGrants = []
     const revocationCallsBefore = metadataSearchCalls.length

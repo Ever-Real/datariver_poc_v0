@@ -102,7 +102,7 @@ import {
   datahubDatasetKind,
   isCurrentDatahubTable,
 } from './poc-datahub-current-table.mjs'
-import { isCanonicalDatahubDatasetUrn } from './poc-table-data-access.mjs'
+import { isCanonicalDatahubDatasetUrn, tablePolicyCellKey } from './poc-table-data-access.mjs'
 import {
   POC_FEATURE_SECURITY_POLICY_SCOPE,
   applyFeatureSecurityPolicyUpdate,
@@ -7544,13 +7544,14 @@ async function bulkCandidatePreview(entry, candidate) {
   }
 }
 
-async function neo4jQuery(statement, parameters = {}, timeoutMs = providerTimeoutMs) {
+async function neo4jQuery(statement, parameters = {}, timeoutMs = providerTimeoutMs, signal) {
   if (!neo4j) throw Object.assign(new Error('Neo4j is not configured.'), { statusCode: 503 })
   const response = await providerFetch(joinProviderUrl(neo4j.url, '/db/neo4j/tx/commit'), {
     method: 'POST',
     headers: { Authorization: basicAuthorization(neo4j), 'Content-Type': 'application/json' },
     body: JSON.stringify({ statements: [{ statement, parameters, resultDataContents: ['row'] }] }),
     timeoutMs,
+    signal,
   })
   await requireOk(response, 'Neo4j')
   const payload = await response.json()
@@ -8455,15 +8456,18 @@ function knowledgeChatVerifiedEvidence(jobs) {
   }
 }
 
-async function knowledgeChatScope(context, graphIdValue, releaseIdValue) {
+async function knowledgeChatScope(context, graphIdValue, releaseIdValue, signal) {
+  signal?.throwIfAborted()
   const graphId = boundedString(graphIdValue, 255).trim()
   const requestedReleaseId = releaseIdValue == null ? null : boundedString(releaseIdValue, 255).trim()
   if (!graphId || (releaseIdValue != null && !requestedReleaseId)) throw knowledgeChatNotFound()
   if (typeof context.stateStore.getK9ManagedGraphAsset === 'function') {
     const managedRow = await context.stateStore.getK9ManagedGraphAsset(graphId)
+    signal?.throwIfAborted()
     if (managedRow) return managedK9ScopeFromRow(context, managedRow, requestedReleaseId)
   }
   const coreSnapshot = await context.stateStore.read('core')
+  signal?.throwIfAborted()
   const core = coreSnapshot.value && typeof coreSnapshot.value === 'object' && !Array.isArray(coreSnapshot.value)
     ? coreSnapshot.value
     : {}
@@ -8478,6 +8482,7 @@ async function knowledgeChatScope(context, graphIdValue, releaseIdValue) {
   let projectionScope
   try {
     projectionScope = await knowledgeProjectionScope(context, draft.id)
+    signal?.throwIfAborted()
   } catch (error) {
     if ([403, 404].includes(Number(error?.statusCode))) throw knowledgeChatNotFound()
     throw error
@@ -8490,6 +8495,7 @@ async function knowledgeChatScope(context, graphIdValue, releaseIdValue) {
     .filter((job) => job?.state === 'PROJECTED'
       && job?.graph_id === graphId
       && job?.release_id === projectionScope.studioReleaseId)
+  signal?.throwIfAborted()
   if (!jobs.length) throw knowledgeChatNotFound()
   const verified = knowledgeChatVerifiedEvidence(jobs)
   return Object.freeze({
@@ -9049,7 +9055,8 @@ export function selectManagedKnowledgeVisualization(canonicalRelease, {
   }
 }
 
-async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeId = null, managedMaximumHops = 3, managedVisualization) {
+async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeId = null, managedMaximumHops = 3, managedVisualization, signal) {
+  signal?.throwIfAborted()
   const boundedMaximumNodes = Math.max(1, Math.min(200, Number(maximumNodes) || 200))
   if (scope.managed) {
     let expectedNodes
@@ -9100,7 +9107,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
     `, {
       namespace: scope.namespace,
       nodeIds: [...expectedNodeIds],
-    })
+    }, providerTimeoutMs, signal)
     const edgeRows = expectedEdges.length ? await neo4jQuery(`
       MATCH (source:K9Node { namespace: $namespace })-[relation:K9Edge]->(target:K9Node { namespace: $namespace })
       WHERE source.id IN $nodeIds AND target.id IN $nodeIds
@@ -9109,7 +9116,8 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
     `, {
       namespace: scope.namespace,
       nodeIds: [...expectedNodeIds],
-    }) : []
+    }, providerTimeoutMs, signal) : []
+    signal?.throwIfAborted()
     const readBackNodes = nodeRows.map(({ row }) => ({
       id: row[0],
       type: row[1],
@@ -9180,7 +9188,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
     releaseId: scope.studioReleaseId,
     nodeEvidence: boundedNodeEvidence,
     maximumNodes: boundedMaximumNodes,
-  })
+  }, providerTimeoutMs, signal)
   const classification = securityGradeRank(scope.draft.classification)
   const nodes = nodeRows.map(({ row }) => ({
     id: row[0],
@@ -9219,7 +9227,8 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
     releaseId: scope.studioReleaseId,
     nodeIds,
     relationEvidence: boundedRelationEvidence,
-  })
+  }, providerTimeoutMs, signal)
+  signal?.throwIfAborted()
   const edges = edgeRows.map(({ row }) => ({
     id: row[0],
     source_id: row[1],
@@ -9449,7 +9458,7 @@ async function knowledgeGraphRag(scope, body, signal) {
     || !Number.isSafeInteger(maximumNodes) || maximumNodes < 1 || maximumNodes > 20) {
     throw knowledgeProjectionError(400, 'KNOWLEDGE_TRAVERSAL_BOUNDS_INVALID', 'Knowledge Chat traversal must use 1-3 hops and 1-20 nodes.')
   }
-  const snapshot = await knowledgeChatSnapshot(scope, 200, startNodeId, maximumHops)
+  const snapshot = await knowledgeChatSnapshot(scope, 200, startNodeId, maximumHops, undefined, signal)
   const traversal = knowledgeChatTraversal(snapshot, {
     startNodeId, question, direction, edgeTypes, maximumHops, maximumNodes,
   })
@@ -9538,11 +9547,73 @@ function assertMcpReadToolAuthorized(context, toolName) {
   if (!capability || !context.principal.capabilitySet.has(capability)) {
     throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
   }
+  if (capability === 'knowledge.read' && context.knowledgeAdapter !== 'MCP') {
+    const maximumRank = securityGradeRank(context.principal.maxSecurityGrade)
+    const knowledgePolicyAllows = ['normal', 'credential', 'restricted']
+      .slice(0, maximumRank + 1)
+      .some((grade) => context.principal.allowedFeatureSecurityCells.has(
+        tablePolicyCellKey('knowledge', context.principal.role, grade),
+      ))
+    if (!knowledgePolicyAllows) {
+      throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
+    }
+  }
 }
 
 function intersectMcpAssets(serviceAssets, userAssets) {
   const userIds = new Set(userAssets.map((asset) => asset.id))
   return serviceAssets.filter((asset) => userIds.has(asset.id))
+}
+
+function intersectMcpPrincipalSets(left, right) {
+  return new Set([...left].filter((value) => right.has(value)))
+}
+
+function intersectMcpPrincipals(servicePrincipal, userPrincipal) {
+  const serviceIsAdmin = servicePrincipal.role === 'admin'
+  const userIsAdmin = userPrincipal.role === 'admin'
+  const serviceGrade = serviceIsAdmin ? null : securityGradeRank(servicePrincipal.maxSecurityGrade)
+  const userGrade = userIsAdmin ? null : securityGradeRank(userPrincipal.maxSecurityGrade)
+  const capabilitySet = intersectMcpPrincipalSets(servicePrincipal.capabilitySet, userPrincipal.capabilitySet)
+  const role = serviceIsAdmin
+    ? userPrincipal.role
+    : userIsAdmin ? servicePrincipal.role : userPrincipal.role
+  const systemIds = servicePrincipal.globalSystemRead
+    ? new Set(userPrincipal.systemIds)
+    : userPrincipal.globalSystemRead
+      ? new Set(servicePrincipal.systemIds)
+      : intersectMcpPrincipalSets(servicePrincipal.systemIds, userPrincipal.systemIds)
+  const activeTableGrantUrns = serviceIsAdmin
+    ? new Set(userPrincipal.activeTableGrantUrns)
+    : userIsAdmin
+      ? new Set(servicePrincipal.activeTableGrantUrns)
+      : intersectMcpPrincipalSets(servicePrincipal.activeTableGrantUrns, userPrincipal.activeTableGrantUrns)
+  const allowedFeatureSecurityCells = new Set()
+  for (const cell of servicePrincipal.allowedFeatureSecurityCells) {
+    const [feature, cellRole, grade] = String(cell).split('\u0000')
+    if (cellRole === servicePrincipal.role
+      && userPrincipal.allowedFeatureSecurityCells.has(
+        tablePolicyCellKey(feature, userPrincipal.role, grade),
+      )) {
+      allowedFeatureSecurityCells.add(tablePolicyCellKey(feature, role, grade))
+    }
+  }
+  return Object.freeze({
+    ...userPrincipal,
+    role,
+    maxSecurityGrade: serviceIsAdmin
+      ? userPrincipal.maxSecurityGrade
+      : userIsAdmin || serviceGrade <= userGrade
+        ? servicePrincipal.maxSecurityGrade
+        : userPrincipal.maxSecurityGrade,
+    capabilities: Object.freeze([...capabilitySet].sort()),
+    capabilitySet,
+    systemIds,
+    globalSystemRead: servicePrincipal.globalSystemRead === true && userPrincipal.globalSystemRead === true,
+    globalSystemMutation: false,
+    activeTableGrantUrns,
+    allowedFeatureSecurityCells,
+  })
 }
 
 function intersectMcpKnowledgeScopes(serviceScope, userScope) {
@@ -9639,10 +9710,9 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
   if (profile.default_workspace_id !== mcpWorkspaceId) {
     return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'Configured MCP workspace does not match the subject default workspace.')
   }
-  const userContext = userAuthenticated ? {
-    ...await authenticatedRequestContext(baseContext, humanAuthentication),
-    knowledgeAdapter: 'MCP',
-  } : null
+  const userContext = userAuthenticated
+    ? await authenticatedRequestContext(baseContext, humanAuthentication)
+    : null
   if (userContext && authenticatedPocProfile(userContext.accessUser).default_workspace_id !== mcpWorkspaceId) {
     return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'The authenticated user workspace does not match the MCP workspace.')
   }
@@ -9711,9 +9781,12 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     if (userContext) assertMcpReadToolAuthorized(userContext, toolName)
   }
   const effectiveAssets = async () => {
+    activeSignal?.throwIfAborted()
     const serviceAssets = await managedK9Assets(requestContext)
     if (!userContext) return serviceAssets
-    return intersectMcpAssets(serviceAssets, await managedK9Assets(userContext))
+    const userAssets = await managedK9Assets(userContext)
+    activeSignal?.throwIfAborted()
+    return intersectMcpAssets(serviceAssets, userAssets)
   }
   const publicMcpAsset = (asset) => ({
     id: asset.id,
@@ -9729,12 +9802,11 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     supported_entity_types: asset.supported_entity_types,
   })
   const effectiveScope = async (graphId, releaseId) => {
-    const serviceScope = await mcpKnowledgeChatScope(requestContext, graphId, releaseId)
+    const serviceScope = await mcpKnowledgeChatScope(requestContext, graphId, releaseId, activeSignal)
     if (!userContext) return serviceScope
-    return intersectMcpKnowledgeScopes(
-      serviceScope,
-      await mcpKnowledgeChatScope(userContext, graphId, releaseId),
-    )
+    const userScope = await mcpKnowledgeChatScope(userContext, graphId, releaseId, activeSignal)
+    activeSignal?.throwIfAborted()
+    return intersectMcpKnowledgeScopes(serviceScope, userScope)
   }
   const assertEffectiveScopeResult = (scope, result) => {
     if (!userContext || !scope.managed) return
@@ -9765,20 +9837,17 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     }
   }
   const effectiveMetadataSearch = async (question, route, limit) => {
-    // The user boundary intersects two independently authorized, bounded views.
-    // It intentionally exposes no total: a maximum of 20 candidates per principal
+    // The user boundary supplies one exact effective principal to one bounded call.
+    // It intentionally exposes no total: a maximum of 20 candidates
     // is not proof of the exhaustive authorized catalog cardinality.
-    const serviceEvidence = await mcpMetadataSearch(
-      question, route, userContext ? 20 : limit, requestContext.principal, activeSignal,
+    const effectivePrincipal = userContext
+      ? intersectMcpPrincipals(requestContext.principal, userContext.principal)
+      : requestContext.principal
+    const evidence = await mcpMetadataSearch(
+      question, route, userContext ? 20 : limit, effectivePrincipal, activeSignal,
     )
-    if (!Array.isArray(serviceEvidence)) throw new Error('Invalid')
-    if (!userContext) return serviceEvidence.slice(0, limit)
-    const userEvidence = await mcpMetadataSearch(
-      question, route, 20, userContext.principal, activeSignal,
-    )
-    if (!Array.isArray(userEvidence)) throw new Error('Invalid')
-    const userIds = new Set(userEvidence.map((item) => item?.id).filter((id) => typeof id === 'string'))
-    return serviceEvidence.filter((item) => typeof item?.id === 'string' && userIds.has(item.id)).slice(0, limit)
+    if (!Array.isArray(evidence)) throw new Error('Invalid')
+    return evidence.slice(0, limit)
   }
 
   const mcpResponse = async () => {
@@ -9861,7 +9930,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
       const tools = [
           {
             name: 'metadata_search',
-            description: 'Authorization-filtered metadata search over at most 20 intersected candidates; this tool does not report an exhaustive result total',
+            description: 'Authorization-filtered metadata entity resolution and semantic search through the shared DataHub core service',
             inputSchema: {
               type: 'object',
               properties: {
@@ -9968,14 +10037,30 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
             }
           }
       ]
-      return {
-        tools: userContext
-          ? tools.filter((tool) => (
+      const visibleTools = userContext
+        ? tools.filter((tool) => (
             requestContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
               && userContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
-          ))
-          : tools,
-      }
+          )).map((tool) => {
+            if (tool.name === 'metadata_search') return {
+              ...tool,
+              description: 'Authorization-filtered metadata search over at most 20 effective-scope candidates; no exhaustive result total is reported',
+            }
+            if (tool.name !== 'knowledge_release_snapshot') return tool
+            return {
+              ...tool,
+              description: 'Exact-release snapshot operation bounded to 20 nodes for user-authenticated MCP',
+              inputSchema: {
+                ...tool.inputSchema,
+                properties: {
+                  ...tool.inputSchema.properties,
+                  maximum_nodes: { type: 'integer', minimum: 1, maximum: 20 },
+                },
+              },
+            }
+          })
+        : tools
+      return { tools: visibleTools }
     }
     if (rpc.method === 'tools/call') {
       const params = rpc.params
@@ -10041,7 +10126,9 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         }
         assertPocRouteAuthorization(resolvePocRoute('GET', `/poc-api/knowledge/graphs/${g}/releases/${r}/snapshot`), requestContext.principal)
         const scope = await effectiveScope(g, r)
-        const snapshot = await mcpKnowledgeChatSnapshot(scope, 200, startNodeId, maximumHops)
+        const snapshot = await mcpKnowledgeChatSnapshot(
+          scope, 200, startNodeId, maximumHops, undefined, activeSignal,
+        )
         const traversal = knowledgeChatTraversal(snapshot, {
           startNodeId,
           question: '',
@@ -10065,12 +10152,15 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         const g = args.graph_id.trim()
         const r = args.release_id.trim()
         if (!g || !r) throw { code: -32602, message: 'Invalid params' }
-        if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > 200)) throw { code: -32602, message: 'Invalid params' }
+        const snapshotMaximum = userContext ? 20 : 200
+        if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > snapshotMaximum)) throw { code: -32602, message: 'Invalid params' }
 
         assertPocRouteAuthorization(resolvePocRoute('GET', `/poc-api/knowledge/graphs/${g}/releases/${r}/snapshot`), requestContext.principal)
         const scope = await effectiveScope(g, r)
-        const requested = args.maximum_nodes || 200
-        const result = await mcpKnowledgeChatSnapshot(scope, requested)
+        const requested = args.maximum_nodes || snapshotMaximum
+        const result = await mcpKnowledgeChatSnapshot(
+          scope, requested, null, 3, undefined, activeSignal,
+        )
 
         if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid')
         try { exactBodyKeys(result, ['release', 'nodes', 'edges', 'filtered'], ['release', 'nodes', 'edges', 'filtered']) } catch { throw new Error('Invalid') }

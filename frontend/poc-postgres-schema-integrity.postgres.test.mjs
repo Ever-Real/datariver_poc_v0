@@ -49,6 +49,11 @@ const v2DdlOnly = v2Migration.slice(
   v2Migration.indexOf('CREATE TABLE'),
   v2Migration.indexOf('INSERT INTO poc_state'),
 )
+const v3Migration = migrations.get('005-poc-mcp-read-receipts.sql')
+const v3DdlOnly = v3Migration.slice(
+  v3Migration.indexOf('CREATE OR REPLACE FUNCTION'),
+  v3Migration.indexOf('INSERT INTO poc_state'),
+)
 
 const knownOlderCategoryConstraint = `
   ALTER TABLE poc_change_history_ledger_events
@@ -435,6 +440,36 @@ test('actual catalog convergence fails closed before mutation for missing, malfo
         })
       },
       code: 'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+    },
+    {
+      label: 'v1_v3_without_v2_receipt',
+      setup: async (pool) => {
+        await applyV1(pool)
+        await recordPocPostgresV1SchemaReceipt(pool)
+        await pool.query(v2DdlOnly)
+        await pool.query(v3DdlOnly)
+        await insertReceipt(pool, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, exactV3Receipt)
+      },
+      code: 'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+    },
+    {
+      label: 'v1_schema_with_v3_receipt',
+      setup: async (pool) => {
+        await applyV1(pool)
+        await recordPocPostgresV1SchemaReceipt(pool)
+        await insertReceipt(pool, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, exactV2Receipt)
+        await insertReceipt(pool, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, exactV3Receipt)
+      },
+      code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED',
+    },
+    {
+      label: 'known_older_with_v3_receipt',
+      setup: async (pool) => {
+        await applyV1(pool)
+        await pool.query(knownOlderCategoryConstraint)
+        await insertReceipt(pool, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, exactV3Receipt)
+      },
+      code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED',
     },
   ]
 

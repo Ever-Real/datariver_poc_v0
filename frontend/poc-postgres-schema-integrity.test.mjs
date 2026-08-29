@@ -182,6 +182,25 @@ test('fails closed for missing, malformed, wrong, partial and newer receipt sets
     { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
   )
   assert.throws(
+    () => classifyVersioned(versions.v3Rows, [
+      v1Receipt(versions.v1Fingerprint),
+      v3Receipt(versions.v3Fingerprint),
+    ]),
+    { code: 'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH' },
+  )
+  assert.throws(
+    () => classifyVersioned(versions.v1Rows, [
+      v1Receipt(versions.v1Fingerprint),
+      v2Receipt(versions.v2Fingerprint),
+      v3Receipt(versions.v3Fingerprint),
+    ]),
+    { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
+  )
+  assert.throws(
+    () => classifyVersioned(versions.olderRows, [v3Receipt(versions.v3Fingerprint)]),
+    { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
+  )
+  assert.throws(
     () => classifyVersioned(versions.v3Rows, [v3Receipt(versions.v3Fingerprint, { revision: 4 })]),
     { code: 'POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED' },
   )

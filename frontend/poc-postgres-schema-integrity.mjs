@@ -219,6 +219,12 @@ function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint, 
       fingerprint: v3Fingerprint,
     })
   }
+  if (v1 !== undefined && v3 !== undefined && v2 === undefined) {
+    throw schemaError(
+      'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+      'The Product-owned PostgreSQL schema receipt ancestry is incomplete.',
+    )
+  }
   return { v1, v2, v3 }
 }
 
@@ -248,6 +254,12 @@ export function classifyPocPostgresOwnedSchema({
   }
   const fingerprint = fingerprintPocOwnedSchema(normalized)
   if (fingerprint === expectedFingerprint) {
+    if (receiptSet.v1 !== undefined && receiptSet.v2 === undefined && receiptSet.v3 === undefined) {
+      throw schemaError(
+        'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+        'The Product-owned PostgreSQL schema receipt ancestry does not match the current schema.',
+      )
+    }
     const state = receiptSet.v3 !== undefined
       ? 'CURRENT'
       : receiptSet.v2 !== undefined ? 'V3_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
@@ -265,15 +277,15 @@ export function classifyPocPostgresOwnedSchema({
     return Object.freeze({ state: 'V2_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v1Fingerprint
-    && receiptSet.v1 !== undefined && receiptSet.v2 === undefined) {
+    && receiptSet.v1 !== undefined && receiptSet.v2 === undefined && receiptSet.v3 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V1', fingerprint })
   }
   if (fingerprint === v1Fingerprint
-    && receiptSet.v1 === undefined && receiptSet.v2 === undefined) {
+    && receiptSet.v1 === undefined && receiptSet.v2 === undefined && receiptSet.v3 === undefined) {
     return Object.freeze({ state: 'V1_RECEIPT_PENDING', fingerprint })
   }
   if (migratableFingerprints.has(fingerprint)
-    && receiptSet.v1 === undefined && receiptSet.v2 === undefined) {
+    && receiptSet.v1 === undefined && receiptSet.v2 === undefined && receiptSet.v3 === undefined) {
     return Object.freeze({ state: 'KNOWN_OLDER_MIGRATABLE', fingerprint })
   }
   throw schemaError(
