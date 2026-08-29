@@ -5190,17 +5190,24 @@ async function setAirflowDagPaused(dagId, paused) {
   return transitioned
 }
 
-async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeoutMs, signal) {
+async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeoutMs, signal, timings) {
   if (!provider) throw Object.assign(new Error('The requested LLM stage is not configured.'), { statusCode: 503 })
+  const serializationStarted = performance.now()
+  const serializedBody = JSON.stringify(body)
+  recordChatPerformance(timings, 'provider_request_serialization_ms', serializationStarted)
   let response
   try {
+    const responseWaitStarted = performance.now()
     response = await providerFetch(llmEndpoint(provider, endpoint), {
       method: 'POST',
       headers: { Authorization: `Bearer ${provider.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: serializedBody,
       timeoutMs,
       signal,
     })
+    // With a non-streaming provider contract this is the observable wait until
+    // response headers, not a claim about provider queue, TTFT, or generation.
+    recordChatPerformance(timings, 'provider_response_wait_ms', responseWaitStarted)
   } catch (error) {
     if (signal?.aborted) throw error
     const timeout = error?.name === 'TimeoutError'
@@ -5225,7 +5232,10 @@ async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeo
   }
   let value
   try {
+    const responseBodyStarted = performance.now()
     value = await response.json()
+    // response.json() combines body transfer, decoding, and local JSON parsing.
+    recordChatPerformance(timings, 'provider_response_body_ms', responseBodyStarted)
   } catch (error) {
     throw Object.assign(new Error('The LLM provider returned invalid JSON.'), {
       statusCode: 502,
@@ -6887,6 +6897,12 @@ async function writeApprovedAnswerStream(response, answer, signal) {
 async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context, signal) {
   const totalStarted = performance.now()
   const retrievalPerformance = { catalog_discovery_ms: null, vector_ms: null }
+  const compositionPerformance = {
+    prompt_assembly_ms: null,
+    provider_request_serialization_ms: null,
+    provider_response_wait_ms: null,
+    provider_response_body_ms: null,
+  }
   const principal = context.principal
   const progress = (stage, status, detailCode) => {
     onWorkflow?.({ stage, status, detail_code: detailCode })
@@ -6940,6 +6956,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
         retrieval_ms: null,
         reranking_ms: null,
         composition_ms: null,
+        ...compositionPerformance,
         total_ms: Math.max(0, Math.round(performance.now() - totalStarted)),
       },
     }
@@ -7095,15 +7112,18 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
   } else if (route.intent === 'CATALOG_INVENTORY' && inventoryRequest) {
     answer = inventoryEvidenceAnswer(inventoryRequest, evidence)
   } else {
+    const promptAssemblyStarted = performance.now()
     const generalRoute = route.selected_mode === 'GENERAL'
+    const resolvedQuestionLine = resolvedQuestion === question
+      ? ''
+      : `\nResolved standalone question: ${resolvedQuestion}`
     const compositionSystemPrompt = generalRoute
       ? 'Answer in Korean unless the user asks for another language. This is the GENERAL route: answer useful general-knowledge and conversational questions directly without requiring, mentioning, or fabricating DataHub, metadata, vector, graph, or internal evidence. Do not claim that an answer is unavailable merely because live metadata evidence was not retrieved. Bounded conversation memory is non-authoritative continuity text and may be used only to preserve conversational context. Do not invent current facts that would require live verification.'
       : 'Answer in Korean unless the user asks for another language. Give a complete, useful response only from the supplied authorization-filtered live DataHub metadata and catalog evidence. Prefer a short conclusion followed by relevant metadata, columns, quality/profile observations, or comparisons; use roughly 5 to 10 sentences when the evidence supports that detail, but do not pad the answer. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly which requested Catalog values are absent from the supplied evidence. Never invent an asset, field, metric, relationship, or inaccessible System. Bounded conversation memory is non-authoritative continuity text: it may resolve what the user means and may answer an explicit request to recall what the user or assistant said, clearly as conversation recall and without an evidence citation. It is never evidence for a current Catalog fact.'
     const compositionUserPrompt = generalRoute
-      ? `Selected route: GENERAL\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}`
-      : `Selected route: ${route.selected_mode}\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${evidenceContext || '(no matching live evidence)'}`
-    compositionLlmCalls += 1
-    const completion = await llmRequest(llm.chat, '/chat/completions', {
+      ? `Selected route: GENERAL\nCurrent question: ${question}${resolvedQuestionLine}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}`
+      : `Selected route: ${route.selected_mode}\nCurrent question: ${question}${resolvedQuestionLine}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${evidenceContext || '(no matching live evidence)'}`
+    const compositionRequest = {
       model: llm.chat.model,
       stream: false,
       reasoning_effort: 'none',
@@ -7113,7 +7133,12 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
         { role: 'system', content: compositionSystemPrompt },
         { role: 'user', content: compositionUserPrompt },
       ],
-    }, llmProviderTimeoutMs, signal)
+    }
+    recordChatPerformance(compositionPerformance, 'prompt_assembly_ms', promptAssemblyStarted)
+    compositionLlmCalls += 1
+    const completion = await llmRequest(
+      llm.chat, '/chat/completions', compositionRequest, llmProviderTimeoutMs, signal, compositionPerformance,
+    )
     answer = completion.choices?.[0]?.message?.content
     if (typeof answer !== 'string' || !answer.trim()) {
       throw Object.assign(new Error('The Chat model returned no answer.'), {
@@ -7154,6 +7179,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       retrieval_ms: route.selected_mode === 'GENERAL' ? null : route.latency_ms.retrieval,
       reranking_ms: rerankingMilliseconds,
       composition_ms: compositionMilliseconds,
+      ...compositionPerformance,
       total_ms: route.latency_ms.total,
     },
   }

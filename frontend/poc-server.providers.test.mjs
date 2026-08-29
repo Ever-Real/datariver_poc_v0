@@ -938,6 +938,10 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.ok(payload.performance.retrieval_ms >= 0)
   assert.ok(payload.performance.reranking_ms >= 0)
   assert.ok(payload.performance.composition_ms >= 0)
+  assert.equal(Number.isInteger(payload.performance.prompt_assembly_ms), true)
+  assert.equal(Number.isInteger(payload.performance.provider_request_serialization_ms), true)
+  assert.equal(Number.isInteger(payload.performance.provider_response_wait_ms), true)
+  assert.equal(Number.isInteger(payload.performance.provider_response_body_ms), true)
   for (const path of ['/embeddings', '/rerank', '/chat/completions']) {
     assert.ok(requests.some((request) => request.path.endsWith(path)))
   }
@@ -955,6 +959,13 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(classifierPayload.reasoning_effort, 'none')
   assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
   assert.equal(classifierPayload.max_tokens, 640)
+  const composerRequest = [...requests].reverse().find((request) => {
+    if (!request.path.endsWith('/chat/completions')) return false
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('supplied authorization-filtered live DataHub metadata')
+  })
+  const composerPrompt = JSON.parse(composerRequest.body).messages[1].content
+  assert.equal(composerPrompt.split('wafer metadata evidence').length - 1, 1)
+  assert.doesNotMatch(composerPrompt, /Resolved standalone question:/)
 })
 
 test('emits null Catalog and vector timings when clarification skips both phases', async () => {
@@ -976,6 +987,10 @@ test('emits null Catalog and vector timings when clarification skips both phases
     assert.equal(payload.discovery, null)
     assert.equal(payload.performance.catalog_discovery_ms, null)
     assert.equal(payload.performance.vector_ms, null)
+    assert.equal(payload.performance.prompt_assembly_ms, null)
+    assert.equal(payload.performance.provider_request_serialization_ms, null)
+    assert.equal(payload.performance.provider_response_wait_ms, null)
+    assert.equal(payload.performance.provider_response_body_ms, null)
   } finally {
     forcedClassifierResponse = undefined
   }
@@ -1030,6 +1045,8 @@ test('streams approved answer deltas before the persisted final provider result'
   assert.ok(resultPayload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
   assert.equal(Number.isInteger(resultPayload.performance.catalog_discovery_ms), true)
   assert.equal(resultPayload.performance.vector_ms, null)
+  assert.equal(Number.isInteger(resultPayload.performance.prompt_assembly_ms), true)
+  assert.equal(Number.isInteger(resultPayload.performance.provider_response_wait_ms), true)
   assert.ok(resultPayload.performance.total_ms >= 0)
   const sessionsResponse = await fetch(`${pocOrigin}/poc-api/chat/sessions`)
   assert.equal(sessionsResponse.status, 200)
@@ -1068,7 +1085,10 @@ test('uses bounded conversation memory to resolve a same-session follow-up witho
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Bounded conversation memory is non-authoritative')
   })
-  assert.match(JSON.parse(composer.body).messages[1].content, /사용자는 wafer_events 테이블을 확인했습니다/)
+  const composerPrompt = JSON.parse(composer.body).messages[1].content
+  assert.match(composerPrompt, /Current question: 그 테이블의 컬럼도 알려줘/)
+  assert.match(composerPrompt, /Resolved standalone question: wafer_events 테이블의 컬럼을 알려줘/)
+  assert.match(composerPrompt, /사용자는 wafer_events 테이블을 확인했습니다/)
   assert.equal(payload.evidence.some((item) => item.evidence_type === 'CHAT_MEMORY'), false)
 })
 

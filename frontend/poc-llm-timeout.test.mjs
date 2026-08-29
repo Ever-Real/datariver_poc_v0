@@ -109,7 +109,7 @@ test('canonical timeout accepts a generated latency beyond the former short boun
 })
 
 test('AUTO classifier and GENERAL composition succeed without retrieval evidence', async () => {
-  answerDelayMs = 25
+  answerDelayMs = 60
   answerInvalidContract = false
   answerStatus = 200
   const started = Date.now()
@@ -118,6 +118,11 @@ test('AUTO classifier and GENERAL composition succeed without retrieval evidence
   const payload = await response.json()
   assert.equal(payload.route.selected_mode, 'GENERAL')
   assert.deepEqual(payload.evidence, [])
+  assert.ok(payload.performance.composition_ms >= payload.performance.provider_response_wait_ms)
+  assert.ok(payload.performance.provider_response_wait_ms >= 40)
+  assert.equal(Number.isInteger(payload.performance.prompt_assembly_ms), true)
+  assert.equal(Number.isInteger(payload.performance.provider_request_serialization_ms), true)
+  assert.equal(Number.isInteger(payload.performance.provider_response_body_ms), true)
   assert.ok(Date.now() - started < 1_000)
 })
 

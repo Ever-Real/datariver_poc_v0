@@ -948,6 +948,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   <div><dt>검색</dt><dd>{visiblePerformance.retrieval_ms ?? '—'} ms</dd></div>
                   <div><dt>재정렬</dt><dd>{visiblePerformance.reranking_ms ?? '—'} ms</dd></div>
                   <div><dt>답변 생성</dt><dd>{visiblePerformance.composition_ms ?? '—'} ms</dd></div>
+                  <div><dt>프롬프트 조립</dt><dd>{visiblePerformance.prompt_assembly_ms ?? '—'} ms</dd></div>
+                  <div><dt>요청 직렬화</dt><dd>{visiblePerformance.provider_request_serialization_ms ?? '—'} ms</dd></div>
+                  <div><dt>Provider 응답 대기</dt><dd>{visiblePerformance.provider_response_wait_ms ?? '—'} ms</dd></div>
+                  <div><dt>Provider 응답 읽기</dt><dd>{visiblePerformance.provider_response_body_ms ?? '—'} ms</dd></div>
                   <div><dt>전체</dt><dd>{visiblePerformance.total_ms} ms</dd></div>
                 </dl>
               )}

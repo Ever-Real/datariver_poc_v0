@@ -1434,6 +1434,10 @@ export interface ChatRequestPerformance {
   retrieval_ms: number | null
   reranking_ms: number | null
   composition_ms: number | null
+  prompt_assembly_ms: number | null
+  provider_request_serialization_ms: number | null
+  provider_response_wait_ms: number | null
+  provider_response_body_ms: number | null
   total_ms: number
 }
 

@@ -67,6 +67,10 @@ const response: ChatResponse = {
     retrieval_ms: 34,
     reranking_ms: 8,
     composition_ms: 120,
+    prompt_assembly_ms: 1,
+    provider_request_serialization_ms: 2,
+    provider_response_wait_ms: 115,
+    provider_response_body_ms: 2,
     total_ms: 190,
   },
   evidence: [{
@@ -362,6 +366,10 @@ describe('ChatPage', () => {
     const performance = screen.getByLabelText('현재 응답 처리 시간')
     expect(performance).toHaveTextContent('Catalog 탐색18 ms')
     expect(performance).toHaveTextContent('Vector20 ms')
+    expect(performance).toHaveTextContent('프롬프트 조립1 ms')
+    expect(performance).toHaveTextContent('요청 직렬화2 ms')
+    expect(performance).toHaveTextContent('Provider 응답 대기115 ms')
+    expect(performance).toHaveTextContent('Provider 응답 읽기2 ms')
     expect(performance).toHaveTextContent('전체190 ms')
     expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')
     expect(screen.queryByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).not.toBeInTheDocument()
