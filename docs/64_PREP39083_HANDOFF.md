@@ -7,15 +7,15 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  72fde0af0601a04a819eaffbd891e1f1f1788471
-Evidence 43eb60f408d18b2ce28256b6ec911a079ac0a2c7
+Product  44fc36b4e7dc64ea7bf08ab3791a2d9874eb1343
+Evidence 6e989a259a8e9e0c8b7af055c37135a25edd79ec
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`72fde0af0601a04a819eaffbd891e1f1f1788471`. Its SHA-256, child manifest,
+`44fc36b4e7dc64ea7bf08ab3791a2d9874eb1343`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
@@ -164,13 +164,18 @@ identity.
 ## Current cumulative evidence and historical checkpoints
 
 The cumulative local Evidence is
-[`docs/evidence/wave-c-d-contract-closure/README.md`](evidence/wave-c-d-contract-closure/README.md).
-It records the exact Chat Catalog candidate-scope handoff, Quality/Airflow/MCP
-safety dispositions, integrated regression, and the fresh exact cumulative OCI.
-TEST PC accepted-state runtime/browser validation is pending. This Handoff does
-not claim Actual PREP or OPS execution. The canonical no-build, ownership,
-schema-integrity, provider, smoke, and non-destructive resume contracts remain
-unchanged.
+[`docs/evidence/user-facing-stabilization-bundle/README.md`](evidence/user-facing-stabilization-bundle/README.md).
+It records the frozen Glossary/Search timeout and Chat route corrections, Home
+stabilization, exact Change Detection remediation, cumulative regression, and
+the fresh exact Product OCI. The last TEST-approved Product remains
+`579b068340f2e38ecc8f2f05ed0460c66797b226`; its PASS is not inherited by this
+descendant candidate. TEST PC accepted-state runtime/browser validation is
+pending. This Handoff does not claim Actual PREP or OPS execution. The
+canonical no-build, ownership, schema-integrity, provider, smoke, and
+non-destructive resume contracts remain unchanged.
+
+The preceding cumulative platform Evidence remains at
+[`docs/evidence/cumulative-platform-operations-bundle/README.md`](evidence/cumulative-platform-operations-bundle/README.md).
 
 The preceding published Wave C evidence remains at
 [`docs/evidence/wave-c-knowledge-workflows/README.md`](evidence/wave-c-knowledge-workflows/README.md).
