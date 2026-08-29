@@ -265,7 +265,7 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
             {selectedTerm.relationships.length > 0 && <section aria-label="선택 용어의 DataHub 직접 관계">
               <h3>직접 관계</h3>
               <ul className="poc-glossary-assets">{selectedTerm.relationships.map((relationship) => <li key={`${relationship.type}:${relationship.direction}:${relationship.target_urn}`}>
-                <strong>{relationship.target_name ?? relationship.target_urn}</strong>
+                <strong>{relationship.target_name ?? '이름 없음'}</strong>
                 <span><span className="badge badge-soft">{relationship.direction}</span>{relationship.type} · {relationship.target_type}</span>
                 <small>{relationship.target_urn}</small>
               </li>)}</ul>
