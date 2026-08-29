@@ -1183,7 +1183,8 @@
   min-width: 0;
 }
 
-.chat-evidence-list li > button {
+.chat-evidence-list li > button,
+.chat-evidence-list li > .chat-evidence-static {
   width: 100%;
   min-width: 0;
   display: grid;

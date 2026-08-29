@@ -188,8 +188,17 @@ function evidenceKindLabel(kind: ChatEvidence['asset_kind']): string {
   return '테이블'
 }
 
-function isKnowledgeEvidence(item: ChatEvidence): boolean {
-  return item.source_type.startsWith('KNOWLEDGE_ASSET_')
+function evidenceSourceLabel(item: ChatEvidence, context: 'candidate' | 'evidence'): string {
+  if (item.source_type === 'CATALOG_ASSET') return evidenceKindLabel(item.asset_kind)
+  if (item.source_type === 'GOVERNANCE_DOCUMENT') return '거버넌스 문서'
+  if (item.source_type === 'KNOWLEDGE_NODE' || item.source_type.startsWith('KNOWLEDGE_ASSET_')) {
+    return context === 'candidate' ? '지식 그래프 후보' : '지식 그래프 근거'
+  }
+  return context === 'candidate' ? '기타 인가 후보' : '기타 인가 근거'
+}
+
+function canOpenCatalogEvidence(item: ChatEvidence): boolean {
+  return item.source_type === 'CATALOG_ASSET'
 }
 
 function authorizedEvidenceGraph(evidence: ChatEvidence[]): ReadGraphModel | undefined {
@@ -958,24 +967,31 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   </button>
                   <ol className="chat-evidence-list">
                     {displayedDiscovery.map((item) => {
-                      const knowledgeEvidence = isKnowledgeEvidence(item)
+                      const catalogEvidence = canOpenCatalogEvidence(item)
+                      const content = <>
+                        <span className="chat-evidence-rank">#{item.rank}</span>
+                        <span className="chat-evidence-copy">
+                          <strong>{item.name}</strong>
+                          <small>{evidenceSourceLabel(item, 'candidate')}</small>
+                        </span>
+                      </>
                       return <li key={item.chunk_id}>
-                        <button
-                          aria-label={`검색 후보 ${item.rank} ${item.name} 상세 열기`}
-                          disabled={knowledgeEvidence}
-                          onClick={(event) => {
-                            if (knowledgeEvidence) return
-                            evidenceTriggerRef.current = event.currentTarget
-                            setSelectedEvidenceAssetId(item.resource_id)
-                          }}
-                          type="button"
-                        >
-                          <span className="chat-evidence-rank">#{item.rank}</span>
-                          <span className="chat-evidence-copy">
-                            <strong>{item.name}</strong>
-                            <small>{knowledgeEvidence ? '지식 그래프 후보' : evidenceKindLabel(item.asset_kind)}</small>
-                          </span>
-                        </button>
+                        {catalogEvidence ? (
+                          <button
+                            aria-label={`검색 후보 ${item.rank} ${item.name} 상세 열기`}
+                            onClick={(event) => {
+                              evidenceTriggerRef.current = event.currentTarget
+                              setSelectedEvidenceAssetId(item.resource_id)
+                            }}
+                            type="button"
+                          >
+                            {content}
+                          </button>
+                        ) : (
+                          <div className="chat-evidence-static" aria-label={`검색 후보 ${item.rank} ${item.name}`}>
+                            {content}
+                          </div>
+                        )}
                       </li>
                     })}
                   </ol>
@@ -1014,29 +1030,36 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 <ol className="chat-evidence-list">
                   {displayedEvidence.map((item) => {
                     const description = evidenceDescriptionForDisplay(item.description)
-                    const knowledgeEvidence = isKnowledgeEvidence(item)
+                    const catalogEvidence = canOpenCatalogEvidence(item)
+                    const content = <>
+                      <span className="chat-evidence-rank">#{item.rank}</span>
+                      <span className="chat-evidence-copy">
+                        <strong>{item.name}</strong>
+                        <small>{evidenceSourceLabel(item, 'evidence')}</small>
+                        {description && <span>{description}</span>}
+                        {!catalogEvidence && (
+                          <code className="break-all text-[10px] text-slate-500">{item.source_locator}</code>
+                        )}
+                      </span>
+                    </>
                     return (
                       <li key={item.chunk_id}>
-                        <button
-                          aria-label={`근거 ${item.rank} ${item.name} 상세 열기`}
-                          disabled={knowledgeEvidence}
-                          onClick={(event) => {
-                            if (knowledgeEvidence) return
-                            evidenceTriggerRef.current = event.currentTarget
-                            setSelectedEvidenceAssetId(item.resource_id)
-                          }}
-                          type="button"
-                        >
-                          <span className="chat-evidence-rank">#{item.rank}</span>
-                          <span className="chat-evidence-copy">
-                            <strong>{item.name}</strong>
-                            <small>{knowledgeEvidence ? '지식 그래프 근거' : evidenceKindLabel(item.asset_kind)}</small>
-                            {description && <span>{description}</span>}
-                            {knowledgeEvidence && (
-                              <code className="break-all text-[10px] text-slate-500">{item.source_locator}</code>
-                            )}
-                          </span>
-                        </button>
+                        {catalogEvidence ? (
+                          <button
+                            aria-label={`근거 ${item.rank} ${item.name} 상세 열기`}
+                            onClick={(event) => {
+                              evidenceTriggerRef.current = event.currentTarget
+                              setSelectedEvidenceAssetId(item.resource_id)
+                            }}
+                            type="button"
+                          >
+                            {content}
+                          </button>
+                        ) : (
+                          <div className="chat-evidence-static" aria-label={`근거 ${item.rank} ${item.name}`}>
+                            {content}
+                          </div>
+                        )}
                       </li>
                     )
                   })}

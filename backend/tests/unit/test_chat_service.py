@@ -128,6 +128,54 @@ class FakeIndex:
         return (self.item,) if self.item.external_urn in external_urns else ()
 
 
+class MultiFakeIndex:
+    def __init__(
+        self,
+        items: Sequence[CatalogAssetIndex],
+        *,
+        detail_items: dict[UUID, CatalogAssetIndex] | None = None,
+    ) -> None:
+        self.items = tuple(items)
+        self.detail_items = detail_items or {item.asset_id: item for item in self.items}
+
+    async def search(self, **values: Any) -> CatalogPage:
+        limit = cast(int, values["limit"])
+        return CatalogPage(
+            items=self.items[:limit],
+            next_cursor=None,
+            observed_at=datetime.now(UTC),
+        )
+
+    async def get_authorized_asset(
+        self, *, subject: SubjectAttributes, access: object, asset_id: UUID
+    ) -> CatalogAssetDetail | None:
+        del subject, access
+        item = self.detail_items.get(asset_id)
+        if item is None:
+            return None
+        return CatalogAssetDetail(
+            index=item,
+            ownership=(),
+            glossary_terms=(),
+            tags=item.tags,
+            schema_fields=(),
+            quality={},
+            raw_version=item.source_version,
+            observed_at=item.observed_at,
+        )
+
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+    ) -> Sequence[CatalogAssetIndex]:
+        del subject, access
+        requested = set(external_urns)
+        return tuple(item for item in self.items if item.external_urn in requested)
+
+
 class RejectingBudgetGuard:
     def __init__(self) -> None:
         self.reservations = 0
@@ -1185,7 +1233,7 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     composer = CapturingComposer()
     binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
     exchange = await chat_service(
-        catalog_index=FakeIndex(first),
+        catalog_index=MultiFakeIndex(candidates),
         vector_catalog=vector,
         composer=composer,
         classification_access=cast(
@@ -1221,6 +1269,57 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     assert exchange.discovery.next_cursor is None
     assert tuple(item.rank for item in exchange.discovery.rankings) == tuple(range(1, 9))
     assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
+
+
+async def test_vector_discovery_is_omitted_when_an_uncited_candidate_drifts() -> None:
+    workspace_id = uuid4()
+    first = asset(workspace_id)
+    candidates = tuple(
+        replace(
+            first,
+            asset_id=uuid4(),
+            external_urn=f"urn:li:dataset:generic-{index}",
+            name=f"Generic candidate {index}",
+        )
+        for index in range(8)
+    )
+    candidates = (first, *candidates[1:])
+    drifted = replace(candidates[-1], source_version="drifted-version")
+
+    class CandidateWindow:
+        async def search(self, **values: Any) -> ChatVectorSearchResult:
+            del values
+            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+
+    details = {item.asset_id: item for item in candidates}
+    details[candidates[-1].asset_id] = drifted
+    composer = CapturingComposer()
+    binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    exchange = await chat_service(
+        catalog_index=MultiFakeIndex(candidates, detail_items=details),
+        vector_catalog=CandidateWindow(),
+        composer=composer,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(binding)),
+        ),
+        inference_runtime_bindings=(binding,),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="인가된 후보의 최신 상태를 확인해줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-discovery-drift",
+        requested_mode=ChatRetrievalMode.VECTOR,
+    )
+
+    assert exchange.answer != UNVERIFIABLE_ANSWER
+    assert exchange.evidence == (composer.evidence[0],)
+    assert exchange.discovery is None
 
 
 async def test_vector_provider_receives_only_exact_profile_bound_classifications() -> None:
@@ -1807,9 +1906,13 @@ async def test_final_citation_validation_rejects_revoked_current_membership() ->
     )
 
     assert composer.calls == 1
-    assert subject_access.calls == 1
+    # The broader discovery window is checked first. When that check fails,
+    # citations are checked once more so an unrelated candidate cannot erase a
+    # still-valid grounded answer.
+    assert subject_access.calls == 2
     assert exchange.answer == UNVERIFIABLE_ANSWER
     assert exchange.evidence == ()
+    assert exchange.discovery is None
     assert store.saved_evidence == ()
     assert any(
         item.detail_code == "GROUNDED_DRAFT_COMPOSED"
@@ -1855,6 +1958,7 @@ async def test_final_citation_validation_rejects_canonical_catalog_drift() -> No
 
     assert exchange.answer == UNVERIFIABLE_ANSWER
     assert exchange.evidence == ()
+    assert exchange.discovery is None
     assert store.saved_evidence == ()
 
 
@@ -2925,7 +3029,8 @@ async def test_chat_refuses_governance_citation_when_active_version_drifts() -> 
     assert exchange.answer == UNVERIFIABLE_ANSWER
     assert exchange.evidence == ()
     assert store.saved_evidence == ()
-    assert governance.current_calls == 1
+    # A failed discovery-window check is followed by one citation-only check.
+    assert governance.current_calls == 2
 
 
 async def test_chat_rejects_forged_or_zero_citations_without_persisting_evidence() -> None:

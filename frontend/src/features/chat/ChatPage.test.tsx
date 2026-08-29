@@ -185,7 +185,7 @@ describe('ChatPage', () => {
         chunk_id: 'knowledge-node-1',
         resource_id: 'knowledge-node:node-1',
         name: 'Wafer W-001',
-        source_type: 'KNOWLEDGE_ASSET_NODE',
+        source_type: 'KNOWLEDGE_NODE',
         source_locator: 'urn:li:dataset:(quality)#row=1',
         source_version: 'release-7',
         extraction_method: 'K5_PROJECTED_RECEIPT',
@@ -214,8 +214,8 @@ describe('ChatPage', () => {
 
     expect(await screen.findByText(/지식 Asset 품질 관계 지식/)).toHaveTextContent('version release-7')
     expect(screen.getByLabelText('서버 라우팅 결정')).toHaveTextContent('지식 Asset 관계 탐색')
-    const evidenceButton = screen.getByRole('button', { name: '근거 1 Wafer W-001 상세 열기' })
-    expect(evidenceButton).toBeDisabled()
+    expect(screen.getByLabelText('근거 1 Wafer W-001')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '근거 1 Wafer W-001 상세 열기' })).not.toBeInTheDocument()
     expect(screen.getByText('지식 그래프 근거')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '답변에 사용된 인가 그래프 근거' })).toHaveTextContent('2 nodes · 1 edges')
     expect(screen.getByRole('region', { name: '답변에 사용된 인가 그래프' })).toBeInTheDocument()
@@ -314,6 +314,9 @@ describe('ChatPage', () => {
       chunk_id: `discovery-${index + 1}`,
       resource_id: `discovery-asset-${index + 1}`,
       name: `authorized_asset_${index + 1}`,
+      source_type: index === 5
+        ? 'KNOWLEDGE_NODE'
+        : index === 6 ? 'GOVERNANCE_DOCUMENT' : index === 4 ? 'UNRECOGNIZED_SOURCE' : 'CATALOG_ASSET',
       rank: index + 1,
     }))
     const discoveryResponse: ChatResponse = {
@@ -340,12 +343,18 @@ describe('ChatPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
 
     expect(await screen.findByText('상위 7개 조회 · 추가 결과 가능')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).toBeInTheDocument()
+    expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')
+    expect(screen.queryByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '검색 후보 나머지 2개 보기' }))
-    expect(screen.getByRole('button', { name: '검색 후보 7 authorized_asset_7 상세 열기' })).toBeInTheDocument()
+    expect(screen.getByLabelText('검색 후보 6 authorized_asset_6')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()
+    expect(screen.getByText('지식 그래프 후보')).toBeInTheDocument()
+    expect(screen.getByLabelText('검색 후보 7 authorized_asset_7')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '검색 후보 7 authorized_asset_7 상세 열기' })).not.toBeInTheDocument()
+    expect(screen.getByText('거버넌스 문서')).toBeInTheDocument()
   })
 
   it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {
