@@ -65,6 +65,7 @@ import type {
   SystemConfigurationTestResult,
   PocFeatureSecurityPolicy,
   PocFeatureSecurityPolicyUpdate,
+  SiteBranding,
 } from '../../api/types'
 
 type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
@@ -86,6 +87,10 @@ export interface VersionedPocFeatureSecurityPolicy extends PocFeatureSecurityPol
   etag: string
 }
 
+export interface VersionedSiteBranding extends SiteBranding {
+  etag: string
+}
+
 export interface AdminCursorPage<T> {
   items: T[]
   nextCursor: string | null
@@ -104,6 +109,31 @@ export class AdminApi {
     return this.client.request<AdminReadContext>('/admin/me', {
       cache: 'no-store',
       signal,
+    })
+  }
+
+  async getSiteBranding(signal?: AbortSignal): Promise<VersionedSiteBranding> {
+    const response = await this.client.requestWithMeta<SiteBranding>('/site-branding', {
+      cache: 'no-store', signal,
+    })
+    if (!response.etag || !/^"(?:0|[1-9]\d*)"$/.test(response.etag)) {
+      throw new Error('사이트 관리 설정의 ETag를 검증하지 못했습니다.')
+    }
+    return { ...response.data, etag: response.etag }
+  }
+
+  updateSiteBranding(
+    payload: {
+      site_name: string | null
+      logo: { asset_id: string } | { mime_type: string; data_base64: string } | null
+      favicon: { asset_id: string } | { mime_type: string; data_base64: string } | null
+      restore_default: boolean
+    },
+    etag: string,
+    idempotencyKey: string,
+  ): Promise<SiteBranding> {
+    return this.client.request<SiteBranding>('/site-branding', {
+      method: 'PUT', ifMatch: etag, idempotencyKey, body: JSON.stringify(payload),
     })
   }
 

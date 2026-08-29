@@ -94,6 +94,14 @@ source; Admin cells are immutable Allow and role-ineligible cells immutable Deny
 no User grant, Table identity, System assignment, custom Role, inheritance or expression and is not a
 generic permission database. PHASE 1C-3 manages this state; PHASE 1D owns cross-feature enforcement.
 
+`poc_state` also owns the bounded `site-branding-v1` POC document. It stores one site name, optional
+server-validated raster logo/favicon payloads under random server asset identities, update evidence,
+and at most 32 hashed idempotency replay receipts. The anonymous projection omits update evidence and
+receipts. The scope uses the existing row-level integer CAS/version contract, adds no PostgreSQL
+object, and therefore does not change the Product-owned schema inventory, fingerprint, receipt
+revision or clean/resume schema path. It does not overwrite frontend source assets; null state falls
+back to the packaged Product mark and browser symbol.
+
 The Catalog projection retains exact Table tag URN/name references. PHASE 1C-2 derives the strict
 severity order `normal < credential < restricted` using exact normalized tag equality only, with
 `restricted` precedence when both canonical tags exist. Each access-document user has one

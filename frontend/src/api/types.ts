@@ -2804,3 +2804,16 @@ export interface PocFeatureSecurityPolicyUpdate {
   cells: PocFeatureSecurityCell[]
   reason: string
 }
+
+export interface SiteBrandingAsset {
+  asset_id: string
+  mime_type: 'image/png' | 'image/jpeg' | 'image/x-icon'
+  byte_size: number
+  data_url: string
+}
+
+export interface SiteBranding {
+  site_name: string
+  logo: SiteBrandingAsset | null
+  favicon: SiteBrandingAsset | null
+}

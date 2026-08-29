@@ -162,6 +162,7 @@ function requireRegistrationReader(path: string): void {
 
 function localDispatchCapability(path: string, method: string): PocCapability | 'AUTHENTICATED' | undefined {
   if (path === '/admin/me') return 'AUTHENTICATED'
+  if (path === '/site-branding') return 'admin.manage'
   if (path === '/capabilities') return 'monitoring.read'
   if (path.startsWith('/admin/')) return 'admin.manage'
   if (path === '/poc/glossary' || path.startsWith('/poc/glossary/')) {
@@ -1892,6 +1893,7 @@ class PocApiClient {
         && /^\/change-requests\/(?!intake$|summaries$|systems$|targets$)[^/]+$/.test(parsed.pathname)))
       && runtimeFlags().pocState)
       || path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
+      || parsed.pathname === '/site-branding'
       || parsed.pathname === '/admin/table-system-mappings'
       || parsed.pathname === '/admin/feature-security-policy'
       || parsed.pathname === '/admin/users'
@@ -1899,7 +1901,8 @@ class PocApiClient {
       const headers = new Headers(options.headers)
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       if (options.ifMatch) headers.set('If-Match', options.ifMatch)
-      return gatewayRequestWithMeta<T>(`/api/v1${path}`, { ...options, headers })
+      const gatewayPath = parsed.pathname === '/site-branding' ? `/api/v1/site-branding${parsed.search}` : `/api/v1${path}`
+      return gatewayRequestWithMeta<T>(gatewayPath, { ...options, headers })
     }
     if (runtimeFlags().pocState) await this.ensureHydrated()
     const value = await this.dispatch(parsed, options)

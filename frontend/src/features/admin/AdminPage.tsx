@@ -13,6 +13,7 @@ import { AuditLogsAdmin, DictionaryAdmin } from './AdminReadOnlySurfaces'
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 import { PocFeaturePermissionAdmin } from './PocFeaturePermissionAdmin'
+import { SiteManagementAdmin } from './SiteManagementAdmin'
 import { getAdminMessages } from './messages'
 import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
 
@@ -210,6 +211,7 @@ export function AdminPage({
     <ErrorNotice error={error} />
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
+      {activeSection === 'siteManagement' && <SiteManagementAdmin {...shared} />}
       {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}

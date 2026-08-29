@@ -180,6 +180,100 @@ test('separates loopback transport from canonical intranet Origin for authentica
   }
 })
 
+test('site branding is anonymously readable while mutation requires admin CAS and idempotency', async () => {
+  const fixture = await serverFixture()
+  try {
+    const anonymous = await fetch(`${fixture.origin}/api/v1/site-branding`)
+    assert.equal(anonymous.status, 200)
+    assert.equal(anonymous.headers.get('etag'), '"0"')
+    assert.deepEqual(await anonymous.json(), { site_name: 'DataRiver', logo: null, favicon: null })
+
+    const anonymousMutation = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT',
+      headers: {
+        Origin: fixture.canonicalOrigin,
+        'Content-Type': 'application/json',
+        'If-Match': '"0"',
+        'Idempotency-Key': 'generic-anonymous-branding-attempt',
+      },
+      body: JSON.stringify({ site_name: 'Denied', logo: null, favicon: null, restore_default: false }),
+    })
+    assert.equal(anonymousMutation.status, 401)
+    assert.equal((await anonymousMutation.json()).code, 'SESSION_REQUIRED')
+
+    const viewer = await fixture.login('second@example.com', 'second correct password')
+    assert.ok(viewer.cookie)
+    const denied = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT',
+      headers: {
+        Cookie: viewer.cookie,
+        Origin: fixture.canonicalOrigin,
+        'Content-Type': 'application/json',
+        'If-Match': '"0"',
+        'Idempotency-Key': 'generic-viewer-branding-attempt',
+      },
+      body: JSON.stringify({ site_name: 'Denied', logo: null, favicon: null, restore_default: false }),
+    })
+    assert.equal(denied.status, 403)
+    assert.equal((await denied.json()).code, 'CAPABILITY_REQUIRED')
+
+    const admin = await fixture.login('first@example.com', 'first correct password')
+    assert.ok(admin.cookie)
+    const headers = {
+      Cookie: admin.cookie,
+      Origin: fixture.canonicalOrigin,
+      'Content-Type': 'application/json',
+      'If-Match': '"0"',
+      'Idempotency-Key': 'generic-admin-branding-update',
+    }
+    const body = JSON.stringify({ site_name: 'Generic Portal', logo: null, favicon: null, restore_default: false })
+    const missingOriginHeaders = { ...headers }
+    delete missingOriginHeaders.Origin
+    const missingOrigin = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT', headers: missingOriginHeaders, body,
+    })
+    assert.equal(missingOrigin.status, 403)
+    assert.equal((await missingOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+    const wrongOrigin = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT', headers: { ...headers, Origin: 'http://wrong-origin.invalid' }, body,
+    })
+    assert.equal(wrongOrigin.status, 403)
+    assert.equal((await wrongOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+
+    const updated = await fetch(`${fixture.origin}/api/v1/site-branding`, { method: 'PUT', headers, body })
+    assert.equal(updated.status, 200)
+    assert.equal(updated.headers.get('etag'), '"1"')
+    assert.deepEqual(await updated.json(), { site_name: 'Generic Portal', logo: null, favicon: null })
+
+    const replay = await fetch(`${fixture.origin}/api/v1/site-branding`, { method: 'PUT', headers, body })
+    assert.equal(replay.status, 200)
+    assert.equal(replay.headers.get('etag'), '"1"')
+
+    const replayWithoutIfMatchHeaders = { ...headers }
+    delete replayWithoutIfMatchHeaders['If-Match']
+    const replayWithoutIfMatch = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT', headers: replayWithoutIfMatchHeaders, body,
+    })
+    assert.equal(replayWithoutIfMatch.status, 428)
+    assert.equal((await replayWithoutIfMatch.json()).code, 'IF_MATCH_REQUIRED')
+    const replayWithMalformedIfMatch = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT', headers: { ...headers, 'If-Match': '0' }, body,
+    })
+    assert.equal(replayWithMalformedIfMatch.status, 400)
+    assert.equal((await replayWithMalformedIfMatch.json()).code, 'IF_MATCH_INVALID')
+
+    const stale = await fetch(`${fixture.origin}/api/v1/site-branding`, {
+      method: 'PUT',
+      headers: { ...headers, 'Idempotency-Key': 'generic-admin-stale-update' },
+      body: JSON.stringify({ site_name: 'Stale Portal', logo: null, favicon: null, restore_default: false }),
+    })
+    assert.equal(stale.status, 409)
+    assert.equal((await stale.json()).code, 'SITE_BRANDING_VERSION_STALE')
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('binds concurrent browser sessions to current server-side access profiles', async () => {
   const fixture = await serverFixture()
   try {

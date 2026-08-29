@@ -96,6 +96,8 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('auth.me', 'GET', /^\/auth\/me$/, 'AUTHENTICATED'),
   route('auth.password.change', 'POST', /^\/auth\/password$/, 'AUTHENTICATED'),
   route('auth.logout', 'POST', /^\/auth\/logout$/, 'AUTHENTICATED'),
+  route('site-branding.read', 'GET', /^\/api\/v1\/site-branding$/, 'ANONYMOUS'),
+  route('site-branding.write', 'PUT', /^\/api\/v1\/site-branding$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.access.read', 'GET', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.access.write', 'PUT', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.table-system-mappings.read', 'GET', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
@@ -237,7 +239,7 @@ export function assertPocRouteAuthorization(routeEntry, principal) {
   if (!routeEntry || routeEntry.authorizationClass === 'DISABLED') {
     throw authorizationError(404, 'NOT_FOUND', 'The POC gateway route does not exist.')
   }
-  if (routeEntry.authorizationClass === 'INTERNAL_SERVICE') return
+  if (routeEntry.authorizationClass === 'ANONYMOUS' || routeEntry.authorizationClass === 'INTERNAL_SERVICE') return
   if (!principal) throw authorizationError(401, 'SESSION_REQUIRED', 'A valid local session is required.')
   if (routeEntry.authorizationClass === 'CAPABILITY_PROTECTED' && routeEntry.capability
     && !principal.capabilitySet.has(routeEntry.capability)) {

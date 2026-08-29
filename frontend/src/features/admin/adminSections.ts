@@ -1,14 +1,14 @@
 import type { AdminOperation, AdminReadContext } from '../../api/types'
 
 const primarySections = [
-  'memberships', 'featurePermissions', 'systemSettings', 'retention', 'auditLogs', 'dictionary'
+  'memberships', 'siteManagement', 'featurePermissions', 'systemSettings', 'retention', 'auditLogs', 'dictionary'
 ] as const satisfies readonly AdminSection[]
 
 export type AdminSection =
   | 'memberships' | 'systems' | 'systemSettings' | 'roles' | 'fallback'
   | 'classification' | 'providers' | 'restrictedGrants'
   | 'retention' | 'holds' | 'erasure'
-  | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary' | 'featurePermissions'
+  | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary' | 'featurePermissions' | 'siteManagement'
 
 const sectionOperations: Record<AdminSection, readonly AdminOperation[]> = {
   memberships: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
@@ -27,12 +27,13 @@ const sectionOperations: Record<AdminSection, readonly AdminOperation[]> = {
   securityLogs: ['MEMBERSHIP_ACCESS_READ'],
   dictionary: ['MEMBERSHIP_ACCESS_READ'],
   featurePermissions: ['MEMBERSHIP_ACCESS_READ'],
+  siteManagement: ['MEMBERSHIP_ACCESS_READ'],
 }
 
 export function allowedAdminSections(context: AdminReadContext): AdminSection[] {
   const allowed = new Set(context.allowed_operations)
   return primarySections.filter((section) => {
-    if (section === 'featurePermissions') {
+    if (section === 'featurePermissions' || section === 'siteManagement') {
       return context.action_vocabulary.includes('POC_LOCAL_ACCOUNT_ADMIN_V1')
     }
     if (section === 'memberships') {

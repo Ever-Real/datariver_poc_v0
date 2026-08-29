@@ -5,6 +5,7 @@
 .top-brand { height: 56px; display: flex; align-items: center; gap: 8px; border: 0; padding: 0 8px 0 0; color: white; font-weight: 800; letter-spacing: -.02em; background: transparent; }
 .top-brand-mark { width: 34px; height: 34px; display: grid; place-items: center; overflow: hidden; border: 1px solid #5da5d4; border-radius: var(--radius); color: white; background: var(--blue-700); }
 .datariver-mark { width: 32px; height: 32px; display: block; }
+.site-branding-logo { width: 32px; height: 32px; display: block; object-fit: contain; }
 .primary-navigation { position: relative; min-width: 0; height: 56px; display: grid; grid-template-columns: 20px minmax(0, 1fr) 20px; align-items: stretch; }
 .primary-navigation-track { min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; }
 .primary-navigation-track::-webkit-scrollbar { display: none; }

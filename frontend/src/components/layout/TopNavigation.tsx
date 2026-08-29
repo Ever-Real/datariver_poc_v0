@@ -8,6 +8,7 @@ import { GlobalCatalogSearch } from './GlobalCatalogSearch'
 import { ExternalSystemLinks } from './ExternalSystemLinks'
 import { ProfileMenu, type AdminContextStatus, type AdminMenuItem } from './ProfileMenu'
 import { DataRiverMark } from './DataRiverMark'
+import { useSiteBranding } from './SiteBranding'
 
 interface TopNavigationProps {
   page: Page
@@ -58,6 +59,7 @@ export function TopNavigation({
   onEnrollSecurityKey,
   onSignOut,
 }: TopNavigationProps) {
+  const { branding } = useSiteBranding()
   const [navigation, setNavigation] = useState<HTMLElement | null>(null)
   const activePrimaryPage = page === 'knowledge-chat'
     || page === 'knowledge-instances'
@@ -72,9 +74,11 @@ export function TopNavigation({
 
   return (
     <header className="top-navigation">
-      <button className="top-brand" type="button" onClick={() => onNavigate('dashboard')} aria-label="DataRiver 홈">
-        <span className="top-brand-mark" aria-hidden="true"><DataRiverMark /></span>
-        <span>DataRiver</span>
+      <button className="top-brand" type="button" onClick={() => onNavigate('dashboard')} aria-label={`${branding.site_name} 홈`}>
+        <span className="top-brand-mark" aria-hidden="true">{branding.logo
+          ? <img className="site-branding-logo" src={branding.logo.data_url} alt="" />
+          : <DataRiverMark />}</span>
+        <span>{branding.site_name}</span>
       </button>
       <nav className="primary-navigation" aria-label="주 메뉴">
         <button className="navigation-scroll navigation-scroll-left" type="button" aria-label="이전 메뉴" onClick={() => navigation?.scrollBy({ left: -240, behavior: 'smooth' })}><ChevronLeft size={14} /></button>

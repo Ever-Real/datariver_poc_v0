@@ -104,6 +104,14 @@ import {
   llmProviderFailureCodes,
   parseLlmProviderTimeoutMs,
 } from './poc-llm-timeout.mjs'
+import {
+  POC_SITE_BRANDING_SCOPE,
+  applySiteBrandingUpdate,
+  normalizeSiteBrandingDocument,
+  publicSiteBranding,
+  siteBrandingIdempotencyHash,
+  siteBrandingRequestHash,
+} from './poc-site-branding.mjs'
 
 export { currentDatahubDatasetExists } from './poc-datahub-current-table.mjs'
 
@@ -536,6 +544,15 @@ function featureSecurityPolicyIfMatch(request) {
   const match = value.match(/^"(0|[1-9]\d*)"$/)
   const version = match ? Number(match[1]) : Number.NaN
   if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted feature security policy version.')
+  return version
+}
+
+function siteBrandingIfMatch(request) {
+  const value = request.headers['if-match']
+  if (typeof value !== 'string') throw accessError(428, 'IF_MATCH_REQUIRED', 'If-Match is required for site branding changes.')
+  const match = value.match(/^"(0|[1-9]\d*)"$/)
+  const version = match ? Number(match[1]) : Number.NaN
+  if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted site branding version.')
   return version
 }
 
@@ -10186,6 +10203,62 @@ async function featureSecurityPolicyApi(request, response, context) {
   return json(response, 200, { version, ...next }, { ETag: `"${version}"` })
 }
 
+function siteBrandingIdempotencyKey(request) {
+  const value = request.headers['idempotency-key']
+  if (typeof value !== 'string' || !value.trim() || value.length > 200 || hasAccessControlCharacter(value)) {
+    throw accessError(428, 'IDEMPOTENCY_KEY_REQUIRED', 'A bounded Idempotency-Key is required for site branding changes.')
+  }
+  return value.trim()
+}
+
+async function siteBrandingApi(request, response, context) {
+  const snapshot = await context.stateStore.read(POC_SITE_BRANDING_SCOPE)
+  const current = normalizeSiteBrandingDocument(snapshot.value)
+  if (request.method === 'GET') {
+    return json(response, 200, publicSiteBranding(current), { ETag: `"${snapshot.version}"` })
+  }
+  if (request.method !== 'PUT') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Site branding supports only GET and PUT.')
+  }
+  const expectedVersion = siteBrandingIfMatch(request)
+  const idempotencyKey = siteBrandingIdempotencyKey(request)
+  const body = await bodyJson(request)
+  const keyHash = siteBrandingIdempotencyHash(idempotencyKey)
+  const requestHash = siteBrandingRequestHash(body)
+  const replay = current.idempotency_receipts.find((receipt) => receipt.key_hash === keyHash)
+  if (replay) {
+    if (replay.request_hash !== requestHash) {
+      throw accessError(409, 'SITE_BRANDING_IDEMPOTENCY_CONFLICT', 'The Idempotency-Key is already bound to another site branding request.')
+    }
+    return json(response, 200, replay.projection, { ETag: `"${replay.version}"` })
+  }
+  if (expectedVersion !== snapshot.version) {
+    throw accessError(409, 'SITE_BRANDING_VERSION_STALE', 'The site branding version is stale.')
+  }
+  const applied = applySiteBrandingUpdate(current, body, {
+    actor: context.principal.subjectId,
+    idempotencyKey,
+    version: expectedVersion + 1,
+    occurredAt: new Date().toISOString(),
+  })
+  try {
+    const version = await context.stateStore.writeIfVersion(
+      POC_SITE_BRANDING_SCOPE,
+      applied.document,
+      expectedVersion,
+    )
+    return json(response, 200, applied.projection, { ETag: `"${version}"` })
+  } catch (error) {
+    if (error?.code !== 'STATE_VERSION_STALE') throw error
+    const concurrent = normalizeSiteBrandingDocument((await context.stateStore.read(POC_SITE_BRANDING_SCOPE)).value)
+    const concurrentReplay = concurrent.idempotency_receipts.find((receipt) => receipt.key_hash === keyHash)
+    if (concurrentReplay?.request_hash === requestHash) {
+      return json(response, 200, concurrentReplay.projection, { ETag: `"${concurrentReplay.version}"` })
+    }
+    throw accessError(409, 'SITE_BRANDING_VERSION_STALE', 'The site branding version is stale.')
+  }
+}
+
 function crNextId() { return randomUUID() }
 
 function exactCrBodyKeys(body, allowed, required = allowed) {
@@ -10676,6 +10749,9 @@ async function crCommandApi(request, response, url, context) {
 }
 
 async function api(request, response, url, context) {
+  if (url.pathname === '/api/v1/site-branding') {
+    return siteBrandingApi(request, response, context)
+  }
   if (url.pathname === '/api/v1/admin/users' || /^\/api\/v1\/admin\/users\//.test(url.pathname)) {
     return adminUsersApi(request, response, url, context)
   }
@@ -11241,6 +11317,11 @@ export function createPocServer({
       }
       if (url.pathname === '/auth' || url.pathname.startsWith('/auth/')) {
         return await authRoute(request, response, url, baseContext, authenticator)
+      }
+      if (url.pathname === '/api/v1/site-branding' && request.method === 'GET') {
+        assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname))
+        rejectProtectedAccessClaims(request, url)
+        return await siteBrandingApi(request, response, baseContext)
       }
       if (url.pathname === '/api/v1/registration/bulk-preparations/execute') {
         assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname))

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { PocApp } from './PocApp'
+import { SiteBrandingProvider } from '../components/layout/SiteBranding'
 import { installPocRandomUuidCompatibility } from './pocUuidCompat'
 import '../styles/tailwind.css'
 import '../styles/tokens.css'
@@ -32,7 +33,7 @@ if (!root) throw new Error('POC root element is missing.')
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <PocApp />
+      <SiteBrandingProvider><PocApp /></SiteBrandingProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

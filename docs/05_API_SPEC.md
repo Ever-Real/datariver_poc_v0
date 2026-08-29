@@ -650,6 +650,26 @@ host-development launcher may explicitly enable a security-administrator-only
 `EPHEMERAL_NO_STORE` response: it still performs Chat and evidence ABAC, but creates no session,
 message, citation or retention binding and production configuration rejects the mode.
 
+### Node POC site branding
+
+| Method/path | Authorization | Purpose |
+|---|---|---|
+| `GET /api/v1/site-branding` | anonymous read-only | return only the current site name and validated raster logo/favicon projection with an integer `ETag` |
+| `PUT /api/v1/site-branding` | local session `admin.manage` | CAS-save or restore the fixed branding document |
+
+The public GET is `no-store` and exposes no actor, timestamp, replay receipt or internal state
+version beyond the quoted response `ETag`. PUT requires the exact same-origin boundary,
+`If-Match` and a bounded `Idempotency-Key`; the server persists only its hash in a bounded replay
+window. A replay with the same key and canonical request returns the accepted projection, while a
+changed request conflicts. The fixed body is
+`{site_name,logo,favicon,restore_default}`. An asset is `null`, an exact current
+`{asset_id}` reference, or `{mime_type,data_base64}`; no filename or path is accepted. Logo input is
+PNG/JPEG up to 512 KiB decoded and favicon input is PNG/ICO up to 128 KiB decoded. Canonical base64,
+declared MIME, raster magic/structure, bounded dimensions and exact image termination are checked;
+SVG, MIME mismatch and trailing polyglot content fail closed. Default restore uses null values for
+the other three fields and remains CAS/idempotency protected. The local password session is the
+current POC assurance ceiling; this route does not claim or synthesize stronger assurance.
+
 ### Administrator membership access
 
 Access Role write documents accept optional `data_access_rules`, with no more than one rule for each

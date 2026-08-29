@@ -45,6 +45,24 @@ const access: WorkspaceMembershipAccess = {
 }
 
 describe('AdminApi', () => {
+  it('binds site branding save and default restore to exact ETag and idempotency options', async () => {
+    const { api, request, requestWithMeta } = mockClient()
+    const branding = { site_name: 'Generic Portal', logo: null, favicon: null }
+    requestWithMeta.mockResolvedValue({ data: branding, etag: '"3"' })
+    request.mockResolvedValue(branding)
+
+    await expect(api.getSiteBranding()).resolves.toEqual({ ...branding, etag: '"3"' })
+    await api.updateSiteBranding({
+      site_name: null, logo: null, favicon: null, restore_default: true,
+    }, '"3"', 'generic-restore-key')
+
+    expect(requestWithMeta).toHaveBeenCalledWith('/site-branding', { cache: 'no-store', signal: undefined })
+    expect(request).toHaveBeenCalledWith('/site-branding', expect.objectContaining({
+      method: 'PUT', ifMatch: '"3"', idempotencyKey: 'generic-restore-key',
+      body: JSON.stringify({ site_name: null, logo: null, favicon: null, restore_default: true }),
+    }))
+  })
+
   it('forces administrator context hydration through the no-store boundary', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()
