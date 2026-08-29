@@ -204,6 +204,47 @@ test('managed K9 resume reports an active descendant attempt instead of a retain
   assert.equal(summary.semantic_index_status, 'PENDING')
 })
 
+test('managed K9 scheduler read model separates configured boundaries from durable receipts', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-scheduler-read-model-contract')
+  const config = {
+    requested: true, enabled: true, refreshMode: 'DAILY', schedule: '02:15 Asia/Seoul',
+    timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 15,
+  }
+  const readModel = managedK9SchedulerReadModel(config, { version: 4, value: {
+    last_successful_schedule: '2026-08-28T17:15:00.000Z',
+    last_attempt: {
+      status: 'FAILURE', reason: 'K9_METADATA_REFRESH_FAILED',
+      scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+      trigger: 'scheduled', internal_detail: 'must not escape',
+    },
+  } }, null, new Date('2026-08-29T18:00:00.000Z'))
+  assert.deepEqual(readModel, {
+    scheduler_status: 'SCHEDULED', scheduler_requested: true, scheduler_timer_enabled: true,
+    schedule: '02:15 Asia/Seoul', schedule_timezone: 'Asia/Seoul',
+    next_scheduled_run: '2026-08-30T17:15:00.000Z',
+    last_successful_schedule: '2026-08-28T17:15:00.000Z',
+    scheduler_last_attempt: {
+      status: 'FAILURE', reason: 'K9_METADATA_REFRESH_FAILED',
+      scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+      trigger: 'scheduled',
+    },
+  })
+  assert.equal(JSON.stringify(readModel).includes('internal_detail'), false)
+})
+
+test('managed K9 scheduler status distinguishes active, on-demand, disabled, and unavailable states', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-scheduler-state-contract')
+  const base = {
+    refreshMode: 'MANUAL', schedule: 'MANUAL', timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 0,
+  }
+  assert.equal(managedK9SchedulerReadModel({ ...base, requested: true, enabled: false }).scheduler_status, 'ON_DEMAND')
+  assert.equal(managedK9SchedulerReadModel({ ...base, requested: false, enabled: false }).scheduler_status, 'DISABLED')
+  assert.equal(managedK9SchedulerReadModel({ ...base, requested: true, enabled: false }, null, {
+    status: 'RUNNING', scheduled_for: '2026-08-29T00:00:00.000Z', trigger: 'manual',
+  }).scheduler_status, 'RUNNING')
+  assert.equal(managedK9SchedulerReadModel(null).scheduler_status, 'UNAVAILABLE')
+})
+
 test('DataHub glossary scroll reconciliation rejects unstable or truncated provider pages', async () => {
   const { reconcileDatahubGlossaryScrollPage } = await import('./poc-server.mjs?glossary-scroll-reconciliation')
   const first = reconcileDatahubGlossaryScrollPage({

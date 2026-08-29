@@ -8219,12 +8219,72 @@ function isoValue(value) {
   return typeof value === 'string' ? value : null
 }
 
+function schedulerTimestamp(value) {
+  if (typeof value !== 'string' || value.length > 64) return null
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
+export function managedK9SchedulerReadModel(
+  schedulerConfig,
+  schedulerReceiptSnapshot = null,
+  activeRefreshAttempt = null,
+  now = new Date(),
+) {
+  if (!schedulerConfig) {
+    return {
+      scheduler_status: 'UNAVAILABLE', scheduler_requested: false, scheduler_timer_enabled: false,
+      schedule: null, schedule_timezone: null, next_scheduled_run: null,
+      last_successful_schedule: null, scheduler_last_attempt: null,
+    }
+  }
+  const receipt = schedulerReceiptSnapshot?.value
+  const durableAttempt = receipt?.last_attempt
+  const durableStatus = ['SUCCESS', 'FAILURE'].includes(durableAttempt?.status) ? durableAttempt.status : null
+  const durableTrigger = ['scheduled', 'manual'].includes(durableAttempt?.trigger) ? durableAttempt.trigger : null
+  const durableReason = durableStatus === 'FAILURE'
+    && typeof durableAttempt?.reason === 'string'
+    && /^K9_[A-Z0-9_]+$/.test(durableAttempt.reason)
+    ? durableAttempt.reason : null
+  const schedulerLastAttempt = durableStatus ? {
+    status: durableStatus,
+    scheduled_for: schedulerTimestamp(durableAttempt.scheduled_for),
+    completed_at: schedulerTimestamp(durableAttempt.completed_at),
+    trigger: durableTrigger,
+    ...(durableReason ? { reason: durableReason } : {}),
+  } : null
+  const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
+  const nextScheduledRun = schedulerConfig.enabled
+    ? nextScheduleBoundary(
+      now,
+      schedulerConfig.timeZone,
+      schedulerConfig.scheduleHour,
+      schedulerConfig.scheduleMinute,
+      schedulerConfig.refreshMode,
+    ).toISOString()
+    : null
+  return {
+    scheduler_status: refreshRunning
+      ? 'RUNNING'
+      : (!schedulerConfig.requested ? 'DISABLED' : (schedulerConfig.enabled ? 'SCHEDULED' : 'ON_DEMAND')),
+    scheduler_requested: Boolean(schedulerConfig.requested),
+    scheduler_timer_enabled: Boolean(schedulerConfig.enabled),
+    schedule: schedulerConfig.schedule,
+    schedule_timezone: schedulerConfig.timeZone,
+    next_scheduled_run: nextScheduledRun,
+    last_successful_schedule: schedulerTimestamp(receipt?.last_successful_schedule),
+    scheduler_last_attempt: schedulerLastAttempt,
+  }
+}
+
 export function managedK9AssetSummary(
   row,
   semanticIndex,
   schedulerConfig,
   includeQualityMetrics = false,
   activeRefreshAttempt = null,
+  schedulerReceiptSnapshot = null,
+  now = new Date(),
 ) {
   const definition = k9GraphAssetDefinition(row.graph_id)
   if (!definition) throw knowledgeProjectionError(409, 'K9_ASSET_DEFINITION_MISSING', 'The managed graph Asset definition is missing.')
@@ -8257,6 +8317,9 @@ export function managedK9AssetSummary(
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
     : (latestResult === 'FAILURE' ? 'FAILED' : 'PENDING')
+  const scheduler = managedK9SchedulerReadModel(
+    schedulerConfig, schedulerReceiptSnapshot, activeRefreshAttempt, now,
+  )
   return {
     id: row.graph_id,
     slug: `managed-${row.managed_intent}`,
@@ -8293,16 +8356,8 @@ export function managedK9AssetSummary(
     source: definition.source,
     is_default: definition.is_default,
     refresh_mode: schedulerConfig?.refreshMode || 'DAILY',
-    schedule: row.schedule,
-    next_refresh: schedulerConfig?.enabled
-      ? nextScheduleBoundary(
-        new Date(),
-        schedulerConfig.timeZone,
-        schedulerConfig.scheduleHour,
-        schedulerConfig.scheduleMinute,
-        schedulerConfig.refreshMode,
-      ).toISOString()
-      : null,
+    ...scheduler,
+    next_refresh: scheduler.next_scheduled_run,
     last_refresh: isoValue(row.latest_completed_at),
     last_result: latestResult,
     last_error_code: storedFailureCode,
@@ -8428,6 +8483,10 @@ async function managedK9Assets(context) {
   const activeRefreshAttempt = typeof context.k9SchedulerStatus === 'function'
     ? context.k9SchedulerStatus()
     : null
+  const schedulerReceiptSnapshot = context.k9SchedulerConfig?.lockName
+    && typeof context.stateStore.readK9SchedulerReceipt === 'function'
+    ? await context.stateStore.readK9SchedulerReceipt(context.k9SchedulerConfig.lockName)
+    : null
   return rows.flatMap((row) => {
     try {
       assertManagedK9AssetGrade(context, row.classification)
@@ -8437,6 +8496,7 @@ async function managedK9Assets(context) {
         context.k9SchedulerConfig,
         context.principal.role === 'admin',
         activeRefreshAttempt,
+        schedulerReceiptSnapshot,
       )]
     } catch (error) {
       if (error?.code === 'KNOWLEDGE_GRAPH_NOT_FOUND') return []
