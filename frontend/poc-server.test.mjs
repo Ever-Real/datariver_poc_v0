@@ -451,6 +451,32 @@ test('semantic route plans preserve GENERAL/VECTOR/GRAPH boundaries and graph As
     mode: 'GENERAL',
     intent: 'GENERAL_CONVERSATION',
   }), [asset]).mode, 'GENERAL')
+  const compactGeneral = parseChatRouteDecision(JSON.stringify({
+    mode: 'GENERAL', confidence: 0.99, intent: 'GENERAL_CONVERSATION',
+    primary_concepts: [], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: [], selected_graph_asset: null,
+  }), [asset])
+  assert.equal(compactGeneral.entity_resolution_required, false)
+  assert.equal(compactGeneral.semantic_retrieval_required, false)
+  assert.equal(compactGeneral.retrieval_method, 'NONE')
+  const compactExact = parseChatRouteDecision(JSON.stringify({
+    mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+    primary_concepts: ['generic table'], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: ['TABLE'], selected_graph_asset: null,
+  }), [asset])
+  assert.equal(compactExact.entity_resolution_required, true)
+  assert.equal(compactExact.semantic_retrieval_required, false)
+  assert.equal(compactExact.retrieval_method, 'NONE')
+  const compactGraph = parseChatRouteDecision(JSON.stringify({
+    mode: 'GRAPH', confidence: 0.99, intent: 'IMPACT_ANALYSIS',
+    primary_concepts: ['generic table'], secondary_concepts: [], relation_intent: 'IMPACT',
+    entity_type_hints: ['TABLE'], selected_graph_asset: asset.asset_id,
+  }), [asset])
+  assert.equal(compactGraph.entity_resolution_required, true)
+  assert.equal(compactGraph.graph_traversal_required, true)
+  assert.equal(compactGraph.semantic_retrieval_required, true)
+  assert.equal(compactGraph.retrieval_method, 'SEMANTIC_ENTITY_RESOLUTION_GRAPH')
+  assert.equal(compactGraph.selected_graph_asset, asset.asset_id)
   assert.deepEqual(parseChatRouteDecision(JSON.stringify({
     ...base,
     mode: 'GENERAL',

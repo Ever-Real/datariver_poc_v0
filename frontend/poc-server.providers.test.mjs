@@ -144,7 +144,7 @@ function providerHandler(request, response) {
           summary: '사용자는 wafer_events 메타데이터를 확인했고 후속 컬럼 조회를 원합니다.',
         }) } }] })
       }
-      if (systemPrompt.includes('Plan one untrusted Data Catalog question')) {
+      if (systemPrompt.includes('Classify one untrusted Data Catalog question')) {
         const plannerInput = payload.messages?.[1]?.content || ''
         const question = plannerInput.split('\n\nQuestion:\n').at(-1) || ''
         const graph = /lineage|upstream|downstream|impact|연결 관계/i.test(question)
@@ -984,7 +984,14 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.ok(payload.discovery.items.length >= payload.evidence.length)
   assert.ok(payload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
   assert.ok(payload.performance.total_ms >= 0)
+  assert.equal(Number.isInteger(payload.performance.contextualization_ms), true)
   assert.ok(payload.performance.routing_ms >= 0)
+  assert.equal(Number.isInteger(payload.performance.routing_local_preparation_ms), true)
+  assert.equal(Number.isInteger(payload.performance.routing_capability_lookup_ms), true)
+  assert.equal(Number.isInteger(payload.performance.routing_provider_request_serialization_ms), true)
+  assert.equal(Number.isInteger(payload.performance.routing_provider_response_wait_ms), true)
+  assert.equal(Number.isInteger(payload.performance.routing_provider_response_body_ms), true)
+  assert.equal(Number.isInteger(payload.performance.routing_decision_parse_ms), true)
   assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
   assert.equal(Number.isInteger(payload.performance.vector_ms), true)
   assert.ok(payload.performance.retrieval_ms >= 0)
@@ -1004,13 +1011,23 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.ok(JSON.parse(catalogBatch.body).input.every((document) => document.includes('Columns (')))
   const classifierRequest = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
-    return JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
   const classifierPayload = JSON.parse(classifierRequest.body)
   assert.equal(classifierPayload.response_format.type, 'json_schema')
   assert.equal(classifierPayload.reasoning_effort, 'none')
   assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
-  assert.equal(classifierPayload.max_tokens, 640)
+  assert.equal(classifierPayload.max_tokens, 320)
+  assert.deepEqual(classifierPayload.response_format.json_schema.schema.required, [
+    'mode', 'confidence', 'intent', 'primary_concepts', 'secondary_concepts',
+    'relation_intent', 'entity_type_hints', 'selected_graph_asset',
+  ])
+  for (const derivedField of [
+    'entity_resolution_required', 'graph_traversal_required',
+    'semantic_retrieval_required', 'fallback_mode', 'retrieval_method',
+  ]) {
+    assert.equal(Object.hasOwn(classifierPayload.response_format.json_schema.schema.properties, derivedField), false)
+  }
   const composerRequest = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('supplied authorization-filtered live DataHub metadata')
@@ -1182,7 +1199,7 @@ test('compacts exactly five bounded Chat turns and rejects oversized question or
 
 test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1198,7 +1215,7 @@ test('routes a high-confidence Korean discovery question to the full vector inve
   assert.deepEqual(payload.discovery.catalog_search_fields, [])
   assert.ok(payload.discovery.returned_count >= payload.evidence.length)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore + 1)
 })
 
@@ -1273,7 +1290,7 @@ test('retrieves Knowledge Graph Asset metadata from the authorized managed regis
 
 test('resolves an exact table name and composes detailed DataHub metadata evidence', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1293,18 +1310,18 @@ test('resolves an exact table name and composes detailed DataHub metadata eviden
   assert.equal(payload.evidence[0].dataset_kind, 'TABLE')
   const composer = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
-    return !JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')
+    return !JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
   assert.equal(JSON.parse(composer.body).max_tokens, 896)
   assert.doesNotMatch(JSON.parse(composer.body).messages[0].content, /concisely/i)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore + 1)
 })
 
 test('routes an exact Korean relationship question through one semantic planner and the managed graph', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   const completionsBefore = requests.filter((request) => request.path.endsWith('/chat/completions')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
@@ -1321,7 +1338,7 @@ test('routes an exact Korean relationship question through one semantic planner 
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION'))
   assert.ok(payload.evidence.some((item) => item.name === 'source_events'))
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
-    && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore + 1)
   assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore + 2)
 })
@@ -1378,6 +1395,10 @@ test('bypasses the classifier for explicit Chat routes and fails malformed AUTO 
   assert.equal(explicit.status, 200)
   const explicitPayload = await explicit.json()
   assert.equal(explicitPayload.route.selected_mode, 'GENERAL')
+  assert.equal(Number.isInteger(explicitPayload.performance.contextualization_ms), true)
+  assert.equal(Number.isInteger(explicitPayload.performance.routing_local_preparation_ms), true)
+  assert.equal(explicitPayload.performance.routing_capability_lookup_ms, null)
+  assert.equal(explicitPayload.performance.routing_provider_response_wait_ms, null)
   assert.ok(explicitPayload.workflow.some((item) => (
     item.stage === 'RETRIEVAL'
     && item.status === 'SKIPPED'

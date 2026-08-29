@@ -61,7 +61,14 @@ const response: ChatResponse = {
     { stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'PERSISTED' },
   ],
   performance: {
+    contextualization_ms: 1,
     routing_ms: 12,
+    routing_local_preparation_ms: 1,
+    routing_capability_lookup_ms: 2,
+    routing_provider_request_serialization_ms: 1,
+    routing_provider_response_wait_ms: 7,
+    routing_provider_response_body_ms: 1,
+    routing_decision_parse_ms: 0,
     catalog_discovery_ms: 18,
     vector_ms: 20,
     retrieval_ms: 34,
@@ -377,10 +384,12 @@ describe('ChatPage', () => {
     fireEvent.click(detailSummary)
     expect(performanceDetails).toHaveAttribute('open')
     expect(detailedPerformance).toBeVisible()
-    expect(detailedPerformance).toHaveTextContent('프롬프트 조립1 ms')
-    expect(detailedPerformance).toHaveTextContent('요청 직렬화2 ms')
-    expect(detailedPerformance).toHaveTextContent('Provider 응답 대기115 ms')
-    expect(detailedPerformance).toHaveTextContent('Provider 응답 읽기2 ms')
+    expect(detailedPerformance).toHaveTextContent('문맥 준비1 ms')
+    expect(detailedPerformance).toHaveTextContent('경로 Provider 응답 대기7 ms')
+    expect(detailedPerformance).toHaveTextContent('답변 프롬프트 조립1 ms')
+    expect(detailedPerformance).toHaveTextContent('답변 요청 직렬화2 ms')
+    expect(detailedPerformance).toHaveTextContent('답변 Provider 응답 대기115 ms')
+    expect(detailedPerformance).toHaveTextContent('답변 응답 읽기2 ms')
     expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')
     expect(screen.queryByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()

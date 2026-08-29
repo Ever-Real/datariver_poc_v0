@@ -36,7 +36,7 @@ before(async () => {
     for await (const chunk of request) chunks.push(chunk)
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     const system = payload.messages?.[0]?.content || ''
-    if (system.includes('Plan one untrusted Data Catalog question')) {
+    if (system.includes('Classify one untrusted Data Catalog question')) {
       return sendJson(response, 200, { choices: [{ message: { content: JSON.stringify(generalDecision) } }] })
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, answerDelayMs))

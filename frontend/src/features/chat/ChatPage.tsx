@@ -954,10 +954,17 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   <details>
                     <summary>상세 처리 시간</summary>
                     <dl className="chat-performance-summary" aria-label="상세 처리 시간 항목">
-                      <div><dt>프롬프트 조립</dt><dd>{visiblePerformance.prompt_assembly_ms ?? '—'} ms</dd></div>
-                      <div><dt>요청 직렬화</dt><dd>{visiblePerformance.provider_request_serialization_ms ?? '—'} ms</dd></div>
-                      <div><dt>Provider 응답 대기</dt><dd>{visiblePerformance.provider_response_wait_ms ?? '—'} ms</dd></div>
-                      <div><dt>Provider 응답 읽기</dt><dd>{visiblePerformance.provider_response_body_ms ?? '—'} ms</dd></div>
+                      <div><dt>문맥 준비</dt><dd>{visiblePerformance.contextualization_ms ?? '—'} ms</dd></div>
+                      <div><dt>경로 로컬 준비</dt><dd>{visiblePerformance.routing_local_preparation_ms ?? '—'} ms</dd></div>
+                      <div><dt>인가 그래프 조회</dt><dd>{visiblePerformance.routing_capability_lookup_ms ?? '—'} ms</dd></div>
+                      <div><dt>경로 요청 직렬화</dt><dd>{visiblePerformance.routing_provider_request_serialization_ms ?? '—'} ms</dd></div>
+                      <div><dt>경로 Provider 응답 대기</dt><dd>{visiblePerformance.routing_provider_response_wait_ms ?? '—'} ms</dd></div>
+                      <div><dt>경로 응답 읽기</dt><dd>{visiblePerformance.routing_provider_response_body_ms ?? '—'} ms</dd></div>
+                      <div><dt>경로 판정 검증</dt><dd>{visiblePerformance.routing_decision_parse_ms ?? '—'} ms</dd></div>
+                      <div><dt>답변 프롬프트 조립</dt><dd>{visiblePerformance.prompt_assembly_ms ?? '—'} ms</dd></div>
+                      <div><dt>답변 요청 직렬화</dt><dd>{visiblePerformance.provider_request_serialization_ms ?? '—'} ms</dd></div>
+                      <div><dt>답변 Provider 응답 대기</dt><dd>{visiblePerformance.provider_response_wait_ms ?? '—'} ms</dd></div>
+                      <div><dt>답변 응답 읽기</dt><dd>{visiblePerformance.provider_response_body_ms ?? '—'} ms</dd></div>
                     </dl>
                   </details>
                 </>

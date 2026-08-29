@@ -1410,6 +1410,14 @@ export interface ChatRouteDecision {
   entity_type_hints?: string[]
   selected_graph_asset?: string | null
   retrieval_method?: 'NONE' | 'LEXICAL' | 'SEMANTIC' | 'GRAPH_TRAVERSAL' | 'SEMANTIC_ENTITY_RESOLUTION_GRAPH'
+  routing_breakdown?: {
+    local_preparation_ms: number | null
+    capability_lookup_ms: number | null
+    provider_request_serialization_ms: number | null
+    provider_response_wait_ms: number | null
+    provider_response_body_ms: number | null
+    decision_parse_ms: number | null
+  }
   resolved_entities?: Array<{ id: string; urn: string; name?: string; method: string }>
   latency_ms?: { routing?: number; retrieval?: number; total?: number }
   llm_call_count?: number
@@ -1489,7 +1497,14 @@ export interface ChatAuthorizedDiscovery {
 }
 
 export interface ChatRequestPerformance {
+  contextualization_ms?: number | null
   routing_ms: number | null
+  routing_local_preparation_ms?: number | null
+  routing_capability_lookup_ms?: number | null
+  routing_provider_request_serialization_ms?: number | null
+  routing_provider_response_wait_ms?: number | null
+  routing_provider_response_body_ms?: number | null
+  routing_decision_parse_ms?: number | null
   catalog_discovery_ms: number | null
   vector_ms: number | null
   retrieval_ms: number | null
