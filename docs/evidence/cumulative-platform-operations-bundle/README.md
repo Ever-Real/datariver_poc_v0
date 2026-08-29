@@ -126,3 +126,32 @@ Failure is fail-closed; reset, resecret, volume deletion and user metadata
 mutation are prohibited.
 
 Actual PREP and Actual OPS remain NOT EXECUTED. No PREP readiness claim is made.
+
+## TEST packaging correction candidate
+
+The first accepted-state TEST attempt reached authenticated deployment stage
+`WEB_START` but the exact `7e25691` Web image entered a restart loop with
+`ERR_MODULE_NOT_FOUND` for the Product-owned `poc-airflow-control.mjs` import.
+Provider preflight had passed, and PostgreSQL, Neo4j and Redis remained healthy;
+the failed Web container was stopped without deleting volumes, resetting state
+or regenerating secrets. This is a Product image inventory defect, not an admin
+credential, provider, storage or authorization failure.
+
+The bounded correction adds only the missing explicit Dockerfile `COPY` and a
+release-contract regression assertion. The recursively inspected local runtime
+import graph reports no other uncopied module. The corrected clean Product is:
+
+| Identity | Exact value |
+| --- | --- |
+| Product | `579b068340f2e38ecc8f2f05ed0460c66797b226` |
+| image | `datariver-poc:579b068340f2e38ecc8f2f05ed0460c66797b226` |
+| child manifest | `sha256:ef7509a259406bcbefea5716f7efdbf7b2159d7edc71e1c759f2f9d4b8d46414` |
+| config digest | `sha256:b13ee5ee2af4ff66035e0ced0bf42acffdaf104c3c2a3d8f2c7db0f39c495ec8` |
+| archive SHA-256 | `06b57db5c1a31f6e54cac9e638eb11837196ffaa515fd6fee89f032830ac8f63` |
+| platform | `linux/amd64` |
+| OCI revision | exact Product SHA |
+
+Focused release/deploy/handoff tests are `137/137` PASS, the image-local
+Airflow runtime module import is PASS, and the artifact was exported from the
+already-built exact image without rebuild or pull. TEST accepted-state resume,
+6/6 smoke and same-command rerun remain pending and are not claimed here.
