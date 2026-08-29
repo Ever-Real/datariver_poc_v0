@@ -981,7 +981,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                         ? `전체 ${visibleDiscovery.total}개 중 ${visibleDiscovery.returned_count}개 조회`
                         : `상위 ${visibleDiscovery.returned_count}개 조회`}
                       {visibleDiscovery.truncated ? ' · 추가 결과 가능' : ' · 현재 범위 완료'}
-                      {` · 검색 ${visibleDiscovery.retrieved_count} · 재정렬 ${visibleDiscovery.reranked_count} · 답변 ${visibleDiscovery.answer_context_count}`}
+                      {` · 검색 ${visibleDiscovery.retrieved_count} · 재정렬 ${visibleDiscovery.reranked_count} · 답변 입력 ${visibleDiscovery.answer_context_count}`}
                     </small>
                     {visibleDiscovery.items.length > evidencePreviewLimit && (
                       discoveryExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />

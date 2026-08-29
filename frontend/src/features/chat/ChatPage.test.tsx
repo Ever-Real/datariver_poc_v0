@@ -353,7 +353,7 @@ describe('ChatPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
 
     expect(await screen.findByText(/상위 7개 조회 · 추가 결과 가능/)).toHaveTextContent(
-      '검색 7 · 재정렬 5 · 답변 5',
+      '검색 7 · 재정렬 5 · 답변 입력 5',
     )
     expect(screen.getByLabelText('현재 응답 처리 시간')).toHaveTextContent('전체190 ms')
     expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')

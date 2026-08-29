@@ -1324,7 +1324,7 @@ async def test_reranker_top_n_limits_answer_context_without_truncating_discovery
         subject=chat_subject(workspace_id),
         session_id=None,
         question="인가된 후보를 순서대로 보여줘",
-        maximum_evidence=2,
+        maximum_evidence=5,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="request-reranker-top-n-discovery",
         requested_mode=ChatRetrievalMode.VECTOR,

@@ -722,6 +722,10 @@ class ChatService:
                 )
                 if not rerank_failed:
                     discovery_limit = self._discovery_limit(maximum_evidence)
+                    answer_context_count = min(
+                        reranked_count if reranker_invoked else len(ranked_evidence),
+                        maximum_evidence,
+                    )
                     discovery = ChatAuthorizedDiscovery(
                         items=ranked_evidence,
                         rankings=rankings,
@@ -729,7 +733,7 @@ class ChatService:
                         limit=discovery_limit,
                         retrieved_count=len(evidence),
                         reranked_count=reranked_count,
-                        answer_context_count=min(len(ranked_evidence), maximum_evidence),
+                        answer_context_count=answer_context_count,
                         truncated=(
                             len(ranked_evidence) < len(evidence) or len(evidence) >= discovery_limit
                         ),
@@ -737,8 +741,13 @@ class ChatService:
                 # Discovery recall and answer context are separate bounds.  Every item in the
                 # wider candidate window has already passed the route's authorization checks;
                 # only this request-bounded prefix may reach composition or citation validation.
-                ranked_evidence = ranked_evidence[:maximum_evidence]
-                rankings = rankings[:maximum_evidence]
+                answer_context_count = (
+                    min(reranked_count, maximum_evidence)
+                    if reranker_invoked
+                    else maximum_evidence
+                )
+                ranked_evidence = ranked_evidence[:answer_context_count]
+                rankings = rankings[:answer_context_count]
                 if reranker_invoked:
                     external_stages.append("reranker")
                 if rerank_failed:
