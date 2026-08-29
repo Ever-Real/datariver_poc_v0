@@ -2750,7 +2750,7 @@ test('configured source hash matching no stored source fails closed with SOURCE_
 })
 
 test('MCP adapter bounded implementation', async () => {
-  const { createPocServer } = await import('./poc-server.mjs?mcp-full')
+  const { authorizeManagedK9Release, createPocServer } = await import('./poc-server.mjs?mcp-full')
   const mcpSubjectId = 'mcp-subject'
   const mcpWorkspaceId = '00000000-0000-4000-8000-000000000061'
   const otherWorkspaceId = '00000000-0000-4000-8000-000000000062'
@@ -2759,8 +2759,12 @@ test('MCP adapter bounded implementation', async () => {
   projection.access.value.users.push({ subject_id: mcpSubjectId, role: 'developer', active: true, provider_owner_refs: [] })
   projection.access.value.users.push({ subject_id: 'other', role: 'developer', active: true, provider_owner_refs: [] })
   const grantedTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.authorized_table,PROD)'
+  const deniedTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.denied_identity_must_not_leak,PROD)'
+  const deniedMarker = 'mcp-denied-identity-must-not-leak'
+  const managedGraphId = '01a02d2a-f8a0-7658-b5da-890eccdccf44'
   let mcpGrants = [{ active: true, tableUrn: grantedTableUrn }]
   let writeCalled = false
+  let managedAssetsFailure = null
   const mcpCredentials = new Map([
     [mcpSubjectId, { subjectId: mcpSubjectId, loginEnabled: true, lockedUntil: null }],
     ['inactive', { subjectId: 'inactive', loginEnabled: true, lockedUntil: null }],
@@ -2773,30 +2777,130 @@ test('MCP adapter bounded implementation', async () => {
     async readChangeHistoryProjection() { return structuredClone(projection) },
     async write() { writeCalled = true },
     async listUserTableGrants(subjectId) { return subjectId === mcpSubjectId ? mcpGrants : [] },
+    async listK9ManagedGraphAssets() {
+      if (managedAssetsFailure === 'malformed') {
+        return [{ graph_id: `${deniedMarker}:${providerToken}`, classification: 'INTERNAL' }]
+      }
+      if (managedAssetsFailure) throw managedAssetsFailure
+      return [{
+        graph_id: managedGraphId,
+        managed_intent: 'metadata-lineage',
+        name: 'CATALOG_MIRROR',
+        classification: 'INTERNAL',
+        subject_id: 'k9-service-subject',
+        ontology_version_id: 'managed-ontology',
+        studio_release_id: 'managed-studio-release',
+        active_release_pointer: 'managed-active-release',
+        active_input_snapshot_hash: 'managed-input-hash',
+        active_release_hash: 'managed-release-hash',
+        publication_version: 1,
+        latest_result: 'RUN',
+        active_manifest: { node_count: 3, edge_count: 2, model_version: 2 },
+      }]
+    },
     async readFeatureSecurityPolicy() { return null },
     async readLocalCredential(subjectId) { return mcpCredentials.get(subjectId) || null },
   }
-  const releaseFixture = (s) => ({ id: 'r1', graph_id: s.graphId, release_no: 1, ontology_version_id: 'o', content_hash: 'hash1', node_count: 1, edge_count: 1, published_by: 'p', published_at: '2026', publisher_name: null, publisher_email: null })
+  const releaseFixture = (s) => ({
+    id: 'r1',
+    graph_id: s.graphId,
+    release_no: 1,
+    ontology_version_id: 'o',
+    content_hash: 'hash1',
+    node_count: s.authorizedRelease?.nodes.length ?? 1,
+    edge_count: s.authorizedRelease?.edges.length ?? 1,
+    published_by: 'p',
+    published_at: '2026',
+    publisher_name: null,
+    publisher_email: null,
+  })
   const provFixture = [{ source_ref: 'sr1', source_locator: 'sl1', source_version: 'sv1', method: 'm1', confidence: 1 }]
   const nodeFixture = [{ id: 'n1', entity_type: 't1', properties: { p: 1 }, classification: 1, provenance: provFixture }]
   const edgeFixture = [{ id: 'e1', source_id: 'n1', target_id: 'n2', edge_type: 'et1', properties: {}, classification: 1, provenance: provFixture }]
+  const canonicalAuthorizationRelease = {
+    manifest: { graph_id: 'authorization-filtered' },
+    nodes: [
+      { id: 'table-allowed', type: 'class.table', classification: 'INTERNAL', properties: { external_urn: grantedTableUrn, name: 'Allowed table', nested: { source: grantedTableUrn } } },
+      { id: 'column-allowed', type: 'class.column', classification: 'INTERNAL', properties: { dataset_urn: grantedTableUrn, name: 'allowed_id' } },
+      { id: deniedMarker, type: 'class.table', classification: 'INTERNAL', properties: { external_urn: deniedTableUrn, name: deniedMarker, nested: { source: deniedTableUrn } } },
+      { id: 'semantic-shared', type: 'class.business_term', classification: 'INTERNAL', properties: { name: 'Shared semantic hub' } },
+    ],
+    edges: [
+      { id: 'allowed-to-hub', source: 'table-allowed', target: 'semantic-shared', type: 'rel.table_has_glossary_term', properties: { source_entity_urn: grantedTableUrn } },
+      { id: deniedMarker, source: deniedMarker, target: 'semantic-shared', type: 'rel.table_has_glossary_term', properties: { source_entity_urn: deniedTableUrn, nested: { source: deniedTableUrn } } },
+    ],
+  }
+  const authorizedSnapshot = (scope) => {
+    const provenance = (identity) => [{ source_ref: identity, source_locator: identity, source_version: 'authorized-source-version', method: 'DATAHUB_MANAGED_PROJECTION', confidence: 1 }]
+    return {
+      release: releaseFixture(scope),
+      nodes: scope.authorizedRelease.nodes.map((node) => ({
+        id: node.id,
+        entity_type: node.type,
+        properties: node.properties,
+        classification: 1,
+        provenance: provenance(node.properties.external_urn || node.id),
+      })),
+      edges: scope.authorizedRelease.edges.map((edge) => ({
+        id: edge.id,
+        source_id: edge.source,
+        target_id: edge.target,
+        edge_type: edge.type,
+        properties: edge.properties,
+        classification: 1,
+        provenance: provenance(`${edge.source}->${edge.target}`),
+      })),
+      filtered: true,
+    }
+  }
 
   let lastScope = null
   let lastArgs = null
   const mcpKnowledgeChatScope = async (ctx, g, r) => {
     lastScope = { principal: ctx.principal, knowledgeAdapter: ctx.knowledgeAdapter, graphId: g, studioReleaseId: r }
     if (g === 'unauth') throw Object.assign(new Error('Nope'), { statusCode: 404, code: 'NOT_FOUND' })
-    if (g === 'fail') throw new Error('Secret error here')
+    if (g === 'fail' || g === 'graph-provider-unavailable') throw new Error(`Provider unavailable: ${providerBody}; ${providerToken}; ${mcpToken}`)
+    if (g === 'graph-provider-timeout') throw Object.assign(new Error(`Provider timeout: ${providerBody}; ${providerToken}; ${mcpToken}`), { name: 'TimeoutError' })
+    if (g === 'authorization-filtered') {
+      return {
+        graphId: g,
+        studioReleaseId: r,
+        authorizedRelease: authorizeManagedK9Release(ctx.principal, canonicalAuthorizationRelease, {
+          knowledgeAdapter: ctx.knowledgeAdapter,
+        }),
+      }
+    }
     return { graphId: g, studioReleaseId: r }
   }
   const mcpKnowledgeChatSnapshot = async (s) => {
-    if (s.graphId === 'extra') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false, extraKey: 1 }
+    if (s.graphId === 'authorization-filtered') return authorizedSnapshot(s)
+    if (s.graphId === 'extra') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false, extraKey: providerToken }
     if (s.graphId === 'mismatch') return { release: releaseFixture({ graphId: 'wrong' }), nodes: nodeFixture, edges: edgeFixture, filtered: false }
     return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false }
   }
   const mcpKnowledgeGraphRag = async (s, args) => {
     lastArgs = args
-    if (s.graphId === 'malformed') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, truncated: 'yes', answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
+    if (s.graphId === 'rag-provider-unavailable') throw new Error(`GraphRAG unavailable: ${providerBody}; ${providerToken}; ${mcpToken}`)
+    if (s.graphId === 'rag-provider-timeout') throw Object.assign(new Error(`GraphRAG timeout: ${providerBody}; ${providerToken}; ${mcpToken}`), { name: 'TimeoutError' })
+    if (s.graphId === 'authorization-filtered') {
+      const snapshot = authorizedSnapshot(s)
+      const evidence = [...snapshot.nodes, ...snapshot.edges]
+      return {
+        release: snapshot.release,
+        nodes: snapshot.nodes,
+        edges: snapshot.edges,
+        truncated: snapshot.filtered,
+        answer: `Authorized answer for ${args.question}`,
+        citations: evidence.map((item) => ({
+          evidence_id: item.id,
+          source_locator: item.provenance[0].source_locator,
+          source_version: item.provenance[0].source_version,
+          page_number: null,
+        })),
+        model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' },
+      }
+    }
+    if (s.graphId === 'malformed') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, truncated: 'yes', answer: providerBody, citations: [{ evidence_id: 'e', source_locator: providerToken, source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
     if (s.graphId === 'mismatch') return { release: releaseFixture({ graphId: 'wrong' }), nodes: nodeFixture, edges: edgeFixture, truncated: false, answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
     return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, truncated: false, answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
   }
@@ -2813,18 +2917,28 @@ test('MCP adapter bounded implementation', async () => {
       throw Object.assign(new Error(`DataHub timeout: ${providerBody}`), { name: 'TimeoutError' })
     }
     if (question === 'malformed response') return { items: [] }
-    if (!principal.activeTableGrantUrns.has(grantedTableUrn)) return []
-    return [{
-      id: grantedTableUrn,
-      external_urn: grantedTableUrn,
-      name: 'Authorized synthetic table',
-      dataset_kind: 'TABLE',
-      provider_description: 'Authorized metadata',
-      classification: 'PUBLIC',
-      retrieval_method: 'DATAHUB_GMS',
-      raw_provider_body: providerBody,
-      provider_token: providerToken,
-    }]
+    return [
+      {
+        id: grantedTableUrn,
+        external_urn: grantedTableUrn,
+        name: 'Authorized synthetic table',
+        dataset_kind: 'TABLE',
+        provider_description: 'Authorized metadata',
+        classification: 'PUBLIC',
+        retrieval_method: 'DATAHUB_GMS',
+        raw_provider_body: providerBody,
+        provider_token: providerToken,
+      },
+      {
+        id: deniedTableUrn,
+        external_urn: deniedTableUrn,
+        name: deniedMarker,
+        dataset_kind: 'TABLE',
+        provider_description: deniedMarker,
+        classification: 'PUBLIC',
+        retrieval_method: 'DATAHUB_GMS',
+      },
+    ].filter((item) => principal.activeTableGrantUrns.has(item.id))
   }
 
   const srvMissing = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
@@ -2902,10 +3016,26 @@ test('MCP adapter bounded implementation', async () => {
       }
       return { status: res.status, body: await res.json() }
     }
+    const assertNoSensitiveLeak = (value, additionalMarkers = []) => {
+      const serialized = JSON.stringify(value)
+      for (const marker of [deniedMarker, deniedTableUrn, providerBody, providerToken, mcpToken, ...additionalMarkers]) {
+        assert.equal(serialized.includes(marker), false, `response leaked ${marker}`)
+      }
+    }
+    const assertInternalError = (value) => {
+      assert.equal(value.status, 200)
+      assert.ok(value.body?.error, JSON.stringify(value))
+      assert.equal(value.body.error.code, -32603)
+      assert.equal(value.body.error.message, 'Internal error')
+      assertNoSensitiveLeak(value)
+    }
     const req0 = { jsonrpc: '2.0', method: 'initialize', id: 1 }
 
     assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', body: JSON.stringify(req0) })).status, 401)
-    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: 'Bearer bad' }, body: JSON.stringify(req0) })).status, 401)
+    const rejectedToken = 'rejected-token-must-not-leak'
+    const rejectedTokenResponse = await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${rejectedToken}` }, body: JSON.stringify(req0) })
+    assert.equal(rejectedTokenResponse.status, 401)
+    assertNoSensitiveLeak(await rejectedTokenResponse.json(), [rejectedToken])
     assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${rotatedToken}` }, body: JSON.stringify(req0) })).status, 401)
     assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${airflowToken}` }, body: JSON.stringify(req0) })).status, 401)
     assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'GET' })).status, 405)
@@ -2952,12 +3082,36 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(unkTool.body.error.code, -32601)
 
     const resources = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'resources/list', id: 9 }, h)
-    assert.deepEqual(resources.body.result.resources, [])
+    assert.equal(resources.body.result.resources.length, 1)
+    assert.equal(resources.body.result.resources[0].uri, `datariver://knowledge/assets/${managedGraphId}`)
+    assertNoSensitiveLeak(resources)
 
-    const assets = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_graph_assets', arguments: {} }, id: 10 }, h)
-    assert.deepEqual(assets.body.result.structuredContent.items, [])
+    const resource = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'resources/read', params: { uri: resources.body.result.resources[0].uri }, id: 10 }, h)
+    assert.equal(resource.body.result.contents.length, 1)
+    assert.equal(JSON.parse(resource.body.result.contents[0].text).id, managedGraphId)
+    assertNoSensitiveLeak(resource)
 
-    const metadata = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query: 'authorized table', limit: 3 } }, id: 12 }, h)
+    const hiddenResource = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'resources/read', params: { uri: `datariver://knowledge/assets/${deniedMarker}` }, id: 11 }, h)
+    assert.equal(hiddenResource.status, 404)
+    assert.equal(hiddenResource.body.code, 'KNOWLEDGE_GRAPH_NOT_FOUND')
+    assertNoSensitiveLeak(hiddenResource)
+
+    const assets = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_graph_assets', arguments: {} }, id: 12 }, h)
+    assert.equal(assets.body.result.structuredContent.items.length, 1)
+    assert.equal(assets.body.result.structuredContent.items[0].id, managedGraphId)
+    assertNoSensitiveLeak(assets)
+
+    for (const [failure, request] of [
+      [new Error(`Asset registry unavailable: ${providerBody}; ${providerToken}; ${mcpToken}`), { jsonrpc: '2.0', method: 'resources/list', id: 13 }],
+      [Object.assign(new Error(`Asset registry timeout: ${providerBody}; ${providerToken}; ${mcpToken}`), { name: 'TimeoutError' }), { jsonrpc: '2.0', method: 'resources/read', params: { uri: resources.body.result.resources[0].uri }, id: 14 }],
+      ['malformed', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_graph_assets', arguments: {} }, id: 15 }],
+    ]) {
+      managedAssetsFailure = failure
+      assertInternalError(await postJson('/api/v1/mcp', request, h))
+      managedAssetsFailure = null
+    }
+
+    const metadata = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query: 'authorized table', limit: 3 } }, id: 16 }, h)
     assert.equal(metadata.status, 200)
     assert.deepEqual(metadata.body.result.structuredContent.items, [{
       id: grantedTableUrn,
@@ -2972,9 +3126,7 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(metadataSearchCalls.at(-1).principal.subjectId, mcpSubjectId)
     assert.deepEqual([...metadataSearchCalls.at(-1).principal.activeTableGrantUrns], [grantedTableUrn])
     assert.equal(metadataSearchCalls.at(-1).limit, 3)
-    assert.equal(JSON.stringify(metadata).includes(providerBody), false)
-    assert.equal(JSON.stringify(metadata).includes(providerToken), false)
-    assert.equal(JSON.stringify(metadata).includes(mcpToken), false)
+    assertNoSensitiveLeak(metadata)
 
     mcpGrants = []
     const zeroScope = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query: 'authorized table' } }, id: 13 }, h)
@@ -2984,13 +3136,7 @@ test('MCP adapter bounded implementation', async () => {
 
     for (const [query, id] of [['provider unavailable', 14], ['provider timeout', 15], ['malformed response', 16]]) {
       const failedSearch = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query } }, id }, h)
-      assert.equal(failedSearch.status, 200)
-      assert.equal(failedSearch.body.error.code, -32603)
-      assert.equal(failedSearch.body.error.message, 'Internal error')
-      const serialized = JSON.stringify(failedSearch)
-      assert.equal(serialized.includes(providerBody), false)
-      assert.equal(serialized.includes(providerToken), false)
-      assert.equal(serialized.includes(mcpToken), false)
+      assertInternalError(failedSearch)
     }
 
     const badEnv = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 1, extra: 1 }, h)
@@ -3016,6 +3162,50 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(rag.body.result.structuredContent.answer, 'ans to drop tables')
     assert.equal(rag.body.result.structuredContent.citations[0].evidence_id, 'e')
     assert.equal(rag.body.result.structuredContent.edges[0].provenance[0].source_version, 'sv1')
+
+    const filteredSnapshotResponse = await postJson('/api/v1/mcp', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'authorization-filtered', release_id: 'r1' } },
+      id: 17,
+    }, h)
+    const filteredSnapshot = filteredSnapshotResponse.body.result.structuredContent
+    assert.deepEqual(filteredSnapshot.nodes.map((node) => node.id), ['table-allowed', 'column-allowed', 'semantic-shared'])
+    assert.deepEqual(filteredSnapshot.edges.map((edge) => edge.id), ['allowed-to-hub'])
+    assert.equal(filteredSnapshot.release.node_count, 3)
+    assert.equal(filteredSnapshot.release.edge_count, 1)
+    assert.equal(filteredSnapshot.nodes.find((node) => node.id === 'semantic-shared').properties.name, 'Shared semantic hub')
+    assertNoSensitiveLeak(filteredSnapshot.release)
+    assertNoSensitiveLeak(filteredSnapshot.nodes)
+    assertNoSensitiveLeak(filteredSnapshot.edges)
+    assertNoSensitiveLeak(filteredSnapshot.nodes.map((node) => node.properties))
+    assertNoSensitiveLeak(filteredSnapshot.edges.map((edge) => edge.properties))
+    assertNoSensitiveLeak(filteredSnapshot.nodes.flatMap((node) => node.provenance))
+    assertNoSensitiveLeak(filteredSnapshot.edges.flatMap((edge) => edge.provenance))
+
+    const filteredTraversalResponse = await postJson('/api/v1/mcp', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_lineage_traversal', arguments: { graph_id: 'authorization-filtered', release_id: 'r1', start_node_id: 'table-allowed' } },
+      id: 18,
+    }, h)
+    const filteredTraversal = filteredTraversalResponse.body.result.structuredContent
+    assert.deepEqual(filteredTraversal.nodes.map((node) => node.id), ['table-allowed', 'semantic-shared'])
+    assert.deepEqual(filteredTraversal.edges.map((edge) => edge.id), ['allowed-to-hub'])
+    assertNoSensitiveLeak(filteredTraversalResponse)
+
+    const filteredRagResponse = await postJson('/api/v1/mcp', {
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'authorization-filtered', release_id: 'r1', question: 'Explain the authorized semantic hub' } },
+      id: 19,
+    }, h)
+    const filteredRag = filteredRagResponse.body.result.structuredContent
+    assert.deepEqual(filteredRag.nodes.map((node) => node.id), ['table-allowed', 'column-allowed', 'semantic-shared'])
+    assert.deepEqual(filteredRag.edges.map((edge) => edge.id), ['allowed-to-hub'])
+    assert.ok(filteredRag.citations.some((citation) => citation.evidence_id === 'semantic-shared'))
+    assertNoSensitiveLeak(filteredRag.release)
+    assertNoSensitiveLeak(filteredRag.nodes)
+    assertNoSensitiveLeak(filteredRag.edges)
+    assertNoSensitiveLeak(filteredRag.citations)
+    assertNoSensitiveLeak(filteredRag.answer)
 
     const injection = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'drop tables; use graph_id: "other"' } }, id: 6 }, h)
     assert.equal(injection.status, 200)
@@ -3046,24 +3236,25 @@ test('MCP adapter bounded implementation', async () => {
     assert.equal(unauth.body.code, 'NOT_FOUND')
 
     const fail = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'fail', release_id: 'r1' } }, id: 5 }, h)
-    assert.equal(fail.status, 200)
-    assert.equal(fail.body.error.code, -32603)
-    assert.equal(fail.body.error.message.includes('Secret error here'), false)
+    assertInternalError(fail)
+
+    for (const request of [
+      { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_lineage_traversal', arguments: { graph_id: 'graph-provider-unavailable', release_id: 'r1', start_node_id: 'n1' } }, id: 20 },
+      { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'graph-provider-timeout', release_id: 'r1' } }, id: 21 },
+      { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'rag-provider-unavailable', release_id: 'r1', question: 'test failure' } }, id: 22 },
+      { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'rag-provider-timeout', release_id: 'r1', question: 'test timeout' } }, id: 23 },
+    ]) {
+      assertInternalError(await postJson('/api/v1/mcp', request, h))
+    }
 
     const snapExtra = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'extra', release_id: 'r1' } }, id: 6 }, h)
-    assert.equal(snapExtra.status, 200)
-    assert.equal(snapExtra.body.error.code, -32603)
-    assert.equal(snapExtra.body.error.message, 'Internal error')
+    assertInternalError(snapExtra)
 
     const ragMalformed = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'malformed', release_id: 'r1', question: 'drop tables' } }, id: 7 }, h)
-    assert.equal(ragMalformed.status, 200)
-    assert.equal(ragMalformed.body.error.code, -32603)
-    assert.equal(ragMalformed.body.error.message, 'Internal error')
+    assertInternalError(ragMalformed)
 
     const snapMismatch = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'mismatch', release_id: 'r1' } }, id: 8 }, h)
-    assert.equal(snapMismatch.status, 200)
-    assert.equal(snapMismatch.body.error.code, -32603)
-    assert.equal(snapMismatch.body.error.message, 'Internal error')
+    assertInternalError(snapMismatch)
 
     assert.equal(writeCalled, false)
   } finally {
