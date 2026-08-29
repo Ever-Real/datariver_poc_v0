@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  e131550b7fa441de85ded5b7b55083d77b8c643e
-Evidence 434ea531e1fcde7b0927a69e310ec4caea6cdb6d
+Product  1ad090d084b34906438e281ee208f9ec49d9a95f
+Evidence 32af64f84bb0140cc53bdae1674acff489570c69
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -157,13 +157,16 @@ identity.
 
 ## Current hotfix evidence
 
-The current development Handoff adds the Wave B core user workflows recorded
-in [`docs/evidence/wave-b-core-user-workflows/README.md`](evidence/wave-b-core-user-workflows/README.md).
+The current development Handoff adds the locally verified Wave C knowledge workflows recorded
+in [`docs/evidence/wave-c-knowledge-workflows/README.md`](evidence/wave-c-knowledge-workflows/README.md).
 Its exact ignored archive is pinned by `release.json`; TEST PC validation is
 `BLOCKED_EXTERNAL`, and this development Handoff does not claim Actual PREP or
 OPS execution. The canonical deployment command and all existing no-build,
 ownership, schema-integrity, provider, smoke, and non-destructive resume
 contracts remain unchanged.
+
+The preceding Wave B core user-workflow evidence remains at
+[`docs/evidence/wave-b-core-user-workflows/README.md`](evidence/wave-b-core-user-workflows/README.md).
 
 The current hotfix evidence is
 [`docs/evidence/prep-unknown-state-portability-correction/README.md`](evidence/prep-unknown-state-portability-correction/README.md).
