@@ -399,7 +399,7 @@ describe('application shell contracts', () => {
     const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
     expect(Array.from(navigation.querySelectorAll('.primary-navigation-track > button'))
       .map((button) => button.textContent)).toEqual([
-        '검색', '변경관리', '모니터링', '거버넌스', 'ChatBeta',
+        '검색', '변경관리', '모니터링', '거버넌스', '용어사전', 'ChatBeta',
       ])
     expect(navigation).not.toHaveTextContent('관리자')
     expect(within(navigation).getByRole('button', { name: '검색' })).toHaveClass('active')

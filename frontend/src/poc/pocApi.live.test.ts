@@ -1507,8 +1507,8 @@ describe('POC live-provider compatibility adapter', () => {
     }, 'governance-html-import')
     expect(importedHtml.item.versions[0]?.sanitized_html).toContain('>HTML 정책</h1>')
     expect(importedHtml.item.versions[0]?.sanitized_html).toContain('<strong>서식</strong>')
-    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('data-governance-style="color:#123456;padding:12px"')
-    expect(importedHtml.item.versions[0]?.sanitized_html).not.toContain('position')
+    expect(importedHtml.item.versions[0]?.sanitized_html).not.toContain('data-governance-style')
+    expect(importedHtml.item.versions[0]?.sanitized_html).not.toMatch(/color|padding|position/)
     expect(importedHtml.item.versions[0]?.sanitized_html).not.toMatch(/script|alert/i)
 
     const importedMarkdown = await api.importDocument({
