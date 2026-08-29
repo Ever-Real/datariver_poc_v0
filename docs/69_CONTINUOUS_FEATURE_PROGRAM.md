@@ -131,9 +131,17 @@ Control Plane.
   canonical Epics and eight legacy-source groups are mapped without promoting
   stale claims; program/wave/Epic views, constraints and design-constraints
   tabs, and a collapsed completion archive render over HTTP 200.
-- Wave A correction is active for UX-01..UX-04. AF-01 and the reported Catalog
-  401 remain evidence-gathering tasks until the pinned Airflow runtime and an
-  exact failing endpoint prove whether a Product delta is required.
+- Wave A Product `5ab575ffa3a0f8dba7657245de182ae940fdb325` is locally verified.
+  Catalog close/focus/transient-route behavior, bounded graph geometry, valid
+  font weights, affected-path CSP-compatible styling and shared copy cleanup are
+  complete in source. The pinned Airflow 3.3.0 image parsed all six DAGs, so
+  AF-01 required no Product delta. An authenticated Catalog-open 401 was not
+  reproduced locally and remains an exact TEST browser/network acceptance gate.
+- The exact `linux/amd64` Product archive is exported and checksum/manifest/
+  config/revision verified. Evidence is recorded in
+  `docs/evidence/wave-a-foundation/README.md`. Wave A remains
+  `LOCAL_VERIFIED` until the existing accepted TEST state is redeployed without
+  build/reset/resecret and passes 6/6 smoke plus affected browser/API checks.
 
 ## Release and TEST PC checkpoints
 
