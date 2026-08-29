@@ -404,15 +404,25 @@ describe('catalog workspace', () => {
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(2)
   })
 
-  it('caps a retained Resource Tree branch at 200 nodes', async () => {
+  it('navigates beyond 300 Resource Tree nodes with exact opaque cursors and a bounded branch page', async () => {
+    const pageStarts = new Map<string | null, number>([
+      [null, 0],
+      ['opaque:page-2?/+', 100],
+      ['opaque:page-3=%/+', 200],
+      ['opaque:page-4&next', 300],
+    ])
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options
-      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'platform-node', kind: 'PLATFORM', label: 'snowflake', asset_count: 400, has_children: true, platform: 'snowflake' }], page: { limit: 100 }, meta })
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'platform-node', kind: 'PLATFORM', label: 'snowflake', asset_count: 350, has_children: true, platform: 'snowflake' }], page: { limit: 100 }, meta })
       if (path.includes('parent_kind=PLATFORM')) {
         const parameters = new URL(path, 'http://catalog.test').searchParams
-        const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
+        const cursor = parameters.get('cursor')
+        const offset = pageStarts.get(cursor)
+        if (offset === undefined) return Promise.reject(new Error(`Unexpected cursor: ${cursor}`))
+        const itemCount = Math.min(100, 350 - offset)
+        const nextCursor = [...pageStarts].find(([, value]) => value === offset + itemCount)?.[0]
         return Promise.resolve({
-          items: Array.from({ length: 100 }, (_, index) => ({
+          items: Array.from({ length: itemCount }, (_, index) => ({
             id: `database-${offset + index}`,
             kind: 'DATABASE',
             label: `database_${offset + index}`,
@@ -421,7 +431,7 @@ describe('catalog workspace', () => {
             platform: 'snowflake',
             database_name: `database_${offset + index}`,
           })),
-          page: { limit: 100, next_cursor: `offset-${offset + 100}` },
+          page: { limit: 100, ...(nextCursor ? { next_cursor: nextCursor } : {}) },
           meta,
         })
       }
@@ -430,11 +440,139 @@ describe('catalog workspace', () => {
     render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    fireEvent.click(await within(tree).findByRole('button', { name: /하위 항목 더 보기/ }))
+    const branchNavigation = await within(tree).findByRole('navigation', { name: 'snowflake 하위 항목 페이지 탐색' })
+    expect(await within(tree).findByText('database_99')).toBeInTheDocument()
+    expect(within(tree).getAllByRole('button', { name: /database_/ })).toHaveLength(100)
+    expect(within(branchNavigation).getByRole('button', { name: '이전' })).toBeDisabled()
 
-    expect(await within(tree).findByText('메모리 보호를 위해 이 분기의 200개 항목만 표시합니다. 검색을 사용하세요.')).toBeInTheDocument()
-    expect(within(tree).getAllByRole('button', { name: /database_/ })).toHaveLength(200)
-    expect(within(tree).queryByRole('button', { name: /하위 항목 더 보기/ })).not.toBeInTheDocument()
+    fireEvent.click(within(branchNavigation).getByRole('button', { name: '다음' }))
+    expect(await within(tree).findByText('database_199')).toBeInTheDocument()
+    expect(within(tree).queryByText('database_0')).not.toBeInTheDocument()
+    expect(within(tree).getAllByRole('button', { name: /database_/ })).toHaveLength(100)
+
+    fireEvent.click(within(branchNavigation).getByRole('button', { name: '다음' }))
+    expect(await within(tree).findByText('database_299')).toBeInTheDocument()
+    expect(within(tree).queryByText('database_100')).not.toBeInTheDocument()
+    expect(within(tree).getAllByRole('button', { name: /database_/ })).toHaveLength(100)
+
+    fireEvent.click(within(branchNavigation).getByRole('button', { name: '이전' }))
+    expect(await within(tree).findByText('database_100')).toBeInTheDocument()
+    expect(within(tree).queryByText('database_200')).not.toBeInTheDocument()
+    expect(within(tree).getAllByRole('button', { name: /database_/ })).toHaveLength(100)
+
+    const branchCursors = request.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.includes('parent_kind=PLATFORM'))
+      .map((path) => new URL(path, 'http://catalog.test').searchParams.get('cursor'))
+    expect(branchCursors).toEqual([null, 'opaque:page-2?/+', 'opaque:page-3=%/+', 'opaque:page-2?/+'])
+
+    fireEvent.click(within(tree).getByRole('button', { name: '현재 DataHub 기준으로 Resource Tree 새로고침' }))
+    expect(await within(tree).findByText('database_0')).toBeInTheDocument()
+    expect(within(tree).queryByText('database_100')).not.toBeInTheDocument()
+    await waitFor(() => {
+      const refreshedBranchCursors = request.mock.calls
+        .map(([path]) => String(path))
+        .filter((path) => path.includes('parent_kind=PLATFORM'))
+        .map((path) => new URL(path, 'http://catalog.test').searchParams.get('cursor'))
+      expect(refreshedBranchCursors).toEqual([...branchCursors, null])
+    })
+  })
+
+  it('keeps recent Previous cursors bounded while First recovers page one after history eviction', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: [{ id: 'long-platform', kind: 'PLATFORM', label: 'long_platform', asset_count: 22, has_children: true, platform: 'long_platform' }],
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM')) {
+        const cursor = new URL(path, 'http://catalog.test').searchParams.get('cursor')
+        const pageIndex = cursor ? Number(cursor.replace('opaque-page-', '')) - 1 : 0
+        return Promise.resolve({
+          items: [{ id: `long-database-${pageIndex}`, kind: 'DATABASE', label: `long_database_${pageIndex}`, asset_count: 1, has_children: false, platform: 'long_platform', database_name: `long_database_${pageIndex}` }],
+          page: { limit: 100, ...(pageIndex < 21 ? { next_cursor: `opaque-page-${pageIndex + 2}` } : {}) },
+          meta,
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<TestCatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    const navigation = await within(tree).findByRole('navigation', { name: 'long_platform 하위 항목 페이지 탐색' })
+    for (let page = 2; page <= 22; page += 1) {
+      fireEvent.click(within(navigation).getByRole('button', { name: '다음' }))
+      await waitFor(() => expect(navigation).toHaveTextContent(`${page} 페이지`))
+    }
+    expect(within(tree).getAllByRole('button', { name: /long_database_/ })).toHaveLength(1)
+    expect(within(navigation).getByRole('button', { name: '이전' })).toBeEnabled()
+
+    fireEvent.click(within(navigation).getByRole('button', { name: '처음' }))
+    expect(await within(tree).findByText('long_database_0')).toBeInTheDocument()
+    expect(within(tree).queryByText('long_database_21')).not.toBeInTheDocument()
+    const branchCursors = request.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.includes('parent_kind=PLATFORM'))
+      .map((path) => new URL(path, 'http://catalog.test').searchParams.get('cursor'))
+    expect(branchCursors.at(-1)).toBeNull()
+  })
+
+  it('reports a Resource Tree page that violates the requested 100-item limit', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: [{ id: 'oversized-platform', kind: 'PLATFORM', label: 'oversized_platform', asset_count: 101, has_children: true, platform: 'oversized_platform' }],
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM')) return Promise.resolve({
+        items: Array.from({ length: 101 }, (_, index) => ({
+          id: `oversized-database-${index}`, kind: 'DATABASE', label: `oversized_database_${index}`,
+          asset_count: 1, has_children: false, platform: 'oversized_platform', database_name: `oversized_database_${index}`,
+        })),
+        page: { limit: 100 }, meta,
+      })
+      return defaultRequest(path)
+    })
+    render(<TestCatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    expect(await within(tree).findByRole('alert')).toHaveTextContent('Resource Tree 응답이 요청한 페이지 제한을 초과했습니다.')
+    expect(within(tree).queryByRole('button', { name: /oversized_database_/ })).not.toBeInTheDocument()
+  })
+
+  it('aborts and evicts an in-flight page descendant before navigating its parent branch', async () => {
+    let descendantSignal: AbortSignal | undefined
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: [{ id: 'paged-platform', kind: 'PLATFORM', label: 'paged_platform', asset_count: 2, has_children: true, platform: 'paged_platform' }],
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM')) {
+        const cursor = new URL(path, 'http://catalog.test').searchParams.get('cursor')
+        return Promise.resolve({
+          items: [{ id: cursor ? 'database-page-2' : 'database-page-1', kind: 'DATABASE', label: cursor ? 'database_page_2' : 'database_page_1', asset_count: 1, has_children: !cursor, platform: 'paged_platform', database_name: cursor ? 'page_2' : 'page_1' }],
+          page: { limit: 100, ...(!cursor ? { next_cursor: 'opaque-parent-page-2' } : {}) }, meta,
+        })
+      }
+      if (path.includes('parent_kind=DATABASE') && options?.signal) {
+        descendantSignal = options.signal
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        })
+      }
+      return defaultRequest(path, options)
+    })
+    render(<TestCatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    fireEvent.click(await within(tree).findByRole('button', { name: /database_page_1/ }))
+    await waitFor(() => expect(descendantSignal).toBeDefined())
+    const navigation = within(tree).getByRole('navigation', { name: 'paged_platform 하위 항목 페이지 탐색' })
+    fireEvent.click(within(navigation).getByRole('button', { name: '다음' }))
+
+    expect(descendantSignal?.aborted).toBe(true)
+    expect(await within(tree).findByText('database_page_2')).toBeInTheDocument()
+    expect(within(tree).queryByText('database_page_1')).not.toBeInTheDocument()
   })
 
   it('evicts the least-recently expanded branch after eight retained branches', async () => {

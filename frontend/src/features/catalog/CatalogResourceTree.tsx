@@ -9,11 +9,15 @@ import { GlobalCatalogSearch } from '../../components/layout/GlobalCatalogSearch
 
 interface Branch {
   items: CatalogTreeNode[]
+  page: number
+  pageStarts: Array<{ page: number; cursor?: string }>
   nextCursor?: string
-  truncated?: boolean
 }
 
-const maximumBranchItems = 200
+type BranchTarget = Pick<Branch, 'page' | 'pageStarts'> & { cursor?: string }
+
+const maximumBranchPageItems = 100
+const maximumBranchPageStarts = 20
 const maximumExpandedBranches = 8
 
 function withoutBranchTree(branches: Record<string, Branch>, rootKey: string): Record<string, Branch> {
@@ -104,7 +108,7 @@ export function CatalogResourceTree({
 
   const loadBranch = useCallback(async (
     parent?: CatalogTreeNode,
-    append = false,
+    target: BranchTarget = { page: 1, pageStarts: [{ page: 1 }] },
     expectedGeneration = generation.current,
     forceCurrent = false,
   ) => {
@@ -116,23 +120,23 @@ export function CatalogResourceTree({
     try {
       const parameters = new URLSearchParams(parent ? treePath(parent) : 'parent_kind=ROOT&limit=100')
       if (!parent && forceCurrent) parameters.set('refresh', 'true')
-      const cursor = append ? branches[key]?.nextCursor : undefined
-      if (cursor) parameters.set('cursor', cursor)
+      if (target.cursor !== undefined) parameters.set('cursor', target.cursor)
       const page = await client.request<CatalogTreePage>(`/catalog/tree/nodes?${parameters}`, {
         signal: controller.signal,
       })
       if (expectedGeneration !== generation.current) return
       if (key !== 'ROOT' && !activeBranchKeys.current.has(key)) return
+      if (page.page.limit > maximumBranchPageItems || page.items.length > page.page.limit) {
+        throw new Error('Resource Tree 응답이 요청한 페이지 제한을 초과했습니다.')
+      }
       setBranches((current) => {
-        const items = (append ? [...(current[key]?.items ?? []), ...page.items] : page.items)
-          .slice(0, maximumBranchItems)
-        const truncated = Boolean(page.page.next_cursor) && items.length >= maximumBranchItems
         return {
           ...current,
           [key]: {
-            items,
-            ...(!truncated && page.page.next_cursor ? { nextCursor: page.page.next_cursor } : {}),
-            ...(truncated ? { truncated: true } : {}),
+            items: page.items,
+            page: target.page,
+            pageStarts: target.pageStarts.slice(-maximumBranchPageStarts),
+            ...(page.page.next_cursor ? { nextCursor: page.page.next_cursor } : {}),
           },
         }
       })
@@ -144,7 +148,56 @@ export function CatalogResourceTree({
         setLoading((current) => { const next = new Set(current); next.delete(key); return next })
       }
     }
-  }, [branches, client])
+  }, [client])
+
+  const evictBranchPageDescendants = (branch: Branch) => {
+    const descendantRoots = branch.items.filter((node) => node.has_children).map((node) => node.id)
+    const removed = new Set<string>()
+    descendantRoots.forEach((rootKey) => {
+      branchTreeKeys(branches, rootKey).forEach((key) => removed.add(key))
+    })
+    removed.forEach((removedKey) => {
+      activeBranchKeys.current.delete(removedKey)
+      controllers.current.get(removedKey)?.abort()
+      controllers.current.delete(removedKey)
+    })
+    expandedOrder.current = expandedOrder.current.filter((item) => !removed.has(item))
+    setExpanded((current) => new Set([...current].filter((item) => !removed.has(item))))
+    if (descendantRoots.length > 0) {
+      setBranches((current) => descendantRoots.reduce(withoutBranchTree, current))
+    }
+  }
+
+  const navigateBranch = (parent: CatalogTreeNode | undefined, direction: 'FIRST' | 'PREVIOUS' | 'NEXT') => {
+    const key = branchKey(parent)
+    const branch = branches[key]
+    if (!branch || controllers.current.has(key)) return
+    if (direction === 'NEXT') {
+      if (!branch.nextCursor) return
+      evictBranchPageDescendants(branch)
+      const nextPage = branch.page + 1
+      const pageStarts = [
+        ...branch.pageStarts.filter((entry) => entry.page <= branch.page),
+        { page: nextPage, cursor: branch.nextCursor },
+      ].slice(-maximumBranchPageStarts)
+      void loadBranch(parent, { page: nextPage, cursor: branch.nextCursor, pageStarts })
+      return
+    }
+    if (direction === 'FIRST') {
+      evictBranchPageDescendants(branch)
+      void loadBranch(parent, { page: 1, cursor: undefined, pageStarts: [{ page: 1 }] })
+      return
+    }
+    const previousPage = branch.page - 1
+    const previousStart = branch.pageStarts.find((entry) => entry.page === previousPage)
+    if (!previousStart) return
+    evictBranchPageDescendants(branch)
+    void loadBranch(parent, {
+      page: previousPage,
+      cursor: previousStart.cursor,
+      pageStarts: branch.pageStarts,
+    })
+  }
 
   useEffect(() => {
     const activeControllers = controllers.current
@@ -155,7 +208,7 @@ export function CatalogResourceTree({
     activeBranchKeys.current.clear()
     expandedOrder.current = []
     setBranches({}); setExpanded(new Set()); setLoading(new Set()); setError(undefined)
-    void loadBranch(undefined, false, currentGeneration, hierarchyRefreshGeneration > 0)
+    void loadBranch(undefined, undefined, currentGeneration, hierarchyRefreshGeneration > 0)
     return () => {
       generation.current += 1
       activeControllers.forEach((controller) => controller.abort())
@@ -255,19 +308,16 @@ export function CatalogResourceTree({
   const rows = useMemo(() => {
     const flattened: Array<
       { type: 'NODE'; node: CatalogTreeNode; depth: number }
-      | { type: 'MORE'; parent: CatalogTreeNode; depth: number }
-      | { type: 'LIMIT'; parent: CatalogTreeNode; depth: number }
+      | { type: 'PAGINATION'; parent: CatalogTreeNode; depth: number }
     > = []
     const visit = (items: CatalogTreeNode[], depth: number) => {
       for (const node of items) {
         flattened.push({ type: 'NODE', node, depth })
         if (expanded.has(node.id)) {
           visit(branches[node.id]?.items ?? [], depth + 1)
-          if (branches[node.id]?.nextCursor) {
-            flattened.push({ type: 'MORE', parent: node, depth: depth + 1 })
-          }
-          if (branches[node.id]?.truncated) {
-            flattened.push({ type: 'LIMIT', parent: node, depth: depth + 1 })
+          const branch = branches[node.id]
+          if (branch && (branch.page > 1 || branch.nextCursor)) {
+            flattened.push({ type: 'PAGINATION', parent: node, depth: depth + 1 })
           }
         }
       }
@@ -283,9 +333,10 @@ export function CatalogResourceTree({
     setSearchPageIndex(0)
     setSearchResetGeneration((current) => current + 1)
   }
+  const rootBranch = branches.ROOT
 
   return <aside className="catalog-tree panel" aria-label="Resource Tree">
-    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><div className="catalog-tree-header-actions"><span>{searchQuery ? searchResult?.total ?? 0 : rows.length}</span><button
+    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><div className="catalog-tree-header-actions"><span>{searchQuery ? searchResult?.total ?? 0 : rows.filter((row) => row.type === 'NODE').length}</span><button
       aria-label="현재 DataHub 기준으로 Resource Tree 새로고침"
       className="button button-secondary"
       disabled={loading.size > 0}
@@ -349,16 +400,26 @@ export function CatalogResourceTree({
       />
     </> : <div className="catalog-tree-rows" aria-busy={loading.size > 0}>
       {rows.map((row) => {
-        if (row.type === 'LIMIT') return <div
-          key={`${row.parent.id}-limit`}
-          className={`catalog-tree-state tree-depth-${Math.min(row.depth, 3)}`}
-        >메모리 보호를 위해 이 분기의 200개 항목만 표시합니다. 검색을 사용하세요.</div>
-        if (row.type === 'MORE') return <button
-          key={`${row.parent.id}-more`}
-          type="button"
-          className={`tree-load-more tree-depth-${Math.min(row.depth, 3)}`}
-          onClick={() => void loadBranch(row.parent, true)}
-        ><span className="tree-expander" /><span>+</span><span>하위 항목 더 보기</span></button>
+        if (row.type === 'PAGINATION') {
+          const branch = branches[row.parent.id]
+          if (!branch) return null
+          const isLoading = loading.has(row.parent.id)
+          return <nav
+            key={`${row.parent.id}-pagination`}
+            className={`tree-branch-pagination tree-depth-${Math.min(row.depth, 3)}`}
+            aria-label={`${row.parent.label} 하위 항목 페이지 탐색`}
+          >
+            <span>{branch.page} 페이지</span>
+            <button type="button" disabled={isLoading || branch.page === 1} onClick={() => navigateBranch(row.parent, 'FIRST')}>처음</button>
+            <button
+              type="button"
+              disabled={isLoading || !branch.pageStarts.some((entry) => entry.page === branch.page - 1)}
+              onClick={() => navigateBranch(row.parent, 'PREVIOUS')}
+            >이전</button>
+            <button type="button" disabled={isLoading || !branch.nextCursor} onClick={() => navigateBranch(row.parent, 'NEXT')}>다음</button>
+            {isLoading && <span role="status">하위 항목 페이지를 불러오는 중입니다.</span>}
+          </nav>
+        }
         const { node, depth } = row
         const isExpanded = expanded.has(node.id)
         return <button
@@ -377,7 +438,18 @@ export function CatalogResourceTree({
       {loading.has('ROOT') && <div className="catalog-tree-state">계층을 불러오는 중입니다.</div>}
       {!loading.has('ROOT') && rows.length === 0 && <div className="catalog-tree-state">표시할 권한 범위의 계층이 없습니다.</div>}
     </div>}
-    {!searchQuery && branches.ROOT?.nextCursor && <button className="tree-more" type="button" onClick={() => void loadBranch(undefined, true)}>플랫폼 더 보기</button>}
-    {!searchQuery && branches.ROOT?.truncated && <p className="catalog-tree-state">메모리 보호를 위해 플랫폼 200개만 표시합니다.</p>}
+    {!searchQuery && rootBranch && (
+      rootBranch.page > 1 || rootBranch.nextCursor
+    ) && <nav className="tree-branch-pagination tree-root-pagination" aria-label="플랫폼 페이지 탐색">
+      <span>{rootBranch.page} 페이지</span>
+      <button type="button" disabled={loading.has('ROOT') || rootBranch.page === 1} onClick={() => navigateBranch(undefined, 'FIRST')}>처음</button>
+      <button
+        type="button"
+        disabled={loading.has('ROOT') || !rootBranch.pageStarts.some((entry) => entry.page === rootBranch.page - 1)}
+        onClick={() => navigateBranch(undefined, 'PREVIOUS')}
+      >이전</button>
+      <button type="button" disabled={loading.has('ROOT') || !rootBranch.nextCursor} onClick={() => navigateBranch(undefined, 'NEXT')}>다음</button>
+      {loading.has('ROOT') && <span role="status">플랫폼 페이지를 불러오는 중입니다.</span>}
+    </nav>}
   </aside>
 }

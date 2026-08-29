@@ -145,7 +145,11 @@
 .catalog-tree-rows .tree-kind-platform { font-size: 10px; font-weight: 900; text-transform: uppercase; }
 .catalog-tree-rows .tree-kind-database, .catalog-tree-rows .tree-kind-schema { font-size: 11px; font-weight: 800; text-transform: uppercase; }
 .catalog-tree-rows .tree-kind-asset { font-size: 12px; font-weight: 700; }
-.catalog-tree-rows .tree-load-more { color: var(--blue-700); font-size: 10px; font-weight: 800; }
+.tree-branch-pagination { min-height: 29px; display: flex; align-items: center; justify-content: flex-end; gap: 5px; border-top: 1px solid var(--line-200); border-bottom: 1px solid var(--line-200); padding: 3px 6px; color: var(--text-500); background: var(--cream-100); font-size: 10px; }
+.tree-branch-pagination button { min-height: 23px; border: 1px solid var(--line-300); padding: 2px 7px; color: var(--blue-700); background: white; font-size: 10px; font-weight: 800; }
+.tree-branch-pagination button:disabled { color: var(--text-500); background: var(--cream-100); cursor: default; }
+.tree-branch-pagination [role="status"] { margin-right: auto; }
+.tree-root-pagination { flex: 0 0 auto; border-bottom: 0; }
 .catalog-tree-search { position: relative; z-index: 12; display: grid; gap: 7px; border-bottom: 1px solid var(--line-200); padding: 8px; background: #fff; }
 .catalog-tree-search .global-search-wrap { min-width: 0; }
 .catalog-tree-search-heading { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
@@ -161,7 +165,6 @@
 .tree-expander { display: grid; place-items: center; }
 .tree-count { color: var(--text-500); font-size: 9px; font-weight: 700; }
 .catalog-tree-state, .catalog-detail-state { padding: 24px 10px; color: var(--text-500); text-align: center; font-size: 11px; line-height: 1.5; }
-.tree-more { width: 100%; height: 29px; border: 0; border-top: 1px solid var(--line-300); color: var(--blue-700); font-size: 10px; font-weight: 800; background: #f5f7f8; }
 .catalog-results { position: relative; display: flex; flex-direction: column; }
 .catalog-results > header > div { min-width: 0; display: grid; gap: 1px; }
 .catalog-results .dense-table-frame { min-height: 0; flex: 1; overflow-x: auto; overflow-y: auto; overscroll-behavior-x: contain; border-top: 0; scrollbar-gutter: stable both-edges; }
