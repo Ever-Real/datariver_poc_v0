@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Database, KeyRound, Save, ShieldCheck, UserRound } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { AuthenticatedProfile, Capability, ExternalSystemLink, MembershipRenewalRequest, WorkspaceMembershipSummary } from '../../api/types'
@@ -16,6 +16,7 @@ export function ProfilePage({
   capabilities,
   externalSystemLinks,
   onPasswordChange,
+  onLocalPasswordChange,
   onPasswordReauth,
 }: {
   profile: AuthenticatedProfile
@@ -23,6 +24,11 @@ export function ProfilePage({
   capabilities: Capability[]
   externalSystemLinks: ExternalSystemLink[]
   onPasswordChange: () => void
+  onLocalPasswordChange?: (input: {
+    currentPassword: string
+    newPassword: string
+    confirmation: string
+  }) => Promise<void>
   onPasswordReauth: () => void
 }) {
   const dataHubLink = externalSystemLinks.find((link) => link.system_id === 'datahub')
@@ -31,6 +37,11 @@ export function ProfilePage({
   const [renewalReason, setRenewalReason] = useState('')
   const [renewalBusy, setRenewalBusy] = useState(false)
   const [renewalError, setRenewalError] = useState<unknown>()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [passwordBusy, setPasswordBusy] = useState(false)
+  const [passwordError, setPasswordError] = useState('')
   const loadRenewal = useCallback(async () => {
     setRenewalError(undefined)
     try {
@@ -59,6 +70,35 @@ export function ProfilePage({
       setRenewalReason(''); await loadRenewal()
     } catch (error) { setRenewalError(error) } finally { setRenewalBusy(false) }
   }
+  const submitLocalPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!onLocalPasswordChange || passwordBusy) return
+    setPasswordError('')
+    if (newPassword !== passwordConfirmation) {
+      setPasswordError('새 비밀번호와 확인 값이 일치하지 않습니다.')
+      return
+    }
+    const newPasswordBytes = new TextEncoder().encode(newPassword).byteLength
+    if (newPasswordBytes < 12 || newPasswordBytes > 1024) {
+      setPasswordError('새 비밀번호는 UTF-8 기준 12~1024바이트여야 합니다.')
+      return
+    }
+    setPasswordBusy(true)
+    try {
+      await onLocalPasswordChange({
+        currentPassword,
+        newPassword,
+        confirmation: passwordConfirmation,
+      })
+      setCurrentPassword('')
+      setNewPassword('')
+      setPasswordConfirmation('')
+    } catch {
+      setPasswordError('비밀번호를 변경하지 못했습니다. 입력을 확인하고 다시 시도하세요.')
+    } finally {
+      setPasswordBusy(false)
+    }
+  }
   return <section className="grid gap-4">
     <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="인증 시스템이 검증한 사용자 정보와 현재 Workspace 범위만 표시합니다." />
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -72,11 +112,19 @@ export function ProfilePage({
           <label className="grid gap-1 text-xs font-bold md:col-span-2">역할<input readOnly value={profile.roles.join(', ') || '역할 없음'} /></label>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
-          {profile.password_change_supported && <button type="button" className="button" onClick={onPasswordChange}><KeyRound size={14} /> 비밀번호 변경</button>}
+          {profile.password_change_supported && !onLocalPasswordChange && <button type="button" className="button" onClick={onPasswordChange}><KeyRound size={14} /> 비밀번호 변경</button>}
           <button type="button" className="button button-secondary" onClick={onPasswordReauth}><KeyRound size={14} /> 비밀번호 재인증</button>
           <button type="button" className="button" disabled title="사용자 프로필 수정은 조직 인증 시스템이 관리합니다."><Save size={14} /> 변경사항 저장</button>
         </div>
-        <div className="mt-4"><GovernedUnavailable compact title="자격 증명은 인증 시스템 관리 영역입니다" description={profile.password_change_supported ? 'DataRiver에서 변경 절차를 시작하면 인증 화면에서만 새 비밀번호를 입력한 뒤 이 화면으로 돌아옵니다. DataRiver는 비밀번호를 저장하거나 로그에 남기지 않습니다.' : '이 배포의 인증 시스템은 DataRiver 내 비밀번호 변경 절차를 제공하지 않습니다. 이름·이메일·비밀번호는 조직의 승인된 계정 관리 절차를 따릅니다.'} /></div>
+        {profile.password_change_supported && onLocalPasswordChange ? <form className="mt-4 grid gap-3 rounded-enterprise border border-slate-300 bg-slate-50 p-4" aria-labelledby="local-password-title" onSubmit={(event) => void submitLocalPassword(event)}>
+          <div><span className="text-xs font-black tracking-[.14em] text-enterprise-blue uppercase">Local credential</span><h3 className="mb-1 mt-1 text-sm font-black text-navy-900" id="local-password-title">비밀번호 변경</h3><p className="m-0 text-xs leading-5 text-slate-600">변경하면 현재 세션을 포함해 모든 기기에서 로그아웃됩니다. 새 비밀번호로 다시 로그인해야 합니다.</p></div>
+          <label className="grid gap-1 text-xs font-bold">현재 비밀번호<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+          <label className="grid gap-1 text-xs font-bold">새 비밀번호<input type="password" autoComplete="new-password" required aria-describedby="new-password-help" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+          <p className="m-0 text-xs text-slate-500" id="new-password-help">UTF-8 기준 12~1024바이트</p>
+          <label className="grid gap-1 text-xs font-bold">새 비밀번호 확인<input type="password" autoComplete="new-password" required value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} /></label>
+          {passwordError && <p className="notice notice-error m-0" role="alert">{passwordError}</p>}
+          <div className="flex justify-end"><button type="submit" className="button" disabled={passwordBusy || !currentPassword || !newPassword || !passwordConfirmation}>{passwordBusy ? '변경 중…' : '새 비밀번호 저장'}</button></div>
+        </form> : <div className="mt-4"><GovernedUnavailable compact title="자격 증명은 인증 시스템 관리 영역입니다" description={profile.password_change_supported ? 'DataRiver에서 변경 절차를 시작하면 인증 화면에서만 새 비밀번호를 입력한 뒤 이 화면으로 돌아옵니다. DataRiver는 비밀번호를 저장하거나 로그에 남기지 않습니다.' : '이 배포의 인증 시스템은 DataRiver 내 비밀번호 변경 절차를 제공하지 않습니다. 이름·이메일·비밀번호는 조직의 승인된 계정 관리 절차를 따릅니다.'} /></div>}
         <section className="mt-4 grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-4" aria-labelledby="membership-renewal-title">
           <div><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Workspace access renewal</span><h3 className="mb-1 mt-1 text-sm font-black text-navy-900" id="membership-renewal-title">6개월 계정 갱신</h3></div>
           {!membership ? <p className="m-0 text-xs text-slate-500">현재 멤버십 만료 정보를 확인하는 중입니다.</p> : <dl className="summary-list"><div><dt>가입일</dt><dd>{membership.joined_at ? new Date(membership.joined_at).toLocaleDateString() : '—'}</dd></div><div><dt>현재 만료일</dt><dd>{membership.access_expires_at ? new Date(membership.access_expires_at).toLocaleDateString() : '운영자 관리 계정'}</dd></div><div><dt>신청 가능일</dt><dd>{membership.renewal_eligible_at ? new Date(membership.renewal_eligible_at).toLocaleDateString() : '해당 없음'}</dd></div></dl>}

@@ -29,7 +29,8 @@ const localProfile = {
   default_workspace_id: '00000000-0000-4000-8000-000000000061',
   workspace_selection_enabled: false,
   hardware_webauthn_enabled: false,
-  password_change_supported: false,
+  password_change_supported: true,
+  must_change_password: false,
   authorization: {
     policy_version: 'POC_PROFILE_CAPABILITIES_V1',
     role: 'admin',

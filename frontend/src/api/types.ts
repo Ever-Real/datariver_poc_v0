@@ -50,6 +50,7 @@ export interface AuthenticatedProfile {
   workspace_selection_enabled?: boolean
   hardware_webauthn_enabled?: boolean
   password_change_supported?: boolean
+  must_change_password?: boolean
   authorization?: PocAuthorization
 }
 

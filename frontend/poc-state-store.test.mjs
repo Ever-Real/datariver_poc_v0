@@ -1069,6 +1069,22 @@ test('password reset atomically revokes all sessions', async () => {
   assert.equal((await store.readLocalSession('b'.repeat(64))).revokedAt, '2026-08-13T01:00:00.000Z')
 })
 
+test('reads a local credential by its exact subject without username discovery', async () => {
+  const store = createPocStateStore()
+  await store.insertLocalCredential({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    subjectId: 'subject-exact',
+    usernameNormalized: 'exact@example.com',
+    passwordHash: '$argon2id$v=19$m=16,t=2,p=1$a$b',
+    loginEnabled: true,
+    mustChangePassword: false,
+  })
+
+  assert.equal((await store.readLocalCredentialForSubject('subject-exact')).usernameNormalized, 'exact@example.com')
+  assert.equal(await store.readLocalCredentialForSubject('subject-other'), null)
+})
+
 test('CAS-updates private access with its core projection and fences later generic core writes', async () => {
   const store = createPocStateStore()
   const originalChangeRecords = [{ id: 'request-from-core', state: 'IN_REVIEW', version: 7 }]

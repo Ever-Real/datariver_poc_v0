@@ -94,6 +94,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('auth.login.shell.head', 'HEAD', /^\/auth\/login$/, 'ANONYMOUS'),
   route('auth.login', 'POST', /^\/auth\/login$/, 'ANONYMOUS'),
   route('auth.me', 'GET', /^\/auth\/me$/, 'AUTHENTICATED'),
+  route('auth.password.change', 'POST', /^\/auth\/password$/, 'AUTHENTICATED'),
   route('auth.logout', 'POST', /^\/auth\/logout$/, 'AUTHENTICATED'),
   route('change.access.read', 'GET', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.access.write', 'PUT', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),

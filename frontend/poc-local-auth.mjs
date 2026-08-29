@@ -266,8 +266,9 @@ export function createPocLocalAuthenticator({
   allowInMemoryStoreForTests = false,
 } = {}) {
   const requiredMethods = [
-    'readLocalCredential', 'recordLocalLoginFailure', 'recordLocalLoginSuccess',
+    'readLocalCredential', 'readLocalCredentialForSubject', 'recordLocalLoginFailure', 'recordLocalLoginSuccess',
     'createLocalSession', 'readLocalSession', 'revokeLocalSession',
+    'administerLocalCredential',
   ]
   if (!stateStore || requiredMethods.some((method) => typeof stateStore[method] !== 'function')) {
     throw new Error('Local authentication storage is unavailable.')
@@ -373,6 +374,66 @@ export function createPocLocalAuthenticator({
     })
   }
 
+  async function changePassword(authentication, {
+    currentPassword,
+    newPassword,
+    confirmation,
+  } = {}) {
+    const invalidInput = () => authError(
+      400,
+      'PASSWORD_CHANGE_INPUT_INVALID',
+      'Password change input is invalid.',
+    )
+    if (!authentication || typeof authentication.subjectId !== 'string'
+      || typeof currentPassword !== 'string'
+      || typeof newPassword !== 'string'
+      || typeof confirmation !== 'string'
+      || newPassword !== confirmation) {
+      throw invalidInput()
+    }
+    let currentPasswordInPolicy = true
+    try {
+      boundedPassword(currentPassword)
+    } catch {
+      currentPasswordInPolicy = false
+    }
+    try {
+      boundedPassword(newPassword)
+    } catch {
+      throw invalidInput()
+    }
+    const credential = await stateStore.readLocalCredentialForSubject(authentication?.subjectId)
+    const verified = currentPasswordInPolicy
+      && credential?.loginEnabled === true
+      && await verifyPocPassword(currentPassword, credential.passwordHash)
+    if (!credential || !verified) {
+      throw authError(401, 'PASSWORD_CHANGE_FAILED', 'Password change could not be completed.')
+    }
+    const passwordHash = await hashPocPassword(newPassword, { salt: randomBytes(16) })
+    let result
+    try {
+      result = await stateStore.administerLocalCredential({
+        subjectId: credential.subjectId,
+        expectedVersion: credential.version,
+        usernameNormalized: credential.usernameNormalized,
+        passwordHash,
+        loginEnabled: credential.loginEnabled,
+        mustChangePassword: false,
+        changedAt: timestamp(now).toISOString(),
+      })
+    } catch (error) {
+      if (error?.code === 'CREDENTIAL_VERSION_STALE') {
+        throw authError(
+          409,
+          'PASSWORD_CHANGE_CONFLICT',
+          'Password change could not be completed. Sign in and try again.',
+        )
+      }
+      throw error
+    }
+    return { revokedSessionCount: result.revokedSessionCount }
+  }
+
   function setCookie(token) {
     return [
       `${SESSION_COOKIE_NAME}=${token}`,
@@ -398,6 +459,7 @@ export function createPocLocalAuthenticator({
   return {
     authenticate,
     assertOrigin,
+    changePassword,
     clearCookie,
     config,
     login,
@@ -406,7 +468,10 @@ export function createPocLocalAuthenticator({
   }
 }
 
-export function authenticatedPocProfile(user, { mustChangePassword } = {}) {
+export function authenticatedPocProfile(user, {
+  mustChangePassword,
+  passwordChangeSupported = false,
+} = {}) {
   const profile = {
     subject: user.subject_id,
     display_name: user.display_name || user.subject_id,
@@ -416,7 +481,7 @@ export function authenticatedPocProfile(user, { mustChangePassword } = {}) {
     default_workspace_id: DEFAULT_WORKSPACE_ID,
     workspace_selection_enabled: false,
     hardware_webauthn_enabled: false,
-    password_change_supported: false,
+    password_change_supported: passwordChangeSupported === true,
   }
   if (mustChangePassword !== undefined) profile.must_change_password = Boolean(mustChangePassword)
   return profile

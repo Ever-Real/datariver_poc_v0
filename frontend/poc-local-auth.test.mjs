@@ -40,7 +40,7 @@ async function authFixture(authConfig = config) {
     stateStore,
     config: authConfig,
     now: () => new Date(currentTime),
-    randomBytes: () => Buffer.alloc(32, entropy++),
+    randomBytes: (size) => Buffer.alloc(size, entropy++),
     allowInMemoryStoreForTests: true,
   })
   return {
@@ -49,6 +49,118 @@ async function authFixture(authConfig = config) {
     advance(milliseconds) { currentTime += milliseconds },
   }
 }
+
+test('changes only the authenticated subject password without creating a session', async () => {
+  const { authenticator, stateStore } = await authFixture()
+  const first = await authenticator.login('person@example.com', 'correct horse battery staple')
+  const second = await authenticator.login('person@example.com', 'correct horse battery staple')
+  const authentication = await authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${first.token}` },
+  })
+  let sessionCreates = 0
+  const createLocalSession = stateStore.createLocalSession
+  stateStore.createLocalSession = async (input) => {
+    sessionCreates += 1
+    return createLocalSession(input)
+  }
+
+  const result = await authenticator.changePassword(authentication, {
+    currentPassword: 'correct horse battery staple',
+    newPassword: 'replacement battery staple',
+    confirmation: 'replacement battery staple',
+  })
+
+  assert.deepEqual(result, { revokedSessionCount: 2 })
+  assert.equal(sessionCreates, 0)
+  assert.equal(await verifyPocPassword(
+    'replacement battery staple',
+    (await stateStore.readLocalCredentialForSubject('subject-one')).passwordHash,
+  ), true)
+  await assert.rejects(authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${first.token}` },
+  }), (error) => error.code === 'SESSION_REQUIRED')
+  await assert.rejects(authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${second.token}` },
+  }), (error) => error.code === 'SESSION_REQUIRED')
+})
+
+test('fails password change generically for a wrong current password without mutating state', async () => {
+  const { authenticator, stateStore } = await authFixture()
+  const login = await authenticator.login('person@example.com', 'correct horse battery staple')
+  const authentication = await authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${login.token}` },
+  })
+  const before = await stateStore.readLocalCredentialForSubject('subject-one')
+  const genericPasswordChangeFailure = (error) => error.statusCode === 401
+    && error.code === 'PASSWORD_CHANGE_FAILED'
+    && !error.message.includes('current')
+
+  await assert.rejects(authenticator.changePassword(authentication, {
+    currentPassword: 'wrong current password',
+    newPassword: 'replacement battery staple',
+    confirmation: 'replacement battery staple',
+  }), genericPasswordChangeFailure)
+
+  const after = await stateStore.readLocalCredentialForSubject('subject-one')
+  assert.equal(after.version, before.version)
+  assert.equal(after.passwordHash, before.passwordHash)
+  assert.equal((await stateStore.readLocalSession(login.tokenHash)).revokedAt, null)
+
+  await assert.rejects(authenticator.changePassword(authentication, {
+    currentPassword: 'x'.repeat(1025),
+    newPassword: 'replacement battery staple',
+    confirmation: 'replacement battery staple',
+  }), genericPasswordChangeFailure)
+})
+
+test('rejects mismatched and out-of-policy replacement passwords with bounded typed errors', async () => {
+  const { authenticator } = await authFixture()
+  const login = await authenticator.login('person@example.com', 'correct horse battery staple')
+  const authentication = await authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${login.token}` },
+  })
+  const invalid = (error) => error.statusCode === 400
+    && error.code === 'PASSWORD_CHANGE_INPUT_INVALID'
+    && error.message.length <= 128
+
+  await assert.rejects(authenticator.changePassword(authentication, {
+    currentPassword: 'correct horse battery staple',
+    newPassword: 'replacement battery staple',
+    confirmation: 'different replacement',
+  }), invalid)
+  await assert.rejects(authenticator.changePassword(authentication, {
+    currentPassword: 'correct horse battery staple',
+    newPassword: 'too short',
+    confirmation: 'too short',
+  }), invalid)
+  await assert.rejects(authenticator.changePassword(authentication, {
+    currentPassword: 'correct horse battery staple',
+    newPassword: 'x'.repeat(1025),
+    confirmation: 'x'.repeat(1025),
+  }), invalid)
+})
+
+test('maps a stale credential CAS to a generic password-change conflict', async () => {
+  const fixture = await authFixture()
+  const login = await fixture.authenticator.login('person@example.com', 'correct horse battery staple')
+  const authentication = await fixture.authenticator.authenticate({
+    headers: { cookie: `datariver_poc_session=${login.token}` },
+  })
+  fixture.stateStore.administerLocalCredential = async () => {
+    throw Object.assign(new Error('internal credential version detail'), {
+      statusCode: 409,
+      code: 'CREDENTIAL_VERSION_STALE',
+    })
+  }
+
+  await assert.rejects(fixture.authenticator.changePassword(authentication, {
+    currentPassword: 'correct horse battery staple',
+    newPassword: 'replacement battery staple',
+    confirmation: 'replacement battery staple',
+  }), (error) => error.statusCode === 409
+    && error.code === 'PASSWORD_CHANGE_CONFLICT'
+    && !error.message.includes('version'))
+})
 
 test('normalizes usernames and hashes passwords with encoded Argon2id', async () => {
   assert.equal(normalizePocUsername('  PERSON@Example.COM  '), 'person@example.com')

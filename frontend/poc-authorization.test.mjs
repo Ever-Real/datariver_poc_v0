@@ -92,14 +92,14 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 87)
+  assert.equal(POC_ROUTE_REGISTRY.length, 88)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
     POC_ROUTE_REGISTRY.filter((entry) => entry.authorizationClass === classification).length,
   ])), {
     ANONYMOUS: 7,
-    AUTHENTICATED: 2,
+    AUTHENTICATED: 3,
     CAPABILITY_PROTECTED: 76,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
@@ -109,6 +109,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['HEAD', '/poc-runtime-config.js', 'runtime.config.head'],
     ['GET', '/auth/login', 'auth.login.shell.get'],
     ['GET', '/auth/me', 'auth.me'],
+    ['POST', '/auth/password', 'auth.password.change'],
     ['GET', '/api/v1/change-history/events', 'change.events'],
     ['GET', '/api/v1/change-requests/summaries', 'change.cr.summaries'],
     ['GET', '/api/v1/change-requests/cr-1', 'change.cr.detail'],

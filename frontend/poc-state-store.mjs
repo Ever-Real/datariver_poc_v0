@@ -926,6 +926,22 @@ export function createPocStateStore({ databasePool } = {}) {
     return credential ? structuredClone(credential) : null
   }
 
+  async function readLocalCredentialForSubject(subjectId) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT subject_id, username_normalized, password_hash, login_enabled,
+          must_change_password, failed_attempts, locked_until, version
+        FROM poc_local_credentials
+        WHERE subject_id = $1
+      `, [subjectId])
+      return result.rows[0] ? localCredentialRecord(result.rows[0]) : null
+    }
+    const credential = memoryCredentialsBySubject.get(subjectId)
+    return credential ? structuredClone(credential) : null
+  }
+
   async function provisionLocalCredential({
     expectedAccessVersion,
     expectedCoreVersion,
@@ -3225,6 +3241,7 @@ export function createPocStateStore({ databasePool } = {}) {
     readChangeHistoryAccess,
     writeChangeHistoryAccess,
     readLocalCredential,
+    readLocalCredentialForSubject,
     insertLocalCredential,
     provisionLocalCredential,
     recordLocalLoginFailure,

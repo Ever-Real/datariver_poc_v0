@@ -105,7 +105,7 @@ async function serverFixture(canonicalOrigin = null) {
   const authenticator = createPocLocalAuthenticator({
     stateStore,
     config,
-    randomBytes: () => Buffer.alloc(32, entropy++),
+    randomBytes: (size) => Buffer.alloc(size, entropy++),
     allowInMemoryStoreForTests: true,
   })
   const server = createPocServer({
@@ -199,7 +199,7 @@ test('binds concurrent browser sessions to current server-side access profiles',
       default_workspace_id: '00000000-0000-4000-8000-000000000061',
       workspace_selection_enabled: false,
       hardware_webauthn_enabled: false,
-      password_change_supported: false,
+      password_change_supported: true,
       must_change_password: false,
       authorization: {
         policy_version: 'POC_PROFILE_CAPABILITIES_V1',
@@ -265,6 +265,106 @@ test('binds concurrent browser sessions to current server-side access profiles',
     assert.deepEqual(await logout.json(), { ok: true })
     assert.match(logout.headers.get('set-cookie'), /Max-Age=0/)
     assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: first.cookie } })).status, 401)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('changes the current local subject password and revokes every session without widening target authority', async () => {
+  const fixture = await serverFixture()
+  try {
+    const first = await fixture.login('first@example.com', 'first correct password')
+    const sibling = await fixture.login('first@example.com', 'first correct password')
+    const other = await fixture.login('second@example.com', 'second correct password')
+    assert.equal(first.response.status, 200)
+    assert.equal(sibling.response.status, 200)
+    assert.equal(other.response.status, 200)
+
+    const wrongOrigin = await fetch(`${fixture.origin}/auth/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: 'http://127.0.0.1:1' },
+      body: JSON.stringify({
+        current_password: 'first correct password',
+        new_password: 'first replacement password',
+        new_password_confirmation: 'first replacement password',
+      }),
+    })
+    assert.equal(wrongOrigin.status, 403)
+    assert.equal((await wrongOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+
+    const wrongCurrent = await fetch(`${fixture.origin}/auth/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
+      body: JSON.stringify({
+        current_password: 'wrong current password',
+        new_password: 'first replacement password',
+        new_password_confirmation: 'first replacement password',
+      }),
+    })
+    assert.equal(wrongCurrent.status, 401)
+    const wrongCurrentProblem = await wrongCurrent.json()
+    assert.equal(wrongCurrentProblem.code, 'PASSWORD_CHANGE_FAILED')
+    assert.doesNotMatch(JSON.stringify(wrongCurrentProblem), /wrong current password|first correct password/)
+
+    const targetAttempt = await fetch(`${fixture.origin}/auth/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
+      body: JSON.stringify({
+        current_password: 'first correct password',
+        new_password: 'first replacement password',
+        new_password_confirmation: 'first replacement password',
+        subject_id: 'subject-two',
+      }),
+    })
+    assert.equal(targetAttempt.status, 400)
+    assert.equal((await targetAttempt.json()).code, 'PASSWORD_CHANGE_INPUT_INVALID')
+
+    for (const body of ['{', JSON.stringify({ current_password: 'x'.repeat(5000) })]) {
+      const malformed = await fetch(`${fixture.origin}/auth/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
+        body,
+      })
+      assert.equal(malformed.status, 400)
+      assert.equal((await malformed.json()).code, 'PASSWORD_CHANGE_INPUT_INVALID')
+    }
+
+    for (const [newPassword, confirmation] of [
+      ['first replacement password', 'mismatched replacement'],
+      ['short', 'short'],
+      ['x'.repeat(1025), 'x'.repeat(1025)],
+    ]) {
+      const invalid = await fetch(`${fixture.origin}/auth/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
+        body: JSON.stringify({
+          current_password: 'first correct password',
+          new_password: newPassword,
+          new_password_confirmation: confirmation,
+        }),
+      })
+      assert.equal(invalid.status, 400)
+      assert.equal((await invalid.json()).code, 'PASSWORD_CHANGE_INPUT_INVALID')
+    }
+
+    const changed = await fetch(`${fixture.origin}/auth/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
+      body: JSON.stringify({
+        current_password: 'first correct password',
+        new_password: 'first replacement password',
+        new_password_confirmation: 'first replacement password',
+      }),
+    })
+    assert.equal(changed.status, 200, JSON.stringify(await changed.clone().json()))
+    assert.deepEqual(await changed.json(), { ok: true, reauthentication_required: true })
+    assert.match(changed.headers.get('set-cookie'), /Max-Age=0/)
+    assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: first.cookie } })).status, 401)
+    assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: sibling.cookie } })).status, 401)
+    assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: other.cookie } })).status, 200)
+    assert.equal((await fixture.login('first@example.com', 'first correct password')).response.status, 401)
+    assert.equal((await fixture.login('first@example.com', 'first replacement password')).response.status, 200)
+    assert.equal((await fixture.login('second@example.com', 'second correct password')).response.status, 200)
   } finally {
     await fixture.close()
   }

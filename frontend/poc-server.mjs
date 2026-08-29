@@ -431,6 +431,7 @@ function unconfiguredPocAuthenticator() {
   return {
     authenticate: unavailable,
     assertOrigin: unavailable,
+    changePassword: unavailable,
     clearCookie: () => 'datariver_poc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',
     login: unavailable,
     logout: unavailable,
@@ -449,8 +450,8 @@ async function bodyBuffer(request, limit = maximumJsonBytes) {
   return Buffer.concat(chunks)
 }
 
-async function bodyJson(request) {
-  const body = await bodyBuffer(request)
+async function bodyJson(request, limit = maximumJsonBytes) {
+  const body = await bodyBuffer(request, limit)
   if (body.length === 0) return {}
   const value = JSON.parse(body.toString('utf8'))
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -9635,7 +9636,10 @@ async function authenticatedRequestContext(baseContext, authentication) {
 
 function authenticatedProfile(context, mustChangePassword) {
   return {
-    ...authenticatedPocProfile(context.accessUser, { mustChangePassword }),
+    ...authenticatedPocProfile(context.accessUser, {
+      mustChangePassword,
+      passwordChangeSupported: true,
+    }),
     authorization: authorizationProjection(context.principal),
   }
 }
@@ -9759,6 +9763,36 @@ async function authRoute(request, response, url, baseContext, authenticator) {
     const context = await authenticatedRequestContext(baseContext, authentication)
     assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname), context.principal)
     return json(response, 200, authenticatedProfile(context, authentication.mustChangePassword))
+  }
+  if (url.pathname === '/auth/password') {
+    if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Local password change supports only POST.')
+    authenticator.assertOrigin(request)
+    const authentication = await authenticator.authenticate(request)
+    const context = await authenticatedRequestContext(baseContext, authentication)
+    assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname), context.principal)
+    let body
+    try {
+      body = await bodyJson(request, 4096)
+    } catch (error) {
+      if (error instanceof SyntaxError || error?.statusCode === 413) {
+        throw accessError(400, 'PASSWORD_CHANGE_INPUT_INVALID', 'Password change input is invalid.')
+      }
+      throw error
+    }
+    const allowed = ['current_password', 'new_password', 'new_password_confirmation']
+    if (Object.keys(body).length !== allowed.length
+      || Object.keys(body).some((key) => !allowed.includes(key))
+      || allowed.some((key) => !Object.hasOwn(body, key))) {
+      throw accessError(400, 'PASSWORD_CHANGE_INPUT_INVALID', 'Password change input is invalid.')
+    }
+    await authenticator.changePassword(authentication, {
+      currentPassword: body.current_password,
+      newPassword: body.new_password,
+      confirmation: body.new_password_confirmation,
+    })
+    return json(response, 200, { ok: true, reauthentication_required: true }, {
+      'Set-Cookie': authenticator.clearCookie(),
+    })
   }
   if (url.pathname === '/auth/logout') {
     if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Local logout supports only POST.')

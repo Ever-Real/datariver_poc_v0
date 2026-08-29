@@ -10,6 +10,7 @@ import { configurePocAuthorization } from './pocApi'
 const genericLoginFailure = '로그인할 수 없습니다. 아이디와 비밀번호를 확인하세요.'
 const originLoginFailure = '접속 주소가 허용된 DEV 주소와 다릅니다. 안내된 127.0.0.1 주소로 다시 접속하세요.'
 const genericSessionFailure = '인증 상태를 확인하지 못했습니다. 다시 시도하세요.'
+const passwordChangedNotice = '비밀번호가 변경되었습니다. 새 비밀번호로 다시 로그인하세요.'
 
 type JsonRecord = Record<string, unknown>
 
@@ -75,7 +76,7 @@ function localProfile(value: unknown): AuthenticatedProfile {
     || !defaultWorkspaceId
     || value.workspace_selection_enabled !== false
     || value.hardware_webauthn_enabled !== false
-    || value.password_change_supported !== false
+    || value.password_change_supported !== true
   ) {
     throw new Error('Incomplete local session response.')
   }
@@ -89,6 +90,7 @@ function localProfile(value: unknown): AuthenticatedProfile {
     workspace_selection_enabled: value.workspace_selection_enabled,
     hardware_webauthn_enabled: value.hardware_webauthn_enabled,
     password_change_supported: value.password_change_supported,
+    must_change_password: value.must_change_password === true,
     authorization: localAuthorization(value.authorization),
   }
 }
@@ -100,7 +102,7 @@ async function readProfile(response: Response): Promise<AuthenticatedProfile> {
 export function useAuth() {
   const [profile, setProfile] = useState<AuthenticatedProfile>()
   const [loading, setLoading] = useState(true)
-  const [notice, setNotice] = useState<{ kind: 'ERROR'; message: string }>()
+  const [notice, setNotice] = useState<{ kind: 'INFO' | 'ERROR'; message: string }>()
   const [securityEpoch, setSecurityEpoch] = useState(0)
   const [authorizationRevision, setAuthorizationRevision] = useState(0)
   const securityEpochRef = useRef(0)
@@ -224,6 +226,34 @@ export function useAuth() {
     }
   }, [clearSession])
 
+  const changeLocalPassword = useCallback(async ({
+    currentPassword,
+    newPassword,
+    confirmation,
+  }: {
+    currentPassword: string
+    newPassword: string
+    confirmation: string
+  }) => {
+    const response = await fetch('/auth/password', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+        new_password_confirmation: confirmation,
+      }),
+    })
+    if (!response.ok) throw new Error('Local password change failed.')
+    clearSession()
+    if (mounted.current) setNotice({ kind: 'INFO', message: passwordChangedNotice })
+  }, [clearSession])
+
   const renewAccessToken = useCallback(async () => {
     try {
       await hydrate()
@@ -256,6 +286,7 @@ export function useAuth() {
     renewAccessToken,
     signIn: noAuthenticationAction,
     signInWithCredentials,
+    changeLocalPassword,
     signOut,
     beginWebAuthnEnrollment: noAuthenticationAction,
     beginStepUp: noAuthenticationAction,
