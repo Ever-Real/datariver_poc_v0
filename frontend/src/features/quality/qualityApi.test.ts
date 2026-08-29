@@ -193,6 +193,29 @@ describe('QualityApi authorization contracts', () => {
     ])
   })
 
+  it('binds the authorized asset cursor to exact metadata scope filters', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [],
+      page: { next_cursor: null, limit: 25 },
+      cache_scope: cacheScope,
+      observed_at: '2026-07-30T00:00:00Z',
+      authorization_valid_until: '2026-07-30T00:00:30Z',
+    })
+    const api = new QualityApi({ request })
+
+    await api.assets(undefined, undefined, {
+      query: 'event',
+      platform: 'postgres',
+      database: 'analytics',
+      schema: 'public',
+    })
+
+    expect(request).toHaveBeenCalledWith(
+      '/quality/assets?limit=25&q=event&platform=postgres&database=analytics&schema=public',
+      { cache: 'no-store', signal: undefined },
+    )
+  })
+
   it('sends server-scoped field targets and parameter overrides as one atomic mapping', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce({

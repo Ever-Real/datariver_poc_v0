@@ -148,7 +148,13 @@ export class QualityApi {
   assets(
     cursor?: string,
     signal?: AbortSignal,
-    filters?: { query?: string; schema?: string; limit?: number },
+    filters?: {
+      query?: string
+      platform?: string
+      database?: string
+      schema?: string
+      limit?: number
+    },
   ) {
     return this.list<QualityAsset>('/quality/assets', {
       cursor,
@@ -156,6 +162,8 @@ export class QualityApi {
       limit: filters?.limit,
       parameters: {
         ...(filters?.query ? { q: filters.query } : {}),
+        ...(filters?.platform ? { platform: filters.platform } : {}),
+        ...(filters?.database ? { database: filters.database } : {}),
         ...(filters?.schema ? { schema: filters.schema } : {}),
       },
     })

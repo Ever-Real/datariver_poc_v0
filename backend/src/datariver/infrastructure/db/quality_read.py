@@ -443,6 +443,8 @@ class SqlQualityReadRepository(QualityReadRepository):
         limit: int,
         cursor: str | None,
         query: str = "",
+        platform: str | None = None,
+        database_name: str | None = None,
         schema_name: str | None = None,
     ) -> QualityAssetPage:
         conditions = catalog_asset_scope_conditions(context.subject, context.access)
@@ -457,10 +459,16 @@ class SqlQualityReadRepository(QualityReadRepository):
                     AssetProjectionModel.platform.ilike(pattern, escape="\\"),
                 )
             )
+        if platform:
+            conditions.append(AssetProjectionModel.platform == platform)
+        if database_name:
+            conditions.append(AssetProjectionModel.database_name == database_name)
         if schema_name:
             conditions.append(AssetProjectionModel.schema_name == schema_name)
         cursor_resource = _asset_cursor_resource(
             query=normalized_query,
+            platform=platform,
+            database_name=database_name,
             schema_name=schema_name,
         )
         if cursor:
@@ -2652,11 +2660,19 @@ def _basis_points_text(value: int | None) -> str:
     return f"{percentage:.2f}".rstrip("0").rstrip(".") + "%"
 
 
-def _asset_cursor_resource(*, query: str, schema_name: str | None) -> str:
+def _asset_cursor_resource(
+    *,
+    query: str,
+    platform: str | None,
+    database_name: str | None,
+    schema_name: str | None,
+) -> str:
     scope = canonical_json_hash(
         {
-            "contract": "QUALITY_ASSET_FILTER_V1",
+            "contract": "QUALITY_ASSET_FILTER_V2",
             "query": query,
+            "platform": platform,
+            "database_name": database_name,
             "schema_name": schema_name,
         }
     )

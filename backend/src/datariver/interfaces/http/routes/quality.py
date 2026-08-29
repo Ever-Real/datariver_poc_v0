@@ -228,6 +228,11 @@ async def list_quality_assets(
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     cursor: Annotated[str | None, Query(max_length=2_000)] = None,
     q: Annotated[str, Query(max_length=200)] = "",
+    platform: Annotated[str | None, Query(max_length=100)] = None,
+    database_name: Annotated[
+        str | None,
+        Query(alias="database", max_length=255),
+    ] = None,
     schema_name: Annotated[str | None, Query(alias="schema", max_length=255)] = None,
 ) -> QualityAssetListResponse:
     _private(response)
@@ -235,6 +240,8 @@ async def list_quality_assets(
         limit=limit,
         cursor=cursor,
         query=q,
+        platform=platform,
+        database_name=database_name,
         schema_name=schema_name,
         subject=context.subject,
         environment=context.environment,

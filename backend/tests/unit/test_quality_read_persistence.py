@@ -18,6 +18,7 @@ from datariver.infrastructure.db.models.quality import (
 )
 from datariver.infrastructure.db.quality_read import (
     SqlQualityReadRepository,
+    _asset_cursor_resource,
     _AssetQualityAggregate,
     _DashboardRuleMetric,
     _field_run_quality,
@@ -73,6 +74,34 @@ def test_quality_issue_index_remains_failure_only() -> None:
     predicate = "outcome IN ('ADVISORY_FAIL','BLOCKING_FAIL')"
     assert predicate in migration_source
     assert predicate in canonical_source
+
+
+def test_quality_asset_cursor_is_bound_to_every_metadata_filter() -> None:
+    base = _asset_cursor_resource(
+        query="customer",
+        platform="postgres",
+        database_name="analytics",
+        schema_name="public",
+    )
+
+    assert base != _asset_cursor_resource(
+        query="customer",
+        platform="snowflake",
+        database_name="analytics",
+        schema_name="public",
+    )
+    assert base != _asset_cursor_resource(
+        query="customer",
+        platform="postgres",
+        database_name="warehouse",
+        schema_name="public",
+    )
+    assert base != _asset_cursor_resource(
+        query="customer",
+        platform="postgres",
+        database_name="analytics",
+        schema_name="reporting",
+    )
 
 
 class _AggregateRows:

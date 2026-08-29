@@ -190,8 +190,9 @@ export function QualityFieldBulkApplyDialog({
     </section>}
     <RangeParameterEditor entries={rangeEntries} parameters={parameters} onChange={setParameters} />
     <section className="quality-bulk-schedule-readiness">
-      <strong>3. 실행 계획</strong>
-      <p>룰은 필드에 추가되지만 스케줄 등록은 현재 read-only입니다. {axes.get('scheduling')?.reason_code ?? 'SCHEDULE_PROFILE_ATTESTATION_UNAVAILABLE'}</p>
+      <strong>3. Dry-run 미리보기</strong>
+      <p>{countText(targetGroups.length)}개 테이블의 server-authoritative 룰 제안만 생성합니다. GX 실행과 스케줄 등록은 이 확인에 포함되지 않습니다.</p>
+      <p>스케줄 등록은 현재 read-only입니다. {axes.get('scheduling')?.reason_code ?? 'SCHEDULE_PROFILE_ATTESTATION_UNAVAILABLE'}</p>
     </section>
     {!withinServerBounds && <p className="callout" role="status">
       한 번에 최대 25개 테이블, 테이블별 100개 룰까지 적용할 수 있습니다. 선택 범위를 줄여 주세요.

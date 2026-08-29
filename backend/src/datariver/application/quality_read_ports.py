@@ -37,6 +37,8 @@ class QualityReadRepository(Protocol):
         limit: int,
         cursor: str | None,
         query: str = "",
+        platform: str | None = None,
+        database_name: str | None = None,
         schema_name: str | None = None,
     ) -> QualityAssetPage: ...
 

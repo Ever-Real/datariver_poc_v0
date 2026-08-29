@@ -158,6 +158,84 @@ describe('QualityCommonRulesTab', () => {
     expect(screen.getByRole('button', { name: '공통 룰 만들기' })).toBeEnabled()
     expect(await screen.findByRole('button', { name: '적용 준비 필요' })).toBeDisabled()
   })
+
+  it('previews a bounded exact metadata scope and selects only filtered compatible fields', async () => {
+    const filteredPath = '/quality/assets?limit=100&q=event&platform=postgres&database=analytics&schema=public'
+    const typedAssets: QualityAsset[] = [{
+      ...assets[0]!,
+      name: '이벤트',
+      platform: 'postgres',
+      database_name: 'analytics',
+      schema_name: 'public',
+    }]
+    const request = vi.fn().mockImplementation((path: string) => {
+      if (path === '/quality/common-rule-templates') {
+        return Promise.resolve({
+          items: [template],
+          cache_scope: boundary.cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      if (path === '/quality/common-rule-templates/template-one') {
+        return Promise.resolve({
+          item: { template, mappings: [] },
+          cache_scope: boundary.cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      if (path === '/quality/assets?limit=100') return Promise.resolve(list([], 100))
+      if (path === filteredPath) return Promise.resolve(list(typedAssets, 100))
+      if (path === '/quality/assets/asset-one') {
+        return Promise.resolve({
+          item: typedAssets[0],
+          authoring: {
+            state: 'READY',
+            reason_code: null,
+            source_version: 'source-one',
+            schema_hash: 'c'.repeat(64),
+            fields: [
+              {
+                field_identifier: 'event_name',
+                display_path: 'event_name',
+                logical_type: 'STRING',
+                supported_rule_kinds: ['NOT_NULL'],
+              },
+              {
+                field_identifier: 'event_count',
+                display_path: 'event_count',
+                logical_type: 'INTEGER',
+                supported_rule_kinds: ['NOT_NULL', 'RANGE'],
+              },
+            ],
+          },
+          cache_scope: boundary.cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    renderTab(request)
+
+    fireEvent.click(await screen.findByRole('button', { name: '여러 테이블에 적용' }))
+    fireEvent.change(screen.getByLabelText('테이블 검색'), { target: { value: 'event' } })
+    fireEvent.change(screen.getByLabelText('Platform'), { target: { value: 'postgres' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.change(screen.getByLabelText('스키마'), { target: { value: 'public' } })
+    fireEvent.click(screen.getByRole('button', { name: '검색' }))
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '이벤트 선택' }))
+    await screen.findByRole('checkbox', { name: '이벤트 event_name 선택' })
+    fireEvent.change(screen.getByLabelText('타입'), { target: { value: 'STRING' } })
+    fireEvent.click(screen.getByRole('button', { name: '필터 결과 전체 선택' }))
+
+    expect(screen.getByRole('checkbox', { name: '이벤트 event_name 선택' })).toBeChecked()
+    expect(screen.queryByRole('checkbox', { name: '이벤트 event_count 선택' })).not.toBeInTheDocument()
+    expect(screen.getByText(/nullable 조건은 provider가 검증 가능한/)).toBeInTheDocument()
+    expect(request).toHaveBeenCalledWith(filteredPath, expect.anything())
+  })
 })
 
 function renderTab(

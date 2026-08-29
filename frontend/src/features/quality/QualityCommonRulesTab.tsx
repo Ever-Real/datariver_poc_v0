@@ -384,8 +384,12 @@ function MappingDialog({
   onBoundaryInvalid: () => void
 }) {
   const [draftQuery, setDraftQuery] = useState('')
+  const [draftPlatform, setDraftPlatform] = useState('')
+  const [draftDatabase, setDraftDatabase] = useState('')
   const [draftSchema, setDraftSchema] = useState('')
   const [query, setQuery] = useState('')
+  const [platform, setPlatform] = useState('')
+  const [database, setDatabase] = useState('')
   const [schema, setSchema] = useState('')
   const [fieldQuery, setFieldQuery] = useState('')
   const [fieldType, setFieldType] = useState('ALL')
@@ -395,9 +399,19 @@ function MappingDialog({
   const [error, setError] = useState<unknown>()
   const lastFieldIndex = useRef<number | undefined>(undefined)
   const assets = useQuery({
-    queryKey: qualityQueryKey(boundary, 'assets', 'template-mapping', query, schema),
+    queryKey: qualityQueryKey(
+      boundary,
+      'assets',
+      'template-mapping',
+      query,
+      platform,
+      database,
+      schema,
+    ),
     queryFn: ({ signal }) => api.assets(undefined, signal, {
       query,
+      platform,
+      database,
       schema,
       limit: 100,
     }),
@@ -463,8 +477,12 @@ function MappingDialog({
   useEffect(() => {
     if (!open) return
     setDraftQuery('')
+    setDraftPlatform('')
+    setDraftDatabase('')
     setDraftSchema('')
     setQuery('')
+    setPlatform('')
+    setDatabase('')
     setSchema('')
     setFieldQuery('')
     setFieldType('ALL')
@@ -484,6 +502,8 @@ function MappingDialog({
   const search = (event: FormEvent) => {
     event.preventDefault()
     setQuery(draftQuery.trim())
+    setPlatform(draftPlatform.trim())
+    setDatabase(draftDatabase.trim())
     setSchema(draftSchema.trim())
   }
   const toggle = (assetId: string, checked: boolean) => {
@@ -516,12 +536,25 @@ function MappingDialog({
     })
     lastFieldIndex.current = index
   }
+  const toggleVisibleFields = (checked: boolean) => {
+    setSelectedFields((current) => {
+      const next = new Set(current)
+      for (const field of visibleFieldCandidates) {
+        const key = fieldSelectionKey(field)
+        if (checked) next.add(key)
+        else next.delete(key)
+      }
+      return next
+    })
+  }
+  const allVisibleFieldsSelected = visibleFieldCandidates.length > 0
+    && visibleFieldCandidates.every((field) => selectedFields.has(fieldSelectionKey(field)))
 
   return <>
   <Dialog
     open={open && !parameterOpen}
     title={`${template.name} · 여러 테이블에 적용`}
-    description="스키마와 테이블을 검색하고 최대 25개를 선택해 한 번에 적용합니다."
+    description="메타데이터 조건으로 인가된 대상을 좁히고, 미리보기에서 최대 25개 테이블을 확인한 뒤 적용합니다."
     size="large"
     onRequestClose={onClose}
     footer={<>
@@ -536,9 +569,14 @@ function MappingDialog({
     <form className="quality-mapping-search" onSubmit={search}>
       <Search size={15} aria-hidden="true" />
       <label>테이블 검색<input value={draftQuery} maxLength={200} onChange={(event) => setDraftQuery(event.target.value)} placeholder="테이블·데이터베이스·플랫폼" /></label>
+      <label>Platform<input value={draftPlatform} maxLength={100} onChange={(event) => setDraftPlatform(event.target.value)} placeholder="정확한 platform" /></label>
+      <label>Database<input value={draftDatabase} maxLength={255} onChange={(event) => setDraftDatabase(event.target.value)} placeholder="정확한 database" /></label>
       <label>스키마<input value={draftSchema} maxLength={255} onChange={(event) => setDraftSchema(event.target.value)} placeholder="정확한 스키마명" /></label>
       <button className="button" type="submit">검색</button>
     </form>
+    <p className="quality-mapping-condition-note">
+      현재 배포 소유 필드 계약은 논리 타입을 제공합니다. nullable 조건은 provider가 검증 가능한 필드 identity로 제공할 때까지 선택할 수 없습니다.
+    </p>
     {assets.error && <ErrorNotice error={assets.error} />}
     <div className="quality-mapping-table-scroll">
       <table className="quality-compact-table">
@@ -567,6 +605,14 @@ function MappingDialog({
           <option value="ALL">전체 타입</option>
           {[...new Set(fieldCandidates.map((field) => field.logical_type))].sort().map((type) => <option key={type}>{type}</option>)}
         </select></label>
+        <button
+          className="button button-secondary"
+          type="button"
+          disabled={visibleFieldCandidates.length === 0}
+          onClick={() => toggleVisibleFields(!allVisibleFieldsSelected)}
+        >
+          {allVisibleFieldsSelected ? '필터 결과 선택 해제' : '필터 결과 전체 선택'}
+        </button>
       </div>
       <div className="quality-mapping-table-scroll"><table className="quality-compact-table">
         <thead><tr><th>선택</th><th>테이블</th><th>필드</th><th>타입</th><th>적용 가능한 룰</th></tr></thead>
