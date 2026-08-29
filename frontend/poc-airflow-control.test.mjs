@@ -5,10 +5,12 @@ import { test } from 'node:test'
 
 import {
   AIRFLOW_DAGS,
+  AIRFLOW_EXECUTION_SCOPE,
   AIRFLOW_SYSTEM_ID,
   collectAllowedAirflowDagStatuses,
   createAirflowControlStore,
   normalizeAirflowDagStatus,
+  projectAirflowConnectionStatus,
 } from './poc-airflow-control.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
@@ -89,6 +91,7 @@ async function close(server) {
 
 test('keeps the runtime contract bounded to the canonical Airflow configuration identifier', () => {
   assert.equal(AIRFLOW_SYSTEM_ID, 'AIRFLOW')
+  assert.equal(AIRFLOW_EXECUTION_SCOPE, 'WORKSPACE_WIDE')
   assert.deepEqual(AIRFLOW_DAGS, [
     'datariver_bulk_registration_prepare',
     'datariver_catalog_probe',
@@ -130,7 +133,9 @@ test('collects only the protocol DAG allowlist and one bounded latest run withou
   assert.deepEqual(dagCalls, AIRFLOW_DAGS)
   assert.deepEqual(runCalls, AIRFLOW_DAGS.filter((dagId) => dagId !== 'datariver_catalog_probe'))
   assert.equal(inventory.system_id, AIRFLOW_SYSTEM_ID)
+  assert.equal(inventory.execution_scope, AIRFLOW_EXECUTION_SCOPE)
   assert.equal(inventory.items.length, AIRFLOW_DAGS.length)
+  assert.equal(inventory.items.every((item) => item.execution_scope === AIRFLOW_EXECUTION_SCOPE), true)
   assert.deepEqual(Object.keys(inventory.items[0].latest_run).sort(), [
     'dag_id', 'ended_at', 'logical_date', 'run_id', 'started_at', 'state', 'system_id',
   ])
@@ -145,6 +150,7 @@ test('collects only the protocol DAG allowlist and one bounded latest run withou
   }, 'datariver_catalog_sync', 'v1'), {
     system_id: AIRFLOW_SYSTEM_ID,
     dag_id: 'datariver_catalog_sync',
+    execution_scope: AIRFLOW_EXECUTION_SCOPE,
     state: 'READY',
     paused: false,
     next_logical_date: '2026-08-31T00:00:00.000Z',
@@ -174,6 +180,47 @@ test('collects only the protocol DAG allowlist and one bounded latest run withou
       }, 'datariver_catalog_sync', version), { code: 'AIRFLOW_DAG_CONTRACT_INVALID' })
     }
   }
+})
+
+test('projects only deployment-owned redacted Airflow connection status', () => {
+  const status = projectAirflowConnectionStatus({
+    endpoint: 'https://airflow.internal.example/provider/path?deployment=private',
+    apiVersion: 'v2',
+    credentialConfigured: true,
+    requestTimeoutMs: 15_000,
+    checkedAt: '2026-08-29T12:00:00Z',
+  })
+  assert.deepEqual(status, {
+    label: 'Airflow',
+    management_plane: 'DEPLOYMENT',
+    endpoint_origin: 'https://airflow.internal.example',
+    api_mode: 'V2',
+    auth_mode: 'API_V2_TOKEN',
+    credential_configured: true,
+    request_timeout_ms: 15_000,
+    enabled: true,
+    configured: true,
+    checked_at: '2026-08-29T12:00:00.000Z',
+    status: 'READY',
+    reason_code: null,
+  })
+  assert.equal(JSON.stringify(status).includes('username'), false)
+  assert.equal(JSON.stringify(status).includes('password'), false)
+  assert.equal(JSON.stringify(status).includes('secret'), false)
+  assert.throws(() => projectAirflowConnectionStatus({
+    endpoint: 'https://operator:password@airflow.internal.example',
+    apiVersion: 'v1',
+    credentialConfigured: true,
+    requestTimeoutMs: 15_000,
+    checkedAt: '2026-08-29T12:00:00Z',
+  }), /credential-free/)
+  assert.throws(() => projectAirflowConnectionStatus({
+    endpoint: 'https://airflow.internal.example',
+    apiVersion: 'v1',
+    credentialConfigured: true,
+    requestTimeoutMs: 0,
+    checkedAt: '2026-08-29T12:00:00Z',
+  }), /timeout/)
 })
 
 test('durably binds trigger replay, conflict, failure and reconciliation to subject and configuration', async () => {

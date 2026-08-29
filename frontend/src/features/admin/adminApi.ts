@@ -94,6 +94,7 @@ export interface VersionedSiteBranding extends SiteBranding {
 export interface AirflowDagStatus {
   system_id: 'AIRFLOW'
   dag_id: string
+  execution_scope: 'WORKSPACE_WIDE'
   state: 'READY' | 'MISSING'
   paused: boolean | null
   next_logical_date: string | null
@@ -114,8 +115,23 @@ export interface AirflowRun {
 
 export interface AirflowDagInventory {
   system_id: 'AIRFLOW'
+  execution_scope: 'WORKSPACE_WIDE'
   api_mode: 'V1' | 'V2'
   observed_at: string
+  connection: {
+    label: string
+    management_plane: 'DEPLOYMENT'
+    endpoint_origin: string
+    api_mode: 'V1' | 'V2'
+    auth_mode: 'API_V1_BASIC' | 'API_V2_TOKEN'
+    credential_configured: boolean
+    request_timeout_ms: number
+    enabled: boolean
+    configured: boolean
+    checked_at: string
+    status: 'READY' | 'BLOCKED'
+    reason_code: 'AIRFLOW_CREDENTIAL_NOT_CONFIGURED' | null
+  }
   items: AirflowDagStatus[]
 }
 

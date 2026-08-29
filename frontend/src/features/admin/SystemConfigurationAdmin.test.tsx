@@ -334,12 +334,28 @@ describe('SystemConfigurationAdmin', () => {
         inventoryCall += 1
         return Promise.resolve({
           system_id: 'AIRFLOW',
+          execution_scope: 'WORKSPACE_WIDE',
           api_mode: 'V2',
           observed_at: '2026-08-29T12:00:00Z',
+          connection: {
+            label: 'Airflow',
+            management_plane: 'DEPLOYMENT',
+            endpoint_origin: 'https://canonical-airflow.example.internal',
+            api_mode: 'V2',
+            auth_mode: 'API_V2_TOKEN',
+            credential_configured: true,
+            request_timeout_ms: 15_000,
+            enabled: true,
+            configured: true,
+            checked_at: '2026-08-29T12:00:00Z',
+            status: 'READY',
+            reason_code: null,
+          },
           items: [
             {
               system_id: 'AIRFLOW',
               dag_id: 'datariver_catalog_sync',
+              execution_scope: 'WORKSPACE_WIDE',
               state: 'READY',
               paused: false,
               next_logical_date: '2026-08-30T02:00:00Z',
@@ -354,6 +370,7 @@ describe('SystemConfigurationAdmin', () => {
             {
               system_id: 'AIRFLOW',
               dag_id: 'datariver_quality_dispatch',
+              execution_scope: 'WORKSPACE_WIDE',
               state: 'MISSING',
               paused: null,
               next_logical_date: null,
@@ -375,17 +392,27 @@ describe('SystemConfigurationAdmin', () => {
     expect(table).toHaveTextContent('사용 가능')
     expect(table).toHaveTextContent('datariver_quality_dispatch')
     expect(table).toHaveTextContent('찾을 수 없음')
+    expect(table).toHaveTextContent('워크스페이스 전체')
     expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('API V2')
+    expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('실행 범위 워크스페이스 전체')
     expect(screen.getByRole('note')).toHaveTextContent('멱등성·감사·실패 조정 receipt')
-    expect(screen.getByLabelText('Canonical Airflow 시스템 구성')).toHaveTextContent('구성 IDAIRFLOW')
-    expect(screen.getByText('/admin/system-configuration')).toBeVisible()
+    expect(screen.getByRole('note')).toHaveTextContent('exact System identity')
+    const connection = screen.getByLabelText('Airflow 배포 연결 구성')
+    expect(connection).toHaveTextContent('연결 구성 IDAIRFLOW')
+    expect(connection).toHaveTextContent('배포 환경 · 읽기 전용')
+    expect(connection).toHaveTextContent('https://canonical-airflow.example.internal')
+    expect(connection).toHaveTextContent('API_V2_TOKEN')
+    expect(connection).toHaveTextContent('배포에서 구성됨')
+    expect(connection).not.toHaveTextContent('password')
+    expect(connection).not.toHaveTextContent('username')
     expect(screen.getByText('DEPLOYMENT_MANAGED')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'DAG 실행' }))
     expect(triggerCall).toBe(0)
     expect(pending?.summary).toEqual(expect.arrayContaining([
-      'System configuration ID: AIRFLOW',
+      'Connector configuration ID: AIRFLOW',
       '검토된 DAG: datariver_catalog_sync',
+      '실행 범위: WORKSPACE_WIDE',
       '작업: TRIGGER',
     ]))
     if (!pending) throw new Error('Airflow confirmation was not requested')

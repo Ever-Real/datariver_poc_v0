@@ -9,12 +9,14 @@ import { fileURLToPath, URL } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 import { createPocStateStore } from './poc-state-store.mjs'
 import {
+  AIRFLOW_EXECUTION_SCOPE,
   AIRFLOW_SYSTEM_ID,
   ALLOWED_AIRFLOW_DAGS,
   collectAllowedAirflowDagStatuses,
   createAirflowControlStore,
   normalizeAirflowDagStatus,
   normalizeAirflowRun,
+  projectAirflowConnectionStatus,
 } from './poc-airflow-control.mjs'
 import {
   changeHistoryAccessCoreProjection,
@@ -5026,7 +5028,18 @@ async function airflowDagInventory() {
     {},
     selectedVersion,
   ))
-  return { ...inventory, observed_at: new Date().toISOString() }
+  const observedAt = new Date().toISOString()
+  return {
+    ...inventory,
+    connection: projectAirflowConnectionStatus({
+      endpoint: airflow.url,
+      apiVersion: version,
+      credentialConfigured: Boolean(airflow.username && airflow.password),
+      requestTimeoutMs: providerTimeoutMs,
+      checkedAt: observedAt,
+    }),
+    observed_at: observedAt,
+  }
 }
 
 async function triggerControlledAirflowDag(dagId, runId) {
@@ -11700,7 +11713,9 @@ async function api(request, response, url, context) {
     if (url.search) return problem(response, 400, 'AIRFLOW_DAG_QUERY_INVALID', 'Airflow DAG inventory does not accept query parameters.')
     const inventory = await context.airflowProvider.inventory()
     if (inventory.system_id !== AIRFLOW_SYSTEM_ID
+      || inventory.execution_scope !== AIRFLOW_EXECUTION_SCOPE
       || inventory.items?.some((item) => item.system_id !== AIRFLOW_SYSTEM_ID
+        || item.execution_scope !== AIRFLOW_EXECUTION_SCOPE
         || !ALLOWED_AIRFLOW_DAGS.has(item.dag_id))) {
       throw accessError(503, 'AIRFLOW_SYSTEM_IDENTITY_INVALID', 'Airflow inventory has an invalid System or DAG identity.')
     }

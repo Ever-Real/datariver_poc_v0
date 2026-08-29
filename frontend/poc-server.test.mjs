@@ -1324,6 +1324,7 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
     dag_runs: [{ dag_id: dagId, dag_run_id: `scheduled__${dagId}`, state: 'success' }],
   }), { status: 200 }))
   assert.equal(observed.api_mode, 'V2')
+  assert.equal(observed.execution_scope, 'WORKSPACE_WIDE')
   assert.deepEqual(observed.items.map((item) => item.dag_id), [
     'datariver_bulk_registration_prepare',
     'datariver_catalog_probe',
@@ -1332,7 +1333,8 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
     'datariver_quality_dispatch',
   ])
   assert.deepEqual(observed.items.find((item) => item.dag_id === 'datariver_catalog_probe'), {
-    system_id: 'AIRFLOW', dag_id: 'datariver_catalog_probe', state: 'MISSING', paused: null,
+    system_id: 'AIRFLOW', dag_id: 'datariver_catalog_probe', execution_scope: 'WORKSPACE_WIDE',
+    state: 'MISSING', paused: null,
     next_logical_date: null, next_run_at: null, last_parsed_at: null, latest_run: null,
   })
   assert.equal(

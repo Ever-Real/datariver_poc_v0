@@ -105,8 +105,9 @@ export function AirflowDagStatusPanel({
     requestConfirmation({
       title: `Airflow DAG ${actionLabel}`,
       summary: [
-        `System configuration ID: ${configuration.system_id}`,
+        `Connector configuration ID: ${configuration.system_id}`,
         `검토된 DAG: ${dag.dag_id}`,
+        '실행 범위: WORKSPACE_WIDE',
         `작업: ${action}`,
         '확인 후 동일한 멱등성 키로 내구성 있는 작업 receipt를 기록합니다.',
       ],
@@ -130,6 +131,12 @@ export function AirflowDagStatusPanel({
           {row.original.state === 'READY' ? '사용 가능' : '찾을 수 없음'}
         </span>
       ),
+    },
+    {
+      accessorKey: 'execution_scope',
+      header: '범위',
+      size: 130,
+      cell: () => '워크스페이스 전체',
     },
     {
       id: 'latest_run',
@@ -203,23 +210,34 @@ export function AirflowDagStatusPanel({
           <span className="eyebrow">Bounded Airflow control</span>
           <h5 className="m-0 text-sm font-black text-navy-900">Airflow DAG 상태</h5>
           <p className="m-0 text-xs leading-5 text-slate-600">
-            canonical 시스템 구성에서 선택한 Airflow와 검토된 DAG만 관리합니다. 자격증명 값과 임의 DAG ID는 브라우저에 노출하지 않습니다.
+            배포에서 구성한 Airflow와 검토된 DAG만 관리합니다. 연결값은 읽기 전용이며 자격증명과 임의 DAG ID는 브라우저에 노출하지 않습니다.
           </p>
         </div>
         <button className="button button-secondary" disabled={loading || Boolean(activeOperation)} onClick={() => void load()} type="button">
           {loading ? 'DAG 상태 확인 중…' : 'DAG 상태 새로고침'}
         </button>
       </header>
-      <dl className="summary-list" aria-label="Canonical Airflow 시스템 구성">
-        <div><dt>구성 ID</dt><dd><code>{configuration.system_id}</code></dd></div>
-        <div><dt>관리 원천</dt><dd><code>/admin/system-configuration</code></dd></div>
+      <dl className="summary-list" aria-label="Airflow 배포 연결 구성">
+        <div><dt>연결 구성 ID</dt><dd><code>{configuration.system_id}</code></dd></div>
+        <div><dt>관리 원천</dt><dd>배포 환경 · 읽기 전용</dd></div>
         <div><dt>버전</dt><dd>{configuration.version}</dd></div>
         <div><dt>활성화</dt><dd>{configuration.activation_state}</dd></div>
+        {inventory && (
+          <>
+            <div><dt>연결 주소</dt><dd><code>{inventory.connection.endpoint_origin}</code></dd></div>
+            <div><dt>인증 방식</dt><dd>{inventory.connection.auth_mode}</dd></div>
+            <div><dt>자격증명</dt><dd>{inventory.connection.credential_configured ? '배포에서 구성됨' : '구성 필요'}</dd></div>
+            <div><dt>요청 제한</dt><dd>{inventory.connection.request_timeout_ms.toLocaleString()}ms</dd></div>
+            <div><dt>연결 상태</dt><dd>{inventory.connection.status === 'READY' ? '확인됨' : inventory.connection.reason_code}</dd></div>
+            <div><dt>확인 시각</dt><dd>{timestamp(inventory.connection.checked_at)}</dd></div>
+          </>
+        )}
       </dl>
       {inventory && (
         <div className="flex flex-wrap gap-2" role="status" aria-label="Airflow DAG 조회 정보">
-          <span className="badge">Config {inventory.system_id}</span>
+          <span className="badge">Connector {inventory.system_id}</span>
           <span className="badge">API {inventory.api_mode}</span>
+          <span className="badge badge-soft">실행 범위 워크스페이스 전체</span>
           <span className="badge badge-soft">확인 시각 {timestamp(inventory.observed_at)}</span>
         </div>
       )}
@@ -235,7 +253,7 @@ export function AirflowDagStatusPanel({
         fitContainer
       />
       <p className="callout m-0" role="note">
-        실행은 비밀값 없는 고정 요청과 내구성 있는 멱등성·감사·실패 조정 receipt를 사용합니다. 실제 외부 Airflow 연결 검증은 별도 런타임 승인 게이트입니다.
+        실행은 비밀값 없는 고정 요청과 내구성 있는 멱등성·감사·실패 조정 receipt를 사용합니다. 업무 System 귀속은 DAG 이름이 아니라 각 등록·품질 작업의 권한 검증된 exact System identity를 따릅니다. 실제 외부 Airflow 연결 검증은 별도 런타임 승인 게이트입니다.
       </p>
     </section>
   )

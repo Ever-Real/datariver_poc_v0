@@ -66,6 +66,7 @@ let omitKnowledgeColumnUrn
 let forceKnowledgeNonTable
 let forceABoxNeo4jFailure
 let providerServer
+let providerOrigin
 let pocServer
 let pocOrigin
 let providerStateStore
@@ -104,7 +105,20 @@ function providerHandler(request, response) {
     if (url.pathname === '/' || url.pathname === '/config' || url.pathname.endsWith('/models') || url.pathname === '/minio/health/live') return sendJson(response, { ok: true })
     if (url.pathname === '/airflow/api/v2/monitor/health') return sendJson(response, { detail: 'Airflow 2.x has no API v2' }, 404)
     if (url.pathname === '/airflow/api/v1/dags' && request.method === 'GET') return sendJson(response, { dags: [] })
-    if (/^\/airflow\/api\/v1\/dags\/[^/]+\/dagRuns$/.test(url.pathname)) return sendJson(response, { state: 'queued' }, 201)
+    if (/^\/airflow\/api\/v1\/dags\/[^/]+$/.test(url.pathname) && request.method === 'GET') {
+      const dagId = decodeURIComponent(url.pathname.split('/').at(-1))
+      return sendJson(response, {
+        dag_id: dagId,
+        is_paused: false,
+        next_dagrun: null,
+        next_dagrun_create_after: null,
+        last_parsed_time: '2026-08-29T12:00:00Z',
+      })
+    }
+    if (/^\/airflow\/api\/v1\/dags\/[^/]+\/dagRuns$/.test(url.pathname)) {
+      if (request.method === 'GET') return sendJson(response, { dag_runs: [] })
+      return sendJson(response, { state: 'queued' }, 201)
+    }
     if (url.pathname.endsWith('/embeddings')) {
       const payload = JSON.parse(body.toString('utf8'))
       const inputs = Array.isArray(payload.input) ? payload.input : [payload.input]
@@ -622,7 +636,7 @@ before(async () => {
   await new Promise((resolvePromise) => providerServer.listen(0, '127.0.0.1', resolvePromise))
   const providerAddress = providerServer.address()
   assert.equal(typeof providerAddress, 'object')
-  const providerOrigin = `http://127.0.0.1:${providerAddress.port}`
+  providerOrigin = `http://127.0.0.1:${providerAddress.port}`
   Object.assign(process.env, {
     POC_ENV_FILE: 'poc-server.providers.test.env.missing',
     POC_REDIS_URL: '',
@@ -1401,6 +1415,35 @@ test('requires the durable Airflow receipt store before parsing a trigger or con
   assert.equal(query.status, 400)
   assert.equal((await query.json()).code, 'AIRFLOW_DAG_QUERY_INVALID')
   assert.equal(requests.filter((request) => request.path.includes('/airflow/')).length, airflowRequestsBefore)
+})
+
+test('returns only the deployment-owned redacted Airflow connection and workspace-wide DAG scope', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/airflow/dags`)
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.system_id, 'AIRFLOW')
+  assert.equal(payload.execution_scope, 'WORKSPACE_WIDE')
+  assert.equal(payload.api_mode, 'V1')
+  assert.deepEqual(payload.connection, {
+    label: 'Airflow',
+    management_plane: 'DEPLOYMENT',
+    endpoint_origin: providerOrigin,
+    api_mode: 'V1',
+    auth_mode: 'API_V1_BASIC',
+    credential_configured: true,
+    request_timeout_ms: 15_000,
+    enabled: true,
+    configured: true,
+    checked_at: payload.observed_at,
+    status: 'READY',
+    reason_code: null,
+  })
+  assert.equal(payload.items.length, 5)
+  assert.equal(payload.items.every((item) => item.execution_scope === 'WORKSPACE_WIDE'), true)
+  const serialized = JSON.stringify(payload)
+  for (const forbidden of ['airflow-test', 'airflow-test-password', 'AIRFLOW_USERNAME', 'AIRFLOW_PASSWORD']) {
+    assert.equal(serialized.includes(forbidden), false)
+  }
 })
 
 test('proxies a bounded MinIO upload', async () => {

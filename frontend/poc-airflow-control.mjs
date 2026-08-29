@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
+import { URL } from 'node:url'
 
 // This is the canonical SystemConfigurationId, not an AF-04 domain System UUID linkage.
 export const AIRFLOW_SYSTEM_ID = 'AIRFLOW'
 export const AIRFLOW_CONTROL_SCOPE = 'airflow-control-v1'
+export const AIRFLOW_EXECUTION_SCOPE = 'WORKSPACE_WIDE'
 
 export const AIRFLOW_DAGS = Object.freeze([
   'datariver_bulk_registration_prepare',
@@ -76,6 +78,49 @@ function normalizedRunState(value) {
   return value.trim().toUpperCase()
 }
 
+export function projectAirflowConnectionStatus({
+  endpoint,
+  apiVersion,
+  credentialConfigured,
+  requestTimeoutMs,
+  checkedAt,
+}) {
+  if (typeof endpoint !== 'string' || endpoint.length > 2_048) {
+    throw new TypeError('Airflow connection status requires one bounded deployment endpoint.')
+  }
+  const parsed = new URL(endpoint)
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new TypeError('Airflow connection status requires a credential-free http(s) endpoint.')
+  }
+  if (!['v1', 'v2'].includes(apiVersion)) {
+    throw new TypeError('Airflow connection status requires an explicit supported API version.')
+  }
+  if (typeof credentialConfigured !== 'boolean') {
+    throw new TypeError('Airflow connection status requires a bounded credential state.')
+  }
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > 120_000) {
+    throw new TypeError('Airflow connection status timeout is outside the supported bound.')
+  }
+  const normalizedCheckedAt = timestamp(checkedAt, 'connection check time')
+  if (normalizedCheckedAt === null) {
+    throw new TypeError('Airflow connection status requires a check time.')
+  }
+  return {
+    label: 'Airflow',
+    management_plane: 'DEPLOYMENT',
+    endpoint_origin: parsed.origin,
+    api_mode: apiVersion.toUpperCase(),
+    auth_mode: apiVersion === 'v2' ? 'API_V2_TOKEN' : 'API_V1_BASIC',
+    credential_configured: credentialConfigured,
+    request_timeout_ms: requestTimeoutMs,
+    enabled: credentialConfigured,
+    configured: credentialConfigured,
+    checked_at: normalizedCheckedAt,
+    status: credentialConfigured ? 'READY' : 'BLOCKED',
+    reason_code: credentialConfigured ? null : 'AIRFLOW_CREDENTIAL_NOT_CONFIGURED',
+  }
+}
+
 export function normalizeAirflowDagStatus(payload, expectedDagId, version) {
   const dagId = allowedDagId(expectedDagId)
   if (!['v1', 'v2'].includes(version)) {
@@ -96,6 +141,7 @@ export function normalizeAirflowDagStatus(payload, expectedDagId, version) {
   return {
     system_id: AIRFLOW_SYSTEM_ID,
     dag_id: dagId,
+    execution_scope: AIRFLOW_EXECUTION_SCOPE,
     state: 'READY',
     paused: payload.is_paused,
     next_logical_date: nextLogicalDate,
@@ -148,6 +194,7 @@ export async function collectAllowedAirflowDagStatuses(version, fetchDag, fetchL
       return {
         system_id: AIRFLOW_SYSTEM_ID,
         dag_id: dagId,
+        execution_scope: AIRFLOW_EXECUTION_SCOPE,
         state: 'MISSING',
         paused: null,
         next_logical_date: null,
@@ -162,7 +209,12 @@ export async function collectAllowedAirflowDagStatuses(version, fetchDag, fetchL
     if (!runResponse.ok) throw controlError(502, 'AIRFLOW_RUN_READ_FAILED', 'Airflow run status is unavailable.')
     return { ...status, latest_run: normalizeAirflowLatestRunPage(await runResponse.json(), dagId) }
   }))
-  return { system_id: AIRFLOW_SYSTEM_ID, api_mode: version.toUpperCase(), items }
+  return {
+    system_id: AIRFLOW_SYSTEM_ID,
+    execution_scope: AIRFLOW_EXECUTION_SCOPE,
+    api_mode: version.toUpperCase(),
+    items,
+  }
 }
 
 function normalizeAuditEvent(value) {
