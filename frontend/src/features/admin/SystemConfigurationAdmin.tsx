@@ -9,6 +9,7 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { CapabilityObservation } from '../monitoring/CapabilityObservation'
 import type { AdminSectionProps } from './MembershipAdmin'
+import { AirflowDagStatusPanel } from './AirflowDagStatusPanel'
 
 const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
   'LLM_CHAT_MODEL',
@@ -662,6 +663,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                 </button>
               </div>
               {renderTestResult(selected)}
+              {selected.system_id === 'AIRFLOW' && <AirflowDagStatusPanel api={api} />}
               <small className="muted">
                 전체 옵션 설명: <code>docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md</code>
               </small>

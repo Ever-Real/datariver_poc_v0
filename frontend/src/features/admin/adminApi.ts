@@ -91,6 +91,20 @@ export interface VersionedSiteBranding extends SiteBranding {
   etag: string
 }
 
+export interface AirflowDagStatus {
+  dag_id: string
+  state: 'READY' | 'MISSING'
+  paused: boolean | null
+  next_run_at: string | null
+  last_parsed_at: string | null
+}
+
+export interface AirflowDagInventory {
+  api_mode: 'V1' | 'V2'
+  observed_at: string
+  items: AirflowDagStatus[]
+}
+
 export interface AdminCursorPage<T> {
   items: T[]
   nextCursor: string | null
@@ -711,6 +725,13 @@ export class AdminApi {
   getCapabilities(signal?: AbortSignal) {
     return this.client.request<CapabilitiesResponse>(
       '/capabilities',
+      { signal, cache: 'no-store' },
+    )
+  }
+
+  getAirflowDagInventory(signal?: AbortSignal) {
+    return this.client.request<AirflowDagInventory>(
+      '/poc-api/airflow/dags',
       { signal, cache: 'no-store' },
     )
   }

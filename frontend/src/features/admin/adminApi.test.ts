@@ -102,6 +102,19 @@ describe('AdminApi', () => {
     )
   })
 
+  it('loads the reviewed Airflow DAG inventory through the no-store boundary', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({ api_mode: 'V2', observed_at: '2026-08-29T00:00:00Z', items: [] })
+
+    await api.getAirflowDagInventory(controller.signal)
+
+    expect(request).toHaveBeenCalledWith('/poc-api/airflow/dags', {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+  })
+
   it('uses asset IDs and the System ETag for governed schema-scope changes', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

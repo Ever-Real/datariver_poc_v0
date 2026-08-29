@@ -298,6 +298,81 @@ describe('SystemConfigurationAdmin', () => {
     expect((await screen.findByText('Core Dashboard')).closest('button')).toHaveTextContent('연결됨')
   })
 
+  it('shows only the server-reviewed Airflow DAG inventory and refreshes it', async () => {
+    const airflowEntry = {
+      ...deploymentEntry,
+      system_id: 'AIRFLOW' as const,
+      label: 'Airflow',
+    }
+    let inventoryCall = 0
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
+      if (path === '/poc-api/airflow/dags') {
+        inventoryCall += 1
+        return Promise.resolve({
+          api_mode: 'V2',
+          observed_at: '2026-08-29T12:00:00Z',
+          items: [
+            {
+              dag_id: 'datariver_catalog_sync',
+              state: 'READY',
+              paused: false,
+              next_run_at: '2026-08-30T02:00:00Z',
+              last_parsed_at: '2026-08-29T11:59:00Z',
+            },
+            {
+              dag_id: 'datariver_quality_dispatch',
+              state: 'MISSING',
+              paused: null,
+              next_run_at: null,
+              last_parsed_at: null,
+            },
+          ],
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+
+    const table = await screen.findByRole('table', { name: '검토된 Airflow DAG 목록' })
+    expect(table).toHaveTextContent('datariver_catalog_sync')
+    expect(table).toHaveTextContent('사용 가능')
+    expect(table).toHaveTextContent('datariver_quality_dispatch')
+    expect(table).toHaveTextContent('찾을 수 없음')
+    expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('API V2')
+    expect(screen.getByRole('note')).toHaveTextContent('확인·감사·재시도 안전 계약')
+
+    fireEvent.click(screen.getByRole('button', { name: 'DAG 상태 새로고침' }))
+    await waitFor(() => expect(inventoryCall).toBe(2))
+    expect(request).toHaveBeenCalledWith(
+      '/poc-api/airflow/dags',
+      expect.objectContaining({ cache: 'no-store' }),
+    )
+  })
+
+  it('shows a bounded Airflow DAG inventory error without provider fallback', async () => {
+    const airflowEntry = {
+      ...deploymentEntry,
+      system_id: 'AIRFLOW' as const,
+      label: 'Airflow',
+    }
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
+      if (path === '/poc-api/airflow/dags') throw new Error('Airflow DAG 상태를 불러오지 못했습니다.')
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Airflow DAG 상태를 불러오지 못했습니다.')
+    expect(screen.getByRole('table', { name: '검토된 Airflow DAG 목록' })).toHaveTextContent(
+      '현재 조회 가능한 검토된 DAG가 없습니다.',
+    )
+  })
+
   it('groups Chat, Embedding, and Reranker under one read-only LLM menu', async () => {
     const llmSpecs: Array<[SystemConfigurationEntry['system_id'], string]> = [
       ['LLM_CHAT_MODEL', 'LLM · Chat model'],
