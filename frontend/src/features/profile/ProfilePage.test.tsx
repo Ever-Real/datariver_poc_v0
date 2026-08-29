@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProfilePage } from './ProfilePage'
 
 describe('ProfilePage', () => {
-  it('shows verified identity facts and keeps unsupported profile mutations disabled', () => {
+  it('keeps account workflows while omitting operational security fields from the profile UI', () => {
     const onPasswordChange = vi.fn()
     const onPasswordReauth = vi.fn()
     const client = {
@@ -27,7 +27,6 @@ describe('ProfilePage', () => {
           password_change_supported: true,
         }}
         client={client as never}
-        workspace="workspace-one"
         capabilities={[{ name: 'DataHub', state: 'AVAILABLE', observed_at: '2026-07-20T08:00:00Z' }]}
         externalSystemLinks={[{ system_id: 'datahub', label: 'DataHub', url: 'http://localhost:8080' }]}
         onPasswordChange={onPasswordChange}
@@ -37,10 +36,14 @@ describe('ProfilePage', () => {
 
     expect(screen.getByLabelText('이름')).toHaveValue('관리자')
     expect(screen.getByLabelText('Email')).toHaveValue('admin@example.test')
-    expect(screen.getByLabelText('현재 Workspace')).toHaveValue('workspace-one')
-    expect(screen.getByLabelText('Workspace 운영 모드')).toHaveValue('단일 Workspace · 전환 비활성')
-    expect(screen.getByLabelText('WebAuthn')).toHaveValue('비활성 · 별도 허용 경로만 사용')
+    expect(screen.getByLabelText('역할')).toHaveValue('administrator')
+    expect(screen.queryByLabelText('현재 Workspace')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('인증 보증')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Workspace 운영 모드')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('WebAuthn')).not.toBeInTheDocument()
+    expect(screen.queryByText(/RLS·권한·캐시/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '변경사항 저장' })).toBeDisabled()
+    expect(screen.getByText('Change Request History')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '서버 승인 DataHub 링크 열기' })).toHaveAttribute('href', 'http://localhost:8080')
     fireEvent.click(screen.getByRole('button', { name: '비밀번호 변경' }))
     expect(onPasswordChange).toHaveBeenCalledOnce()

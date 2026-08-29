@@ -19,6 +19,8 @@ function summary(overrides: Record<string, unknown> = {}) {
       schema_name: 'core',
       asset_count: 10,
       described_asset_count: 7,
+      tagged_asset_count: 0,
+      term_asset_count: 4,
     }],
     catalog_schema_metrics_truncated: false,
     ...overrides,
@@ -140,10 +142,47 @@ describe('DashboardPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Platformpostgres10Assets/i }))
     expect(await screen.findByText('warehouse / core')).toBeInTheDocument()
     expect(screen.getAllByText('70%')).toHaveLength(2)
-    expect(screen.getAllByText('미수집')).toHaveLength(2)
+    expect(screen.getByText('0%')).toBeInTheDocument()
+    expect(screen.getByText('40%')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개' })).toHaveAttribute(
+      'title',
+      '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개',
+    )
+    expect(screen.getByRole('group', { name: '용어 1개 이상 연결 자산(분자) 4개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개' })).toHaveAttribute(
+      'title',
+      '용어 1개 이상 연결 자산(분자) 4개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개',
+    )
     expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Metadata Audit Summary' })).not.toBeInTheDocument()
     expect(request).not.toHaveBeenCalledWith('/capabilities')
+  })
+
+  it('shows UNKNOWN only when the current active asset denominator is zero', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary({
+        catalog_asset_count: 0,
+        catalog_described_asset_count: 0,
+        catalog_schema_metrics: [{
+          platform: 'postgres',
+          database_name: 'warehouse',
+          schema_name: 'empty',
+          asset_count: 0,
+          described_asset_count: 0,
+          tagged_asset_count: 0,
+          term_asset_count: 0,
+        }],
+      }))
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDashboard(apiClient(request))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Platformpostgres0Assets/i }))
+
+    expect(screen.getAllByText('UNKNOWN')).toHaveLength(3)
+    const explanation = '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 0개 · 분모가 0이므로 계산할 수 없습니다.'
+    expect(screen.getByRole('group', { name: explanation })).toHaveAttribute('title', explanation)
   })
 
   it('states the bounded hierarchy result instead of silently omitting it', async () => {

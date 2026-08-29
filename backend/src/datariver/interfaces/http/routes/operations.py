@@ -101,9 +101,12 @@ async def _catalog_coverage(
     """
 
     description_present = func.nullif(func.btrim(AssetProjectionModel.description), "").is_not(None)
+    tags_present = func.jsonb_array_length(AssetProjectionModel.tags) > 0
+    terms_present = func.jsonb_array_length(AssetProjectionModel.glossary_terms) > 0
     scope = (
         AssetProjectionModel.workspace_id == workspace_id,
         AssetProjectionModel.deleted_at.is_(None),
+        AssetProjectionModel.lifecycle == "ACTIVE",
     )
     asset_count, described_asset_count = (
         await session.execute(
@@ -127,6 +130,14 @@ async def _catalog_coverage(
                 func.count(AssetProjectionModel.id),
                 func.coalesce(
                     func.sum(case((description_present, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((tags_present, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((terms_present, 1), else_=0)),
                     0,
                 ),
             )
@@ -156,8 +167,18 @@ async def _catalog_coverage(
                 schema_name=schema_name,
                 asset_count=int(count),
                 described_asset_count=int(descriptions),
+                tagged_asset_count=int(tagged),
+                term_asset_count=int(terms),
             )
-            for platform, database_name, schema_name, count, descriptions in metric_rows[:200]
+            for (
+                platform,
+                database_name,
+                schema_name,
+                count,
+                descriptions,
+                tagged,
+                terms,
+            ) in metric_rows[:200]
         ],
         truncated,
     )

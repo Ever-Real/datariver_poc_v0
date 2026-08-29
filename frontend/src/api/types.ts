@@ -105,6 +105,8 @@ export interface CatalogSchemaMetric {
   schema_name?: string
   asset_count: number
   described_asset_count: number
+  tagged_asset_count: number
+  term_asset_count: number
 }
 
 export interface CatalogAsset {

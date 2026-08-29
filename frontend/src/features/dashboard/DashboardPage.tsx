@@ -293,24 +293,32 @@ function DashboardSection({ title, icon, children }: { title: string; icon: Reac
 }
 
 function SchemaMetricCard({ metric }: { metric: CatalogSchemaMetric }) {
-  const descriptionCoverage = metric.asset_count > 0
-    ? Math.round((metric.described_asset_count / metric.asset_count) * 100)
-    : undefined
+  const descriptionCoverage = coveragePresentation('설명 보유 자산', metric.described_asset_count, metric.asset_count)
+  const tagCoverage = coveragePresentation('태그 1개 이상 보유 자산', metric.tagged_asset_count, metric.asset_count)
+  const termCoverage = coveragePresentation('용어 1개 이상 연결 자산', metric.term_asset_count, metric.asset_count)
   const hierarchy = [metric.database_name, metric.schema_name].filter(Boolean).join(' / ') || '미분류 스키마'
   return (
     <article className="dashboard-schema-card">
       <header><strong title={hierarchy}>{hierarchy}</strong><span>{metric.asset_count.toLocaleString()} Assets</span></header>
       <div className="dashboard-schema-metrics">
-        <MetricTile label="Desc" value={descriptionCoverage == null ? '—' : `${descriptionCoverage}%`} />
-        <MetricTile label="Tag" value="미수집" unavailable />
-        <MetricTile label="Term" value="미수집" unavailable />
+        <MetricTile label="Desc" {...descriptionCoverage} />
+        <MetricTile label="Tag" {...tagCoverage} />
+        <MetricTile label="Term" {...termCoverage} />
       </div>
     </article>
   )
 }
 
-function MetricTile({ label, value, unavailable = false }: { label: string; value: string; unavailable?: boolean }) {
-  return <div className={unavailable ? 'metric-tile unavailable' : 'metric-tile'}><small>{label}</small><strong>{value}</strong></div>
+function coveragePresentation(label: string, numerator: number, denominator: number) {
+  const explanation = `${label}(분자) ${numerator.toLocaleString()}개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) ${denominator.toLocaleString()}개`
+  return {
+    value: denominator > 0 ? `${Math.round((numerator / denominator) * 100)}%` : 'UNKNOWN',
+    explanation: denominator > 0 ? explanation : `${explanation} · 분모가 0이므로 계산할 수 없습니다.`,
+  }
+}
+
+function MetricTile({ label, value, explanation }: { label: string; value: string; explanation: string }) {
+  return <div className="metric-tile" role="group" aria-label={explanation} title={explanation}><small>{label}</small><strong>{value}</strong></div>
 }
 
 function QuickAction({

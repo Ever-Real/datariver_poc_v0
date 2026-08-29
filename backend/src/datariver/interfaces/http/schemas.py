@@ -3701,6 +3701,8 @@ class CatalogSchemaMetricResponse(BaseModel):
     schema_name: str | None
     asset_count: int
     described_asset_count: int
+    tagged_asset_count: int
+    term_asset_count: int
 
 
 class OperationsSummaryResponse(BaseModel):
