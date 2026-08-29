@@ -1,3 +1,4 @@
+/* global structuredClone */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import process from 'node:process'
@@ -220,6 +221,135 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
   }
 }
 
+function createCredentialSecurityDatabaseDouble({ failAt, duplicateVersion } = {}) {
+  const statements = []
+  let credential = {
+    subjectId: 'synthetic-subject-a',
+    usernameNormalized: 'synthetic-a',
+    passwordHash: '$argon2id$v=19$m=16,t=2,p=1$old$hash',
+    loginEnabled: true,
+    mustChangePassword: true,
+    failedAttempts: 2,
+    lockedUntil: '2026-08-29T01:00:00.000Z',
+    version: 1,
+  }
+  let sessions = new Map([
+    ['a'.repeat(64), { subjectId: credential.subjectId, revokedAt: null }],
+    ['b'.repeat(64), { subjectId: credential.subjectId, revokedAt: null }],
+  ])
+  let events = duplicateVersion ? [{
+    event_id: '00000000-0000-4000-8000-000000000001',
+    event_type: 'SELF_PASSWORD_CHANGED_V1',
+    subject_id: credential.subjectId,
+    actor_subject_id: credential.subjectId,
+    actor_kind: 'SELF',
+    occurred_at: '2026-08-29T00:00:00.000Z',
+    resulting_credential_version: duplicateVersion,
+    revoked_session_count: 0,
+  }] : []
+  let transactionSnapshot
+
+  const snapshot = () => ({
+    credential: structuredClone(credential),
+    sessions: [...sessions.entries()].map(([key, value]) => [key, structuredClone(value)]),
+    events: structuredClone(events),
+  })
+  const restore = (value) => {
+    credential = value.credential
+    sessions = new Map(value.sessions)
+    events = value.events
+  }
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      statements.push({ sql: normalized, parameters })
+      if (normalized === 'BEGIN') {
+        transactionSnapshot = snapshot()
+        return { rows: [] }
+      }
+      if (normalized === 'COMMIT') {
+        transactionSnapshot = undefined
+        return { rows: [] }
+      }
+      if (normalized === 'ROLLBACK') {
+        if (transactionSnapshot) restore(transactionSnapshot)
+        transactionSnapshot = undefined
+        return { rows: [] }
+      }
+      if (normalized.startsWith('SELECT subject_id, version FROM poc_local_credentials')) {
+        return { rows: credential.subjectId === parameters[0] ? [{
+          subject_id: credential.subjectId,
+          version: credential.version,
+        }] : [] }
+      }
+      if (normalized.startsWith('UPDATE poc_local_credentials SET password_hash')) {
+        if (credential.subjectId !== parameters[0] || credential.version !== parameters[1]
+          || !credential.loginEnabled) return { rows: [] }
+        credential.passwordHash = parameters[2]
+        credential.mustChangePassword = false
+        credential.failedAttempts = 0
+        credential.lockedUntil = null
+        credential.version += 1
+        return { rows: [{ version: credential.version }] }
+      }
+      if (normalized.startsWith('UPDATE poc_local_credentials SET username_normalized')) {
+        credential.usernameNormalized = parameters[2]
+        credential.passwordHash = parameters[3] ?? credential.passwordHash
+        credential.loginEnabled = parameters[4]
+        credential.mustChangePassword = parameters[5]
+        credential.version += 1
+        return { rows: [{ version: credential.version }] }
+      }
+      if (normalized.startsWith('UPDATE poc_local_sessions')) {
+        if (failAt === 'session') throw new Error('synthetic session failure')
+        const rows = []
+        for (const [tokenHash, session] of sessions) {
+          if (session.subjectId === parameters[0] && !session.revokedAt) {
+            session.revokedAt = '2026-08-29T02:00:00.000Z'
+            rows.push({ token_hash: tokenHash })
+          }
+        }
+        return { rows }
+      }
+      if (normalized.startsWith('INSERT INTO poc_local_security_events')) {
+        if (failAt === 'event') throw new Error('synthetic event failure')
+        if (events.some((event) => (
+          event.event_type === 'SELF_PASSWORD_CHANGED_V1'
+          && event.subject_id === parameters[1]
+          && event.resulting_credential_version === parameters[2]
+        ))) {
+          throw Object.assign(new Error('synthetic duplicate event'), { code: '23505' })
+        }
+        const event = {
+          event_id: parameters[0],
+          event_type: 'SELF_PASSWORD_CHANGED_V1',
+          subject_id: parameters[1],
+          actor_subject_id: parameters[1],
+          actor_kind: 'SELF',
+          occurred_at: '2026-08-29T02:00:00.000Z',
+          resulting_credential_version: parameters[2],
+          revoked_session_count: parameters[3],
+        }
+        events.push(event)
+        return { rows: [{ event_id: event.event_id, occurred_at: event.occurred_at }] }
+      }
+      throw new Error(`Unexpected credential security SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  return {
+    pool: {
+      async query(sql, parameters = []) {
+        statements.push({ sql: String(sql).replace(/\s+/g, ' ').trim(), parameters })
+        return { rows: [] }
+      },
+      async connect() { return client },
+    },
+    statements,
+    snapshot,
+  }
+}
+
 test('represents the same fresh and existing PostgreSQL change-history schema contract', async () => {
   const database = createDatabaseDouble()
   const store = createPocStateStore({ databasePool: database.pool })
@@ -227,6 +357,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const startupSql = database.statements.map((entry) => entry.sql).join('\n')
   const initSql = readFileSync(new URL('../deploy/poc/postgres-init/001-poc-state.sql', import.meta.url), 'utf8')
   const knowledgeInitSql = readFileSync(new URL('../deploy/poc/postgres-init/002-poc-knowledge-ingestion.sql', import.meta.url), 'utf8')
+  const securityInitSql = readFileSync(new URL('../deploy/poc/postgres-init/004-poc-local-security-events.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -234,6 +365,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_change_history_cr_link_events',
     'poc_local_credentials',
     'poc_local_sessions',
+    'poc_local_security_events',
     'poc_chat_sessions',
     'poc_chat_messages',
     'poc_user_table_grants',
@@ -241,10 +373,12 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_knowledge_source_rows',
   ]) {
     assert.match(startupSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
-    assert.match(`${initSql}\n${knowledgeInitSql}`, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+    assert.match(`${initSql}\n${knowledgeInitSql}\n${securityInitSql}`, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
   }
   assert.match(knowledgeInitSql, /^BEGIN;/)
   assert.match(knowledgeInitSql, /COMMIT;\s*$/)
+  assert.match(securityInitSql, /^BEGIN;/)
+  assert.match(securityInitSql, /COMMIT;\s*$/)
   for (const contract of [
     'PRIMARY KEY (source_identity_hash, topic_contract, source_partition)',
     'UNIQUE (source_identity_hash, source_event_identity, deterministic_ordinal)',
@@ -273,6 +407,48 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     assert.doesNotMatch(credentialTable, /session_id|owner_subject_id/)
     assert.match(chatSessionTable, /UNIQUE \(session_id, owner_subject_id\)/)
   }
+  const normalizedDdl = (value) => value.replace(/;/g, '').replace(/\s+/g, ' ').trim()
+  const initEventTable = securityInitSql.slice(
+    securityInitSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events'),
+    securityInitSql.indexOf('CREATE OR REPLACE FUNCTION poc_reject_local_security_event_mutation'),
+  )
+  const runtimeSecurityStart = startupSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events')
+  const runtimeSecurityDdl = startupSql.slice(
+    runtimeSecurityStart,
+    startupSql.indexOf('\nBEGIN', runtimeSecurityStart),
+  )
+  const initSecurityDdl = securityInitSql.slice(
+    securityInitSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events'),
+    securityInitSql.indexOf('INSERT INTO poc_state'),
+  )
+  assert.equal(normalizedDdl(runtimeSecurityDdl), normalizedDdl(initSecurityDdl))
+  for (const contract of [
+    "event_type = 'SELF_PASSWORD_CHANGED_V1'",
+    "actor_kind = 'SELF' AND actor_subject_id = subject_id",
+    'resulting_credential_version bigint NOT NULL',
+    'revoked_session_count bigint NOT NULL',
+    'DEFAULT clock_timestamp()',
+    'UNIQUE (event_type, subject_id, resulting_credential_version)',
+    'BEFORE UPDATE OR DELETE ON poc_local_security_events',
+    'BEFORE UPDATE OR DELETE ON poc_state',
+    "OLD.scope LIKE 'product-owned-schema-contract-v%'",
+    "NEW.scope LIKE 'product-owned-schema-contract-v%'",
+    "IF TG_OP = 'DELETE' THEN RETURN OLD",
+    'RETURN NEW',
+  ]) {
+    assert.ok(normalizedDdl(startupSql).includes(normalizedDdl(contract)), contract)
+    assert.ok(normalizedDdl(securityInitSql).includes(normalizedDdl(contract)), contract)
+  }
+  const eventColumns = [...initEventTable.matchAll(/^\s+([a-z_]+) (?:uuid|text|timestamptz|bigint)/gm)]
+    .map((match) => match[1])
+  assert.deepEqual(eventColumns, [
+    'event_id', 'event_type', 'subject_id', 'actor_subject_id', 'actor_kind',
+    'occurred_at', 'resulting_credential_version', 'revoked_session_count',
+  ])
+  assert.equal(eventColumns.some((column) => (
+    /json|username|password|hash|token|request|ip|user_agent/i.test(column)
+  )), false)
+  assert.doesNotMatch(initSql, /poc_local_security_events/)
 })
 
 test('persists immutable bounded Chat turns by subject and fences favorite/archive ownership', async () => {
@@ -1067,6 +1243,83 @@ test('password reset atomically revokes all sessions', async () => {
   assert.equal(res.revokedSessionCount, 2)
   assert.equal((await store.readLocalSession('a'.repeat(64))).revokedAt, '2026-08-13T01:00:00.000Z')
   assert.equal((await store.readLocalSession('b'.repeat(64))).revokedAt, '2026-08-13T01:00:00.000Z')
+})
+
+test('self password change CAS-updates the credential, revokes sessions and inserts one allowlisted event', async () => {
+  const database = createCredentialSecurityDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const passwordHash = '$argon2id$v=19$m=16,t=2,p=1$new$hash'
+  const result = await store.changeOwnLocalPassword({
+    subjectId: 'synthetic-subject-a',
+    expectedVersion: 1,
+    passwordHash,
+  })
+
+  assert.deepEqual(result, { credentialVersion: 2, revokedSessionCount: 2 })
+  const state = database.snapshot()
+  assert.equal(state.credential.passwordHash, passwordHash)
+  assert.equal(state.credential.version, 2)
+  assert.equal(state.credential.mustChangePassword, false)
+  assert.equal(state.credential.failedAttempts, 0)
+  assert.equal(state.credential.lockedUntil, null)
+  assert.ok(state.sessions.every(([, session]) => session.revokedAt !== null))
+  assert.equal(state.events.length, 1)
+  assert.deepEqual(Object.keys(state.events[0]).sort(), [
+    'actor_kind', 'actor_subject_id', 'event_id', 'event_type', 'occurred_at',
+    'resulting_credential_version', 'revoked_session_count', 'subject_id',
+  ])
+  assert.equal(state.events[0].subject_id, 'synthetic-subject-a')
+  assert.equal(state.events[0].actor_subject_id, 'synthetic-subject-a')
+  assert.equal(state.events[0].actor_kind, 'SELF')
+  assert.equal(state.events[0].event_type, 'SELF_PASSWORD_CHANGED_V1')
+  const transaction = database.statements.slice(-6)
+  assert.equal(transaction[0].sql, 'BEGIN')
+  assert.match(transaction[1].sql, /FOR UPDATE$/)
+  assert.match(transaction[2].sql, /WHERE subject_id = \$1 AND version = \$2 AND login_enabled/)
+  assert.match(transaction[3].sql, /^UPDATE poc_local_sessions/)
+  assert.match(transaction[4].sql, /^INSERT INTO poc_local_security_events/)
+  assert.equal(transaction[4].parameters.includes(passwordHash), false)
+  assert.equal(transaction[5].sql, 'COMMIT')
+})
+
+test('self password change rolls back stale, session, event and duplicate-event failures', async () => {
+  const scenarios = [
+    { expectedVersion: 2, error: (value) => value.code === 'CREDENTIAL_VERSION_STALE' },
+    { failAt: 'session', expectedVersion: 1, error: /synthetic session failure/ },
+    { failAt: 'event', expectedVersion: 1, error: /synthetic event failure/ },
+    { duplicateVersion: 2, expectedVersion: 1, error: (value) => value.code === '23505' },
+  ]
+  for (const scenario of scenarios) {
+    const database = createCredentialSecurityDatabaseDouble(scenario)
+    const before = database.snapshot()
+    const store = createPocStateStore({ databasePool: database.pool })
+    await assert.rejects(store.changeOwnLocalPassword({
+      subjectId: 'synthetic-subject-a',
+      expectedVersion: scenario.expectedVersion,
+      passwordHash: '$argon2id$v=19$m=16,t=2,p=1$new$hash',
+    }), scenario.error)
+    assert.deepEqual(database.snapshot(), before)
+    assert.equal(database.statements.at(-1).sql, 'ROLLBACK')
+  }
+})
+
+test('admin credential reset remains separate and emits no SELF password event', async () => {
+  const database = createCredentialSecurityDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const result = await store.administerLocalCredential({
+    subjectId: 'synthetic-subject-a',
+    expectedVersion: 1,
+    usernameNormalized: 'synthetic-a',
+    passwordHash: '$argon2id$v=19$m=16,t=2,p=1$admin$hash',
+    loginEnabled: true,
+    mustChangePassword: true,
+    changedAt: '2026-08-29T03:00:00.000Z',
+  })
+  assert.deepEqual(result, { credentialVersion: 2, revokedSessionCount: 2 })
+  assert.deepEqual(database.snapshot().events, [])
+  assert.equal(database.statements.some(({ sql }) => sql.startsWith(
+    'INSERT INTO poc_local_security_events',
+  )), false)
 })
 
 test('reads a local credential by its exact subject without username discovery', async () => {

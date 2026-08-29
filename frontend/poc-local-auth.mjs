@@ -268,7 +268,7 @@ export function createPocLocalAuthenticator({
   const requiredMethods = [
     'readLocalCredential', 'readLocalCredentialForSubject', 'recordLocalLoginFailure', 'recordLocalLoginSuccess',
     'createLocalSession', 'readLocalSession', 'revokeLocalSession',
-    'administerLocalCredential',
+    'changeOwnLocalPassword',
   ]
   if (!stateStore || requiredMethods.some((method) => typeof stateStore[method] !== 'function')) {
     throw new Error('Local authentication storage is unavailable.')
@@ -412,14 +412,10 @@ export function createPocLocalAuthenticator({
     const passwordHash = await hashPocPassword(newPassword, { salt: randomBytes(16) })
     let result
     try {
-      result = await stateStore.administerLocalCredential({
+      result = await stateStore.changeOwnLocalPassword({
         subjectId: credential.subjectId,
         expectedVersion: credential.version,
-        usernameNormalized: credential.usernameNormalized,
         passwordHash,
-        loginEnabled: credential.loginEnabled,
-        mustChangePassword: false,
-        changedAt: timestamp(now).toISOString(),
       })
     } catch (error) {
       if (error?.code === 'CREDENTIAL_VERSION_STALE') {

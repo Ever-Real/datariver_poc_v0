@@ -16,8 +16,7 @@ import {
 } from './poc-k9-metadata-collection.mjs'
 import {
   POC_POSTGRES_SCHEMA_INTEGRITY_FLAG,
-  inspectPocPostgresOwnedSchema,
-  recordPocPostgresOwnedSchemaReceipt,
+  convergePocPostgresOwnedSchema,
 } from './poc-postgres-schema-integrity.mjs'
 
 const { Pool } = pg
@@ -347,6 +346,90 @@ const LOCAL_AUTH_SCHEMA = [
   `,
 ]
 
+const LOCAL_SECURITY_EVENT_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_local_security_events (
+      event_id uuid PRIMARY KEY,
+      event_type text NOT NULL,
+      subject_id text NOT NULL,
+      actor_subject_id text NOT NULL,
+      actor_kind text NOT NULL,
+      occurred_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      resulting_credential_version bigint NOT NULL,
+      revoked_session_count bigint NOT NULL,
+      CONSTRAINT uq_poc_local_security_event_subject_version
+        UNIQUE (event_type, subject_id, resulting_credential_version),
+      CONSTRAINT ck_poc_local_security_event_type
+        CHECK (event_type = 'SELF_PASSWORD_CHANGED_V1'),
+      CONSTRAINT ck_poc_local_security_event_actor
+        CHECK (actor_kind = 'SELF' AND actor_subject_id = subject_id),
+      CONSTRAINT ck_poc_local_security_event_subject
+        CHECK (char_length(subject_id) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_local_security_event_version
+        CHECK (resulting_credential_version > 0),
+      CONSTRAINT ck_poc_local_security_event_session_count
+        CHECK (revoked_session_count >= 0)
+    )
+  `,
+  `
+    CREATE OR REPLACE FUNCTION poc_reject_local_security_event_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'POC local security events are append-only';
+    END
+    $function$
+  `,
+  `
+    DO $block$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trg_poc_local_security_events_append_only'
+          AND tgrelid = 'poc_local_security_events'::regclass
+      ) THEN
+        CREATE TRIGGER trg_poc_local_security_events_append_only
+          BEFORE UPDATE OR DELETE ON poc_local_security_events
+          FOR EACH ROW EXECUTE FUNCTION poc_reject_local_security_event_mutation();
+      END IF;
+    END
+    $block$
+  `,
+  `
+    CREATE OR REPLACE FUNCTION poc_reject_schema_receipt_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF OLD.scope LIKE 'product-owned-schema-contract-v%'
+        OR (TG_OP = 'UPDATE' AND NEW.scope LIKE 'product-owned-schema-contract-v%') THEN
+        RAISE EXCEPTION 'POC Product schema receipts are immutable';
+      END IF;
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `,
+  `
+    DO $block$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trg_poc_state_schema_receipts_immutable'
+          AND tgrelid = 'poc_state'::regclass
+      ) THEN
+        CREATE TRIGGER trg_poc_state_schema_receipts_immutable
+          BEFORE UPDATE OR DELETE ON poc_state
+          FOR EACH ROW EXECUTE FUNCTION poc_reject_schema_receipt_mutation();
+      END IF;
+    END
+    $block$
+  `,
+]
+
 const CHAT_HISTORY_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS poc_chat_sessions (
@@ -567,7 +650,7 @@ const K9_MANAGED_GRAPH_SCHEMA = [
   `
 ]
 
-async function applyPocPostgresSchema(client) {
+async function applyPocPostgresV1Schema(client) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS poc_state (
       scope text PRIMARY KEY,
@@ -599,6 +682,11 @@ async function applyPocPostgresSchema(client) {
   for (const statement of K9_MANAGED_GRAPH_SCHEMA) await client.query(statement)
 }
 
+async function applyPocPostgresSchema(client) {
+  await applyPocPostgresV1Schema(client)
+  for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await client.query(statement)
+}
+
 async function initializePocPostgresSchema(pool, integrityRequired) {
   if (!integrityRequired) {
     await applyPocPostgresSchema(pool)
@@ -606,30 +694,13 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
   }
   const client = await pool.connect()
   try {
-    await client.query('BEGIN')
-    const before = await inspectPocPostgresOwnedSchema(client)
-    if (['FRESH', 'KNOWN_OLDER_MIGRATABLE'].includes(before.state)) {
-      await applyPocPostgresSchema(client)
-    }
-    if (before.state !== 'CURRENT') {
-      const after = await inspectPocPostgresOwnedSchema(client)
-      if (after.state !== 'CURRENT_UNVERSIONED') {
-        throw Object.assign(new Error('Product-owned PostgreSQL schema migration was incomplete.'), {
-          code: 'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
-        })
-      }
-      await recordPocPostgresOwnedSchemaReceipt(client)
-      const recorded = await inspectPocPostgresOwnedSchema(client)
-      if (recorded.state !== 'CURRENT') {
-        throw Object.assign(new Error('Product-owned PostgreSQL schema receipt was not durable.'), {
-          code: 'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
-        })
-      }
-    }
-    await client.query('COMMIT')
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined)
-    throw error
+    await convergePocPostgresOwnedSchema(client, {
+      applyFreshSchema: applyPocPostgresSchema,
+      applyKnownOlderSchema: applyPocPostgresV1Schema,
+      applyV2Schema: async (migrationClient) => {
+        for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await migrationClient.query(statement)
+      },
+    })
   } finally {
     client.release()
   }
@@ -655,6 +726,7 @@ export function createPocStateStore({ databasePool } = {}) {
   const memoryCredentialsBySubject = new Map()
   const memoryCredentialSubjectByUsername = new Map()
   const memorySessions = new Map()
+  const memoryLocalSecurityEvents = []
   const memoryUserTableGrants = new Map()
   const memoryChatSessions = new Map()
   const memoryChatMessages = new Map()
@@ -1276,6 +1348,7 @@ export function createPocStateStore({ databasePool } = {}) {
       'poc_change_history_cr_link_events',
       'poc_local_credentials',
       'poc_local_sessions',
+      'poc_local_security_events',
       'poc_user_table_grants',
       'poc_knowledge_ingestion_jobs',
       'poc_knowledge_source_rows',
@@ -1305,6 +1378,110 @@ export function createPocStateStore({ databasePool } = {}) {
       active_session_count: Number(activeSessions.rows[0]?.row_count || 0),
       k9_runs: k9Runs.rows,
     }
+  }
+
+  async function changeOwnLocalPassword({
+    subjectId,
+    expectedVersion,
+    passwordHash,
+  }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requirePositiveInteger(expectedVersion, 'expectedVersion')
+    if (typeof passwordHash !== 'string' || passwordHash.length > 512
+      || !passwordHash.startsWith('$argon2id$v=19$')) {
+      throw new Error('passwordHash must be a bounded Argon2id encoded hash.')
+    }
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const selected = await client.query(`
+          SELECT subject_id, version
+          FROM poc_local_credentials
+          WHERE subject_id = $1
+          FOR UPDATE
+        `, [subjectId])
+        if (Number(selected.rows[0]?.version ?? 0) !== expectedVersion) {
+          throw credentialVersionConflict()
+        }
+        const updated = await client.query(`
+          UPDATE poc_local_credentials
+          SET password_hash = $3,
+            must_change_password = false,
+            failed_attempts = 0,
+            locked_until = NULL,
+            version = version + 1,
+            updated_at = clock_timestamp()
+          WHERE subject_id = $1 AND version = $2 AND login_enabled
+          RETURNING version
+        `, [subjectId, expectedVersion, passwordHash])
+        if (updated.rows.length !== 1) throw credentialVersionConflict()
+        const credentialVersion = Number(updated.rows[0].version)
+        const revoked = await client.query(`
+          UPDATE poc_local_sessions
+          SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+          WHERE subject_id = $1 AND revoked_at IS NULL
+          RETURNING token_hash
+        `, [subjectId])
+        const event = await client.query(`
+          INSERT INTO poc_local_security_events (
+            event_id, event_type, subject_id, actor_subject_id, actor_kind,
+            resulting_credential_version, revoked_session_count
+          ) VALUES ($1, 'SELF_PASSWORD_CHANGED_V1', $2, $2, 'SELF', $3, $4)
+          RETURNING event_id, occurred_at
+        `, [randomUUID(), subjectId, credentialVersion, revoked.rows.length])
+        if (event.rows.length !== 1) {
+          throw new Error('The local password security receipt was not inserted.')
+        }
+        await client.query('COMMIT')
+        return {
+          credentialVersion,
+          revokedSessionCount: revoked.rows.length,
+        }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const current = memoryCredentialsBySubject.get(subjectId)
+    if (!current || current.version !== expectedVersion || !current.loginEnabled) {
+      throw credentialVersionConflict()
+    }
+    const credentialVersion = current.version + 1
+    if (memoryLocalSecurityEvents.some((event) => (
+      event.eventType === 'SELF_PASSWORD_CHANGED_V1'
+      && event.subjectId === subjectId
+      && event.resultingCredentialVersion === credentialVersion
+    ))) {
+      throw new Error('The local password security receipt already exists.')
+    }
+    current.passwordHash = passwordHash
+    current.mustChangePassword = false
+    current.failedAttempts = 0
+    current.lockedUntil = null
+    current.version = credentialVersion
+    let revokedSessionCount = 0
+    const occurredAt = new Date().toISOString()
+    for (const session of memorySessions.values()) {
+      if (session.subjectId === subjectId && !session.revokedAt) {
+        session.revokedAt = occurredAt
+        revokedSessionCount += 1
+      }
+    }
+    memoryLocalSecurityEvents.push(Object.freeze({
+      eventId: randomUUID(),
+      eventType: 'SELF_PASSWORD_CHANGED_V1',
+      subjectId,
+      actorSubjectId: subjectId,
+      actorKind: 'SELF',
+      occurredAt,
+      resultingCredentialVersion: credentialVersion,
+      revokedSessionCount,
+    }))
+    return { credentialVersion, revokedSessionCount }
   }
 
   async function administerLocalCredential({
@@ -3252,6 +3429,7 @@ export function createPocStateStore({ databasePool } = {}) {
     disableLocalCredential,
     listLocalCredentialAdministration,
     inspectPrepDeploymentFootprint,
+    changeOwnLocalPassword,
     administerLocalCredential,
     revokeLocalSessionsForSubject,
     listUserTableGrants,

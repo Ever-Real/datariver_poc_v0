@@ -58,10 +58,19 @@ test('changes only the authenticated subject password without creating a session
     headers: { cookie: `datariver_poc_session=${first.token}` },
   })
   let sessionCreates = 0
+  let selfPasswordChanges = 0
   const createLocalSession = stateStore.createLocalSession
   stateStore.createLocalSession = async (input) => {
     sessionCreates += 1
     return createLocalSession(input)
+  }
+  const changeOwnLocalPassword = stateStore.changeOwnLocalPassword
+  stateStore.changeOwnLocalPassword = async (input) => {
+    selfPasswordChanges += 1
+    return changeOwnLocalPassword(input)
+  }
+  stateStore.administerLocalCredential = async () => {
+    assert.fail('self password change must not use the admin credential method')
   }
 
   const result = await authenticator.changePassword(authentication, {
@@ -72,6 +81,7 @@ test('changes only the authenticated subject password without creating a session
 
   assert.deepEqual(result, { revokedSessionCount: 2 })
   assert.equal(sessionCreates, 0)
+  assert.equal(selfPasswordChanges, 1)
   assert.equal(await verifyPocPassword(
     'replacement battery staple',
     (await stateStore.readLocalCredentialForSubject('subject-one')).passwordHash,
@@ -146,7 +156,7 @@ test('maps a stale credential CAS to a generic password-change conflict', async 
   const authentication = await fixture.authenticator.authenticate({
     headers: { cookie: `datariver_poc_session=${login.token}` },
   })
-  fixture.stateStore.administerLocalCredential = async () => {
+  fixture.stateStore.changeOwnLocalPassword = async () => {
     throw Object.assign(new Error('internal credential version detail'), {
       statusCode: 409,
       code: 'CREDENTIAL_VERSION_STALE',
