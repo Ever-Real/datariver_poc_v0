@@ -442,7 +442,10 @@ async def test_vector_reader_times_catalog_then_complete_scoring_phase(
     performance = _PerformanceObserver()
     original_cosine = BoundedCatalogVectorReader._cosine
 
-    def observed_cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    def observed_cosine(
+        left: tuple[float, ...],
+        right: tuple[float, ...],
+    ) -> float:
         performance.events.append("scoring")
         return original_cosine(left, right)
 
