@@ -54,6 +54,20 @@ const searchFieldLabels: Record<SearchField, string> = {
   SCHEMA: 'Schema', TABLE: 'Table', COLUMN: 'Column', TAG: 'Tag', TERM: 'Term', DESCRIPTION: 'Description',
 }
 
+const searchFieldSet = new Set<SearchField>(allSearchFields)
+
+export function catalogSearchFieldsFromLocation(href = window.location.href): SearchField[] {
+  const raw = new URL(href).searchParams.get('search_fields')
+  if (raw === null) return allSearchFields
+  const values = raw.split(',')
+  if (
+    values.length === 0
+    || values.some((value) => !searchFieldSet.has(value as SearchField))
+    || new Set(values).size !== values.length
+  ) return []
+  return values as SearchField[]
+}
+
 const emptyFilters: Filters = {
   assetType: '', platform: '', databaseName: '', schemaName: '', domain: '', classification: '', lifecycle: '', searchFields: allSearchFields,
 }
@@ -117,7 +131,10 @@ export function CatalogPage({
   })
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
-  const [filters, setFilters] = useState<Filters>(emptyFilters)
+  const [filters, setFilters] = useState<Filters>(() => ({
+    ...emptyFilters,
+    searchFields: catalogSearchFieldsFromLocation(),
+  }))
   const [error, setError] = useState<unknown>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)

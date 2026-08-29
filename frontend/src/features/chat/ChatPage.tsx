@@ -101,7 +101,6 @@ interface ChatViewMessage {
   route?: ChatRouteDecision
   workflow?: ChatWorkflowStep[]
   performance?: ChatRequestPerformance
-  discoveryQuery?: string
 }
 
 const workflowStages: ReadonlySet<ChatWorkflowProgressStep['stage']> = new Set([
@@ -335,7 +334,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const visibleDiscovery = visibleAssistant?.discovery
   const visiblePerformance = visibleAssistant?.performance
   const canExploreCatalog = Boolean(
-    visibleAssistant?.discoveryQuery
+    typeof visibleDiscovery?.catalog_search_query === 'string'
     && visibleDiscovery?.items.some((item) => canOpenCatalogEvidence(item)),
   )
   const displayedDiscovery = discoveryExpanded
@@ -567,7 +566,6 @@ export function ChatPage({ client }: { client: ApiClient }) {
             route: result.route,
             workflow: result.workflow,
             performance: result.performance,
-            discoveryQuery: text,
           }
           return message
         })
@@ -580,7 +578,6 @@ export function ChatPage({ client }: { client: ApiClient }) {
           route: result.route,
           workflow: result.workflow,
           performance: result.performance,
-          discoveryQuery: text,
         }]
       })
       await refreshSessions()
@@ -1037,15 +1034,23 @@ export function ChatPage({ client }: { client: ApiClient }) {
                         destination.searchParams.set('page', 'catalog')
                         destination.searchParams.set(
                           'q',
-                          visibleAssistant?.discoveryQuery?.slice(0, 500) ?? '',
+                          visibleDiscovery?.catalog_search_query ?? '',
                         )
+                        if (visibleDiscovery?.catalog_search_fields.length) {
+                          destination.searchParams.set(
+                            'search_fields',
+                            visibleDiscovery.catalog_search_fields.join(','),
+                          )
+                        } else {
+                          destination.searchParams.delete('search_fields')
+                        }
                         destination.searchParams.delete('catalogAsset')
                         window.history.pushState({}, '', destination)
                         window.dispatchEvent(new PopStateEvent('popstate'))
                       }}
                       type="button"
                     >
-                      같은 문구로 전체 카탈로그 검색
+                      같은 카탈로그 후보 범위 전체 보기
                     </button>
                   )}
                 </section>

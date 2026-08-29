@@ -435,6 +435,8 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
 
     assert result.items == (second, first)
     assert result.provider_invoked is True
+    assert result.catalog_search_scope.query == ""
+    assert result.catalog_search_scope.search_fields == ()
     assert index.seen_query == ""
     assert index.seen_limit == 8
 
@@ -470,6 +472,8 @@ async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> N
     )
 
     assert result.items == (matching,)
+    assert result.catalog_search_scope.query == "capital_project_ai_accelerator"
+    assert result.catalog_search_scope.search_fields == ("TABLE",)
     assert index.searches == [("capital_project_ai_accelerator", {"search_fields": "TABLE"})]
 
 

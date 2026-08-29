@@ -25,6 +25,7 @@ from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
     CatalogPage,
+    ChatCatalogSearchScope,
     ChatCompositionAudit,
     ChatConversationContextDraft,
     ChatConversationHistory,
@@ -1065,6 +1066,7 @@ class CapturingVectorCatalog:
         return ChatVectorSearchResult(
             items=(self.item,),
             provider_invoked=self.provider_invoked,
+            catalog_search_scope=ChatCatalogSearchScope(query=""),
         )
 
 
@@ -1207,6 +1209,42 @@ def test_chat_discovery_window_is_separate_and_globally_bounded() -> None:
     assert ChatService._discovery_limit(10) == MAXIMUM_CHAT_VECTOR_CANDIDATES
 
 
+def test_catalog_handoff_requires_a_canonical_query_and_catalog_evidence() -> None:
+    workspace_id = uuid4()
+    catalog = build_evidence_chunk(
+        workspace_id=workspace_id,
+        resource_id=uuid4(),
+        classification=Classification.INTERNAL,
+        system_id=None,
+        domain_id=None,
+        owner_department_id=None,
+        name="catalog asset",
+        description="authorized metadata",
+        source_locator="urn:li:dataset:catalog-asset",
+        source_version="v1",
+        effective_from=datetime.now(UTC),
+        extraction_method="CATALOG_PROJECTION_V2",
+    )
+    non_catalog = replace(catalog, source_type="GOVERNANCE_DOCUMENT")
+
+    assert ChatService._catalog_search_handoff_query(
+        scope=ChatCatalogSearchScope(query=""), evidence=(catalog,)
+    ) == ""
+    assert (
+        ChatService._catalog_search_handoff_query(
+            scope=ChatCatalogSearchScope(query="resolved_catalog", search_fields=("TABLE",)),
+            evidence=(non_catalog,),
+        )
+        is None
+    )
+    assert (
+        ChatService._catalog_search_handoff_query(
+            scope=ChatCatalogSearchScope(query="x" * 501), evidence=(catalog,)
+        )
+        is None
+    )
+
+
 async def test_vector_discovery_window_is_broader_than_bounded_answer_context() -> None:
     workspace_id = uuid4()
     first = asset(workspace_id)
@@ -1227,7 +1265,11 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
 
         async def search(self, **values: Any) -> ChatVectorSearchResult:
             self.limit = cast(int, values["limit"])
-            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+            return ChatVectorSearchResult(
+                items=candidates,
+                provider_invoked=False,
+                catalog_search_scope=ChatCatalogSearchScope(query=""),
+            )
 
     vector = CandidateWindow()
     composer = CapturingComposer()
@@ -1266,12 +1308,39 @@ async def test_vector_discovery_window_is_broader_than_bounded_answer_context() 
     assert exchange.discovery.retrieved_count == 8
     assert exchange.discovery.reranked_count == 0
     assert exchange.discovery.answer_context_count == 2
+    assert exchange.discovery.catalog_search_query == ""
+    assert exchange.discovery.catalog_search_fields == ()
     assert exchange.discovery.truncated is True
     assert exchange.discovery.total is None
     assert exchange.discovery.total_exact is False
     assert exchange.discovery.next_cursor is None
     assert tuple(item.rank for item in exchange.discovery.rankings) == tuple(range(1, 9))
     assert tuple(item.stage for item in exchange.workflow) == tuple(ChatWorkflowStage)
+
+
+async def test_general_catalog_handoff_reuses_the_exact_lexical_search_term() -> None:
+    workspace_id = uuid4()
+    index = FakeIndex(asset(workspace_id))
+    exchange = await chat_service(
+        catalog_index=index,
+        composer=SelectingComposer((0,)),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="현재 inspection_results 메타데이터를 설명해줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-general-catalog-handoff",
+        requested_mode=ChatRetrievalMode.GENERAL,
+    )
+
+    assert index.search_query == "inspection_results"
+    assert exchange.discovery is not None
+    assert exchange.discovery.catalog_search_query == index.search_query
+    assert exchange.discovery.catalog_search_fields == ()
 
 
 async def test_reranker_top_n_limits_answer_context_without_truncating_discovery() -> None:
@@ -1290,7 +1359,13 @@ async def test_reranker_top_n_limits_answer_context_without_truncating_discovery
     class CandidateWindow:
         async def search(self, **values: Any) -> ChatVectorSearchResult:
             del values
-            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+            return ChatVectorSearchResult(
+                items=candidates,
+                provider_invoked=False,
+                catalog_search_scope=ChatCatalogSearchScope(
+                    query="generic_candidate", search_fields=("TABLE",)
+                ),
+            )
 
     class TopTwoReranker:
         async def rerank(
@@ -1349,6 +1424,8 @@ async def test_reranker_top_n_limits_answer_context_without_truncating_discovery
     assert exchange.discovery.reranked_count == 2
     assert exchange.discovery.answer_context_count == 2
     assert exchange.discovery.returned_count == 8
+    assert exchange.discovery.catalog_search_query == "generic_candidate"
+    assert exchange.discovery.catalog_search_fields == ("TABLE",)
     assert [item.retrieval_method for item in exchange.discovery.rankings[:2]] == [
         "LOCAL_RERANKER_V1",
         "LOCAL_RERANKER_V1",
@@ -1377,7 +1454,11 @@ async def test_vector_discovery_is_omitted_when_an_uncited_candidate_drifts() ->
     class CandidateWindow:
         async def search(self, **values: Any) -> ChatVectorSearchResult:
             del values
-            return ChatVectorSearchResult(items=candidates, provider_invoked=False)
+            return ChatVectorSearchResult(
+                items=candidates,
+                provider_invoked=False,
+                catalog_search_scope=ChatCatalogSearchScope(query=""),
+            )
 
     details = {item.asset_id: item for item in candidates}
     details[candidates[-1].asset_id] = drifted

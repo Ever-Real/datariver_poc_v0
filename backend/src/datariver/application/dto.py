@@ -1800,15 +1800,26 @@ class ChatAuthorizedDiscovery:
     retrieved_count: int
     reranked_count: int
     answer_context_count: int
+    catalog_search_query: str | None = None
+    catalog_search_fields: tuple[str, ...] = ()
     total: int | None = None
     total_exact: bool = False
     next_cursor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
+class ChatCatalogSearchScope:
+    """Exact canonical Catalog candidate query used before Chat ranking."""
+
+    query: str
+    search_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ChatVectorSearchResult:
     items: tuple[CatalogAssetIndex, ...]
     provider_invoked: bool
+    catalog_search_scope: ChatCatalogSearchScope
 
 
 @dataclass(frozen=True, slots=True)

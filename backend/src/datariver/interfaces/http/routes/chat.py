@@ -684,6 +684,8 @@ def _discovery_response(
         retrieved_count=discovery.retrieved_count,
         reranked_count=discovery.reranked_count,
         answer_context_count=discovery.answer_context_count,
+        catalog_search_query=discovery.catalog_search_query,
+        catalog_search_fields=list(discovery.catalog_search_fields),
         total=discovery.total,
         total_exact=discovery.total_exact,
         next_cursor=discovery.next_cursor,

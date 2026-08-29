@@ -4,7 +4,12 @@ import math
 import re
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
-from datariver.application.dto import CatalogAssetIndex, CatalogPage, ChatVectorSearchResult
+from datariver.application.dto import (
+    CatalogAssetIndex,
+    CatalogPage,
+    ChatCatalogSearchScope,
+    ChatVectorSearchResult,
+)
 from datariver.application.errors import ChatExternalAdapterInvocationError
 from datariver.application.knowledge_pipeline_ports import KnowledgeEmbeddingProvider
 from datariver.application.ports import CatalogIndexReader, ChatVectorCatalogReader
@@ -46,7 +51,7 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             max(limit, 8),
             MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
-        page = await self._candidate_page(
+        page, catalog_search_scope = await self._candidate_page(
             subject=subject,
             access=access,
             question=question,
@@ -56,7 +61,11 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         # even if an implementation returns an oversized page.
         candidates = tuple(page.items[:candidate_limit])
         if not candidates:
-            return ChatVectorSearchResult(items=(), provider_invoked=False)
+            return ChatVectorSearchResult(
+                items=(),
+                provider_invoked=False,
+                catalog_search_scope=catalog_search_scope,
+            )
         pages = (
             PdfPage.create(page_number=1, text=question),
             *(
@@ -95,6 +104,7 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         return ChatVectorSearchResult(
             items=tuple(candidate for _score, candidate in scored[:limit]),
             provider_invoked=True,
+            catalog_search_scope=catalog_search_scope,
         )
 
     async def _candidate_page(
@@ -104,26 +114,34 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         access: ClassificationAccessSnapshot,
         question: str,
         candidate_limit: int,
-    ) -> CatalogPage:
+    ) -> tuple[CatalogPage, ChatCatalogSearchScope]:
         """Prefer a bounded catalog-name window without broadening the access scope."""
 
         anchor = self._catalog_name_anchor(question)
         if anchor:
-            return await self._catalog_index.search(
+            scope = ChatCatalogSearchScope(query=anchor, search_fields=("TABLE",))
+            return (
+                await self._catalog_index.search(
+                    subject=subject,
+                    access=access,
+                    query=scope.query,
+                    filters={"search_fields": ",".join(scope.search_fields)},
+                    cursor=None,
+                    limit=candidate_limit,
+                ),
+                scope,
+            )
+        scope = ChatCatalogSearchScope(query="")
+        return (
+            await self._catalog_index.search(
                 subject=subject,
                 access=access,
-                query=anchor,
-                filters={"search_fields": "TABLE"},
+                query=scope.query,
+                filters={},
                 cursor=None,
                 limit=candidate_limit,
-            )
-        return await self._catalog_index.search(
-            subject=subject,
-            access=access,
-            query="",
-            filters={},
-            cursor=None,
-            limit=candidate_limit,
+            ),
+            scope,
         )
 
     @staticmethod

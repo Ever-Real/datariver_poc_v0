@@ -19,6 +19,7 @@ from datariver.application.classification_access import (
 from datariver.application.dto import (
     CatalogAssetIndex,
     ChatAuthorizedDiscovery,
+    ChatCatalogSearchScope,
     ChatCompositionAudit,
     ChatConversationContextDraft,
     ChatConversationHistory,
@@ -619,7 +620,7 @@ class ChatService:
                     stage=ChatWorkflowStage.RETRIEVAL,
                     detail_code="RETRIEVAL_IN_PROGRESS",
                 )
-                evidence, retrieval_stages, graph_scope = await self._retrieve(
+                retrieval = await self._retrieve(
                     route=route,
                     workspace_id=workspace_id,
                     subject=subject,
@@ -633,6 +634,7 @@ class ChatService:
                     parent_resource_id=session_id or workspace_id,
                     requested_graph_id=requested_graph_id,
                 )
+                evidence, retrieval_stages, graph_scope, catalog_search_scope = retrieval
                 external_stages.extend(retrieval_stages)
             except ChatExternalAdapterInvocationError as error:
                 external_stages.append(error.stage)
@@ -726,6 +728,10 @@ class ChatService:
                         reranked_count if reranker_invoked else len(ranked_evidence),
                         maximum_evidence,
                     )
+                    catalog_search_query = self._catalog_search_handoff_query(
+                        scope=catalog_search_scope,
+                        evidence=ranked_evidence,
+                    )
                     discovery = ChatAuthorizedDiscovery(
                         items=ranked_evidence,
                         rankings=rankings,
@@ -734,6 +740,13 @@ class ChatService:
                         retrieved_count=len(evidence),
                         reranked_count=reranked_count,
                         answer_context_count=answer_context_count,
+                        catalog_search_query=catalog_search_query,
+                        catalog_search_fields=(
+                            catalog_search_scope.search_fields
+                            if catalog_search_scope is not None
+                            and catalog_search_query is not None
+                            else ()
+                        ),
                         truncated=(
                             len(ranked_evidence) < len(evidence) or len(evidence) >= discovery_limit
                         ),
@@ -1242,6 +1255,7 @@ class ChatService:
         tuple[ChatEvidence, ...],
         tuple[str, ...],
         KnowledgeGraphChatScope | None,
+        ChatCatalogSearchScope | None,
     ]:
         discovery_limit = self._discovery_limit(maximum_evidence)
         if route.selected_mode is ChatRetrievalMode.GRAPH:
@@ -1256,8 +1270,9 @@ class ChatService:
                 parent_resource_id=parent_resource_id,
                 requested_graph_id=requested_graph_id,
             )
-            return evidence, (), scope
+            return evidence, (), scope, None
         retrieval_stages: tuple[str, ...] = ()
+        catalog_search_scope: ChatCatalogSearchScope | None = None
         if route.selected_mode is ChatRetrievalMode.VECTOR:
             catalog_items: Sequence[CatalogAssetIndex] = ()
             governance_items: tuple[ChatEvidence, ...] = ()
@@ -1269,6 +1284,7 @@ class ChatService:
                     limit=discovery_limit,
                 )
                 catalog_items = vector_result.items
+                catalog_search_scope = vector_result.catalog_search_scope
                 if vector_result.provider_invoked:
                     retrieval_stages = ("embedding",)
             if self._governance_evidence is not None:
@@ -1282,10 +1298,11 @@ class ChatService:
                 retrieval_stages = ("embedding",)
         else:
             governance_items = ()
+            catalog_search_scope = ChatCatalogSearchScope(query=self._search_term(question))
             page = await self._catalog_index.search(
                 subject=retrieval_subject,
                 access=access,
-                query=self._search_term(question),
+                query=catalog_search_scope.query,
                 filters={},
                 cursor=None,
                 limit=discovery_limit,
@@ -1312,6 +1329,7 @@ class ChatService:
             ),
             retrieval_stages,
             None,
+            catalog_search_scope,
         )
 
     @staticmethod
@@ -1322,6 +1340,20 @@ class ChatService:
             max(maximum_evidence * 4, _MINIMUM_CHAT_DISCOVERY_CANDIDATES),
             MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
+
+    @staticmethod
+    def _catalog_search_handoff_query(
+        *,
+        scope: ChatCatalogSearchScope | None,
+        evidence: Sequence[ChatEvidence],
+    ) -> str | None:
+        """Expose the exact canonical candidate query only when Catalog evidence is visible."""
+
+        if scope is None or len(scope.query) > 500:
+            return None
+        if not any(item.source_type == "CATALOG_ASSET" for item in evidence):
+            return None
+        return scope.query
 
     @staticmethod
     def _fuse_evidence(

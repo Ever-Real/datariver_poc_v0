@@ -51,6 +51,8 @@ def test_query_discovery_envelope_is_bounded_without_invented_cardinality() -> N
         retrieved_count=20,
         reranked_count=5,
         answer_context_count=5,
+        catalog_search_query="authorized assets",
+        catalog_search_fields=("TABLE",),
     )
 
     payload = _discovery_response(discovery).model_dump(mode="json")
@@ -61,6 +63,8 @@ def test_query_discovery_envelope_is_bounded_without_invented_cardinality() -> N
     assert payload["retrieved_count"] == 20
     assert payload["reranked_count"] == 5
     assert payload["answer_context_count"] == 5
+    assert payload["catalog_search_query"] == "authorized assets"
+    assert payload["catalog_search_fields"] == ["TABLE"]
     assert payload["total"] is None
     assert payload["total_exact"] is False
     assert payload["next_cursor"] is None

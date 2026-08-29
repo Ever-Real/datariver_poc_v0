@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type { CatalogAsset } from '../../api/types'
-import { CatalogPage } from './CatalogPage'
+import { CatalogPage, catalogSearchFieldsFromLocation } from './CatalogPage'
 
 const graphElements = {
   addClass: vi.fn().mockReturnThis(),
@@ -52,6 +52,19 @@ const asset: CatalogAsset = {
     { field: 'DESCRIPTION', text: 'yield evidence', matched_terms: ['yield'] },
   ],
 }
+
+it('parses only exact unique Catalog handoff search fields', () => {
+  expect(catalogSearchFieldsFromLocation('http://catalog.test/?search_fields=TABLE')).toEqual([
+    'TABLE',
+  ])
+  expect(catalogSearchFieldsFromLocation(
+    'http://catalog.test/?search_fields=TABLE,DESCRIPTION',
+  )).toEqual(['TABLE', 'DESCRIPTION'])
+  expect(catalogSearchFieldsFromLocation('http://catalog.test/?search_fields=TABLE,TABLE')).toEqual(
+    [],
+  )
+  expect(catalogSearchFieldsFromLocation('http://catalog.test/?search_fields=UNKNOWN')).toEqual([])
+})
 
 function clientWith(request: (path: string, options?: RequestOptions) => Promise<unknown>): ApiClient {
   return { request: vi.fn(request) } as unknown as ApiClient
@@ -231,6 +244,27 @@ describe('catalog workspace', () => {
     expect(screen.getAllByRole('button', { name: '이전' })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: '다음' })).toHaveLength(2)
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
+  })
+
+  it('applies a validated Chat handoff field scope to canonical Catalog requests', async () => {
+    const destination = new URL(window.location.href)
+    destination.search = '?page=catalog&q=inspection_results&search_fields=TABLE'
+    window.history.replaceState({}, '', destination)
+    const request = vi.fn(defaultRequest)
+
+    render(<TestCatalogPage
+      client={{ request } as unknown as ApiClient}
+      initialQuery="inspection_results"
+    />)
+
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      if (!String(path).startsWith('/catalog/assets?')) return false
+      const parameters = new URL(String(path), 'http://catalog.test').searchParams
+      return parameters.get('q') === 'inspection_results'
+        && parameters.get('search_fields') === 'TABLE'
+    })).toBe(true))
+    destination.searchParams.delete('search_fields')
+    window.history.replaceState({}, '', destination)
   })
 
   it('shows the latest quality score in search results and the Evidence panel', async () => {

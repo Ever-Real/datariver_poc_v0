@@ -3652,6 +3652,10 @@ class ChatAuthorizedDiscoveryResponse(BaseModel):
     retrieved_count: int = Field(ge=0, le=20)
     reranked_count: int = Field(ge=0, le=20)
     answer_context_count: int = Field(ge=0, le=10)
+    catalog_search_query: str | None = Field(default=None, max_length=500)
+    catalog_search_fields: list[
+        Literal["SCHEMA", "TABLE", "COLUMN", "TAG", "TERM", "DESCRIPTION"]
+    ] = Field(default_factory=list, max_length=6)
     total: int | None = Field(default=None, ge=0)
     total_exact: bool = False
     next_cursor: str | None = None
@@ -3668,6 +3672,14 @@ class ChatAuthorizedDiscoveryResponse(BaseModel):
             raise ValueError("reranked_count cannot exceed returned_count.")
         if self.answer_context_count > self.returned_count:
             raise ValueError("answer_context_count cannot exceed returned_count.")
+        if self.catalog_search_query is not None and not any(
+            item.source_type == "CATALOG_ASSET" for item in self.items
+        ):
+            raise ValueError("A Catalog handoff requires at least one Catalog discovery item.")
+        if self.catalog_search_query is None and self.catalog_search_fields:
+            raise ValueError("Catalog search fields require a Catalog handoff query.")
+        if len(self.catalog_search_fields) != len(set(self.catalog_search_fields)):
+            raise ValueError("Catalog search fields must be unique.")
         if self.total_exact and self.total is None:
             raise ValueError("An exact discovery total requires a provider-proven total.")
         if self.total is not None and self.total < self.returned_count:

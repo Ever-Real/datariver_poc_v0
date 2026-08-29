@@ -1420,6 +1420,8 @@ export interface ChatAuthorizedDiscovery {
   retrieved_count: number
   reranked_count: number
   answer_context_count: number
+  catalog_search_query: string | null
+  catalog_search_fields: Array<'SCHEMA' | 'TABLE' | 'COLUMN' | 'TAG' | 'TERM' | 'DESCRIPTION'>
   total: number | null
   total_exact: boolean
   next_cursor: string | null
