@@ -545,7 +545,7 @@ export function App() {
         />}
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'glossary' && <PocGlossaryPage client={client} />}
-        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
+        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onManageTableSystemMappings={hasPocPageAccess('admin') ? () => navigateAdmin('systems') : undefined} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'quality' && <QualityPage
           client={client}
           workspaceId={activeWorkspace}

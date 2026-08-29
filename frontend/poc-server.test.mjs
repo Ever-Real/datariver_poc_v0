@@ -2162,6 +2162,18 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   assert.equal(noExactMappingBody.total, 0)
   assert.equal(noExactMappingBody.empty_state_reason, 'EVENTS_EXIST_BUT_NOT_AUTHORIZED')
   assert.equal(noExactMappingBody.empty_state_detail, 'NO_EXACT_MAPPING')
+  const unrelatedExactMapping = structuredClone(baseProjection)
+  unrelatedExactMapping.mapping.bindings = [{
+    ...baseProjection.mapping.bindings[0],
+    table_identity: 'urn:li:dataset:(urn:li:dataPlatform:postgres,unrelated.db.public.table,PROD)'
+  }]
+  const unrelatedExactMappingBody = await (await run(
+    unrelatedExactMapping,
+    (origin) => fetch(`${origin}/api/v1/change-history/events`),
+  )).result.json()
+  assert.equal(unrelatedExactMappingBody.total, 0)
+  assert.equal(unrelatedExactMappingBody.empty_state_reason, 'EVENTS_EXIST_BUT_NOT_AUTHORIZED')
+  assert.equal(unrelatedExactMappingBody.empty_state_detail, 'NO_EXACT_MAPPING')
   const deniedDetail = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`))
   assert.equal(deniedDetail.result.status, 404)
   const viewerSummary = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))

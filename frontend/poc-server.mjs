@@ -1639,7 +1639,15 @@ async function changeHistoryApi(request, response, url, context) {
       && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary))
       && (!stage || row.current_stage === stage))
     const page = changeHistoryPage(filtered, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
-    const activeExactMappings = mappingDocument.bindings.filter((binding) => binding.active).length
+    const eventAssetIds = new Set(projection.events.map((event) => event.asset_urn))
+    const activeSystemIds = new Set(document.systems
+      .filter((system) => system.active)
+      .map((system) => system.system_id))
+    const activeEventExactMappings = mappingDocument.bindings.filter((binding) => (
+      binding.active
+      && eventAssetIds.has(binding.table_identity)
+      && activeSystemIds.has(binding.system_id)
+    )).length
     const emptyStateReason = filtered.length ? null
       : projection.events.length === 0 ? 'NO_LEDGER_EVENTS'
       : rows.length === 0 ? 'EVENTS_EXIST_BUT_NOT_AUTHORIZED'
@@ -1651,7 +1659,7 @@ async function changeHistoryApi(request, response, url, context) {
       total: filtered.length,
       empty_state_reason: emptyStateReason,
       empty_state_detail: emptyStateReason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED'
-        ? activeExactMappings === 0 ? 'NO_EXACT_MAPPING' : 'AUTHORIZATION_SCOPE'
+        ? activeEventExactMappings === 0 ? 'NO_EXACT_MAPPING' : 'AUTHORIZATION_SCOPE'
         : null,
     })
   }

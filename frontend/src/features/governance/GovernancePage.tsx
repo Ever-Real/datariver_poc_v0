@@ -221,11 +221,18 @@ export function GovernancePage({
   requesterName,
   requesterEmail,
   onNavigate,
+  onManageTableSystemMappings,
   onStepUp,
   onPasswordReauth,
   onEnroll,
   hardwareWebauthnEnabled,
-}: { client: ApiClient; requesterName: string; requesterEmail?: string; onNavigate?: (page: Page) => void } & AssuranceActions) {
+}: {
+  client: ApiClient
+  requesterName: string
+  requesterEmail?: string
+  onNavigate?: (page: Page) => void
+  onManageTableSystemMappings?: () => void
+} & AssuranceActions) {
   const initialStateGroup = changeRequestStateGroupFromLocation()
   const [stateFilter, setStateFilter] = useState<ChangeRequestFilter>(
     initialStateGroup ? `GROUP:${initialStateGroup}` : '',
@@ -932,6 +939,7 @@ export function GovernancePage({
             client={client}
             changeRequests={requests}
             dateRange={dateRange}
+            onManageTableSystemMappings={onManageTableSystemMappings}
           />
         </div>}
       </section>
@@ -969,6 +977,7 @@ export function GovernancePage({
         changeRequests={requests}
         selection={eventSelection}
         onClose={() => setEventSelection(undefined)}
+        onManageTableSystemMappings={onManageTableSystemMappings}
       />}
 
       <ChangeRequestDetailDialog
