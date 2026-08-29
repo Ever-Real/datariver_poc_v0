@@ -310,7 +310,7 @@ export function KnowledgeRegistry({
       size: 180,
       enableSorting: false,
       cell: ({ row }) => row.original.managed
-        ? `${row.original.refresh_mode ?? '—'} · ${row.original.last_result ?? 'NOT_RUN'}`
+        ? `${row.original.refresh_mode ?? '—'} · ${row.original.scheduler_status ?? 'UNAVAILABLE'}`
         : 'MANUAL',
     },
     {
@@ -658,19 +658,39 @@ export function KnowledgeRegistry({
                 {selected.managed && (
                   <>
                     <div>
-                      <dt className="text-[10px] font-black text-slate-500">Refresh Mode / Schedule</dt>
+                      <dt className="text-xs font-black text-slate-500">Scheduler Status</dt>
+                      <dd className="m-0">{selected.scheduler_status ?? 'UNAVAILABLE'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs font-black text-slate-500">Configured Mode / Schedule</dt>
                       <dd className="m-0">{selected.refresh_mode} / {selected.schedule ?? '—'}</dd>
                     </div>
                     <div>
-                      <dt className="text-[10px] font-black text-slate-500">Last Refresh</dt>
+                      <dt className="text-xs font-black text-slate-500">Schedule Timezone</dt>
+                      <dd className="m-0">{selected.schedule_timezone ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs font-black text-slate-500">Last Published Refresh</dt>
                       <dd className="m-0">{localTime(selected.last_refresh ?? undefined)}</dd>
                     </div>
                     <div>
-                      <dt className="text-[10px] font-black text-slate-500">Next Refresh</dt>
-                      <dd className="m-0">{localTime(selected.next_refresh ?? undefined)}</dd>
+                      <dt className="text-xs font-black text-slate-500">Next Scheduled Boundary</dt>
+                      <dd className="m-0">{localTime(selected.next_scheduled_run ?? undefined)}</dd>
                     </div>
                     <div>
-                      <dt className="text-[10px] font-black text-slate-500">Last Result</dt>
+                      <dt className="text-xs font-black text-slate-500">Last Successful Boundary</dt>
+                      <dd className="m-0">{localTime(selected.last_successful_schedule ?? undefined)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs font-black text-slate-500">Last Scheduler Attempt</dt>
+                      <dd className="m-0">
+                        {selected.scheduler_last_attempt
+                          ? `${selected.scheduler_last_attempt.status} · ${localTime(selected.scheduler_last_attempt.completed_at ?? undefined)} · ${selected.scheduler_last_attempt.trigger ?? '—'}${selected.scheduler_last_attempt.reason ? ` · ${selected.scheduler_last_attempt.reason}` : ''}`
+                          : 'NOT_RUN'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs font-black text-slate-500">Last Graph Result</dt>
                       <dd className="m-0">{selected.last_result ?? 'NOT_RUN'}</dd>
                     </div>
                     <div>

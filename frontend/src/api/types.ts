@@ -1167,7 +1167,20 @@ export interface KnowledgeAssetSummary {
   source?: string
   is_default?: boolean
   refresh_mode?: 'DAILY' | 'HOURLY' | 'MANUAL' | 'EVENT_DRIVEN'
-  schedule?: string
+  scheduler_status?: 'UNAVAILABLE' | 'DISABLED' | 'SCHEDULED' | 'ON_DEMAND' | 'RUNNING'
+  scheduler_requested?: boolean
+  scheduler_timer_enabled?: boolean
+  schedule?: string | null
+  schedule_timezone?: string | null
+  next_scheduled_run?: string | null
+  last_successful_schedule?: string | null
+  scheduler_last_attempt?: {
+    status: 'SUCCESS' | 'FAILURE'
+    scheduled_for: string | null
+    completed_at: string | null
+    trigger: 'scheduled' | 'manual' | null
+    reason?: string
+  } | null
   next_refresh?: string | null
   last_refresh?: string | null
   last_result?: string

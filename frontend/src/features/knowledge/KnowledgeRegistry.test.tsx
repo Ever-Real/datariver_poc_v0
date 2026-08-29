@@ -317,6 +317,18 @@ describe('KnowledgeRegistry', () => {
       semantic_index_status: 'READY',
       semantic_index_generation: '2'.repeat(64),
       refresh_mode: 'DAILY',
+      scheduler_status: 'SCHEDULED',
+      scheduler_requested: true,
+      scheduler_timer_enabled: true,
+      schedule: '02:00 Asia/Seoul',
+      schedule_timezone: 'Asia/Seoul',
+      next_scheduled_run: '2026-08-30T17:00:00.000Z',
+      last_successful_schedule: '2026-08-28T17:00:00.000Z',
+      scheduler_last_attempt: {
+        status: 'FAILURE', scheduled_for: '2026-08-29T17:00:00.000Z',
+        completed_at: '2026-08-29T17:01:00.000Z', trigger: 'scheduled',
+        reason: 'K9_METADATA_REFRESH_FAILED',
+      },
       last_result: 'SUCCESS',
       quality_metrics: {
         entity_count_by_type: { 'class.table': 2, 'class.tag': 1 },
@@ -374,6 +386,10 @@ describe('KnowledgeRegistry', () => {
     const drawer = await screen.findByRole('complementary', { name: 'Metadata Master Graph 지식 에셋 상세' })
     expect(within(drawer).getByText('Graph Model')).toBeInTheDocument()
     expect(within(drawer).getByText('v2')).toBeInTheDocument()
+    expect(within(drawer).getByText('Scheduler Status')).toBeInTheDocument()
+    expect(within(drawer).getByText('SCHEDULED')).toBeInTheDocument()
+    expect(within(drawer).getByText('Asia/Seoul')).toBeInTheDocument()
+    expect(within(drawer).getByText(/FAILURE.*scheduled.*K9_METADATA_REFRESH_FAILED/)).toBeInTheDocument()
     expect(within(drawer).getByText('class.table: 2 · class.tag: 1')).toBeInTheDocument()
     expect(within(drawer).getByText('rel.table_has_tag: 2')).toBeInTheDocument()
     expect(within(drawer).getByText('Nodes 1 / 0 / 2 · Edges 2 / 0 / 0')).toBeInTheDocument()
