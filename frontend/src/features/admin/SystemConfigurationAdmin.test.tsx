@@ -336,7 +336,8 @@ describe('SystemConfigurationAdmin', () => {
 
     renderAdmin(request)
 
-    const table = await screen.findByRole('table', { name: '검토된 Airflow DAG 목록' })
+    await screen.findByText('datariver_catalog_sync')
+    const table = screen.getByRole('table', { name: '검토된 Airflow DAG 목록' })
     expect(table).toHaveTextContent('datariver_catalog_sync')
     expect(table).toHaveTextContent('사용 가능')
     expect(table).toHaveTextContent('datariver_quality_dispatch')
