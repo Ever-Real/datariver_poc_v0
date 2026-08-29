@@ -117,7 +117,7 @@ export function AirflowDagStatusPanel({ api }: { api: AdminApi }) {
         fitContainer
       />
       <p className="callout m-0" role="note">
-        DAG 실행·중지 변경은 확인·감사·재시도 안전 계약이 마련되기 전까지 이 화면에서 수행하지 않습니다.
+        DAG 실행·중지 변경은 내구성 있는 멱등성·감사·보존·복구 계약이 승인되기 전까지 안전 보류로 차단됩니다.
       </p>
     </section>
   )

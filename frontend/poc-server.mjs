@@ -11412,10 +11412,13 @@ async function api(request, response, url, context) {
   if (request.method === 'POST' && airflowMatch) {
     const dagId = decodeURIComponent(airflowMatch[1])
     if (!allowedAirflowDags.has(dagId)) return problem(response, 400, 'DAG_NOT_ALLOWED', 'The DAG is not allowlisted for this POC.')
-    const body = await bodyJson(request)
-    const runId = `poc-${Date.now()}`
-    const upstream = await triggerAirflowDag(dagId, { dag_run_id: runId, conf: { poc: true, ...body.conf } })
-    return json(response, 202, { dag_id: dagId, run_id: runId, upstream: await upstream.json() })
+    if (url.search) return problem(response, 400, 'AIRFLOW_DAG_QUERY_INVALID', 'Airflow DAG triggers do not accept query parameters.')
+    return problem(
+      response,
+      503,
+      'AIRFLOW_TRIGGER_SAFETY_HOLD',
+      'Manual Airflow triggers remain disabled until a durable idempotency, audit, retention, and recovery contract is approved.',
+    )
   }
   const minioPart = url.pathname.match(/^\/poc-api\/minio\/uploads\/([a-zA-Z0-9_-]+)\/parts\/(\d+)$/)
   if (request.method === 'PUT' && minioPart) {

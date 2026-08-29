@@ -343,7 +343,8 @@ describe('SystemConfigurationAdmin', () => {
     expect(table).toHaveTextContent('datariver_quality_dispatch')
     expect(table).toHaveTextContent('찾을 수 없음')
     expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('API V2')
-    expect(screen.getByRole('note')).toHaveTextContent('확인·감사·재시도 안전 계약')
+    expect(screen.getByRole('note')).toHaveTextContent('멱등성·감사·보존·복구 계약')
+    expect(screen.queryByRole('button', { name: /DAG 실행/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'DAG 상태 새로고침' }))
     await waitFor(() => expect(inventoryCall).toBe(2))

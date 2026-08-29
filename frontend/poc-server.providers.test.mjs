@@ -1277,14 +1277,40 @@ test('routes general Korean conversation without probing DataHub as arbitrary as
   assert.equal(requests.filter((request) => request.path === '/api/graphql').length, graphqlBefore)
 })
 
-test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', async () => {
+test('holds reviewed Airflow DAG triggers without parsing conf or contacting the provider', async () => {
+  const airflowRequestsBefore = requests.filter((request) => request.path.includes('/airflow/')).length
   const dag = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ conf: { poc_run_id: 'run-1' } }),
+    body: JSON.stringify({ conf: { poc_run_id: 'run-1', provider_secret: 'must-not-leak' } }),
   })
-  assert.equal(dag.status, 202)
-  assert.ok(requests.some((request) => request.path.includes('/airflow/api/v1/dags/datariver_quality_dispatch/dagRuns')))
+  assert.equal(dag.status, 503)
+  assert.deepEqual(await dag.json(), {
+    code: 'AIRFLOW_TRIGGER_SAFETY_HOLD',
+    detail: 'Manual Airflow triggers remain disabled until a durable idempotency, audit, retention, and recovery contract is approved.',
+    status: 503,
+    title: 'POC integration request failed',
+  })
+  assert.equal(requests.filter((request) => request.path.includes('/airflow/')).length, airflowRequestsBefore)
+
+  const retry = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'airflow-reviewed-retry-1' },
+    body: '{"conf":',
+  })
+  assert.equal(retry.status, 503)
+  assert.equal((await retry.json()).code, 'AIRFLOW_TRIGGER_SAFETY_HOLD')
+  assert.equal(requests.filter((request) => request.path.includes('/airflow/')).length, airflowRequestsBefore)
+
+  const query = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs?conf=forbidden`, {
+    method: 'POST',
+  })
+  assert.equal(query.status, 400)
+  assert.equal((await query.json()).code, 'AIRFLOW_DAG_QUERY_INVALID')
+  assert.equal(requests.filter((request) => request.path.includes('/airflow/')).length, airflowRequestsBefore)
+})
+
+test('proxies a bounded MinIO upload', async () => {
   const part = await fetch(`${pocOrigin}/poc-api/minio/uploads/upload-1/parts/1`, {
     method: 'PUT',
     headers: { 'Content-Type': 'text/plain' },

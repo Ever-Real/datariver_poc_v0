@@ -141,6 +141,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.create'],
     ['GET', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.list'],
     ['GET', '/poc-api/airflow/dags', 'provider.airflow.dags'],
+    ['POST', '/poc-api/airflow/dags/datariver_quality_dispatch/runs', 'provider.airflow'],
 
     ['PUT', '/poc-api/state/core', 'state.write'],
     ['GET', '/poc-api/datahub/asset', 'catalog.asset'],
@@ -159,6 +160,14 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ))
   assert.throws(() => assertPocRouteAuthorization(
     resolvePocRoute('GET', '/poc-api/airflow/dags'),
+    principal('manager', 'manager'),
+  ), { code: 'CAPABILITY_REQUIRED' })
+  assert.doesNotThrow(() => assertPocRouteAuthorization(
+    resolvePocRoute('POST', '/poc-api/airflow/dags/datariver_quality_dispatch/runs'),
+    principal('admin', 'admin'),
+  ))
+  assert.throws(() => assertPocRouteAuthorization(
+    resolvePocRoute('POST', '/poc-api/airflow/dags/datariver_quality_dispatch/runs'),
     principal('manager', 'manager'),
   ), { code: 'CAPABILITY_REQUIRED' })
   assert.equal(resolvePocRoute('GET', '/poc-api/not-a-route'), null)
