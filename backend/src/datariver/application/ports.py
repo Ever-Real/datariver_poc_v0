@@ -1063,6 +1063,8 @@ class MembershipRenewalRepository(Protocol):
 
 
 class SystemDirectoryRepository(Protocol):
+    async def code_exists(self, *, workspace_id: UUID, code: str) -> bool: ...
+
     async def list(
         self,
         *,

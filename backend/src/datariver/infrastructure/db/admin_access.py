@@ -1806,6 +1806,18 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def code_exists(self, *, workspace_id: UUID, code: str) -> bool:
+        return bool(
+            await self._session.scalar(
+                select(
+                    exists().where(
+                        DataSystemModel.workspace_id == workspace_id,
+                        func.lower(DataSystemModel.code) == code.casefold(),
+                    )
+                )
+            )
+        )
+
     @staticmethod
     def _schema_scope_asset_conditions(
         *,

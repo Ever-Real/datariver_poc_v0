@@ -652,6 +652,13 @@ class MemorySystems:
         systems.append(entry)
         return entry
 
+    async def code_exists(self, *, workspace_id: UUID, code: str) -> bool:
+        assert workspace_id == self.state["workspace_id"]
+        if self.state.get("system_code_always_exists") is True:
+            return True
+        systems = cast(list[SystemDirectoryEntry], self.state["systems"])
+        return any(item.code.casefold() == code.casefold() for item in systems)
+
 
 class MemoryIdempotency:
     def __init__(self, values: dict[tuple[UUID, str, str], IdempotencyRecord]) -> None:
@@ -1402,7 +1409,6 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
     request_hash = canonical_json_hash(
         {
             "operation": "admin.system.create",
-            "code": "CRM",
             "name": "Customer Data",
             "description": "Customer source",
         }
@@ -1410,7 +1416,6 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
 
     created = await service.create_system(
         workspace_id=workspace_id,
-        code="CRM",
         name="Customer Data",
         description="Customer source",
         subject=subject,
@@ -1421,7 +1426,6 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
     )
     replayed = await service.create_system(
         workspace_id=workspace_id,
-        code="CRM",
         name="Customer Data",
         description="Customer source",
         subject=subject,
@@ -1432,6 +1436,7 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
     )
 
     assert replayed == created
+    assert created.code == "CUSTOMER-DATA"
     assert len(cast(list[SystemDirectoryEntry], state["systems"])) == 1
     events = cast(list[DomainEvent], state["outbox"])
     assert len(events) == 1
@@ -1441,7 +1446,6 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
     with pytest.raises(ConflictError, match="different request"):
         await service.create_system(
             workspace_id=workspace_id,
-            code="CRM",
             name="Changed",
             description="Customer source",
             subject=subject,
@@ -1450,6 +1454,96 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
             idempotency_key="system-create-idempotency-0001",
             request_hash="f" * 64,
         )
+
+
+@pytest.mark.asyncio
+async def test_system_creation_selects_a_collision_suffix_under_the_workspace_lock() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(list[SystemDirectoryEntry], state["systems"]).extend(
+        [
+            SystemDirectoryEntry(
+                system_id=uuid4(),
+                code="customer-data",
+                name="Existing System",
+                description="",
+                active=True,
+                version=1,
+            ),
+            SystemDirectoryEntry(
+                system_id=uuid4(),
+                code="CUSTOMER-DATA-2",
+                name="Existing Collision",
+                description="",
+                active=True,
+                version=1,
+            ),
+        ]
+    )
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    request_hash = canonical_json_hash(
+        {
+            "operation": "admin.system.create",
+            "name": "Customer Data",
+            "description": "New canonical System",
+        }
+    )
+
+    created = await _service(state, enabled=False).create_system(
+        workspace_id=workspace_id,
+        name="Customer Data",
+        description="New canonical System",
+        subject=subject,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="system-create-collision",
+        idempotency_key="system-create-idempotency-collision",
+        request_hash=request_hash,
+    )
+
+    assert created.code == "CUSTOMER-DATA-3"
+    assert state["lock_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_system_creation_fails_closed_when_the_bounded_code_space_is_exhausted() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["system_code_always_exists"] = True
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+
+    with pytest.raises(ConflictError, match="No canonical System code is available"):
+        await _service(state, enabled=False).create_system(
+            workspace_id=workspace_id,
+            name="Customer Data",
+            description="Exhausted code space",
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="system-create-exhausted",
+            idempotency_key="system-create-idempotency-exhausted",
+            request_hash=canonical_json_hash(
+                {
+                    "operation": "admin.system.create",
+                    "name": "Customer Data",
+                    "description": "Exhausted code space",
+                }
+            ),
+        )
+
+    assert state["systems"] == []
+    assert state["outbox"] == []
+    assert state["lock_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -1483,7 +1577,6 @@ async def test_development_password_bypass_exposes_and_audits_direct_system_muta
 
     created = await service.create_system(
         workspace_id=workspace_id,
-        code="DEV",
         name="Development System",
         description="Local E2E only",
         subject=subject,
@@ -1493,14 +1586,13 @@ async def test_development_password_bypass_exposes_and_audits_direct_system_muta
         request_hash=canonical_json_hash(
             {
                 "operation": "admin.system.create",
-                "code": "DEV",
                 "name": "Development System",
                 "description": "Local E2E only",
             }
         ),
     )
 
-    assert created.code == "DEV"
+    assert created.code == "DEVELOPMENT-SYSTEM"
     events = cast(list[DomainEvent], state["outbox"])
     assert events[-1].payload["assurance"] == "PASSWORD"
 

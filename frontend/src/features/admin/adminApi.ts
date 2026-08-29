@@ -145,7 +145,7 @@ export class AdminApi {
   }
 
   async createSystem(
-    payload: { code: string; name: string; description: string },
+    payload: { name: string; description: string },
     idempotencyKey: string,
   ): Promise<SystemDirectoryEntry> {
     return this.client.request<SystemDirectoryEntry>('/admin/systems', {
@@ -685,10 +685,10 @@ export class AdminApi {
     )
   }
 
-  testDeploymentSystemConfiguration(systemId: string) {
+  testDeploymentSystemConfiguration(systemId: string, signal?: AbortSignal) {
     return this.client.request<SystemConfigurationTestResult>(
       `/admin/system-configuration/${encodeURIComponent(systemId)}/test-deployment`,
-      { method: 'POST' },
+      { method: 'POST', signal },
     )
   }
 

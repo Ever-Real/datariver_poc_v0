@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -19,7 +21,9 @@ MEMBERSHIP_ACCESS_COMMAND = "WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1"
 SYSTEM_ASSIGNMENT_UPDATE_COMMAND = "SYSTEM_ASSIGNMENT_UPDATE_V1"
 SYSTEM_SCHEMA_SCOPE_UPDATE_COMMAND = "SYSTEM_SCHEMA_SCOPE_UPDATE_V1"
 MAXIMUM_FALLBACK_LIFETIME = timedelta(minutes=5)
+MAXIMUM_SYSTEM_CODE_CANDIDATES = 1000
 _GROUP_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,99}$")
+_SYSTEM_CODE_SEPARATORS = re.compile(r"[^A-Z0-9]+")
 _COMMAND_KEYS = {
     "command_type",
     "workspace_id",
@@ -94,6 +98,40 @@ class AdminOperation(StrEnum):
 class AdminAccessDecision(StrEnum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+def canonical_system_code_base(name: str) -> str:
+    """Derive the stable, server-owned base code for a System name."""
+    normalized_name = unicodedata.normalize("NFKC", name).strip()
+    if not normalized_name:
+        raise ValidationError("The system name is required.")
+    ascii_name = (
+        unicodedata.normalize("NFKD", normalized_name)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .upper()
+    )
+    code = _SYSTEM_CODE_SEPARATORS.sub("-", ascii_name).strip("-")
+    if not code:
+        digest = hashlib.sha256(normalized_name.casefold().encode()).hexdigest()[:10].upper()
+        code = f"SYSTEM-{digest}"
+    elif not code[0].isalpha():
+        code = f"SYSTEM-{code}"
+    code = code[:100].rstrip("-")
+    if len(code) == 1:
+        code = f"{code}-SYSTEM"
+    return code
+
+
+def system_code_collision_candidate(base_code: str, collision_index: int) -> str:
+    """Return the base code, then deterministic -2, -3, ... collision variants."""
+    if collision_index < 0:
+        raise ValidationError("The system code collision index cannot be negative.")
+    if collision_index == 0:
+        return base_code
+    suffix = f"-{collision_index + 1}"
+    prefix = base_code[: 100 - len(suffix)].rstrip("-")
+    return f"{prefix}{suffix}"
 
 
 @dataclass(frozen=True, slots=True)

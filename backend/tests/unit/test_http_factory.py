@@ -2312,6 +2312,10 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "MANAGER",
         "ADMIN",
     }
+    system_create = document["components"]["schemas"]["SystemCreateRequest"]
+    assert set(system_create["properties"]) == {"name", "description"}
+    assert system_create["required"] == ["name"]
+    assert system_create["additionalProperties"] is False
 
     context_schema = document["components"]["schemas"]["AdminReadContextResponse"]
     assert set(context_schema["properties"]["authentication_assurance"]["enum"]) == {

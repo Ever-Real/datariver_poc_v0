@@ -68,8 +68,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
   const [createOpen, setCreateOpen] = useState(false)
-  const [createForm, setCreateForm] = useState({ code: '', name: '', description: '' })
-  const [createValidationError, setCreateValidationError] = useState('')
+  const [createForm, setCreateForm] = useState({ name: '', description: '' })
   const [editOpen, setEditOpen] = useState(false)
   const [editForm, setEditForm] = useState({ name: '', description: '' })
   const [schemaOpen, setSchemaOpen] = useState(false)
@@ -485,32 +484,27 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const handleCreateSubmit = (event: React.FormEvent) => {
     event.preventDefault()
     if (!canUpdate) return
-    setCreateValidationError('')
-    if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(createForm.code)) {
-      setCreateValidationError('시스템 코드는 영문자로 시작하고 2~100자의 영숫자, -, _ 만 허용됩니다.')
-      return
-    }
     const payload = {
-      code: createForm.code.trim(),
       name: createForm.name.trim(),
       description: createForm.description.trim(),
     }
+    if (!payload.name || payload.name.length > 255 || payload.description.length > 4000) return
     const intent = `system-create:${JSON.stringify(payload)}`
     requestConfirmation({
       title: '신규 시스템 생성',
-      summary: [payload.code, payload.name, '현재 Workspace의 시스템 정본에 추가합니다.'],
+      summary: [payload.name, 'System 코드는 서버가 이름에서 생성하며 이후 변경되지 않습니다.'],
       execute: async () => {
         await api.createSystem(payload, keyFor(intent, 'admin-system-create'))
         clearKey(intent)
         setCreateOpen(false)
-        setCreateForm({ code: '', name: '', description: '' })
+        setCreateForm({ name: '', description: '' })
         await loadSystems()
       },
     })
   }
 
   return <section className="panel admin-system-directory" onClickCapture={handleDirectoryAction}>
-    <div className="section-heading"><div><h3>System Master 및 Table 연결</h3><p className="muted">System 정본은 기존 access authority를 사용하고, exact Table 연결은 독립 CAS 버전으로 관리합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
+    <div className="section-heading"><div><h3>System Master 및 Table 연결</h3><p className="muted">System 정본은 기존 access authority를 사용하고, exact Table 연결은 독립 CAS 버전으로 관리합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => setCreateOpen(true)} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
     <label className="mb-3 block max-w-md text-xs font-bold">시스템 검색<input type="search" value={systemQuery} onChange={(event) => setSystemQuery(event.target.value)} placeholder="시스템명 또는 코드" /></label>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
@@ -593,10 +587,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     </section>}
     <Dialog open={createOpen} title="시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
       <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
-        <label className="block text-sm font-bold">시스템 코드
-          <input className="mt-1 block w-full" maxLength={100} onChange={(e) => setCreateForm({ ...createForm, code: e.target.value })} pattern="^[A-Za-z][A-Za-z0-9_-]{1,99}$" required type="text" value={createForm.code} placeholder="예: system-code_123" />
-        </label>
-        {createValidationError && <div className="text-red-600 text-xs mt-[-8px]">{createValidationError}</div>}
+        <p className="callout">System 코드는 이름을 기준으로 서버가 생성합니다. 생성된 코드와 ID는 변경되지 않습니다.</p>
         <label className="block text-sm font-bold">시스템 이름
           <input className="mt-1 block w-full" maxLength={255} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} required type="text" value={createForm.name} />
         </label>

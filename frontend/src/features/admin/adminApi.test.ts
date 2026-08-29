@@ -71,6 +71,19 @@ describe('AdminApi', () => {
     })
   })
 
+  it('forwards cancellation to the fixed deployment probe', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({})
+
+    await api.testDeploymentSystemConfiguration('DATAHUB_GMS', controller.signal)
+
+    expect(request).toHaveBeenCalledWith(
+      '/admin/system-configuration/DATAHUB_GMS/test-deployment',
+      { method: 'POST', signal: controller.signal },
+    )
+  })
+
   it('uses asset IDs and the System ETag for governed schema-scope changes', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

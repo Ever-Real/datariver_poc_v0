@@ -2957,14 +2957,12 @@ async def create_system(
     request_hash = canonical_json_hash(
         {
             "operation": "admin.system.create",
-            "code": body.code.strip(),
             "name": body.name.strip(),
             "description": body.description.strip(),
         }
     )
     entry = await _service(request).create_system(
         workspace_id=context.workspace_id,
-        code=body.code,
         name=body.name,
         description=body.description,
         subject=context.subject,

@@ -17,7 +17,7 @@ const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
 ])
 
 type SystemTabId = SystemConfigurationEntry['system_id'] | 'LLM_MODELS' | 'CORE_DASHBOARD'
-type ConnectionState = 'UNVERIFIED' | 'CHECKING' | 'ERROR' | 'CONNECTED'
+type ConnectionState = 'CHECKING' | 'READY' | 'DEFERRED' | 'FAILED' | 'BLOCKED'
 
 function llmTabLabel(systemId: SystemConfigurationEntry['system_id']) {
   if (systemId === 'LLM_CHAT_MODEL') return 'Chat Model'
@@ -41,15 +41,17 @@ function testStatusLabel(
 
 function connectionStateLabel(state: ConnectionState) {
   if (state === 'CHECKING') return '확인 중'
-  if (state === 'ERROR') return '오류'
-  if (state === 'CONNECTED') return '연결됨'
-  return '미확인'
+  if (state === 'FAILED') return '오류'
+  if (state === 'READY') return '연결됨'
+  if (state === 'BLOCKED') return '인증 확인 필요'
+  return '확인 보류'
 }
 
 function connectionStateClass(state: ConnectionState) {
   if (state === 'CHECKING') return 'badge-connecting'
-  if (state === 'ERROR') return 'badge-error'
-  if (state === 'CONNECTED') return 'badge-connected'
+  if (state === 'FAILED') return 'badge-error'
+  if (state === 'READY') return 'badge-connected'
+  if (state === 'BLOCKED') return 'badge-warning'
   return 'badge-soft'
 }
 
@@ -58,13 +60,14 @@ function aggregateConnectionState(
   states: Partial<Record<SystemConfigurationEntry['system_id'], ConnectionState>>,
 ): ConnectionState {
   const probeable = entries.filter(
-    (item) => item.runtime_supported && item.state !== 'NOT_CONFIGURED',
+    (item) => item.runtime_supported && item.state === 'CONFIGURED',
   )
-  if (probeable.length === 0) return 'UNVERIFIED'
-  const values = probeable.map((item) => states[item.system_id] ?? 'UNVERIFIED')
-  if (values.includes('ERROR')) return 'ERROR'
+  if (probeable.length === 0) return 'DEFERRED'
+  const values = probeable.map((item) => states[item.system_id] ?? 'DEFERRED')
+  if (values.includes('FAILED')) return 'FAILED'
+  if (values.includes('BLOCKED')) return 'BLOCKED'
   if (values.includes('CHECKING')) return 'CHECKING'
-  return values.every((value) => value === 'CONNECTED') ? 'CONNECTED' : 'UNVERIFIED'
+  return values.every((value) => value === 'READY') ? 'READY' : 'DEFERRED'
 }
 
 function applyMethodLabel(method: DeploymentEnvironment['apply_method']) {
@@ -97,6 +100,72 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const loadRequest = useRef<{ generation: number; controller?: AbortController }>({
     generation: 0,
   })
+  const probeRequests = useRef(new Map<
+    SystemConfigurationEntry['system_id'],
+    { generation: number; promise: Promise<SystemConfigurationTestResult> }
+  >())
+
+  const probeSystem = useCallback((
+    item: SystemConfigurationEntry,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<SystemConfigurationTestResult> => {
+    const active = probeRequests.current.get(item.system_id)
+    if (active?.generation === generation) return active.promise
+
+    const promise = Promise.resolve()
+      .then(() => api.testDeploymentSystemConfiguration(item.system_id, signal))
+      .then(
+      (result) => {
+        if (signal.aborted || loadRequest.current.generation !== generation) return result
+        setTestResults((current) => ({ ...current, [item.system_id]: result }))
+        setConnectionStates((current) => ({
+          ...current,
+          [item.system_id]: result.status === 'AVAILABLE'
+            ? 'READY'
+            : result.status === 'AUTHENTICATION_REQUIRED'
+              ? 'BLOCKED'
+              : 'FAILED',
+        }))
+        return result
+      },
+      (next: unknown) => {
+        if (!signal.aborted && loadRequest.current.generation === generation) {
+          setConnectionStates((current) => ({ ...current, [item.system_id]: 'FAILED' }))
+        }
+        throw next
+      },
+    ).finally(() => {
+      const current = probeRequests.current.get(item.system_id)
+      if (current?.generation === generation && current.promise === promise) {
+        probeRequests.current.delete(item.system_id)
+      }
+    })
+    probeRequests.current.set(item.system_id, { generation, promise })
+    return promise
+  }, [api])
+
+  const autoProbe = useCallback(async (
+    itemsToProbe: SystemConfigurationEntry[],
+    generation: number,
+    signal: AbortSignal,
+  ) => {
+    const limit = 3
+    let index = 0
+    const worker = async () => {
+      while (index < itemsToProbe.length) {
+        if (signal.aborted) return
+        const item = itemsToProbe[index++]
+        if (!item) return
+        try {
+          await probeSystem(item, generation, signal)
+        } catch {
+          // The shared probe records FAILED; automatic checks do not surface a global error notice.
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: limit }, worker))
+  }, [probeSystem])
 
   const load = useCallback(async () => {
     loadRequest.current.controller?.abort()
@@ -104,19 +173,32 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     const generation = loadRequest.current.generation + 1
     loadRequest.current = { generation, controller }
     setLoading(true)
+    setTestingId(undefined)
     setError(undefined)
     try {
       const next = await api.listSystemConfiguration(controller.signal)
       if (controller.signal.aborted || loadRequest.current.generation !== generation) return
       setItems(next.items)
       setDeploymentEnvironment(next.deployment_environment)
-      setConnectionStates({})
+
+      const initialStates: Partial<Record<SystemConfigurationEntry['system_id'], ConnectionState>> = {}
+      const probeableItems: SystemConfigurationEntry[] = []
+      for (const item of next.items) {
+        if (item.runtime_supported && item.state === 'CONFIGURED') {
+          initialStates[item.system_id] = 'CHECKING'
+          probeableItems.push(item)
+        } else {
+          initialStates[item.system_id] = 'DEFERRED'
+        }
+      }
+      setConnectionStates(initialStates)
       setTestResults({})
       setSelectedId((current) => {
         if (current === 'CORE_DASHBOARD' && next.items.some((item) => item.is_core)) return current
         if (current && next.items.some((item) => item.system_id === current)) return current
         return next.items.some((item) => item.is_core) ? 'CORE_DASHBOARD' : next.items[0]?.system_id
       })
+      void autoProbe(probeableItems, generation, controller.signal)
     } catch (next) {
       if (!controller.signal.aborted) {
         setError(next)
@@ -127,7 +209,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
         setLoading(false)
       }
     }
-  }, [api, reportError])
+  }, [api, reportError, autoProbe])
 
   useEffect(() => {
     void load()
@@ -192,8 +274,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       : llmSelected
         ? llmConnectionState
         : selected
-          ? connectionStates[selected.system_id] ?? 'UNVERIFIED'
-          : 'UNVERIFIED'
+          ? connectionStates[selected.system_id] ?? 'DEFERRED'
+          : 'DEFERRED'
   const selectSystemTab = (id: SystemTabId) => {
     setSelectedId(id === 'LLM_MODELS' ? llmItems[0]?.system_id : id)
   }
@@ -207,25 +289,30 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const testConnection = async (
     item: SystemConfigurationEntry,
   ): Promise<SystemConfigurationTestResult | undefined> => {
-    if (testingId || item.state === 'NOT_CONFIGURED' || !item.runtime_supported) return undefined
+    const request = loadRequest.current
+    if (
+      testingId
+      || item.state !== 'CONFIGURED'
+      || !item.runtime_supported
+      || !request.controller
+      || request.controller.signal.aborted
+    ) return undefined
     setTestingId(item.system_id)
     setConnectionStates((current) => ({ ...current, [item.system_id]: 'CHECKING' }))
     setError(undefined)
     try {
-      const result = await api.testDeploymentSystemConfiguration(item.system_id)
-      setTestResults((current) => ({ ...current, [item.system_id]: result }))
-      setConnectionStates((current) => ({
-        ...current,
-        [item.system_id]: result.status === 'AVAILABLE' ? 'CONNECTED' : 'ERROR',
-      }))
-      return result
+      return await probeSystem(item, request.generation, request.controller.signal)
     } catch (next) {
-      setConnectionStates((current) => ({ ...current, [item.system_id]: 'ERROR' }))
-      setError(next)
-      reportError(next)
+      if (
+        !request.controller.signal.aborted
+        && loadRequest.current.generation === request.generation
+      ) {
+        setError(next)
+        reportError(next)
+      }
       return undefined
     } finally {
-      setTestingId(undefined)
+      if (loadRequest.current.generation === request.generation) setTestingId(undefined)
     }
   }
 
@@ -313,7 +400,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
             </div>
           </dl>
           {deploymentEnvironment.apply_command && (
-            <pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">
+            <pre className="m-0 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-700">
               {deploymentEnvironment.apply_command}
             </pre>
           )}
@@ -357,10 +444,10 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
             >
               <span
                 className={`badge ${connectionStateClass(
-                  connectionStates[item.system_id] ?? 'UNVERIFIED',
+                  connectionStates[item.system_id] ?? 'DEFERRED',
                 )}`}
               >
-                {connectionStateLabel(connectionStates[item.system_id] ?? 'UNVERIFIED')}
+                {connectionStateLabel(connectionStates[item.system_id] ?? 'DEFERRED')}
               </span>
               <strong>{item.label}</strong>
             </button>
@@ -400,7 +487,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               <header className="mb-6">
                 <span className="eyebrow">Read-only inventory</span>
                 <h4>Core Systems</h4>
-                <p className="muted" style={{ fontSize: 11 }}>
+                <p className="muted text-xs">
                   API 프로세스가 시작할 때 읽은 배포 환경의 상태입니다.
                 </p>
               </header>
@@ -424,8 +511,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                       <button
                         className="button button-secondary"
                         disabled={
-                          Boolean(testingId)
-                          || item.state === 'NOT_CONFIGURED'
+                          connectionStates[item.system_id] === 'CHECKING'
+                          || item.state !== 'CONFIGURED'
                           || !item.runtime_supported
                         }
                         aria-label={`${item.label} 연결 확인`}
@@ -451,7 +538,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               <header>
                 <span className="eyebrow">{selected.system_id}</span>
                 <h4>{selected.label}</h4>
-                <p className="muted" style={{ fontSize: 11 }}>
+                <p className="muted text-xs">
                   {selected.description}
                 </p>
               </header>
@@ -460,7 +547,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                 <div className="admin-system-llm-tabs" role="group" aria-label="LLM 모델 상태">
                   {llmItems.map((item) => {
                     const stageLabel = llmTabLabel(item.system_id)
-                    const stageConnection = connectionStates[item.system_id] ?? 'UNVERIFIED'
+                    const stageConnection = connectionStates[item.system_id] ?? 'DEFERRED'
                     return (
                       <button
                         key={item.system_id}
@@ -512,8 +599,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               <p className="callout">
                 <strong>구성됨</strong>은 서버 설정값이 존재한다는 뜻이며 실제 연결 성공을
                 의미하지 않습니다. <strong>연결 확인</strong>은 현재 API에 적용된 값을 고정 서버
-                검증으로 확인하고, 그 결과를 이 페이지에만 표시합니다. 새로고침하면 다시
-                미확인 상태가 됩니다.
+                검증으로 확인하고, 그 결과를 이 페이지에만 표시합니다. 새로고침하면 구성된
+                항목을 다시 자동 확인합니다.
               </p>
 
               {selected.state === 'GOVERNED_PROFILE_REQUIRED' && (
@@ -539,7 +626,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                     {copiedId === selected.system_id ? '복사됨' : '템플릿 복사'}
                   </button>
                 </div>
-                <pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">
+                <pre className="m-0 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-700">
                   {selected.environment_template || '이 시스템에 노출할 환경 변수 옵션이 없습니다.'}
                 </pre>
               </section>
@@ -550,7 +637,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                   aria-label={`${selected.label} 현재 적용 설정`}
                 >
                   <span className="eyebrow">현재 API 적용값 (비밀값 제외)</span>
-                  <pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">
+                  <pre className="m-0 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-700">
                     {selected.effective_configuration_yaml}
                   </pre>
                 </section>
@@ -560,8 +647,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                 <button
                   className="button button-secondary"
                   disabled={
-                    Boolean(testingId)
-                    || selected.state === 'NOT_CONFIGURED'
+                    connectionStates[selected.system_id] === 'CHECKING'
+                    || selected.state !== 'CONFIGURED'
                     || !selected.runtime_supported
                   }
                   onClick={() => void testConnection(selected)}

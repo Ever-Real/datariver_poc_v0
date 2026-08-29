@@ -58,6 +58,21 @@ function inventory(items: SystemConfigurationEntry[]) {
   return { items, deployment_environment: deploymentEnvironment }
 }
 
+function probeResult(
+  systemId: SystemConfigurationEntry['system_id'],
+  status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE' = 'AVAILABLE',
+) {
+  return {
+    system_id: systemId,
+    status,
+    scope: 'HTTP_HEALTH' as const,
+    latency_ms: 8,
+    detail: `fixed deployment probe ${status.toLowerCase()}`,
+    configuration_version: null,
+    tested_at: '2026-07-20T09:01:00Z',
+  }
+}
+
 function renderAdmin(request: ReturnType<typeof vi.fn>) {
   const routedRequest = (path: string, options?: RequestInit) => {
     if (path === '/capabilities') {
@@ -107,6 +122,7 @@ describe('SystemConfigurationAdmin', () => {
       if (path === '/admin/system-configuration') {
         return Promise.resolve(inventory([deploymentEntry]))
       }
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('DATAHUB_GMS'))
       throw new Error(`unexpected request: ${path}`)
     })
 
@@ -144,6 +160,7 @@ describe('SystemConfigurationAdmin', () => {
       if (path === '/admin/system-configuration') {
         return Promise.resolve(inventory([deploymentEntry]))
       }
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('DATAHUB_GMS'))
       throw new Error(`unexpected request: ${path}`)
     })
 
@@ -158,7 +175,7 @@ describe('SystemConfigurationAdmin', () => {
     expect(screen.getByRole('button', { name: '복사됨' })).toBeInTheDocument()
   })
 
-  it('keeps a configured connector unverified until the deployment-owned probe runs', async () => {
+  it('automatically runs the deployment-owned probe for a configured connector', async () => {
     const request = vi.fn((path: string, options?: RequestInit) => {
       if (path === '/admin/system-configuration') {
         return Promise.resolve(inventory([deploymentEntry]))
@@ -167,38 +184,20 @@ describe('SystemConfigurationAdmin', () => {
         path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
         && options?.method === 'POST'
       ) {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS',
-          status: 'AVAILABLE',
-          scope: 'HTTP_HEALTH',
-          latency_ms: 12,
-          detail: 'fixed deployment probe passed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
+        return Promise.resolve({ ...probeResult('DATAHUB_GMS'), latency_ms: 12 })
       }
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    expect(
-      await screen.findByRole('status', { name: '현재 연결 상태: 미확인' }),
-    ).toHaveTextContent('미확인')
-    expect(request).not.toHaveBeenCalledWith(
-      '/admin/system-configuration/DATAHUB_GMS/test-deployment',
-      expect.anything(),
-    )
-    fireEvent.click(screen.getByRole('button', { name: '연결 확인' }))
 
     expect(
       await screen.findByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
-    ).toHaveTextContent(
-      '정상 연결됨 · HTTP_HEALTH · 12ms',
-    )
+    ).toHaveTextContent('정상 연결됨 · HTTP_HEALTH · 12ms')
     expect(screen.getByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeInTheDocument()
     expect(request).toHaveBeenCalledWith(
       '/admin/system-configuration/DATAHUB_GMS/test-deployment',
-      { method: 'POST' },
+      expect.objectContaining({ method: 'POST' }),
     )
   })
 
@@ -208,68 +207,39 @@ describe('SystemConfigurationAdmin', () => {
       configurable: true,
       value: { writeText },
     })
-    const request = vi.fn((path: string, options?: RequestInit) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory([deploymentEntry]))
-      }
-      if (
-        path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
-        && options?.method === 'POST'
-      ) {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS',
-          status: 'AVAILABLE',
-          scope: 'HTTP_HEALTH',
-          latency_ms: 8,
-          detail: 'fixed deployment probe passed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
-      }
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([deploymentEntry]))
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('DATAHUB_GMS'))
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toHaveTextContent(
       '연결됨',
     )
-    expect(
-      screen.getByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
-    ).toHaveTextContent('정상 연결됨')
+    expect(screen.getByRole('status', { name: 'DataHub GMS 연결 테스트 결과' })).toHaveTextContent(
+      '정상 연결됨',
+    )
     expect(writeText).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: '연결 확인' })).toBeEnabled()
   })
 
-  it('returns to an unverified connection state after refreshing the inventory', async () => {
+  it('reruns the automatic probe after refreshing the inventory', async () => {
     const request = vi.fn((path: string) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory([deploymentEntry]))
-      }
-      if (path === '/admin/system-configuration/DATAHUB_GMS/test-deployment') {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS',
-          status: 'AVAILABLE',
-          scope: 'HTTP_HEALTH',
-          latency_ms: 8,
-          detail: 'fixed deployment probe passed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
-      }
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([deploymentEntry]))
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('DATAHUB_GMS'))
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
     expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: '새로고침' }))
     await waitFor(() => {
-      expect(request.mock.calls.filter(([path]) => path === '/admin/system-configuration')).toHaveLength(2)
+      expect(request.mock.calls.filter(([path]) => path.endsWith('/test-deployment'))).toHaveLength(2)
     })
-    expect(await screen.findByRole('status', { name: '현재 연결 상태: 미확인' })).toBeVisible()
+    expect(screen.getByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
   })
 
   it('shows an error state when the fixed connection probe fails', async () => {
@@ -278,114 +248,52 @@ describe('SystemConfigurationAdmin', () => {
       configurable: true,
       value: { writeText },
     })
-    const request = vi.fn((path: string, options?: RequestInit) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory([deploymentEntry]))
-      }
-      if (
-        path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
-        && options?.method === 'POST'
-      ) {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS',
-          status: 'UNAVAILABLE',
-          scope: 'HTTP_HEALTH',
-          latency_ms: 8,
-          detail: 'fixed deployment probe failed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([deploymentEntry]))
+      if (path.endsWith('/test-deployment')) {
+        return Promise.resolve(probeResult('DATAHUB_GMS', 'UNAVAILABLE'))
       }
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(
       await screen.findByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
     ).toHaveTextContent('연결 불가')
     expect(writeText).not.toHaveBeenCalled()
-    expect(screen.getByRole('status', { name: '현재 연결 상태: 오류' })).toHaveTextContent(
-      '오류',
-    )
+    expect(screen.getByRole('status', { name: '현재 연결 상태: 오류' })).toHaveTextContent('오류')
     expect(screen.getByRole('button', { name: '연결 확인' })).toBeInTheDocument()
   })
 
-  it('shows a checking state while the fixed connection probe is pending', async () => {
-    let resolveProbe:
-      | ((value: {
-          system_id: string
-          status: 'AVAILABLE'
-          scope: 'HTTP_HEALTH'
-          latency_ms: number
-          detail: string
-          configuration_version: null
-          tested_at: string
-        }) => void)
-      | undefined
-    const pendingProbe = new Promise<{
-      system_id: string
-      status: 'AVAILABLE'
-      scope: 'HTTP_HEALTH'
-      latency_ms: number
-      detail: string
-      configuration_version: null
-      tested_at: string
-    }>((resolve) => {
-      resolveProbe = resolve
-    })
+  it('shows a checking state while the automatic fixed connection probe is pending', async () => {
+    const pendingProbe = deferred<ReturnType<typeof probeResult>>()
     const request = vi.fn((path: string) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory([deploymentEntry]))
-      }
-      if (path === '/admin/system-configuration/DATAHUB_GMS/test-deployment') {
-        return pendingProbe
-      }
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([deploymentEntry]))
+      if (path.endsWith('/test-deployment')) return pendingProbe.promise
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
-    expect(
-      await screen.findByRole('status', { name: '현재 연결 상태: 확인 중' }),
-    ).toHaveTextContent('확인 중')
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 확인 중' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '연결 확인' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인' }))
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/test-deployment'))).toHaveLength(1)
 
-    resolveProbe?.({
-      system_id: 'DATAHUB_GMS',
-      status: 'AVAILABLE',
-      scope: 'HTTP_HEALTH',
-      latency_ms: 8,
-      detail: 'fixed deployment probe passed',
-      configuration_version: null,
-      tested_at: '2026-07-20T09:01:00Z',
-    })
+    pendingProbe.resolve(probeResult('DATAHUB_GMS'))
     expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
   })
 
-  it('shows a green connected badge on the Core Systems navigation after applying', async () => {
+  it('shows a green connected badge on the Core Systems navigation after probing', async () => {
     const coreEntry = { ...deploymentEntry, is_core: true }
     const request = vi.fn((path: string) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory([coreEntry]))
-      }
-      if (path === '/admin/system-configuration/DATAHUB_GMS/test-deployment') {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS',
-          status: 'AVAILABLE',
-          scope: 'HTTP_HEALTH',
-          latency_ms: 8,
-          detail: 'fixed deployment probe passed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
-      }
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([coreEntry]))
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('DATAHUB_GMS'))
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: 'DataHub GMS 연결 확인' }))
 
     expect((await screen.findByText('Core Dashboard')).closest('button')).toHaveTextContent('연결됨')
   })
@@ -402,27 +310,21 @@ describe('SystemConfigurationAdmin', () => {
       label,
     }))
     const request = vi.fn((path: string) => {
-      if (path === '/admin/system-configuration') {
-        return Promise.resolve(inventory(llmEntries))
-      }
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory(llmEntries))
+      const systemId = path.split('/').at(-2) as SystemConfigurationEntry['system_id']
+      if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult(systemId))
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
 
     expect(await screen.findByRole('tab', { name: /LLM Models/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Chat Model/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
-    expect(screen.getByRole('status', { name: 'Chat Model 연결 상태: 미확인' })).toBeVisible()
-    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 미확인' })).toBeVisible()
-    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 미확인' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Chat Model/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(await screen.findByRole('status', { name: 'Chat Model 연결 상태: 연결됨' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 연결됨' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 연결됨' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /Reranker/ }))
-    expect(screen.getByRole('button', { name: /Reranker/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
+    expect(screen.getByRole('button', { name: /Reranker/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
   })
 
@@ -432,52 +334,26 @@ describe('SystemConfigurationAdmin', () => {
       ['LLM_EMBEDDING', 'LLM · Embedding'],
       ['LLM_RERANKER', 'LLM · Reranker'],
     ]
-    const llmEntries = llmSpecs.map(([systemId, label]) => ({
-      ...deploymentEntry,
-      system_id: systemId,
-      label,
-    }))
+    const llmEntries = llmSpecs.map(([systemId, label]) => ({ ...deploymentEntry, system_id: systemId, label }))
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') return Promise.resolve(inventory(llmEntries))
-      if (path === '/admin/system-configuration/LLM_CHAT_MODEL/test-deployment') {
-        return Promise.resolve({
-          system_id: 'LLM_CHAT_MODEL',
-          status: 'AVAILABLE',
-          scope: 'MODEL_INFERENCE',
-          latency_ms: 9,
-          detail: 'chat inference probe passed',
-          configuration_version: null,
-          tested_at: '2026-07-20T09:01:00Z',
-        })
-      }
+      if (path.includes('LLM_CHAT_MODEL')) return Promise.resolve(probeResult('LLM_CHAT_MODEL'))
+      if (path.includes('LLM_EMBEDDING')) return Promise.resolve(probeResult('LLM_EMBEDDING', 'AUTHENTICATION_REQUIRED'))
+      if (path.includes('LLM_RERANKER')) return Promise.resolve(probeResult('LLM_RERANKER', 'UNAVAILABLE'))
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(await screen.findByRole('status', { name: 'Chat Model 연결 상태: 연결됨' })).toBeVisible()
-    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 미확인' })).toBeVisible()
-    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 미확인' })).toBeVisible()
-    expect(request).toHaveBeenCalledWith(
-      '/admin/system-configuration/LLM_CHAT_MODEL/test-deployment',
-      { method: 'POST' },
-    )
+    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 인증 확인 필요' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 오류' })).toBeVisible()
   })
 
-  it('separates an available model transport from missing governed Chat binding', async () => {
+  it('defers an unconfigured governed Chat binding and disables its probe', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') {
-        return Promise.resolve(
-          inventory([
-            {
-              ...deploymentEntry,
-              system_id: 'LLM_CHAT_MODEL',
-              label: 'LLM · Chat model',
-              state: 'GOVERNED_PROFILE_REQUIRED',
-            },
-          ]),
-        )
+        return Promise.resolve(inventory([{ ...deploymentEntry, system_id: 'LLM_CHAT_MODEL', label: 'LLM · Chat model', state: 'GOVERNED_PROFILE_REQUIRED' }]))
       }
       throw new Error(`unexpected request: ${path}`)
     })
@@ -485,9 +361,82 @@ describe('SystemConfigurationAdmin', () => {
     renderAdmin(request)
 
     expect(await screen.findAllByText('추론 승인 필요')).toHaveLength(2)
-    expect(
-      screen.getByText(/승인된 추론 프로필 UUID 및 활성 분류정책 연결이 필요합니다/),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '연결 확인' })).toBeEnabled()
+    expect(screen.getByText(/승인된 추론 프로필 UUID 및 활성 분류정책 연결이 필요합니다/)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Chat Model 연결 상태: 확인 보류' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '연결 확인' })).toBeDisabled()
+    expect(request.mock.calls.some(([path]) => path.endsWith('/test-deployment'))).toBe(false)
+  })
+
+  it('limits automatic probes to three and skips unconfigured or unsupported entries', async () => {
+    const ids: SystemConfigurationEntry['system_id'][] = ['DATAHUB_GMS', 'POSTGRESQL', 'REDIS_CACHE', 'S3_STORAGE']
+    const probes = new Map(ids.map((id) => [id, deferred<ReturnType<typeof probeResult>>()]))
+    let active = 0
+    let maximumActive = 0
+    const entries = [
+      ...ids.map((systemId) => ({ ...deploymentEntry, system_id: systemId, label: systemId })),
+      { ...deploymentEntry, system_id: 'AIRFLOW' as const, label: 'AIRFLOW', state: 'NOT_CONFIGURED' as const },
+      { ...deploymentEntry, system_id: 'NEO4J' as const, label: 'NEO4J', runtime_supported: false },
+    ]
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory(entries))
+      if (path.endsWith('/test-deployment')) {
+        const systemId = path.split('/').at(-2) as SystemConfigurationEntry['system_id']
+        active += 1
+        maximumActive = Math.max(maximumActive, active)
+        return probes.get(systemId)?.promise.finally(() => { active -= 1 })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/test-deployment'))).toHaveLength(3))
+    expect(maximumActive).toBe(3)
+    probes.get('DATAHUB_GMS')?.resolve(probeResult('DATAHUB_GMS'))
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/test-deployment'))).toHaveLength(4))
+    probes.get('POSTGRESQL')?.resolve(probeResult('POSTGRESQL', 'AUTHENTICATION_REQUIRED'))
+    probes.get('REDIS_CACHE')?.reject(new Error('provider request failed'))
+    probes.get('S3_STORAGE')?.resolve(probeResult('S3_STORAGE', 'UNAVAILABLE'))
+
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
+    expect(await screen.findByRole('tab', { name: /인증 확인 필요POSTGRESQL/ })).toBeVisible()
+    expect(screen.getByRole('tab', { name: /오류REDIS_CACHE/ })).toBeVisible()
+    expect(screen.getByRole('tab', { name: /오류S3_STORAGE/ })).toBeVisible()
+    expect(screen.getByRole('tab', { name: /확인 보류AIRFLOW/ })).toBeVisible()
+    expect(screen.getByRole('tab', { name: /확인 보류NEO4J/ })).toBeVisible()
+    expect(request.mock.calls.some(([path]) => path.includes('/AIRFLOW/test-deployment'))).toBe(false)
+    expect(request.mock.calls.some(([path]) => path.includes('/NEO4J/test-deployment'))).toBe(false)
+  })
+
+  it('does not let an aborted older probe overwrite a refreshed generation', async () => {
+    const oldProbe = deferred<ReturnType<typeof probeResult>>()
+    const newProbe = deferred<ReturnType<typeof probeResult>>()
+    let probeCall = 0
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory([deploymentEntry]))
+      if (path.endsWith('/test-deployment')) {
+        probeCall += 1
+        return probeCall === 1 ? oldProbe.promise : newProbe.promise
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 확인 중' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }))
+    await waitFor(() => expect(probeCall).toBe(2))
+    newProbe.resolve(probeResult('DATAHUB_GMS'))
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
+    oldProbe.resolve(probeResult('DATAHUB_GMS', 'UNAVAILABLE'))
+    await waitFor(() => expect(screen.getByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible())
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next
+    reject = fail
+  })
+  return { promise, reject, resolve }
+}

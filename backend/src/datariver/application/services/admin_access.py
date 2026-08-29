@@ -28,6 +28,7 @@ from datariver.application.dto import (
 from datariver.application.ports import AdminAccessUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.admin_access import (
+    MAXIMUM_SYSTEM_CODE_CANDIDATES,
     AdminAccessDecision,
     AdminAccessRequest,
     AdminAccessRequestState,
@@ -37,6 +38,8 @@ from datariver.domain.admin_access import (
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
     SystemSchemaScopePatchCommand,
+    canonical_system_code_base,
+    system_code_collision_candidate,
 )
 from datariver.domain.authz import (
     Action,
@@ -160,7 +163,6 @@ class AdminAccessService:
         self,
         *,
         workspace_id: UUID,
-        code: str,
         name: str,
         description: str,
         subject: SubjectAttributes,
@@ -203,9 +205,23 @@ class AdminAccessService:
                     active=True,
                     version=int(existing.result["version"]),
                 )
+            base_code = canonical_system_code_base(name)
+            code: str | None = None
+            for collision_index in range(MAXIMUM_SYSTEM_CODE_CANDIDATES):
+                candidate = system_code_collision_candidate(base_code, collision_index)
+                if not await uow.systems.code_exists(
+                    workspace_id=workspace_id,
+                    code=candidate,
+                ):
+                    code = candidate
+                    break
+            if code is None:
+                raise ConflictError(
+                    "No canonical System code is available for this name in the workspace."
+                )
             result = await uow.systems.create(
                 workspace_id=workspace_id,
-                code=code.strip(),
+                code=code,
                 name=name.strip(),
                 description=description.strip(),
             )

@@ -48,6 +48,22 @@ from datariver.interfaces.http.presenters import workspace_membership_access_res
 POSTGRES_DIALECT = cast(Callable[[], Dialect], postgresql.dialect)()
 
 
+@pytest.mark.asyncio
+async def test_system_code_collision_lookup_is_workspace_scoped_and_case_insensitive() -> None:
+    workspace_id = uuid4()
+    session = _SystemRepositorySession(scalar_results=[[True]])
+
+    exists = await SqlSystemDirectoryRepository(cast(AsyncSession, session)).code_exists(
+        workspace_id=workspace_id,
+        code="CUSTOMER-DATA",
+    )
+
+    assert exists is True
+    statement = _compiled_postgres(session.scalar_statements[0])
+    assert "data_systems.workspace_id" in statement
+    assert "lower(platform.data_systems.code)" in statement
+
+
 def _stored_membership() -> tuple[SubjectModel, WorkspaceMembershipModel]:
     subject_id, workspace_id, department_id, system_id, domain_id = (uuid4() for _ in range(5))
     subject = SubjectModel(
@@ -334,6 +350,15 @@ class _SystemRepositorySession:
         self.execute_count = 0
         self.added: list[object] = []
         self.flush_count = 0
+
+    async def scalar(self, statement: object) -> Any | None:
+        self.scalar_statements.append(statement)
+        if not self.scalar_results:
+            raise AssertionError("unexpected scalar query")
+        values = self.scalar_results.pop(0)
+        if len(values) > 1:
+            raise AssertionError("scalar received multiple fake rows")
+        return values[0] if values else None
 
     async def scalars(self, statement: object) -> _ScalarResult:
         self.scalar_statements.append(statement)

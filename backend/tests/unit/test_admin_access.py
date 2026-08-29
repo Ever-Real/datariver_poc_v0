@@ -10,6 +10,8 @@ from datariver.domain.admin_access import (
     AdminAccessRequest,
     AdminAccessRequestState,
     MembershipAccessUpdate,
+    canonical_system_code_base,
+    system_code_collision_candidate,
 )
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import ConflictError, ValidationError
@@ -37,6 +39,16 @@ def test_command_hash_is_canonical_and_round_trips() -> None:
 
     assert restored == value
     assert restored.payload_hash == value.payload_hash
+
+
+def test_server_owned_system_codes_are_normalized_stable_and_collision_safe() -> None:
+    assert canonical_system_code_base("  Customer data / CRM  ") == "CUSTOMER-DATA-CRM"
+    assert canonical_system_code_base("123 warehouse") == "SYSTEM-123-WAREHOUSE"
+    assert canonical_system_code_base("고객 관리") == canonical_system_code_base("고객 관리")
+    assert canonical_system_code_base("고객 관리").startswith("SYSTEM-")
+    assert system_code_collision_candidate("CUSTOMER-DATA", 0) == "CUSTOMER-DATA"
+    assert system_code_collision_candidate("CUSTOMER-DATA", 1) == "CUSTOMER-DATA-2"
+    assert len(system_code_collision_candidate("A" * 100, 999)) == 100
 
 
 def test_request_rejects_self_benefit_and_long_lifetime() -> None:
