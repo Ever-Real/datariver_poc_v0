@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from time import perf_counter
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import (
@@ -12,11 +13,16 @@ from datariver.application.dto import (
 )
 from datariver.application.errors import ChatExternalAdapterInvocationError
 from datariver.application.knowledge_pipeline_ports import KnowledgeEmbeddingProvider
-from datariver.application.ports import CatalogIndexReader, ChatVectorCatalogReader
+from datariver.application.ports import (
+    CatalogIndexReader,
+    ChatRequestPerformanceObserver,
+    ChatVectorCatalogReader,
+)
 from datariver.domain.authz import SubjectAttributes
 from datariver.domain.chat import (
     MAXIMUM_CHAT_VECTOR_CANDIDATES,
     MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS,
+    ChatPerformanceMetric,
 )
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import ModelBinding, PdfPage
@@ -34,10 +40,12 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         catalog_index: CatalogIndexReader,
         embedding: KnowledgeEmbeddingProvider,
         binding: ModelBinding,
+        performance_observer: ChatRequestPerformanceObserver | None = None,
     ) -> None:
         self._catalog_index = catalog_index
         self._embedding = embedding
         self._binding = binding
+        self._performance_observer = performance_observer
 
     async def search(
         self,
@@ -51,11 +59,16 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             max(limit, 8),
             MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
+        catalog_started = perf_counter()
         page, catalog_search_scope = await self._candidate_page(
             subject=subject,
             access=access,
             question=question,
             candidate_limit=candidate_limit,
+        )
+        self._record(
+            ChatPerformanceMetric.CATALOG_DISCOVERY,
+            catalog_started,
         )
         # The catalog port is expected to honor its limit, but keep the provider batch bounded
         # even if an implementation returns an oversized page.
@@ -77,10 +90,12 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             ),
         )
         try:
+            vector_started = perf_counter()
             batch = await self._embedding.embed_pages(
                 pages=pages,
                 binding=self._binding,
             )
+            self._record(ChatPerformanceMetric.VECTOR, vector_started)
             if batch.binding.to_document() != self._binding.to_document():
                 raise ValidationError("The vector adapter returned a different embedding binding.")
             if len(batch.embeddings) != len(pages):
@@ -105,6 +120,14 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             items=tuple(candidate for _score, candidate in scored[:limit]),
             provider_invoked=True,
             catalog_search_scope=catalog_search_scope,
+        )
+
+    def _record(self, metric: ChatPerformanceMetric, started: float) -> None:
+        if self._performance_observer is None:
+            return
+        self._performance_observer.record(
+            metric=metric,
+            duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         )
 
     async def _candidate_page(

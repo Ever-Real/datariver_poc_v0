@@ -1429,6 +1429,8 @@ export interface ChatAuthorizedDiscovery {
 
 export interface ChatRequestPerformance {
   routing_ms: number | null
+  catalog_discovery_ms: number | null
+  vector_ms: number | null
   retrieval_ms: number | null
   reranking_ms: number | null
   composition_ms: number | null

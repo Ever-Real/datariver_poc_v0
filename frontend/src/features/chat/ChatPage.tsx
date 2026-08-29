@@ -943,6 +943,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
               {visiblePerformance && (
                 <dl className="chat-performance-summary" aria-label="현재 응답 처리 시간">
                   <div><dt>경로 선택</dt><dd>{visiblePerformance.routing_ms ?? '—'} ms</dd></div>
+                  <div><dt>Catalog 탐색</dt><dd>{visiblePerformance.catalog_discovery_ms ?? '—'} ms</dd></div>
+                  <div><dt>Vector</dt><dd>{visiblePerformance.vector_ms ?? '—'} ms</dd></div>
                   <div><dt>검색</dt><dd>{visiblePerformance.retrieval_ms ?? '—'} ms</dd></div>
                   <div><dt>재정렬</dt><dd>{visiblePerformance.reranking_ms ?? '—'} ms</dd></div>
                   <div><dt>답변 생성</dt><dd>{visiblePerformance.composition_ms ?? '—'} ms</dd></div>

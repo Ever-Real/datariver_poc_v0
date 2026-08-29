@@ -36,7 +36,11 @@ from datariver.application.services.chat_history import ChatHistoryService
 from datariver.application.services.chat_routing import SemanticChatQuestionRouter
 from datariver.application.services.governance_documents import GovernanceDocumentService
 from datariver.application.services.knowledge_assets import KnowledgeGraphScopeService
-from datariver.domain.chat import ChatWorkflowStage, ChatWorkflowStatus
+from datariver.domain.chat import (
+    ChatPerformanceMetric,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter, SqlSubjectReader
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.chat import (
@@ -108,6 +112,7 @@ class _ChatRequestTimingObserver:
         self._request_started = clock()
         self._stage_started: dict[ChatWorkflowStage, float] = {}
         self._duration_ms: dict[ChatWorkflowStage, int] = {}
+        self._metric_ms: dict[ChatPerformanceMetric, int] = {}
 
     def publish(self, *, event: ChatWorkflowEvent) -> None:
         now = self._clock()
@@ -119,9 +124,17 @@ class _ChatRequestTimingObserver:
         if self._delegate is not None:
             self._delegate.publish(event=event)
 
+    def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
+        self._metric_ms[metric] = max(
+            self._metric_ms.get(metric, 0),
+            max(0, duration_ms),
+        )
+
     def response(self) -> ChatRequestPerformanceResponse:
         return ChatRequestPerformanceResponse(
             routing_ms=self._duration_ms.get(ChatWorkflowStage.ROUTING),
+            catalog_discovery_ms=self._metric_ms.get(ChatPerformanceMetric.CATALOG_DISCOVERY),
+            vector_ms=self._metric_ms.get(ChatPerformanceMetric.VECTOR),
             retrieval_ms=self._duration_ms.get(ChatWorkflowStage.RETRIEVAL),
             reranking_ms=self._duration_ms.get(ChatWorkflowStage.RERANKING),
             composition_ms=self._duration_ms.get(ChatWorkflowStage.COMPOSITION),
@@ -252,6 +265,7 @@ async def _query_response(
             catalog_index=catalog_index,
             embedding=runtime.embedding,
             binding=runtime.bindings.embedding,
+            performance_observer=timing,
         )
     governance_evidence = None
     if settings.governance_document_worker_enabled and runtime is not None:
@@ -339,6 +353,7 @@ async def _query_response(
             and settings.app_env == "development"
             and "security-administrators" in context.subject.groups
         ),
+        performance_observer=timing,
     ).query(
         workspace_id=context.workspace_id,
         subject=context.subject,

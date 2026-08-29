@@ -40,6 +40,7 @@ from datariver.domain.authz import (
 )
 from datariver.domain.chat import (
     ChatAdapterState,
+    ChatPerformanceMetric,
     ChatRetrievalMode,
     ChatRouteReason,
 )
@@ -84,6 +85,14 @@ class _RouteClassifier:
         if isinstance(self._result, Exception):
             raise self._result
         return self._result
+
+
+class _PerformanceObserver:
+    def __init__(self) -> None:
+        self.values: dict[ChatPerformanceMetric, int] = {}
+
+    def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None:
+        self.values[metric] = duration_ms
 
 
 async def test_router_preserves_explicit_modes_and_uses_no_keyword_fallback() -> None:
@@ -420,10 +429,12 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
         adapter_contract="openai-compatible-embeddings-v1",
         deployment_configuration_hash="a" * 64,
     )
+    performance = _PerformanceObserver()
     reader = BoundedCatalogVectorReader(
         catalog_index=index,
         embedding=_Embedding(),
         binding=binding,
+        performance_observer=performance,
     )
 
     result = await reader.search(
@@ -439,6 +450,11 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
     assert result.catalog_search_scope.search_fields == ()
     assert index.seen_query == ""
     assert index.seen_limit == 8
+    assert performance.values.keys() == {
+        ChatPerformanceMetric.CATALOG_DISCOVERY,
+        ChatPerformanceMetric.VECTOR,
+    }
+    assert all(value >= 0 for value in performance.values.values())
 
 
 async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> None:

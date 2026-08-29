@@ -62,6 +62,8 @@ const response: ChatResponse = {
   ],
   performance: {
     routing_ms: 12,
+    catalog_discovery_ms: 18,
+    vector_ms: 20,
     retrieval_ms: 34,
     reranking_ms: 8,
     composition_ms: 120,
@@ -357,7 +359,10 @@ describe('ChatPage', () => {
     expect(await screen.findByText(/상위 7개 조회 · 추가 결과 가능/)).toHaveTextContent(
       '검색 7 · 재정렬 5 · 답변 입력 5',
     )
-    expect(screen.getByLabelText('현재 응답 처리 시간')).toHaveTextContent('전체190 ms')
+    const performance = screen.getByLabelText('현재 응답 처리 시간')
+    expect(performance).toHaveTextContent('Catalog 탐색18 ms')
+    expect(performance).toHaveTextContent('Vector20 ms')
+    expect(performance).toHaveTextContent('전체190 ms')
     expect(screen.getByLabelText('검색 후보 5 authorized_asset_5')).toHaveTextContent('기타 인가 후보')
     expect(screen.queryByRole('button', { name: '검색 후보 5 authorized_asset_5 상세 열기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '검색 후보 6 authorized_asset_6 상세 열기' })).not.toBeInTheDocument()

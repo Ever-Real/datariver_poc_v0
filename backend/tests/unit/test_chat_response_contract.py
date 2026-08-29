@@ -71,6 +71,39 @@ def test_query_discovery_envelope_is_bounded_without_invented_cardinality() -> N
     assert [item["rank"] for item in payload["items"]] == list(range(1, 21))
 
 
+def test_query_discovery_full_result_fields_remain_exact() -> None:
+    items = tuple(_evidence(f"authorized-{index}") for index in range(3))
+    discovery = ChatAuthorizedDiscovery(
+        items=items,
+        rankings=tuple(
+            ChatEvidenceRanking(
+                chunk_id=item.chunk_id,
+                rank=index,
+                retrieval_method="CATALOG_LEXICAL_V1",
+            )
+            for index, item in enumerate(items, start=1)
+        ),
+        returned_count=3,
+        limit=8,
+        truncated=False,
+        retrieved_count=3,
+        reranked_count=0,
+        answer_context_count=3,
+        catalog_search_query="authorized",
+        catalog_search_fields=(),
+    )
+
+    payload = _discovery_response(discovery).model_dump(mode="json")
+
+    assert [item["chunk_id"] for item in payload["items"]] == [str(item.chunk_id) for item in items]
+    assert payload["returned_count"] == payload["retrieved_count"] == 3
+    assert payload["limit"] == 8
+    assert payload["truncated"] is False
+    assert payload["total"] is None
+    assert payload["total_exact"] is False
+    assert payload["next_cursor"] is None
+
+
 def test_history_keeps_citations_and_omits_unpersisted_discovery() -> None:
     citation = _evidence("cited-asset")
     record = ChatMessageRecord(

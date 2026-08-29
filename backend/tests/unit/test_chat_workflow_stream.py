@@ -8,6 +8,7 @@ from uuid import uuid4
 from datariver.application.dto import ChatWorkflowEvent
 from datariver.domain.chat import (
     ChatAdapterState,
+    ChatPerformanceMetric,
     ChatRetrievalMode,
     ChatRouteReason,
     ChatWorkflowStage,
@@ -69,6 +70,7 @@ async def test_chat_workflow_stream_emits_server_events_before_final_result(
             evidence=[],
             performance=ChatRequestPerformanceResponse(total_ms=1),
         )
+
     monkeypatch.setattr(chat_routes, "_query_response", fake_query_response)
 
     frames = [
@@ -105,6 +107,9 @@ def test_chat_request_timing_observer_measures_only_server_observed_stages() -> 
             detail_code="ROUTING_IN_PROGRESS",
         )
     )
+    observer.record(metric=ChatPerformanceMetric.CATALOG_DISCOVERY, duration_ms=7)
+    observer.record(metric=ChatPerformanceMetric.VECTOR, duration_ms=11)
+    observer.record(metric=ChatPerformanceMetric.VECTOR, duration_ms=9)
     observer.publish(
         event=ChatWorkflowEvent(
             stage=ChatWorkflowStage.ROUTING,
@@ -117,4 +122,6 @@ def test_chat_request_timing_observer_measures_only_server_observed_stages() -> 
 
     assert performance.routing_ms == 25
     assert performance.retrieval_ms is None
+    assert performance.catalog_discovery_ms == 7
+    assert performance.vector_ms == 11
     assert performance.total_ms == 200

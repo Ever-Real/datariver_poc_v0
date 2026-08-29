@@ -44,3 +44,10 @@ class ChatWorkflowStatus(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
     FAILED = "FAILED"
     REFUSED = "REFUSED"
+
+
+class ChatPerformanceMetric(StrEnum):
+    """Request-only measurements that must never become persisted Chat evidence."""
+
+    CATALOG_DISCOVERY = "catalog_discovery"
+    VECTOR = "vector"

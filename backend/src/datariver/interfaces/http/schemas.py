@@ -3704,6 +3704,8 @@ class ChatRequestPerformanceResponse(BaseModel):
     """Request-only server timings; these values are never written to Chat history."""
 
     routing_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    catalog_discovery_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    vector_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     retrieval_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     reranking_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     composition_ms: int | None = Field(default=None, ge=0, le=3_600_000)

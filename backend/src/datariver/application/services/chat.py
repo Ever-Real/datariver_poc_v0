@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime
+from time import perf_counter
 from uuid import UUID
 
 from datariver.application.classification_access import (
@@ -45,6 +46,7 @@ from datariver.application.ports import (
     ChatPersistenceUnitOfWork,
     ChatQuestionRouter,
     ChatRequestBudgetGuard,
+    ChatRequestPerformanceObserver,
     ChatSessionOwnershipReader,
     ChatSubjectAccessReader,
     ChatVectorCatalogReader,
@@ -65,6 +67,7 @@ from datariver.domain.chat import (
     MAXIMUM_CHAT_VECTOR_CANDIDATES,
     MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS,
     ChatAdapterState,
+    ChatPerformanceMetric,
     ChatRetrievalMode,
     ChatWorkflowStage,
     ChatWorkflowStatus,
@@ -232,6 +235,7 @@ class ChatService:
         request_limit_per_minute: int = 30,
         token_limit_per_minute: int = 1_000_000,
         allow_ephemeral_without_retention: bool = False,
+        performance_observer: ChatRequestPerformanceObserver | None = None,
     ) -> None:
         if graph_evidence is not None and knowledge_evidence is not None:
             raise ValueError("Only one governed graph evidence adapter may be supplied.")
@@ -281,6 +285,7 @@ class ChatService:
             raise ValueError("The Chat composer and deployment provider-profile bindings differ.")
         self._question_router = question_router or DeterministicChatQuestionRouter()
         self._allow_ephemeral_without_retention = allow_ephemeral_without_retention
+        self._performance_observer = performance_observer
 
     async def query(
         self,
@@ -1299,6 +1304,7 @@ class ChatService:
         else:
             governance_items = ()
             catalog_search_scope = ChatCatalogSearchScope(query=self._search_term(question))
+            catalog_started = perf_counter()
             page = await self._catalog_index.search(
                 subject=retrieval_subject,
                 access=access,
@@ -1306,6 +1312,10 @@ class ChatService:
                 filters={},
                 cursor=None,
                 limit=discovery_limit,
+            )
+            self._record_performance(
+                metric=ChatPerformanceMetric.CATALOG_DISCOVERY,
+                started=catalog_started,
             )
             catalog_items = page.items
         catalog_evidence = await self._authorize_catalog_items(
@@ -1330,6 +1340,14 @@ class ChatService:
             retrieval_stages,
             None,
             catalog_search_scope,
+        )
+
+    def _record_performance(self, *, metric: ChatPerformanceMetric, started: float) -> None:
+        if self._performance_observer is None:
+            return
+        self._performance_observer.record(
+            metric=metric,
+            duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         )
 
     @staticmethod

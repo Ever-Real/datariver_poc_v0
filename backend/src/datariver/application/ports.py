@@ -131,7 +131,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.chat import ChatRetrievalMode
+from datariver.domain.chat import ChatPerformanceMetric, ChatRetrievalMode
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
@@ -2279,6 +2279,12 @@ class ChatWorkflowProgressObserver(Protocol):
     """Receive non-persisted, server-observed Chat workflow transitions."""
 
     def publish(self, *, event: ChatWorkflowEvent) -> None: ...
+
+
+class ChatRequestPerformanceObserver(Protocol):
+    """Collect bounded request-local latency without persisting provider telemetry."""
+
+    def record(self, *, metric: ChatPerformanceMetric, duration_ms: int) -> None: ...
 
 
 class ChatVectorCatalogReader(Protocol):
