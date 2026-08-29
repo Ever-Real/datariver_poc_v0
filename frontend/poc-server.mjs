@@ -153,6 +153,7 @@ const catalogEmbeddingRefreshIntervalMs = 15 * 60 * 1000
 const maximumCatalogQueryTerms = 12
 const maximumCatalogQueryTermLength = 120
 const maximumChatEvidenceItems = 20
+const minimumChatDiscoveryItems = 8
 const maximumChatQuestionCharacters = 12_000
 const maximumChatMemoryCharacters = 16_000
 const maximumChatMemorySummaryCharacters = 5_000
@@ -5709,6 +5710,25 @@ function chatRetrievalQueries(question) {
     .slice(0, 4)
 }
 
+function chatCatalogNameAnchor(question) {
+  const identifierCandidates = [...question.matchAll(/[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+/g)]
+    .map((match) => match[0])
+    .filter((value) => value.length <= 100)
+  const mixedLanguageCandidates = [...question.matchAll(/[A-Za-z][A-Za-z0-9]{2,99}(?=[가-힣])/gu)]
+    .map((match) => match[0])
+  return [...identifierCandidates, ...mixedLanguageCandidates]
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0] || ''
+}
+
+function chatCatalogSearchScope(question, evidence) {
+  if (!evidence.some((item) => isCanonicalDatahubDatasetUrn(item?.external_urn || item?.id))) return null
+  const anchor = chatCatalogNameAnchor(question)
+  return {
+    query: anchor,
+    search_fields: anchor ? ['TABLE'] : [],
+  }
+}
+
 function normalizedCatalogIdentifier(value) {
   return String(value || '').normalize('NFKC').trim().toLocaleLowerCase()
 }
@@ -5973,6 +5993,29 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal, si
     if (results.size >= evidenceLimit) break
   }
   return [...results.values()].slice(0, entityResolutionLimit)
+}
+
+async function detailedChatAnswerEvidence(items, principal) {
+  return Promise.all(items.map(async (item) => {
+    const urn = item?.external_urn || item?.id
+    if (item?.extraction_method !== 'DATAHUB_GMS_VECTOR_INDEX'
+      || !isCanonicalDatahubDatasetUrn(urn)) return item
+    try {
+      const detail = await datahubAssetAll(urn)
+      if (!canReadAsset(principal, detail, 'chat')) return null
+      return {
+        ...publicDatahubAsset(detail),
+        provider_description: detail.description,
+        evidence_type: 'CATALOG_METADATA',
+        extraction_method: 'DATAHUB_GMS_VECTOR_RESOLVED_DETAIL',
+        retrieval_method: item.retrieval_method,
+        similarity: item.similarity,
+        description: catalogDetailEvidence(detail),
+      }
+    } catch {
+      return item
+    }
+  })).then((resolved) => resolved.filter(Boolean))
 }
 
 function knowledgeAssetSearchTokens(value) {
@@ -6666,6 +6709,18 @@ function publicChatEvidence(items) {
   }))
 }
 
+function publicChatDiscovery(discovery) {
+  if (!discovery) return null
+  return {
+    ...discovery,
+    items: publicChatEvidence(discovery.items).map((item) => (
+      isCanonicalDatahubDatasetUrn(item.resource_id)
+        ? { ...item, source_type: 'CATALOG_ASSET' }
+        : item
+    )),
+  }
+}
+
 function persistedChatMemory(messages) {
   const turns = []
   for (let index = 0; index < messages.length - 1; index += 1) {
@@ -6749,6 +6804,14 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       route,
       workflow: clarificationChatWorkflow(route),
       evidence: [],
+      discovery: null,
+      performance: {
+        routing_ms: route.latency_ms.routing,
+        retrieval_ms: null,
+        reranking_ms: null,
+        composition_ms: null,
+        total_ms: Math.max(0, Math.round(performance.now() - totalStarted)),
+      },
     }
   }
   let evidence = []
@@ -6757,6 +6820,10 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
   let compositionLlmCalls = 0
   const retrievalStarted = performance.now()
   const evidenceLimit = requestedChatEvidenceLimit(resolvedQuestion)
+  const discoveryLimit = Math.min(
+    maximumChatEvidenceItems,
+    Math.max(evidenceLimit * 4, minimumChatDiscoveryItems),
+  )
   if (route.selected_mode === 'GENERAL') {
     progress('RETRIEVAL', 'SKIPPED', 'RETRIEVAL_NOT_EXECUTED')
   } else {
@@ -6780,14 +6847,14 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     evidence = knowledgeMainChatEvidence(knowledgeSelection, result)
     knowledgeAnswer = result.answer
   } else if (route.selected_mode === 'VECTOR' && route.entity_type_hints.includes('KNOWLEDGE_ASSET')) {
-    evidence = await managedK9AssetMetadataEvidence(route, context, evidenceLimit)
+    evidence = await managedK9AssetMetadataEvidence(route, context, discoveryLimit)
   } else if (datahub && route.selected_mode !== 'GENERAL') {
     if (route.intent === 'CATALOG_INVENTORY') {
       const inventory = await datahubInventoryEvidence(resolvedQuestion, principal)
       inventoryRequest = inventory.request
       evidence = inventory.evidence
     } else {
-      evidence = await datahubChatEvidence(resolvedQuestion, route, evidenceLimit, principal, signal)
+      evidence = await datahubChatEvidence(resolvedQuestion, route, discoveryLimit, principal, signal)
     }
   }
   if (!knowledgeSelection && route.selected_mode === 'GRAPH' && datahub) {
@@ -6812,7 +6879,11 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     },
   }
   let rerankingState = 'NOT_USED'
+  let rerankingMilliseconds = null
+  let rerankedCount = 0
+  let rerankedIds = new Set()
   if (route.semantic_retrieval_required && route.selected_mode !== 'GRAPH' && llm.reranker && evidence.length > 1) {
+    const rerankingStarted = performance.now()
     progress('RERANKING', 'IN_PROGRESS', 'RERANKING_IN_PROGRESS')
     try {
       const rerankResponse = await llmRequest(llm.reranker, '/rerank', {
@@ -6823,8 +6894,12 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       }, 10_000, signal)
       const indices = (rerankResponse.results || rerankResponse.data || []).map((item) => Number(item.index))
       const ordered = indices.map((index) => evidence[index]).filter(Boolean)
-      if (!ordered.length) throw new Error('The reranker returned no usable ordering.')
-      evidence = ordered
+      if (!ordered.length || new Set(ordered.map((item) => item.id)).size !== ordered.length) {
+        throw new Error('The reranker returned no usable ordering.')
+      }
+      rerankedIds = new Set(ordered.map((item) => item.id))
+      evidence = [...ordered, ...evidence.filter((item) => !rerankedIds.has(item.id))]
+      rerankedCount = ordered.length
       rerankingState = 'COMPLETED'
       progress('RERANKING', 'COMPLETED', 'RERANKING_COMPLETED')
     } catch (error) {
@@ -6833,6 +6908,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
       // deterministic DataHub order when an optional reranker is unavailable.
       rerankingState = 'FAILED_OPEN'
       progress('RERANKING', 'SKIPPED', 'RERANKER_UNAVAILABLE_LEXICAL_ORDER_USED')
+    } finally {
+      rerankingMilliseconds = Math.max(0, Math.round(performance.now() - rerankingStarted))
     }
   } else {
     progress('RERANKING', 'SKIPPED', 'RERANKING_NOT_USED')
@@ -6841,11 +6918,37 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     ...item,
     evidence_type: item.evidence_type || 'CATALOG_ASSET',
     extraction_method: item.extraction_method || 'DATAHUB_GMS',
-    retrieval_method: item.retrieval_method || (rerankingState === 'COMPLETED' ? 'RERANKED' : route.selected_mode),
+    retrieval_method: rerankedIds.has(item.id)
+      ? 'RERANKED'
+      : item.retrieval_method || route.selected_mode,
   }))
+  const retrievedCount = evidence.length
+  const catalogSearchScope = route.selected_mode === 'VECTOR'
+    && route.intent !== 'CATALOG_INVENTORY'
+    && !route.entity_type_hints.includes('KNOWLEDGE_ASSET')
+    ? chatCatalogSearchScope(resolvedQuestion, evidence)
+    : null
+  const discovery = catalogSearchScope ? {
+    items: evidence,
+    returned_count: evidence.length,
+    limit: discoveryLimit,
+    truncated: evidence.length >= discoveryLimit,
+    retrieved_count: retrievedCount,
+    reranked_count: rerankedCount,
+    answer_context_count: Math.min(evidenceLimit, evidence.length),
+    catalog_search_query: catalogSearchScope.query,
+    catalog_search_fields: catalogSearchScope.search_fields,
+    total: null,
+    total_exact: false,
+    next_cursor: null,
+  } : null
+  if (catalogSearchScope) {
+    evidence = await detailedChatAnswerEvidence(evidence.slice(0, evidenceLimit), principal)
+  }
   const evidenceContext = evidence.map((item, index) => `[${index + 1}] (${item.evidence_type}) ${item.name}: ${item.description}`).join('\n')
   const conversationContext = chatMemoryText(memory)
   progress('COMPOSITION', 'IN_PROGRESS', 'COMPOSITION_IN_PROGRESS')
+  const compositionStarted = performance.now()
   let answer
   if (knowledgeAnswer) {
     answer = knowledgeAnswer
@@ -6885,6 +6988,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     }
   }
   progress('COMPOSITION', 'COMPLETED', 'POC_LIVE_PROVIDER')
+  const compositionMilliseconds = Math.max(0, Math.round(performance.now() - compositionStarted))
   const validatedAnswer = evidence.length
     ? answer.trim()
     : answer.replace(/\s*\[\d+\]/g, '').trim()
@@ -6907,6 +7011,14 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     route,
     workflow: completedChatWorkflow(route, evidence.length, rerankingState),
     evidence,
+    discovery,
+    performance: {
+      routing_ms: route.latency_ms.routing,
+      retrieval_ms: route.selected_mode === 'GENERAL' ? null : route.latency_ms.retrieval,
+      reranking_ms: rerankingMilliseconds,
+      composition_ms: compositionMilliseconds,
+      total_ms: route.latency_ms.total,
+    },
   }
 }
 
@@ -11315,7 +11427,11 @@ async function api(request, response, url, context) {
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(body.mode) ? body.mode : 'AUTO'
     const memory = chatMemoryPayload(body.memory)
     if (!question.trim()) return problem(response, 400, 'QUESTION_REQUIRED', 'A non-empty question is required.')
-    return json(response, 200, await liveChat(question, mode, undefined, memory, context))
+    const result = await liveChat(question, mode, undefined, memory, context)
+    return json(response, 200, {
+      ...result,
+      discovery: publicChatDiscovery(result.discovery),
+    })
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/llm/chat/compact') {
     const body = await bodyJson(request)
@@ -11396,6 +11512,8 @@ async function api(request, response, url, context) {
         route: result.route,
         workflow,
         evidence,
+        discovery: publicChatDiscovery(result.discovery),
+        performance: result.performance,
       })
     } catch (error) {
       if (!controller.signal.aborted) writeEventStream(response, 'error', {

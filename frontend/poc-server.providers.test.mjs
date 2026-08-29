@@ -923,7 +923,19 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(payload.answer, 'Live provider answer [1]')
   assert.equal(payload.route.selected_mode, 'VECTOR')
   assert.equal(payload.evidence[0].evidence_type, 'CATALOG_METADATA')
-  assert.equal(payload.evidence[0].retrieval_method, 'PGVECTOR_COSINE')
+  assert.equal(payload.evidence[0].retrieval_method, 'RERANKED')
+  assert.equal(payload.discovery.catalog_search_query, '')
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.equal(payload.discovery.total, null)
+  assert.equal(payload.discovery.total_exact, false)
+  assert.equal(payload.discovery.next_cursor, null)
+  assert.ok(payload.discovery.items.length >= payload.evidence.length)
+  assert.ok(payload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
+  assert.ok(payload.performance.total_ms >= 0)
+  assert.ok(payload.performance.routing_ms >= 0)
+  assert.ok(payload.performance.retrieval_ms >= 0)
+  assert.ok(payload.performance.reranking_ms >= 0)
+  assert.ok(payload.performance.composition_ms >= 0)
   for (const path of ['/embeddings', '/rerank', '/chat/completions']) {
     assert.ok(requests.some((request) => request.path.endsWith(path)))
   }
@@ -985,6 +997,10 @@ test('streams approved answer deltas before the persisted final provider result'
   assert.match(frames.at(-1) || '', /^event: result\ndata: /)
   assert.match(frames.at(-1) || '', /"persistence":"PERSISTED"/)
   const resultPayload = JSON.parse((frames.at(-1) || '').split('\ndata: ')[1])
+  assert.equal(resultPayload.discovery.catalog_search_query, 'wafer_events')
+  assert.deepEqual(resultPayload.discovery.catalog_search_fields, ['TABLE'])
+  assert.ok(resultPayload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
+  assert.ok(resultPayload.performance.total_ms >= 0)
   const sessionsResponse = await fetch(`${pocOrigin}/poc-api/chat/sessions`)
   assert.equal(sessionsResponse.status, 200)
   const sessions = await sessionsResponse.json()
@@ -1075,10 +1091,31 @@ test('routes a high-confidence Korean discovery question to the full vector inve
   assert.equal(payload.route.selected_mode, 'VECTOR')
   assert.equal(payload.route.intent, 'SEMANTIC_DISCOVERY')
   assert.ok(payload.evidence.length > 0)
-  assert.ok(payload.evidence.every((item) => item.retrieval_method === 'PGVECTOR_COSINE'))
+  assert.ok(payload.evidence.every((item) => ['RERANKED', 'PGVECTOR_COSINE'].includes(item.retrieval_method)))
+  assert.equal(payload.discovery.catalog_search_query, '')
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.ok(payload.discovery.returned_count >= payload.evidence.length)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Plan one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore + 1)
+})
+
+test('hands an identifier-scoped vector result to the exact authorized Catalog candidate scope', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'inspection_results 테이블을 찾아줘', mode: 'VECTOR' }),
+  })
+  assert.equal(response.status, 200, await response.clone().text())
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.discovery.catalog_search_query, 'inspection_results')
+  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
+  assert.deepEqual(payload.discovery.items.map((item) => item.resource_id), [
+    'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)',
+  ])
+  assert.equal(payload.discovery.total, null)
+  assert.equal(payload.discovery.next_cursor, null)
 })
 
 test('retrieves Knowledge Graph Asset metadata from the authorized managed registry instead of DataHub tables', async () => {
@@ -2214,6 +2251,7 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     assert.equal(unauthorizedAuto.status, 200, await unauthorizedAuto.clone().text())
     const unauthorizedAutoPayload = await unauthorizedAuto.json()
     assert.ok(unauthorizedAutoPayload.evidence.every((item) => item.id !== inspectionUrn && item.name !== 'inspection_results'))
+    assert.ok(unauthorizedAutoPayload.discovery.items.every((item) => item.resource_id !== inspectionUrn && item.name !== 'inspection_results'))
     assert.doesNotMatch(JSON.stringify(unauthorizedAutoPayload), /MANUFACTURING\.QUALITY\.inspection_results/)
 
     const deniedPolicy = structuredClone(allowedPolicy)
