@@ -425,7 +425,10 @@ function providerHandler(request, response) {
                 total: 2,
                 relationships: [{
                   type: 'RelatedTo', direction: 'OUTGOING',
-                  entity: { urn: 'urn:li:glossaryTerm:substrate', type: 'GLOSSARY_TERM' },
+                  entity: {
+                    urn: 'urn:li:glossaryTerm:substrate', type: 'GLOSSARY_TERM',
+                    properties: { name: 'Substrate' },
+                  },
                 }],
               },
             } },
@@ -819,6 +822,7 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(glossary.currentness.atomic_snapshot, false)
   assert.equal(glossary.items[0].relationship_count, 2)
   assert.equal(glossary.items[0].relationships.length, 1)
+  assert.equal(glossary.items[0].relationships[0].target_name, 'Substrate')
   assert.equal(glossary.items[0].relationships_truncated, true)
   const glossaryPageOne = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?limit=1`)).json()
   assert.equal(glossaryPageOne.items.length, 1)

@@ -2092,7 +2092,14 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
             includeSoftDelete: false
           }) {
             total
-            relationships { type direction entity { urn type } }
+            relationships {
+              type direction
+              entity {
+                urn type
+                ... on GlossaryTerm { properties { name } }
+                ... on GlossaryNode { properties { name } }
+              }
+            }
           }
         }
         ... on GlossaryNode {
@@ -2121,7 +2128,14 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
             includeSoftDelete: false
           }) {
             total
-            relationships { type direction entity { urn type } }
+            relationships {
+              type direction
+              entity {
+                urn type
+                ... on GlossaryTerm { properties { name } }
+                ... on GlossaryNode { properties { name } }
+              }
+            }
           }
         }
       }
@@ -2178,7 +2192,14 @@ query DataRiverPocGlossaryTermByUrn($urn: String!) {
         includeSoftDelete: false
       }) {
         total
-        relationships { type direction entity { urn type } }
+        relationships {
+          type direction
+          entity {
+            urn type
+            ... on GlossaryTerm { properties { name } }
+            ... on GlossaryNode { properties { name } }
+          }
+        }
       }
     }
   }
@@ -4241,6 +4262,34 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
   }
 }
 
+export function reconcileDatahubGlossaryScrollPage(page, state = {}) {
+  const priorTotal = state.total
+  const priorFetched = Number.isSafeInteger(state.fetched) && state.fetched >= 0 ? state.fetched : 0
+  const priorCursor = typeof state.cursor === 'string' && state.cursor ? state.cursor : null
+  if (!page || typeof page !== 'object' || !Array.isArray(page.searchResults)
+    || !Number.isSafeInteger(page.count) || page.count < 0
+    || !Number.isSafeInteger(page.total) || page.total < 0
+    || page.count !== page.searchResults.length
+    || (priorTotal !== undefined && priorTotal !== null && page.total !== priorTotal)) {
+    throw Object.assign(new Error('DataHub glossary pagination metadata changed during the bounded read.'), { statusCode: 502 })
+  }
+  const fetched = priorFetched + page.searchResults.length
+  if (fetched > page.total) {
+    throw Object.assign(new Error('DataHub glossary pagination exceeded the reported total.'), { statusCode: 502 })
+  }
+  const cursor = typeof page.nextScrollId === 'string' && page.nextScrollId
+    ? page.nextScrollId
+    : null
+  const complete = fetched === page.total
+  if ((!complete && !cursor) || (cursor && cursor === priorCursor)) {
+    throw Object.assign(new Error('DataHub glossary pagination did not make progress.'), { statusCode: 502 })
+  }
+  if (complete && cursor) {
+    throw Object.assign(new Error('DataHub glossary pagination continued after the reported total.'), { statusCode: 502 })
+  }
+  return { total: page.total, fetched, cursor, complete }
+}
+
 async function datahubGlossary(searchParameters, principal) {
   const normalizeGlossarySearch = (value) => boundedString(value, 500)
     .normalize('NFKC').toLocaleLowerCase().replace(/[_.-]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -4258,6 +4307,7 @@ async function datahubGlossary(searchParameters, principal) {
   const terms = []
   const observed = new Set()
   let providerCursor
+  let providerScroll = { total: undefined, fetched: 0, cursor: null, complete: false }
   for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
     const input = {
       types: ['GLOSSARY_TERM'], query: '*', count: 250, keepAlive: '1m',
@@ -4267,7 +4317,8 @@ async function datahubGlossary(searchParameters, principal) {
     }
     const data = await datahubGraphql(datahubGlossaryQuery, { input })
     const page = data.scrollAcrossEntities
-    for (const result of page?.searchResults || []) {
+    providerScroll = reconcileDatahubGlossaryScrollPage(page, providerScroll)
+    for (const result of page.searchResults) {
       const entity = result.entity
       const urn = entity?.urn
       const name = entity?.properties?.name || entity?.hierarchicalName || urnTail(urn)
@@ -4300,6 +4351,9 @@ async function datahubGlossary(searchParameters, principal) {
           direction: relationship.direction,
           target_urn: relationship.entity.urn,
           target_type: relationship.entity.type,
+          target_name: typeof relationship.entity.properties?.name === 'string'
+            ? relationship.entity.properties.name
+            : null,
         }]
       })
       terms.push({
@@ -4323,14 +4377,11 @@ async function datahubGlossary(searchParameters, principal) {
         relationships_truncated: relationships.length < relationshipTotal,
       })
     }
-    const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
-      ? page.nextScrollId
-      : undefined
-    if (!nextProviderCursor) break
-    if (nextProviderCursor === providerCursor) {
-      throw Object.assign(new Error('DataHub glossary returned a repeated scroll cursor.'), { statusCode: 502 })
-    }
-    providerCursor = nextProviderCursor
+    if (providerScroll.complete) break
+    providerCursor = providerScroll.cursor
+  }
+  if (!providerScroll.complete) {
+    throw Object.assign(new Error('DataHub glossary pagination exceeded its bound.'), { statusCode: 502 })
   }
   const sorted = terms.sort((left, right) => (
     left.name.localeCompare(right.name) || left.urn.localeCompare(right.urn)

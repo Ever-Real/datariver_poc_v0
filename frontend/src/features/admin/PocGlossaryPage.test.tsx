@@ -24,7 +24,7 @@ describe('PocGlossaryPage', () => {
         relationship_count: 1,
         relationships: [{
           type: 'RelatedTo', direction: 'OUTGOING',
-          target_urn: 'urn:li:glossaryTerm:substrate', target_type: 'GLOSSARY_TERM',
+          target_urn: 'urn:li:glossaryTerm:substrate', target_type: 'GLOSSARY_TERM', target_name: 'Substrate',
         }],
         relationships_truncated: false,
       }
@@ -85,6 +85,7 @@ describe('PocGlossaryPage', () => {
     expect(await screen.findByText('postgres.MANUFACTURING.QUALITY.wafer_events.wafer_id')).toBeInTheDocument()
     expect(screen.getByText(/DataHub Glossary Term은 leaf/)).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '선택 용어의 DataHub 직접 관계' })).toHaveTextContent('RelatedTo')
+    expect(screen.getByRole('region', { name: '선택 용어의 DataHub 직접 관계' })).toHaveTextContent('Substrate')
     expect(screen.getByText(/atomic snapshot으로 간주하지 않습니다/)).toBeInTheDocument()
   })
 })

@@ -520,7 +520,7 @@ export function KnowledgeRegistry({
                   <button className="button button-primary" type="button" onClick={() => onCreate()}>
                     <Plus size={14} /> 일반 에셋 추가
                   </button>
-                  <p className="m-0 max-w-xl text-[10px] text-slate-500">
+                  <p className="m-0 max-w-xl text-xs text-slate-500">
                     Metadata Lineage와 Data Glossary 기본 graph는 승인된 managed policy bootstrap이 동일 identity로 생성합니다. 일반 Studio 생성으로 중복 default graph를 만들지 않습니다.
                   </p>
                 </div>

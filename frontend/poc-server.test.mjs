@@ -204,6 +204,36 @@ test('managed K9 resume reports an active descendant attempt instead of a retain
   assert.equal(summary.semantic_index_status, 'PENDING')
 })
 
+test('DataHub glossary scroll reconciliation rejects unstable or truncated provider pages', async () => {
+  const { reconcileDatahubGlossaryScrollPage } = await import('./poc-server.mjs?glossary-scroll-reconciliation')
+  const first = reconcileDatahubGlossaryScrollPage({
+    count: 1,
+    total: 2,
+    nextScrollId: 'page-2',
+    searchResults: [{ entity: { urn: 'urn:li:glossaryTerm:first' } }],
+  })
+  assert.deepEqual(first, { total: 2, fetched: 1, cursor: 'page-2', complete: false })
+  assert.deepEqual(reconcileDatahubGlossaryScrollPage({
+    count: 1,
+    total: 2,
+    nextScrollId: null,
+    searchResults: [{ entity: { urn: 'urn:li:glossaryTerm:second' } }],
+  }, first), { total: 2, fetched: 2, cursor: null, complete: true })
+
+  assert.throws(() => reconcileDatahubGlossaryScrollPage({
+    count: 1, total: 3, nextScrollId: 'page-3', searchResults: [{}],
+  }, first), /metadata changed/)
+  assert.throws(() => reconcileDatahubGlossaryScrollPage({
+    count: 1, total: 2, nextScrollId: null, searchResults: [{}],
+  }), /did not make progress/)
+  assert.throws(() => reconcileDatahubGlossaryScrollPage({
+    count: 2, total: 2, nextScrollId: null, searchResults: [{}],
+  }), /metadata changed/)
+  assert.throws(() => reconcileDatahubGlossaryScrollPage({
+    count: 1, total: 1, nextScrollId: 'unexpected', searchResults: [{}],
+  }), /continued after/)
+})
+
 test('managed K9 source failure exposes only bounded durable source diagnostics', async () => {
   const { managedK9AssetSummary } = await import('./poc-server.mjs?k9-source-diagnostic-summary')
   const summary = managedK9AssetSummary({

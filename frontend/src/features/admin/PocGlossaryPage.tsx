@@ -44,6 +44,7 @@ interface PocGlossaryTerm {
     direction: string
     target_urn: string
     target_type: 'GLOSSARY_TERM' | 'GLOSSARY_NODE'
+    target_name: string | null
   }>
   relationships_truncated: boolean
 }
@@ -264,8 +265,8 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
             {selectedTerm.relationships.length > 0 && <section aria-label="선택 용어의 DataHub 직접 관계">
               <h3>직접 관계</h3>
               <ul className="poc-glossary-assets">{selectedTerm.relationships.map((relationship) => <li key={`${relationship.type}:${relationship.direction}:${relationship.target_urn}`}>
-                <strong>{relationship.type}</strong>
-                <span><span className="badge badge-soft">{relationship.direction}</span>{relationship.target_type}</span>
+                <strong>{relationship.target_name ?? relationship.target_urn}</strong>
+                <span><span className="badge badge-soft">{relationship.direction}</span>{relationship.type} · {relationship.target_type}</span>
                 <small>{relationship.target_urn}</small>
               </li>)}</ul>
               {selectedTerm.relationships_truncated && <p className="poc-glossary-empty">전체 관계는 K9 collector의 bounded provider pagination에서 검증하며, 이 화면은 현재 DataHub 응답에 포함된 관계만 표시합니다.</p>}
