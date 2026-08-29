@@ -281,7 +281,7 @@ function CurrentWeekChangeSummary({
   loading: boolean
   error: unknown
 }) {
-  if (loading && !summary) return <DashboardLoading label="이번 주 변경 원장 요약을 조회하고 있습니다." />
+  if (loading && !summary) return <DashboardLoading label="이번 주 데이터 변경 요약을 조회하고 있습니다." />
   if (error || !summary) {
     return (
       <div className="dashboard-audit-unavailable" role="alert">
@@ -290,9 +290,9 @@ function CurrentWeekChangeSummary({
           <strong>이번 주 데이터 변경을 표시할 수 없습니다.</strong>
           <p>{changeSummaryUnavailableText(error)}</p>
           <div className="dashboard-operation-grid" aria-label="사용할 수 없는 이번 주 변경 집계">
-            <OperationFact label="Distinct normalized total" value="—" />
-            <OperationFact label="Schema changes" value="—" />
-            <OperationFact label="Metadata changes" value="—" />
+            <OperationFact label="전체 변경" value="—" />
+            <OperationFact label="스키마 변경" value="—" />
+            <OperationFact label="메타데이터 변경" value="—" />
           </div>
         </div>
       </div>
@@ -304,17 +304,18 @@ function CurrentWeekChangeSummary({
   return (
     <div aria-label="현재 사용자 권한 범위의 이번 주 데이터 변경">
       <p className="dashboard-contract-note">
-        현재 사용자가 열람 권한을 가진, Table↔System이 정확히 매핑된 Table 범위 · change.read
+        현재 사용자가 열람할 수 있으며 시스템에 정확히 연결된 테이블만 집계합니다.
+        동일한 원본 변경에서 파생된 중복 항목은 한 건으로 계산합니다.
       </p>
       <p>
-        집계 구간 <strong>{`[${summary.week_start} 00:00, ${summary.week_end_exclusive} 00:00) KST (Asia/Seoul)`}</strong>
+        집계 구간 <strong>{`[${summary.week_start} 00:00, ${summary.week_end_exclusive} 00:00) KST (${summary.timezone})`}</strong>
       </p>
-      <div className="dashboard-operation-grid" aria-label="이번 주 distinct normalized change transaction 집계">
-        <OperationFact label="Distinct normalized total" value={summary.total_count.toLocaleString()} />
-        <OperationFact label="Schema changes" value={summary.schema_change_count.toLocaleString()} />
-        <OperationFact label="Metadata changes" value={summary.metadata_change_count.toLocaleString()} />
+      <div className="dashboard-operation-grid" aria-label="이번 주 중복 제거 데이터 변경 집계">
+        <OperationFact label="전체 변경" value={summary.total_count.toLocaleString()} />
+        <OperationFact label="스키마 변경" value={summary.schema_change_count.toLocaleString()} />
+        <OperationFact label="메타데이터 변경" value={summary.metadata_change_count.toLocaleString()} />
       </div>
-      <div className="dashboard-capabilities" aria-label="변경 원장 캡처 및 동기화 상태">
+      <div className="dashboard-capabilities" aria-label="변경 이력 캡처 및 동기화 상태">
         <StatusFact label="캡처 상태" value={summary.capture_state} />
         <StatusFact label="동기화 상태" value={summary.sync_status} />
       </div>
@@ -325,7 +326,7 @@ function CurrentWeekChangeSummary({
       )}
       {incompleteHistory && (
         <p className="notice" role="status">
-          이 주의 시작부터 연속된 완전한 이력은 보장되지 않습니다. 원장 보장 시작: {formatKstTimestamp(summary.ledger_guarantee_from)}
+          이 주의 시작부터 연속된 완전한 이력은 보장되지 않습니다. 완전성 보장 시작: {formatKstTimestamp(summary.ledger_guarantee_from)}
         </p>
       )}
     </div>
@@ -340,7 +341,7 @@ function StatusFact({ label, value }: { label: string; value: ChangeHistorySyncS
   const healthy = value === 'CONTIGUOUS_CAPTURE_RECORDED'
   return (
     <span className={`dashboard-capability ${healthy ? 'state-healthy' : 'state-unavailable'}`}>
-      <i aria-hidden="true" /><b>{label}</b><small>{syncStatusLabel(value)} · {value}</small>
+      <i aria-hidden="true" /><b>{label}</b><small>{syncStatusLabel(value)}</small>
     </span>
   )
 }
@@ -571,7 +572,7 @@ function syncStatusLabel(value: ChangeHistorySyncStatus): string {
 
 function changeSummaryUnavailableText(error: unknown): string {
   if (error instanceof ApiError && [401, 403].includes(error.problem.status)) {
-    return '현재 사용자의 change.read 권한 범위에서는 이 집계를 조회할 수 없습니다. 다른 데이터 카드에는 영향을 주지 않습니다.'
+    return '현재 사용자에게 이번 주 데이터 변경을 열람할 권한이 없습니다. 다른 데이터 카드에는 영향을 주지 않습니다.'
   }
-  return '권한 필터가 적용된 변경 이력 원장을 현재 사용할 수 없습니다. 0건으로 해석하지 않습니다.'
+  return '권한 필터가 적용된 변경 이력을 현재 사용할 수 없습니다. 0건으로 해석하지 않습니다.'
 }
