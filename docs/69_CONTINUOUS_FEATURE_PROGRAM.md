@@ -142,6 +142,14 @@ Control Plane.
   `docs/evidence/wave-a-foundation/README.md`. Wave A remains
   `LOCAL_VERIFIED` until the existing accepted TEST state is redeployed without
   build/reset/resecret and passes 6/6 smoke plus affected browser/API checks.
+- Wave B Product `e131550b7fa441de85ded5b7b55083d77b8c643e`
+  has `15/17` Epics locally verified. Home coverage/CR overview, Profile cleanup,
+  Admin connection/system-code/permissions/site-branding, Monitoring dashboard
+  persistence, and all seven Search Epics passed their focused and integrated
+  gates. `AC-01` remains `NEEDS_DECISION` for a canonical immutable local-auth
+  audit-event sink; `HM-03` remains `NEEDS_DECISION` for an honest historical
+  trend read model. The exact Wave B archive is pinned in `release.json`, while
+  TEST PC acceptance remains `BLOCKED_EXTERNAL`.
 
 ## Release and TEST PC checkpoints
 

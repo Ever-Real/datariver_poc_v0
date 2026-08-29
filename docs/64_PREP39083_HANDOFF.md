@@ -6,8 +6,8 @@ The machine-readable accepted release is
 `deploy/prep39083/release.json`. At this checkpoint it identifies:
 
 ```text
-Product  5ab575ffa3a0f8dba7657245de182ae940fdb325
-Evidence da2452c9d85d4d5475658c92d45599d7bb8c3cab
+Product  e131550b7fa441de85ded5b7b55083d77b8c643e
+Evidence 434ea531e1fcde7b0927a69e310ec4caea6cdb6d
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
@@ -156,6 +156,14 @@ awaited and version-verified; it does not reset the ledger, checkpoint, or disco
 identity.
 
 ## Current hotfix evidence
+
+The current development Handoff adds the Wave B core user workflows recorded
+in [`docs/evidence/wave-b-core-user-workflows/README.md`](evidence/wave-b-core-user-workflows/README.md).
+Its exact ignored archive is pinned by `release.json`; TEST PC validation is
+`BLOCKED_EXTERNAL`, and this development Handoff does not claim Actual PREP or
+OPS execution. The canonical deployment command and all existing no-build,
+ownership, schema-integrity, provider, smoke, and non-destructive resume
+contracts remain unchanged.
 
 The current hotfix evidence is
 [`docs/evidence/prep-unknown-state-portability-correction/README.md`](evidence/prep-unknown-state-portability-correction/README.md).
