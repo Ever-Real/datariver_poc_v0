@@ -97,7 +97,8 @@ describe('MonitoringPage', () => {
     expect(frame).toHaveAttribute('src', 'https://grafana.example/d/datahub')
     expect(frame).toHaveAttribute('sandbox', 'allow-forms allow-same-origin allow-scripts')
     expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer')
-    expect(frame).toHaveStyle({ height: '1040px' })
+    expect(frame).toHaveAttribute('height', '1040')
+    expect(frame).not.toHaveAttribute('style')
   })
 
   it('frames an administrator-approved non-Grafana dashboard link', async () => {

@@ -388,10 +388,7 @@ export function MonitoringPage({
 function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboard }) {
   if (dashboard.embed_state === 'AVAILABLE' && dashboard.embed_url) {
     return (
-      <div
-        className="monitoring-approved-embed"
-        style={{ minHeight: dashboard.height_px + 43 }}
-      >
+      <div className="monitoring-approved-embed">
         <div className="monitoring-embed-notice">
           <span>
             <Monitor size={20} aria-hidden="true" />
@@ -416,7 +413,7 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
           referrerPolicy="no-referrer"
           sandbox="allow-forms allow-same-origin allow-scripts"
           src={dashboard.embed_url}
-          style={{ height: dashboard.height_px }}
+          height={dashboard.height_px}
           title={`${dashboard.label} Monitoring Dashboard`}
         />
       </div>
