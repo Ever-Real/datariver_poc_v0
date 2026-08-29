@@ -57,7 +57,8 @@ it('previews exact selected vocabulary then bulk-approves through a confirmed go
       auto_application: 'DISABLED_NEEDS_DECISION',
     })
     if (path === '/catalog/metadata-recommendations/approve') {
-      const submitted = JSON.parse(String(options?.body)) as { targets: unknown[] }
+      expect(typeof options?.body).toBe('string')
+      const submitted = JSON.parse(typeof options?.body === 'string' ? options.body : '') as { targets: unknown[] }
       expect(submitted.targets).toHaveLength(2)
       const changeRequestId = '01900000-0000-7000-8000-000000000030'
       return Promise.resolve({
@@ -82,7 +83,8 @@ it('previews exact selected vocabulary then bulk-approves through a confirmed go
 
   await waitFor(() => expect(screen.getByRole('button', { name: '선택 승인 요청 (2)' })).toBeEnabled())
   const previewCall = request.mock.calls.find(([path]) => String(path).endsWith('/metadata-recommendation-previews'))
-  expect(JSON.parse(String(previewCall?.[1]?.body))).toEqual({
+  expect(typeof previewCall?.[1]?.body).toBe('string')
+  expect(JSON.parse(typeof previewCall?.[1]?.body === 'string' ? previewCall[1].body : '')).toEqual({
     source_version: 'catalog-v1', field_path: null, vocabulary_ids: [tagId, termId],
   })
   fireEvent.click(screen.getByRole('button', { name: '선택 승인 요청 (2)' }))
