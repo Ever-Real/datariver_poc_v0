@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Network, X } from 'lucide-react'
+import { ChevronLeft, Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAssetDetail, CatalogLineage, QualityAsset } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -103,6 +103,7 @@ export function CatalogDetailPane({
   client,
   assetId,
   onClose,
+  onPrevious,
   onDetailLoaded,
   onSelectAsset,
   onResizeWidth,
@@ -117,6 +118,7 @@ export function CatalogDetailPane({
   client: ApiClient
   assetId: string
   onClose: () => void
+  onPrevious?: () => void
   onDetailLoaded?: (detail?: CatalogAssetDetail) => void
   onSelectAsset?: (assetId: string) => void
   onResizeWidth?: (width: number) => void
@@ -330,7 +332,10 @@ export function CatalogDetailPane({
       }} onPointerDown={startResize} title="왼쪽으로 끌어 상세 폭 조절" type="button" />}
       <header>
         <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>
-        <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
+        <div className="catalog-detail-header-actions">
+          <button className="button button-secondary" disabled={!onPrevious} onClick={onPrevious} type="button"><ChevronLeft size={14} aria-hidden="true" />이전</button>
+          <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
+        </div>
       </header>
       <div className="catalog-detail-scroll">
       {loading && <div className="catalog-detail-state">상세 정보를 불러오는 중입니다.</div>}

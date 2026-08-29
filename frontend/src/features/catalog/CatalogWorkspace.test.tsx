@@ -401,11 +401,111 @@ describe('catalog workspace', () => {
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(1)
     expect(request.mock.calls.some(([path]) => String(path).includes('platform=snowflake'))).toBe(true)
 
-    fireEvent.click(within(tree).getByRole('button', { name: /snowflake/ }))
+    fireEvent.click(within(tree).getByRole('button', { name: 'snowflake 하위 항목 접기' }))
     expect(within(tree).queryByText('analytics')).not.toBeInTheDocument()
-    fireEvent.click(within(tree).getByRole('button', { name: /snowflake/ }))
+    fireEvent.click(within(tree).getByRole('button', { name: 'snowflake 하위 항목 펼치기' }))
     await within(tree).findByText('analytics')
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(2)
+  })
+
+  it('keeps direct Resource Tree loading and empty states outside the node-row grid contract', async () => {
+    render(<TestCatalogPage client={clientWith(defaultRequest)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    const empty = await within(tree).findByText('표시할 권한 범위의 계층이 없습니다.')
+    expect(empty).toHaveClass('catalog-tree-state')
+    expect(empty).not.toHaveClass('tree-node-row')
+    expect(tree.querySelector('.tree-node-row')).toBeNull()
+  })
+
+  it('separates hierarchy expanders from titles and applies exact Search scope without q pollution', async () => {
+    const scopedAsset: CatalogAsset = {
+      ...asset,
+      id: 'scope-asset',
+      external_urn: 'urn:li:dataset:daily-metrics',
+      name: 'daily_metrics',
+      description: 'Daily reporting metrics',
+      platform: 'cloud_alpha',
+      database_name: 'reporting_db',
+      schema_name: 'public_metrics',
+      owner: 'urn:li:corpGroup:analytics',
+      domain: 'urn:li:domain:reporting',
+      tags: ['certified'],
+      terms: ['metric'],
+      matches: [],
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [scopedAsset], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
+      if (path.startsWith('/catalog/facets')) return Promise.resolve({
+        asset_types: [], platforms: [], databases: [], schemas: [], domains: [],
+        classifications: [], lifecycles: [], meta,
+      })
+      if (path.startsWith('/catalog/assets/locate?')) return Promise.resolve({
+        asset_id: scopedAsset.id, item_index: 0, page_index: 0, cursors: [null], meta,
+      })
+      if (path === `/catalog/assets/${scopedAsset.id}`) return Promise.resolve(detailFor(scopedAsset))
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{
+        id: 'scope-platform', kind: 'PLATFORM', label: 'cloud_alpha', asset_count: 1,
+        has_children: true, platform: 'cloud_alpha',
+      }], page: { limit: 100 }, meta })
+      if (path.includes('parent_kind=PLATFORM')) return Promise.resolve({ items: [{
+        id: 'scope-database', kind: 'DATABASE', label: 'reporting_db', asset_count: 1,
+        has_children: true, platform: 'cloud_alpha', database_name: 'reporting_db',
+      }], page: { limit: 100 }, meta })
+      if (path.includes('parent_kind=DATABASE')) return Promise.resolve({ items: [{
+        id: 'scope-schema', kind: 'SCHEMA', label: 'public_metrics', asset_count: 1,
+        has_children: true, platform: 'cloud_alpha', database_name: 'reporting_db', schema_name: 'public_metrics',
+      }], page: { limit: 100 }, meta })
+      if (path.includes('parent_kind=SCHEMA')) return Promise.resolve({ items: [{
+        id: 'scope-table', kind: 'ASSET', label: scopedAsset.name, asset_count: 1,
+        has_children: false, platform: 'cloud_alpha', database_name: 'reporting_db',
+        schema_name: 'public_metrics', asset: scopedAsset,
+      }], page: { limit: 100 }, meta })
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<TestCatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    const platformTitle = await within(tree).findByRole('button', { name: 'cloud_alpha' })
+    expect(within(tree).getByRole('button', { name: 'cloud_alpha 하위 항목 접기' })).toBeInTheDocument()
+    expect(await within(tree).findByRole('button', { name: 'reporting_db' })).toBeInTheDocument()
+
+    fireEvent.click(platformTitle)
+    expect(within(tree).getByRole('button', { name: 'cloud_alpha 하위 항목 접기' })).toBeInTheDocument()
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      if (!String(path).startsWith('/catalog/assets?')) return false
+      const parameters = new URL(String(path), 'http://catalog.test').searchParams
+      return parameters.get('platform') === 'cloud_alpha'
+        && !parameters.has('database') && !parameters.has('schema')
+    })).toBe(true))
+
+    fireEvent.click(within(tree).getByRole('button', { name: 'reporting_db' }))
+    expect(within(tree).queryByRole('button', { name: 'public_metrics' })).not.toBeInTheDocument()
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      if (!String(path).startsWith('/catalog/assets?')) return false
+      const parameters = new URL(String(path), 'http://catalog.test').searchParams
+      return parameters.get('platform') === 'cloud_alpha'
+        && parameters.get('database') === 'reporting_db' && !parameters.has('schema')
+    })).toBe(true))
+
+    fireEvent.click(within(tree).getByRole('button', { name: 'reporting_db 하위 항목 펼치기' }))
+    fireEvent.click(await within(tree).findByRole('button', { name: 'public_metrics' }))
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      if (!String(path).startsWith('/catalog/assets?')) return false
+      const parameters = new URL(String(path), 'http://catalog.test').searchParams
+      return parameters.get('platform') === 'cloud_alpha'
+        && parameters.get('database') === 'reporting_db'
+        && parameters.get('schema') === 'public_metrics'
+    })).toBe(true))
+
+    fireEvent.click(within(tree).getByRole('button', { name: 'public_metrics 하위 항목 펼치기' }))
+    fireEvent.click(await within(tree).findByRole('button', { name: scopedAsset.name }))
+    await waitFor(() => expect(screen.getByRole('table', { name: '카탈로그 검색 결과' }).querySelector('tbody tr.selected')).toHaveTextContent(scopedAsset.name))
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/tree/')).every(([path]) => (
+      !new URL(String(path), 'http://catalog.test').searchParams.has('q')
+    ))).toBe(true)
   })
 
   it('navigates beyond 300 Resource Tree nodes with exact opaque cursors and a bounded branch page', async () => {
@@ -569,7 +669,7 @@ describe('catalog workspace', () => {
     render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    fireEvent.click(await within(tree).findByRole('button', { name: /database_page_1/ }))
+    fireEvent.click(await within(tree).findByRole('button', { name: 'database_page_1 하위 항목 펼치기' }))
     await waitFor(() => expect(descendantSignal).toBeDefined())
     const navigation = within(tree).getByRole('navigation', { name: 'paged_platform 하위 항목 페이지 탐색' })
     fireEvent.click(within(navigation).getByRole('button', { name: '다음' }))
@@ -604,11 +704,11 @@ describe('catalog workspace', () => {
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     await within(tree).findByText('database_platform_0')
     await within(tree).findByText('database_platform_7')
-    fireEvent.click(await within(tree).findByRole('button', { name: /platform_8/ }))
+    fireEvent.click(await within(tree).findByRole('button', { name: 'platform_8 하위 항목 펼치기' }))
     await within(tree).findByText('database_platform_8')
 
     expect(within(tree).queryByText('database_platform_0')).not.toBeInTheDocument()
-    expect(within(tree).getByRole('button', { name: /platform_0/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(within(tree).getByRole('button', { name: 'platform_0 하위 항목 펼치기' })).toHaveAttribute('aria-expanded', 'false')
     expect(within(tree).getByText('database_platform_8')).toBeInTheDocument()
   })
 
@@ -634,11 +734,11 @@ describe('catalog workspace', () => {
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     await waitFor(() => expect(branchSignals).toHaveLength(8))
-    fireEvent.click(await within(tree).findByRole('button', { name: /slow_platform_8/ }))
+    fireEvent.click(await within(tree).findByRole('button', { name: 'slow_platform_8 하위 항목 펼치기' }))
     await waitFor(() => expect(branchSignals).toHaveLength(9))
     expect(branchSignals[0]?.aborted).toBe(true)
     expect(branchSignals.slice(1).filter((signal) => !signal.aborted)).toHaveLength(8)
-    expect(within(tree).getByRole('button', { name: /slow_platform_0/ })).toHaveAttribute(
+    expect(within(tree).getByRole('button', { name: 'slow_platform_0 하위 항목 펼치기' })).toHaveAttribute(
       'aria-expanded', 'false',
     )
   })
@@ -667,8 +767,8 @@ describe('catalog workspace', () => {
     render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    const platform = await within(tree).findByRole('button', { name: /slow_platform/ })
-    fireEvent.click(await within(tree).findByRole('button', { name: /slow_database/ }))
+    const platform = await within(tree).findByRole('button', { name: 'slow_platform 하위 항목 접기' })
+    fireEvent.click(await within(tree).findByRole('button', { name: 'slow_database 하위 항목 펼치기' }))
     await waitFor(() => expect(branchSignal).toBeDefined())
     fireEvent.click(platform)
 
@@ -676,7 +776,7 @@ describe('catalog workspace', () => {
     expect(platform).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('keeps filtered Search Results intact while exact-reading a Resource Tree table and opening detail', async () => {
+  it('keeps filtered Search Results intact while exact-reading and focusing a Resource Tree table without opening detail', async () => {
     const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
     const assets = [...Array.from({ length: 50 }, (_, index) => ({
       ...asset,
@@ -710,10 +810,12 @@ describe('catalog workspace', () => {
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     fireEvent.click(await within(tree).findByRole('button', { name: /tree_selected_table/ }))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
-    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
-    expect(table.querySelector('tbody tr.selected')).toBeNull()
+    await waitFor(() => expect(within(tree).getByRole('button', { name: treeAsset.name })).toHaveAttribute('aria-pressed', 'true'))
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name)
     expect(table).toHaveTextContent('first_page_0')
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(50)
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(51)
+    expect(screen.getByRole('status')).toHaveTextContent('Resource Tree에서 선택한 인가 자산 1건')
     expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('wafer')
     expect(onQueryChange).not.toHaveBeenCalled()
     expect(request.mock.calls.some(([path]) => path === `/catalog/assets/${treeAsset.id}`)).toBe(true)
@@ -764,7 +866,7 @@ describe('catalog workspace', () => {
     expect(table).toHaveTextContent('tree_tail_9')
     expect(table.querySelectorAll('tbody tr')).toHaveLength(21)
     expect(screen.getAllByText('3 페이지 · 현재 21건')).toHaveLength(2)
-    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('')
     expect(request.mock.calls.some(([path]) => path === `/catalog/assets/${treeAsset.id}`)).toBe(true)
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/assets/locate?'))).toBe(true)
@@ -1124,5 +1226,194 @@ describe('catalog workspace', () => {
     const nextDetail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
     expect(await within(nextDetail).findByText(nextAsset.name)).toBeInTheDocument()
     expect(nextDetail).toBeVisible()
+  })
+
+  it('returns A from lineage B with the bounded Previous action and only one browser entry', async () => {
+    const firstAsset: CatalogAsset = {
+      ...asset,
+      id: 'history-first', external_urn: 'urn:li:dataset:monthly-summary', name: 'monthly_summary',
+      description: 'Monthly summary', platform: 'cloud_beta', database_name: 'reporting',
+      schema_name: 'metrics', owner: 'urn:li:corpGroup:reporting', domain: 'urn:li:domain:metrics',
+      tags: [], terms: [], matches: [],
+    }
+    const secondAsset: CatalogAsset = {
+      ...firstAsset,
+      id: 'history-second', external_urn: 'urn:li:dataset:quarterly-summary', name: 'quarterly_summary',
+      description: 'Quarterly summary',
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({
+        items: [firstAsset, secondAsset], page: { limit: 50 }, total: 2, meta, match_mode: 'ALL',
+      })
+      if (path.startsWith('/catalog/facets')) return Promise.resolve({
+        asset_types: [], platforms: [], databases: [], schemas: [], domains: [],
+        classifications: [], lifecycles: [], meta,
+      })
+      if (path.startsWith('/catalog/tree/')) return Promise.resolve({ items: [], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${firstAsset.id}`) return Promise.resolve(detailFor(firstAsset))
+      if (path === `/catalog/assets/${secondAsset.id}`) return Promise.resolve(detailFor(secondAsset))
+      if (path === `/catalog/assets/${firstAsset.id}/lineage?direction=BOTH&depth=2`) return Promise.resolve({
+        center_asset_id: firstAsset.id,
+        nodes: [firstAsset, secondAsset],
+        edges: [{ source_asset_id: firstAsset.id, target_asset_id: secondAsset.id }],
+        direction: 'BOTH', depth: 2, truncated: false, meta,
+      })
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    const originalUrl = window.location.href
+    const catalogUrl = new URL(originalUrl)
+    catalogUrl.search = '?page=catalog'
+    window.history.replaceState({}, '', catalogUrl)
+    const pushState = vi.spyOn(window.history, 'pushState')
+    render(<TestCatalogPage client={clientWith(request)} />)
+
+    fireEvent.click(await screen.findByText(firstAsset.name))
+    let detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByRole('heading', { name: firstAsset.name })).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+    fireEvent.click(within(detail).getByRole('tab', { name: 'Lineage' }))
+    const graph = await within(detail).findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
+    fireEvent.click(within(graph).getByLabelText(`${secondAsset.name} 상세 열기`))
+
+    detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByRole('heading', { name: secondAsset.name })).toBeInTheDocument()
+    expect(pushState).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(detail).getByRole('button', { name: '이전' }))
+    detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByRole('heading', { name: firstAsset.name })).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+
+    fireEvent.click(within(detail).getByRole('button', { name: '상세 닫기' }))
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
+    pushState.mockRestore()
+    window.history.replaceState({}, '', originalUrl)
+  })
+
+  it('removes stale detail URLs after query, filter, and tree-scope resets while preserving q', async () => {
+    const firstAsset: CatalogAsset = {
+      ...asset,
+      id: 'reset-first', external_urn: 'urn:li:dataset:service-activity', name: 'service_activity',
+      description: 'Service activity', platform: 'cloud_delta', database_name: 'operations',
+      schema_name: 'service_reports', owner: 'urn:li:corpGroup:service', domain: 'urn:li:domain:service',
+      tags: [], terms: [], matches: [],
+    }
+    const secondAsset: CatalogAsset = {
+      ...firstAsset,
+      id: 'reset-second', external_urn: 'urn:li:dataset:service-status', name: 'service_status',
+      description: 'Service status',
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [firstAsset, secondAsset], page: { limit: 50 }, total: 2, meta, match_mode: 'ALL' })
+      if (path.startsWith('/catalog/facets')) return Promise.resolve({
+        asset_types: [], platforms: [{ value: 'cloud_delta', count: 2 }], databases: [], schemas: [], domains: [],
+        classifications: [{ value: 'INTERNAL', count: 2 }], lifecycles: [], meta,
+      })
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{
+        id: 'reset-platform', kind: 'PLATFORM', label: 'cloud_delta', asset_count: 2,
+        has_children: false, platform: 'cloud_delta',
+      }], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${firstAsset.id}`) return Promise.resolve(detailFor(firstAsset))
+      if (path === `/catalog/assets/${secondAsset.id}`) return Promise.resolve(detailFor(secondAsset))
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    const originalUrl = window.location.href
+    const catalogUrl = new URL(originalUrl)
+    catalogUrl.search = '?page=catalog&q=retained'
+    window.history.replaceState({}, '', catalogUrl)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="retained" />)
+
+    const openAThenB = async () => {
+      fireEvent.click(await screen.findByText(firstAsset.name))
+      let detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+      await within(detail).findByRole('heading', { name: firstAsset.name })
+      fireEvent.click(screen.getByText(secondAsset.name))
+      detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+      await within(detail).findByRole('heading', { name: secondAsset.name })
+      expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBe(secondAsset.id)
+    }
+
+    await openAThenB()
+    const queryInput = screen.getByLabelText('데이터셋 이름이나 설명 검색')
+    fireEvent.change(queryInput, { target: { value: 'activity' } })
+    fireEvent.submit(screen.getByRole('search', { name: '카탈로그 상세 검색' }))
+    expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBeNull()
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('retained')
+
+    await openAThenB()
+    fireEvent.click(screen.getByRole('button', { name: '필터' }))
+    const filter = await screen.findByRole('dialog', { name: '상세 검색 필터' })
+    fireEvent.change(within(filter).getByLabelText('Classification'), { target: { value: 'INTERNAL' } })
+    expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBeNull()
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('retained')
+    fireEvent.click(within(filter).getByRole('button', { name: '필터 적용' }))
+
+    await openAThenB()
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    fireEvent.click(await within(tree).findByRole('button', { name: 'cloud_delta' }))
+    expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBeNull()
+    expect(new URL(window.location.href).searchParams.get('q')).toBe('retained')
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+
+    window.history.replaceState({}, '', originalUrl)
+  })
+
+  it('keeps direct links safe, restores browser Back through popstate, and clears detail on route return', async () => {
+    const firstAsset: CatalogAsset = {
+      ...asset,
+      id: 'popstate-first', external_urn: 'urn:li:dataset:activity-summary', name: 'activity_summary',
+      description: 'Activity summary', platform: 'cloud_gamma', database_name: 'operations',
+      schema_name: 'reports', owner: 'urn:li:corpGroup:operations', domain: 'urn:li:domain:operations',
+      tags: [], terms: [], matches: [],
+    }
+    const secondAsset: CatalogAsset = {
+      ...firstAsset,
+      id: 'popstate-second', external_urn: 'urn:li:dataset:status-summary', name: 'status_summary',
+      description: 'Status summary',
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [firstAsset, secondAsset], page: { limit: 50 }, total: 2, meta, match_mode: 'ALL' })
+      if (path.startsWith('/catalog/facets')) return Promise.resolve({ asset_types: [], platforms: [], databases: [], schemas: [], domains: [], classifications: [], lifecycles: [], meta })
+      if (path.startsWith('/catalog/tree/')) return Promise.resolve({ items: [], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${firstAsset.id}`) return Promise.resolve(detailFor(firstAsset))
+      if (path === `/catalog/assets/${secondAsset.id}`) return Promise.resolve(detailFor(secondAsset))
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    const originalUrl = window.location.href
+    const directUrl = new URL(originalUrl)
+    directUrl.search = `?page=catalog&catalogAsset=${firstAsset.id}`
+    window.history.replaceState({}, '', directUrl)
+    const view = render(<TestCatalogPage client={clientWith(request)} />)
+
+    let detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(firstAsset.name)).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+    fireEvent.click(screen.getByText(secondAsset.name))
+    detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(secondAsset.name)).toBeInTheDocument()
+
+    window.history.back()
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBe(firstAsset.id))
+    detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(firstAsset.name)).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+
+    const homeUrl = new URL(window.location.href)
+    homeUrl.searchParams.set('page', 'home')
+    homeUrl.searchParams.delete('catalogAsset')
+    window.history.replaceState({}, '', homeUrl)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument())
+    view.unmount()
+
+    const returnUrl = new URL(homeUrl)
+    returnUrl.searchParams.set('page', 'catalog')
+    window.history.replaceState({}, '', returnUrl)
+    render(<TestCatalogPage client={clientWith(request)} />)
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    window.history.replaceState({}, '', originalUrl)
   })
 })

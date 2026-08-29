@@ -158,8 +158,8 @@
 .catalog-tree-header-actions .button { min-height: 25px; padding: 3px 6px; font-size: 9px; }
 .catalog-tree { display: flex; flex-direction: column; }
 .catalog-tree-rows { min-height: 0; flex: 1; overflow: auto; padding: 4px 0; background: white; }
-.catalog-tree-rows > button { width: 100%; min-height: 26px; display: grid; grid-template-columns: 14px 15px minmax(0, 1fr) auto; align-items: center; gap: 3px; border: 0; padding-top: 3px; padding-right: 6px; padding-bottom: 3px; color: var(--text-900); text-align: left; background: white; }
-.catalog-tree-rows > button:hover, .catalog-tree-rows > button.selected { color: var(--blue-700); background: var(--blue-100); }
+.catalog-tree-rows > .tree-node-row { width: 100%; min-height: 26px; display: grid; grid-template-columns: 18px 15px minmax(0, 1fr) auto; align-items: center; gap: 3px; padding-top: 3px; padding-right: 6px; padding-bottom: 3px; color: var(--text-900); text-align: left; background: white; }
+.catalog-tree-rows > .tree-node-row:hover, .catalog-tree-rows > .tree-node-row.selected { color: var(--blue-700); background: var(--blue-100); }
 .catalog-tree-rows .tree-kind-platform { font-size: 10px; font-weight: 900; text-transform: uppercase; }
 .catalog-tree-rows .tree-kind-database, .catalog-tree-rows .tree-kind-schema { font-size: 11px; font-weight: 800; text-transform: uppercase; }
 .catalog-tree-rows .tree-kind-asset { font-size: 12px; font-weight: 700; }
@@ -180,7 +180,9 @@
 .catalog-tree-search-results small { overflow: hidden; color: var(--text-500); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-tree > .cursor-pagination { border-top: 1px solid var(--line-200); padding: 5px; }
 .catalog-tree > .cursor-pagination label { display: none; }
-.tree-expander { display: grid; place-items: center; }
+.tree-expander, .tree-expander-placeholder { width: 18px; height: 20px; display: grid; place-items: center; border: 0; padding: 0; color: inherit; background: transparent; }
+.tree-title { min-width: 0; overflow: hidden; border: 0; padding: 2px 0; color: inherit; font: inherit; font-weight: inherit; text-align: left; text-overflow: ellipsis; text-transform: inherit; white-space: nowrap; background: transparent; }
+.tree-title:focus-visible, .tree-expander:focus-visible { outline: 2px solid var(--blue-700); outline-offset: 1px; }
 .tree-count { color: var(--text-500); font-size: 9px; font-weight: 700; }
 .catalog-tree-state, .catalog-detail-state { padding: 24px 10px; color: var(--text-500); text-align: center; font-size: 11px; line-height: 1.5; }
 .catalog-results { position: relative; display: flex; flex-direction: column; }
@@ -214,7 +216,9 @@
 .catalog-detail-resizer:hover::after, .catalog-detail-resizer:focus-visible::after { background: var(--blue-700); opacity: 1; }
 .catalog-detail > header, .catalog-detail > header > div, .catalog-detail-scroll, .catalog-detail-body, .catalog-detail-body > [role="tabpanel"] { min-width: 0; max-width: 100%; }
 .catalog-detail-scroll { min-height: 0; overflow-x: hidden; overflow-x: clip; overflow-y: auto; }
-.catalog-detail > header > button { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line-300); color: var(--text-600); background: white; }
+.catalog-detail-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.catalog-detail-header-actions > button { min-height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; border: 1px solid var(--line-300); color: var(--text-600); background: white; }
+.catalog-detail-header-actions > button[aria-label="상세 닫기"] { flex: 0 0 28px; width: 28px; padding: 0; }
 .catalog-detail-body { box-sizing: border-box; width: 100%; display: grid; gap: 7px; padding: 8px; }
 .catalog-detail-identity { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px; align-items: center; }
 .catalog-detail-badges { min-width: 0; display: flex; align-items: center; white-space: nowrap; }

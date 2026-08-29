@@ -77,6 +77,7 @@ export function CatalogResourceTree({
   client,
   selectedAssetId,
   onSelectAsset,
+  onSelectScope,
   searchable = false,
   searchIdPrefix = 'resource-tree',
   searchLabel = 'Resource Tree 검색',
@@ -85,6 +86,7 @@ export function CatalogResourceTree({
   client: ApiClient
   selectedAssetId?: string
   onSelectAsset: (assetId: string, asset?: CatalogAsset) => void
+  onSelectScope?: (node: CatalogTreeNode) => void
   searchable?: boolean
   searchIdPrefix?: string
   searchLabel?: string
@@ -266,7 +268,7 @@ export function CatalogResourceTree({
   }, [branches.ROOT])
 
   const toggle = (node: CatalogTreeNode) => {
-    if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id, node.asset); return }
+    if (node.kind === 'ASSET') return
     const key = branchKey(node)
     const isExpanded = expanded.has(key)
     if (isExpanded) {
@@ -422,18 +424,31 @@ export function CatalogResourceTree({
         }
         const { node, depth } = row
         const isExpanded = expanded.has(node.id)
-        return <button
+        const isSelected = Boolean(node.asset?.id && node.asset.id === selectedAssetId)
+        return <div
           key={node.id}
-          type="button"
-          className={`${node.asset?.id === selectedAssetId ? 'selected' : ''} tree-kind-${node.kind.toLowerCase()} tree-depth-${Math.min(depth, 3)}`}
-          aria-expanded={node.has_children ? isExpanded : undefined}
-          onClick={() => toggle(node)}
+          className={`tree-node-row ${isSelected ? 'selected' : ''} tree-kind-${node.kind.toLowerCase()} tree-depth-${Math.min(depth, 3)}`}
         >
-          <span className="tree-expander" aria-hidden="true">{node.has_children ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}</span>
+          {node.has_children ? <button
+            aria-expanded={isExpanded}
+            aria-label={`${node.label} 하위 항목 ${isExpanded ? '접기' : '펼치기'}`}
+            className="tree-expander"
+            onClick={() => toggle(node)}
+            type="button"
+          >{isExpanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}</button> : <span className="tree-expander-placeholder" aria-hidden="true" />}
           <NodeIcon kind={node.kind} />
-          <TruncatedText value={node.label} />
+          {node.kind === 'ASSET' && node.asset ? <button
+            aria-pressed={isSelected}
+            className="tree-title"
+            onClick={() => onSelectAsset(node.asset!.id, node.asset ?? undefined)}
+            type="button"
+          ><TruncatedText value={node.label} /></button> : onSelectScope ? <button
+            className="tree-title"
+            onClick={() => onSelectScope(node)}
+            type="button"
+          ><TruncatedText value={node.label} /></button> : <span className="tree-title"><TruncatedText value={node.label} /></span>}
           <span className="tree-count">{node.asset_count.toLocaleString()}</span>
-        </button>
+        </div>
       })}
       {loading.has('ROOT') && <div className="catalog-tree-state">계층을 불러오는 중입니다.</div>}
       {!loading.has('ROOT') && rows.length === 0 && <div className="catalog-tree-state">표시할 권한 범위의 계층이 없습니다.</div>}
