@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type { CatalogAsset } from '../../api/types'
 import { CatalogPage, catalogSearchFieldsFromLocation } from './CatalogPage'
+import { CatalogDetailPane } from './CatalogDetailPane'
 
 const graphElements = {
   addClass: vi.fn().mockReturnThis(),
@@ -133,6 +134,56 @@ function defaultRequest(path: string, options?: RequestOptions): Promise<unknown
 }
 
 describe('catalog workspace', () => {
+  it('keeps base detail visible when an independent schema panel times out', async () => {
+    const request = vi.fn((path: string, _options?: RequestOptions): Promise<unknown> => {
+      void _options
+      if (path === `/catalog/assets/${asset.id}`) {
+        return Promise.resolve({
+          ...asset, ownership: [], glossary_terms: [], tags: [],
+          projection_source_version: 'projection-v7', source_version: 'source-v7',
+        })
+      }
+      if (path.includes('detail_scope=SCHEMA')) return Promise.reject(new Error('schema provider timeout'))
+      if (path.includes('detail_scope=QUALITY')) return Promise.resolve({ quality: {}, source_version: 'source-v7' })
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><CatalogDetailPane
+      client={clientWith(request)} assetId={asset.id} onClose={() => undefined}
+    /></QueryClientProvider>)
+
+    expect(await screen.findByRole('heading', { name: 'wafer_events' })).toBeInTheDocument()
+    expect(await screen.findByText('schema provider timeout')).toBeInTheDocument()
+    expect(screen.getByText('yield evidence')).toBeInTheDocument()
+    expect(request.mock.calls.filter(([path]) => String(path).includes('detail_scope=SCHEMA'))[0]?.[1]?.signal)
+      .toBeInstanceOf(AbortSignal)
+  })
+
+  it('cancels independent detail panels when the pane unmounts', async () => {
+    let schemaSignal: AbortSignal | undefined
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === `/catalog/assets/${asset.id}`) {
+        return Promise.resolve({
+          ...asset, ownership: [], glossary_terms: [], tags: [],
+          projection_source_version: 'projection-v7', source_version: 'source-v7',
+        })
+      }
+      if (path.includes('detail_scope=QUALITY')) return Promise.resolve({ quality: {}, source_version: 'source-v7' })
+      if (path.includes('detail_scope=SCHEMA')) {
+        schemaSignal = options?.signal ?? undefined
+        return new Promise((_resolve, reject) => schemaSignal?.addEventListener('abort', () => reject(new Error('schema request aborted'))))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(<QueryClientProvider client={queryClient}><CatalogDetailPane
+      client={clientWith(request)} assetId={asset.id} onClose={() => undefined}
+    /></QueryClientProvider>)
+    await waitFor(() => expect(schemaSignal).toBeInstanceOf(AbortSignal))
+    view.unmount()
+    expect(schemaSignal?.aborted).toBe(true)
+  })
+
   it('restores the canonical asset detail from a hard-reloaded catalog URL', async () => {
     const originalUrl = window.location.href
     const directUrl = new URL(window.location.href)
@@ -1133,20 +1184,29 @@ describe('catalog workspace', () => {
   it('keeps wide schema metadata on bounded server pages', async () => {
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options
-      if (path === `/catalog/assets/${asset.id}` || path.startsWith(`/catalog/assets/${asset.id}?`)) {
+      if (path === `/catalog/assets/${asset.id}`) {
+        return Promise.resolve({
+          ...asset, ownership: [], glossary_terms: [], tags: [],
+          projection_source_version: 'projection-v7', source_version: 'source-v7',
+        })
+      }
+      if (path.startsWith(`/catalog/assets/${asset.id}?`)) {
         const parameters = new URL(path, 'http://catalog.test').searchParams
+        if (parameters.get('detail_scope') === 'QUALITY') {
+          return Promise.resolve({ quality: {}, source_version: 'source-v7' })
+        }
         const offset = Number(parameters.get('field_offset') ?? 0)
         const fields = Array.from({ length: 100 }, (_, index) => ({
           fieldPath: `field_${String(offset + index).padStart(3, '0')}`,
           nativeDataType: 'STRING',
         }))
         return Promise.resolve({
-          ...asset, ownership: [], glossary_terms: [], tags: [], schema_fields: fields,
+          schema_fields: fields,
           schema_fields_total: 250, schema_fields_available: 250, schema_fields_truncated: false,
           schema_fields_total_exact: true,
           schema_fields_offset: offset, schema_fields_limit: 100,
           schema_fields_has_more: offset + fields.length < 250, quality: {},
-          projection_source_version: 'projection-v7', source_version: 'source-v7',
+          source_version: 'source-v7',
         })
       }
       return defaultRequest(path)
@@ -1163,7 +1223,7 @@ describe('catalog workspace', () => {
     expect(await within(detail).findByText('field_100')).toBeInTheDocument()
     expect(within(detail).queryByText('field_000')).not.toBeInTheDocument()
     expect(request.mock.calls.some(([path, options]) => (
-      path === `/catalog/assets/${asset.id}?field_offset=100&field_limit=100&field_source_version=source-v7`
+      path === `/catalog/assets/${asset.id}?detail_scope=SCHEMA&field_offset=100&field_limit=100&field_source_version=source-v7`
       && options?.signal instanceof AbortSignal
     ))).toBe(true)
   })

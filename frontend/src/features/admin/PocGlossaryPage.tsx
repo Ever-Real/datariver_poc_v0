@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type FormEvent } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import type { ApiClient } from '../../api/client'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -141,10 +141,20 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
     () => terms.data?.pages.flatMap((page) => page.items) ?? [],
     [terms.data?.pages],
   )
-  const selectedTerm = useMemo(
+  const selectedTermSummary = useMemo(
     () => loadedTerms.find((item) => item.urn === selectedTermUrn),
     [loadedTerms, selectedTermUrn],
   )
+  const selectedTermDetail = useQuery({
+    queryKey: ['poc', 'glossary', 'detail', selectedTermUrn],
+    queryFn: ({ signal }) => client.request<PocGlossaryTerm>(
+      `/poc/glossary/detail?urn=${encodeURIComponent(selectedTermUrn ?? '')}`,
+      { signal },
+    ),
+    enabled: Boolean(selectedTermUrn),
+    staleTime: 30_000,
+  })
+  const selectedTerm = selectedTermDetail.data ?? selectedTermSummary
   const tableAssignments = useInfiniteQuery({
     queryKey: ['poc', 'glossary', 'assignments', selectedTermUrn, 'TABLE'],
     queryFn: ({ signal, pageParam }) => client.request<PocGlossaryAssignmentPage>(
@@ -255,6 +265,8 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
           >{terms.isFetchingNextPage ? '불러오는 중…' : '용어 더 보기'}</button>}
         </div>
         <aside className="poc-glossary-detail" aria-label="선택 용어 상세와 적용 자산">
+          {selectedTermDetail.isFetching && <p className="poc-glossary-empty" role="status">선택 용어 상세와 관계를 불러오는 중입니다.</p>}
+          <ErrorNotice error={selectedTermDetail.error} />
           {selectedTerm ? <>
             <header><span className="eyebrow">Glossary context</span><h2>{selectedTerm.name}</h2><p>{selectedTerm.description || 'DataHub에 정의가 등록되지 않았습니다.'}</p></header>
             <dl>

@@ -288,7 +288,7 @@ function providerHandler(request, response) {
           ],
         } } })
       }
-      if (payload.query.includes('DataRiverPocAsset')) {
+      if (payload.query.includes('DataRiverPocAsset') || payload.query.includes('DataRiverPocDetail')) {
         return sendJson(response, { data: { entity: {
           urn: payload.variables.urn,
           type: 'DATASET',
@@ -430,40 +430,45 @@ function providerHandler(request, response) {
           },
         } } })
       }
+      if (payload.query.includes('DataRiverPocGlossaryTermByUrn')) {
+        return sendJson(response, { data: { entity: {
+          urn: payload.variables.urn, type: 'GLOSSARY_TERM', exists: true, status: { removed: false },
+          hierarchicalName: 'manufacturing.wafer',
+          properties: { name: 'Wafer', description: 'A thin semiconductor substrate.' },
+          tableAssignments: { total: 1 }, columnAssignments: { total: 1 },
+          parentNodes: { nodes: [
+            { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
+            { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
+          ] },
+          outgoingRelationships: { total: 2, relationships: [{
+            type: 'RelatedTo', direction: 'OUTGOING',
+            entity: { urn: 'urn:li:glossaryTerm:substrate', type: 'GLOSSARY_TERM', properties: { name: 'Substrate' } },
+          }] },
+        } } })
+      }
       if (payload.query.includes('DataRiverPocGlossary')) {
+        const allTerms = [{ entity: {
+          urn: 'urn:li:glossaryTerm:wafer', type: 'GLOSSARY_TERM', hierarchicalName: 'manufacturing.wafer',
+          properties: { name: 'Wafer', description: 'A thin semiconductor substrate.' },
+          parentNodes: { nodes: [
+            { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
+            { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
+          ] },
+        } }, { entity: {
+          urn: 'urn:li:glossaryTerm:identifier', type: 'GLOSSARY_TERM', hierarchicalName: 'shared.identifier',
+          properties: { name: 'Identifier', description: 'A value used to identify a record.' },
+          parentNodes: { nodes: [] },
+        } }]
+        const matching = payload.variables.input.query === '*'
+          ? allTerms
+          : allTerms.filter(({ entity }) => entity.hierarchicalName.includes('wafer'))
+        const start = payload.variables.input.scrollId === 'glossary-page-2' ? 1 : 0
+        const searchResults = matching.slice(start, start + payload.variables.input.count)
         return sendJson(response, { data: { scrollAcrossEntities: {
-          count: 2,
-          total: 2,
-          nextScrollId: null,
-          searchResults: [
-            { entity: {
-              urn: 'urn:li:glossaryTerm:wafer', type: 'GLOSSARY_TERM', hierarchicalName: 'manufacturing.wafer',
-              properties: { name: 'Wafer', description: 'A thin semiconductor substrate.' },
-              tableAssignments: { total: 1 },
-              columnAssignments: { total: 1 },
-              parentNodes: { nodes: [
-                { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
-                { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
-              ] },
-              outgoingRelationships: {
-                total: 2,
-                relationships: [{
-                  type: 'RelatedTo', direction: 'OUTGOING',
-                  entity: {
-                    urn: 'urn:li:glossaryTerm:substrate', type: 'GLOSSARY_TERM',
-                    properties: { name: 'Substrate' },
-                  },
-                }],
-              },
-            } },
-            { entity: {
-              urn: 'urn:li:glossaryTerm:identifier', type: 'GLOSSARY_TERM', hierarchicalName: 'shared.identifier',
-              properties: { name: 'Identifier', description: 'A value used to identify a record.' },
-              tableAssignments: { total: 0 },
-              columnAssignments: { total: 1 },
-              parentNodes: { nodes: [] },
-            } },
-          ],
+          count: searchResults.length,
+          total: matching.length,
+          nextScrollId: start + searchResults.length < matching.length ? 'glossary-page-2' : null,
+          searchResults,
         } } })
       }
       const relationships = payload.variables?.input?.direction === 'UPSTREAM'
@@ -778,6 +783,26 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   ))
   assert.match(detailQuery.body, /datasetProfiles\(limit: 10\)/)
   assert.match(detailQuery.body, /assertions\(start: 0, count: 100\)/)
+  const baseDetailResponse = await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&detail_scope=BASE`)
+  const baseDetail = await baseDetailResponse.json()
+  assert.equal(baseDetailResponse.status, 200, JSON.stringify(baseDetail))
+  assert.equal(baseDetail.name, 'wafer_events')
+  assert.equal(Object.hasOwn(baseDetail, 'schema_fields'), false)
+  assert.equal(Object.hasOwn(baseDetail, 'quality'), false)
+  const schemaDetail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&detail_scope=SCHEMA&field_limit=1&field_source_version=datahub-live`)).json()
+  assert.equal(schemaDetail.schema_fields.length, 1)
+  assert.equal(schemaDetail.schema_fields_total, 2)
+  assert.equal(schemaDetail.schema_fields_has_more, true)
+  const qualityDetail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&detail_scope=QUALITY&source_version=datahub-live`)).json()
+  assert.equal(qualityDetail.quality.rowCount, 4400)
+  assert.equal(qualityDetail.quality.assertionTotal, 1)
+  const splitQueries = requests.filter((request) => request.path === '/api/graphql')
+    .map((request) => request.body)
+  const baseQuery = splitQueries.find((body) => body.includes('DataRiverPocDetailBase'))
+  assert.ok(baseQuery)
+  assert.doesNotMatch(baseQuery, /schemaMetadata|datasetProfiles|assertions/)
+  assert.ok(splitQueries.some((body) => body.includes('DataRiverPocDetailSchema')))
+  assert.ok(splitQueries.some((body) => body.includes('DataRiverPocDetailQuality')))
   const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
   assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
   assert.equal(secondFieldPage.schema_fields_offset, 1)
@@ -837,27 +862,40 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(glossary.items[0].name, 'Wafer')
   assert.equal(glossary.items[0].description, 'A thin semiconductor substrate.')
   assert.deepEqual(glossary.items[0].parent_terms.map((item) => item.name), ['Semiconductor', 'Manufacturing'])
-  assert.equal(glossary.items[0].asset_count, 2)
-  assert.equal(glossary.items[0].table_asset_count, 1)
-  assert.equal(glossary.items[0].column_asset_count, 1)
+  assert.equal(glossary.items[0].asset_count, null)
+  assert.equal(glossary.items[0].table_asset_count, null)
+  assert.equal(glossary.items[0].column_asset_count, null)
   assert.deepEqual(glossary.items[0].assets, [])
   assert.equal(glossary.total, 1)
   assert.deepEqual(glossary.page, { next_cursor: null, limit: 50 })
   assert.equal(glossary.currentness.atomic_snapshot, false)
-  assert.equal(glossary.items[0].relationship_count, 2)
-  assert.equal(glossary.items[0].relationships.length, 1)
-  assert.equal(glossary.items[0].relationships[0].target_name, 'Substrate')
-  assert.equal(glossary.items[0].relationships_truncated, true)
+  assert.equal(glossary.items[0].relationship_count, 0)
+  assert.equal(glossary.items[0].relationships.length, 0)
+  const glossaryDetailResponse = await fetch(
+    `${pocOrigin}/poc-api/datahub/glossary?detail=true&urn=${encodeURIComponent(glossary.items[0].urn)}`,
+  )
+  const glossaryDetail = await glossaryDetailResponse.json()
+  assert.equal(glossaryDetailResponse.status, 200, JSON.stringify(glossaryDetail))
+  assert.equal(glossaryDetail.asset_count, 2)
+  assert.equal(glossaryDetail.relationship_count, 2)
+  assert.equal(glossaryDetail.relationships[0].target_name, 'Substrate')
+  assert.equal(glossaryDetail.relationships_truncated, true)
   const glossaryPageOne = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?limit=1`)).json()
   assert.equal(glossaryPageOne.items.length, 1)
   assert.equal(glossaryPageOne.total, 2)
-  assert.equal(glossaryPageOne.page.next_cursor, '1')
+  assert.ok(glossaryPageOne.page.next_cursor)
+  assert.notEqual(glossaryPageOne.page.next_cursor, 'glossary-page-2')
   const glossaryPageTwo = await (await fetch(
-    `${pocOrigin}/poc-api/datahub/glossary?limit=1&cursor=${glossaryPageOne.page.next_cursor}`,
+    `${pocOrigin}/poc-api/datahub/glossary?limit=1&cursor=${encodeURIComponent(glossaryPageOne.page.next_cursor)}`,
   )).json()
   assert.equal(glossaryPageTwo.items.length, 1)
   assert.notEqual(glossaryPageTwo.items[0].urn, glossaryPageOne.items[0].urn)
   assert.equal(glossaryPageTwo.page.next_cursor, null)
+  const glossaryQueries = requests.filter((request) => (
+    request.path === '/api/graphql' && request.body.includes('query DataRiverPocGlossary(')
+  )).map((request) => JSON.parse(request.body))
+  assert.ok(glossaryQueries.every((request) => request.variables.input.count <= 50))
+  assert.ok(glossaryQueries.every((request) => !/tableAssignments|columnAssignments|outgoingRelationships/.test(request.query)))
   const smokeTargetResponse = await fetch(`${pocOrigin}/poc-api/datahub/glossary/smoke-target`)
   assert.equal(smokeTargetResponse.status, 200)
   assert.deepEqual(await smokeTargetResponse.json(), {
@@ -2339,6 +2377,12 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
 
     const hiddenDetail = await fetch(`${origin}/poc-api/datahub/asset?urn=${encodeURIComponent(inspectionUrn)}`)
     assert.equal(hiddenDetail.status, 404)
+    for (const scope of ['BASE', 'SCHEMA', 'QUALITY']) {
+      const hiddenPanel = await fetch(
+        `${origin}/poc-api/datahub/asset?urn=${encodeURIComponent(inspectionUrn)}&detail_scope=${scope}`,
+      )
+      assert.equal(hiddenPanel.status, 404, `${scope} must preserve the base detail authorization boundary`)
+    }
     const graph = await getJson('/poc-api/neo4j/graph')
     assert.deepEqual(graph, { nodes: [], edges: [] })
 

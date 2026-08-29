@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogAssetDetail, CatalogLineage, QualityAsset } from '../../api/types'
+import type {
+  CatalogAssetBaseDetail,
+  CatalogAssetDetail,
+  CatalogAssetQualityDetail,
+  CatalogAssetSchemaDetail,
+  CatalogLineage,
+  QualityAsset,
+} from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
@@ -141,25 +148,63 @@ export function CatalogDetailPane({
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
   const panelRef = useRef<HTMLElement>(null)
   const pagedAssetId = useRef(assetId)
-  const fieldSourceVersion = useRef<string | undefined>(undefined)
 
-  const { data: detail, isFetching: loading, error } = useQuery({
-    queryKey: ['catalog', 'asset', assetId, fieldOffset],
-    queryFn: async ({ signal }) => {
-      const fieldQuery = fieldOffset > 0
-        ? `?${new URLSearchParams({
-          field_offset: String(fieldOffset),
-          field_limit: '100',
-          ...(fieldSourceVersion.current ? { field_source_version: fieldSourceVersion.current } : {}),
-        })}`
-        : ''
-      const res = await client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}${fieldQuery}`, { signal })
-      if (fieldOffset === 0) fieldSourceVersion.current = res.source_version
-      return res
-    },
+  const { data: baseDetail, isFetching: loading, error } = useQuery({
+    queryKey: ['catalog', 'asset-detail-base', assetId],
+    queryFn: ({ signal }) => client.request<CatalogAssetBaseDetail>(
+      `/catalog/assets/${assetId}`, {
+        signal,
+        headers: { 'X-DataRiver-Detail-Scope': 'BASE' },
+      },
+    ),
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
   })
+  const embeddedDetail = baseDetail as Partial<CatalogAssetDetail> | undefined
+  const baseIncludesSchema = Array.isArray(embeddedDetail?.schema_fields)
+  const baseIncludesQuality = Boolean(embeddedDetail?.quality && typeof embeddedDetail.quality === 'object')
+
+  const { data: schemaDetail, isFetching: schemaLoading, error: schemaError } = useQuery({
+    queryKey: ['catalog', 'asset-detail-schema', assetId, fieldOffset, baseDetail?.source_version],
+    queryFn: ({ signal }) => client.request<CatalogAssetSchemaDetail>(
+      `/catalog/assets/${assetId}?${new URLSearchParams({
+        detail_scope: 'SCHEMA',
+        field_offset: String(fieldOffset),
+        field_limit: '100',
+        field_source_version: baseDetail?.source_version ?? '',
+      })}`,
+      { signal },
+    ),
+    enabled: Boolean(baseDetail && expanded.has('columns') && !baseIncludesSchema),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
+
+  const { data: qualityDetail, isFetching: detailQualityLoading, error: detailQualityError } = useQuery({
+    queryKey: ['catalog', 'asset-detail-quality', assetId, baseDetail?.source_version],
+    queryFn: ({ signal }) => client.request<CatalogAssetQualityDetail>(
+      `/catalog/assets/${assetId}?${new URLSearchParams({
+        detail_scope: 'QUALITY', source_version: baseDetail?.source_version ?? '',
+      })}`,
+      { signal },
+    ),
+    enabled: Boolean(baseDetail && expanded.has('details') && !baseIncludesQuality),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
+
+  const detail = useMemo<CatalogAssetDetail | undefined>(() => baseDetail ? {
+    ...baseDetail,
+    schema_fields: schemaDetail?.schema_fields ?? embeddedDetail?.schema_fields ?? [],
+    schema_fields_total: schemaDetail?.schema_fields_total ?? embeddedDetail?.schema_fields_total ?? 0,
+    schema_fields_available: schemaDetail?.schema_fields_available ?? embeddedDetail?.schema_fields_available ?? 0,
+    schema_fields_truncated: schemaDetail?.schema_fields_truncated ?? embeddedDetail?.schema_fields_truncated ?? false,
+    schema_fields_total_exact: schemaDetail?.schema_fields_total_exact ?? embeddedDetail?.schema_fields_total_exact ?? true,
+    schema_fields_offset: schemaDetail?.schema_fields_offset ?? embeddedDetail?.schema_fields_offset ?? fieldOffset,
+    schema_fields_limit: schemaDetail?.schema_fields_limit ?? embeddedDetail?.schema_fields_limit ?? 100,
+    schema_fields_has_more: schemaDetail?.schema_fields_has_more ?? embeddedDetail?.schema_fields_has_more ?? false,
+    quality: qualityDetail?.quality ?? embeddedDetail?.quality ?? {},
+  } : undefined, [baseDetail, embeddedDetail, fieldOffset, qualityDetail?.quality, schemaDetail])
 
   // onDetailLoaded 콜백 처리
   useEffect(() => {
@@ -249,7 +294,6 @@ export function CatalogDetailPane({
   useEffect(() => {
     if (pagedAssetId.current !== assetId) {
       pagedAssetId.current = assetId
-      fieldSourceVersion.current = undefined
       if (fieldOffset !== 0) {
         setFieldOffset(0)
       }
@@ -392,6 +436,8 @@ export function CatalogDetailPane({
       </div>
       <section aria-labelledby="catalog-metadata-tab" hidden={activeTab !== 'metadata'} id="catalog-metadata-panel" role="tabpanel">
         <AccordionItem itemId="details" title="Table details" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
+          {detailQualityLoading && <div className="catalog-detail-state" role="status">프로필과 assertion을 불러오는 중입니다.</div>}
+          <ErrorNotice error={detailQualityError} />
           <dl className="catalog-detail-properties">
             <div><dt>Platform</dt><dd>{detailText(detail.platform)}</dd></div>
             <div><dt>Database</dt><dd>{detailText(detail.database_name)}</dd></div>
@@ -413,6 +459,8 @@ export function CatalogDetailPane({
           </dl>
         </AccordionItem>
         <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
+          {schemaLoading && <div className="catalog-detail-state" role="status">컬럼 메타데이터를 불러오는 중입니다.</div>}
+          <ErrorNotice error={schemaError} />
           <div className="catalog-schema-table">
             {detail.schema_fields_truncated && <div className="catalog-detail-state" role="status">원본 {detail.schema_fields_total_exact ? '' : '최소 '}{detail.schema_fields_total.toLocaleString()}개 중 메모리 보호 상한인 {detail.schema_fields_available.toLocaleString()}개 컬럼만 제공합니다.</div>}
             <table><caption className="sr-only">스키마 필드</caption><thead><tr><th>Column</th><th>Type</th><th>Description</th><th>Terms</th><th>Tags</th></tr></thead>

@@ -217,6 +217,32 @@ export interface CatalogAssetDetail extends CatalogAsset {
   source_version: string
 }
 
+export interface CatalogAssetBaseDetail extends CatalogAsset {
+  ownership: Array<Record<string, unknown>>
+  ownership_truncated?: boolean
+  glossary_terms: Array<Record<string, unknown>>
+  tags: string[]
+  projection_source_version: string
+  source_version: string
+}
+
+export interface CatalogAssetSchemaDetail {
+  schema_fields: Array<Record<string, unknown>>
+  schema_fields_total: number
+  schema_fields_available: number
+  schema_fields_truncated: boolean
+  schema_fields_total_exact: boolean
+  schema_fields_offset: number
+  schema_fields_limit: number
+  schema_fields_has_more: boolean
+  source_version: string
+}
+
+export interface CatalogAssetQualityDetail {
+  quality: Record<string, unknown>
+  source_version: string
+}
+
 export interface ManualMetadataColumn {
   field_path: string
   description: string

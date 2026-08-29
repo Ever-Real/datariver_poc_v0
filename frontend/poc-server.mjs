@@ -1905,11 +1905,6 @@ query DataRiverPocAsset($urn: String!) {
       platform { urn name }
       properties { name qualifiedName description created customProperties { key value } }
       editableProperties { description }
-      container { urn properties { name qualifiedName description customProperties { key value } } subTypes { typeNames } }
-      dataPlatformInstance {
-        urn instanceId
-        properties { name description customProperties { key value } }
-      }
       browsePathV2 {
         path {
           name
@@ -1977,6 +1972,102 @@ query DataRiverPocAsset($urn: String!) {
           glossaryTerms { terms { term { urn name properties { name description } } } }
         }
       }
+      latestFullTableProfile: datasetProfiles(limit: 10) {
+        rowCount columnCount sizeInBytes timestampMillis
+        partitionSpec { type partition }
+      }
+      assertions(start: 0, count: 100) {
+        start count total
+        assertions {
+          urn
+          info { type source { type } }
+          runEvents(status: COMPLETE, limit: 1) {
+            total failed succeeded
+            runEvents { timestampMillis status result { type } }
+          }
+        }
+      }
+    }
+  }
+}`
+
+const datahubCatalogDetailBaseQuery = `
+query DataRiverPocDetailBase($urn: String!) {
+  entity(urn: $urn) {
+    urn type
+    ... on Dataset {
+      exists
+      status { removed }
+      name
+      subTypes { typeNames }
+      platform { urn name }
+      properties { name qualifiedName description created customProperties { key value } }
+      editableProperties { description }
+      container { urn properties { name qualifiedName description customProperties { key value } } subTypes { typeNames } }
+      dataPlatformInstance {
+        urn instanceId
+        properties { name description customProperties { key value } }
+      }
+      browsePathV2 {
+        path {
+          name
+          entity {
+            urn type
+            ... on Container {
+              properties { name qualifiedName }
+              subTypes { typeNames }
+            }
+          }
+        }
+      }
+      domain { domain { urn properties { name description } } }
+      ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
+      globalTags: tags { tags { tag { urn name properties { name description } } } }
+      glossaryTerms { terms { term { urn name properties { name description } } } }
+    }
+  }
+}`
+
+const datahubCatalogDetailSchemaQuery = `
+query DataRiverPocDetailSchema($urn: String!) {
+  entity(urn: $urn) {
+    urn type
+    ... on Dataset {
+      schemaMetadata(version: 0) {
+        fields {
+          fieldPath label type nativeDataType description nullable isPartOfKey isPartitioningKey jsonPath
+          globalTags { tags { tag { urn name properties { name description } } } }
+          glossaryTerms { terms { term { urn name properties { name description } } } }
+          schemaFieldEntity {
+            urn type
+            globalTags: tags { tags { tag { urn name properties { name description } } } }
+            glossaryTerms { terms { term { urn name properties { name description } } } }
+            structuredProperties {
+              properties {
+                structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+                values { ... on StringValue { stringValue } ... on NumberValue { numberValue } }
+                associatedUrn
+              }
+            }
+          }
+        }
+      }
+      editableSchemaMetadata {
+        editableSchemaFieldInfo {
+          fieldPath description
+          globalTags { tags { tag { urn name properties { name description } } } }
+          glossaryTerms { terms { term { urn name properties { name description } } } }
+        }
+      }
+    }
+  }
+}`
+
+const datahubCatalogDetailQualityQuery = `
+query DataRiverPocDetailQuality($urn: String!) {
+  entity(urn: $urn) {
+    urn type
+    ... on Dataset {
       latestFullTableProfile: datasetProfiles(limit: 10) {
         rowCount columnCount sizeInBytes timestampMillis
         partitionSpec { type partition }
@@ -2070,89 +2161,10 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
         ... on GlossaryTerm {
           hierarchicalName
           properties { name description }
-          glossaryTermInfo { name description termSource sourceRef sourceUrl customProperties { key value } }
-          domain { domain { urn properties { name description } } }
-          structuredProperties {
-            properties {
-              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
-              values {
-                ... on StringValue { stringValue }
-                ... on NumberValue { numberValue }
-              }
-              associatedUrn
-            }
-          }
           parentNodes {
             nodes {
               urn type
               ... on GlossaryNode { properties { name description } }
-            }
-          }
-          tableAssignments: relationships(input: {
-            types: ["TermedWith"]
-            direction: INCOMING
-            start: 0
-            count: 0
-            includeSoftDelete: false
-          }) { total }
-          columnAssignments: relationships(input: {
-            types: ["SchemaFieldWithGlossaryTerm"]
-            direction: INCOMING
-            start: 0
-            count: 0
-            includeSoftDelete: false
-          }) { total }
-          outgoingRelationships: relationships(input: {
-            types: []
-            direction: OUTGOING
-            start: 0
-            count: 100
-            includeSoftDelete: false
-          }) {
-            total
-            relationships {
-              type direction
-              entity {
-                urn type
-                ... on GlossaryTerm { properties { name } }
-                ... on GlossaryNode { properties { name } }
-              }
-            }
-          }
-        }
-        ... on GlossaryNode {
-          properties { name description customProperties { key value } }
-          structuredProperties {
-            properties {
-              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
-              values {
-                ... on StringValue { stringValue }
-                ... on NumberValue { numberValue }
-              }
-              associatedUrn
-            }
-          }
-          parentNodes {
-            nodes {
-              urn type
-              ... on GlossaryNode { properties { name description } }
-            }
-          }
-          outgoingRelationships: relationships(input: {
-            types: []
-            direction: OUTGOING
-            start: 0
-            count: 100
-            includeSoftDelete: false
-          }) {
-            total
-            relationships {
-              type direction
-              entity {
-                urn type
-                ... on GlossaryTerm { properties { name } }
-                ... on GlossaryNode { properties { name } }
-              }
             }
           }
         }
@@ -2451,13 +2463,20 @@ function datahubAssetCacheKey(urn) {
   return `datahub-asset-v3:${datahubCacheScope}:${createHash('sha256').update(urn).digest('hex')}`
 }
 
+function datahubAssetBaseCacheKey(urn) {
+  return `datahub-asset-base-v1:${datahubCacheScope}:${createHash('sha256').update(urn).digest('hex')}`
+}
+
 async function invalidateDatahubCaches(urn) {
   if (inventorySnapshot) inventorySnapshot.expiresAt = 0
   catalogEmbeddingSnapshot = undefined
   catalogEmbeddingRefreshStartedAt = 0
   await Promise.allSettled([
     pocStateStore.cacheDelete(datahubInventoryCacheKey),
-    ...(urn ? [pocStateStore.cacheDelete(datahubAssetCacheKey(urn))] : []),
+    ...(urn ? [
+      pocStateStore.cacheDelete(datahubAssetCacheKey(urn)),
+      pocStateStore.cacheDelete(datahubAssetBaseCacheKey(urn)),
+    ] : []),
   ])
   if (datahub) void startDatahubInventoryRefresh().catch(() => undefined)
 }
@@ -3722,6 +3741,19 @@ async function datahubEntity(urn) {
   return data.entity
 }
 
+async function datahubCatalogDetailBaseEntity(urn) {
+  const cacheKey = datahubAssetBaseCacheKey(urn)
+  try {
+    const cached = await pocStateStore.cacheGet(cacheKey)
+    if (cached && typeof cached === 'object') return cached
+  } catch { /* optional cache */ }
+  const data = await datahubGraphql(datahubCatalogDetailBaseQuery, { urn })
+  if (data.entity) {
+    try { await pocStateStore.cacheSet(cacheKey, data.entity, 60) } catch { /* optional cache */ }
+  }
+  return data.entity
+}
+
 async function currentDatahubTables(tableUrns, { signal } = {}) {
   if (!Array.isArray(tableUrns) || tableUrns.length < 1 || tableUrns.length > 2_000) {
     throw new Error('Current Table confirmation requires 1-2000 identities.')
@@ -4319,113 +4351,112 @@ export function reconcileDatahubGlossaryScrollPage(page, state = {}) {
 }
 
 async function datahubGlossary(searchParameters, principal) {
-  const normalizeGlossarySearch = (value) => boundedString(value, 500)
-    .normalize('NFKC').toLocaleLowerCase().replace(/[_.-]+/g, ' ').replace(/\s+/g, ' ').trim()
-  const query = normalizeGlossarySearch(searchParameters.get('q'))
+  if (searchParameters.get('detail') === 'true') {
+    return datahubGlossaryDetail(searchParameters, principal)
+  }
+  const query = boundedString(searchParameters.get('q'), 500).trim()
   const rawLimit = searchParameters.get('limit') ?? '50'
-  const rawCursor = searchParameters.get('cursor') ?? '0'
   if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100) {
     throw Object.assign(new Error('Glossary limit must be between 1 and 100.'), { statusCode: 400 })
   }
-  if (!/^\d+$/.test(rawCursor) || Number(rawCursor) > 100_000) {
-    throw Object.assign(new Error('Glossary cursor is invalid.'), { statusCode: 400 })
-  }
   const limit = Number(rawLimit)
-  const start = Number(rawCursor)
-  const terms = []
-  const observed = new Set()
-  let providerCursor
-  let providerScroll = { total: undefined, fetched: 0, cursor: null, complete: false }
-  for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-    const input = {
-      types: ['GLOSSARY_TERM'], query: '*', count: 250, keepAlive: '1m',
-      sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
-      searchFlags: { skipAggregates: true, skipHighlighting: true },
-      ...(providerCursor ? { scrollId: providerCursor } : {}),
-    }
-    const data = await datahubGraphql(datahubGlossaryQuery, { input })
-    const page = data.scrollAcrossEntities
-    providerScroll = reconcileDatahubGlossaryScrollPage(page, providerScroll)
-    for (const result of page.searchResults) {
-      const entity = result.entity
-      const urn = entity?.urn
-      const name = entity?.properties?.name || entity?.hierarchicalName || urnTail(urn)
-      const description = entity?.properties?.description || ''
-      if (!urn || observed.has(urn)) continue
-      observed.add(urn)
-      if (query && !normalizeGlossarySearch(`${name} ${entity.hierarchicalName || ''} ${description}`).includes(query)) continue
-      const parents = (entity.parentNodes?.nodes || []).flatMap((node) => (
-        node?.urn && node?.properties?.name
-          ? [{ urn: node.urn, name: node.properties.name, description: node.properties.description || '' }]
-          : []
-      )).reverse()
-      const tableAssetCount = principal.role === 'admin'
-        ? Math.max(0, Number(entity.tableAssignments?.total) || 0)
-        : null
-      const columnAssetCount = principal.role === 'admin'
-        ? Math.max(0, Number(entity.columnAssignments?.total) || 0)
-        : null
-      const outgoing = entity.outgoingRelationships
-      const relationshipTotal = Math.max(0, Number(outgoing?.total) || 0)
-      const relationshipKeys = new Set()
-      const relationships = (outgoing?.relationships || []).flatMap((relationship) => {
-        if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship?.entity?.type)
-          || typeof relationship.entity.urn !== 'string') return []
-        const key = `${relationship.type}\u0000${relationship.direction}\u0000${relationship.entity.urn}`
-        if (relationshipKeys.has(key)) return []
-        relationshipKeys.add(key)
-        return [{
-          type: relationship.type,
-          direction: relationship.direction,
-          target_urn: relationship.entity.urn,
-          target_type: relationship.entity.type,
-          target_name: typeof relationship.entity.properties?.name === 'string'
-            ? relationship.entity.properties.name
-            : null,
-        }]
-      })
-      terms.push({
-        urn,
-        name,
-        hierarchical_name: entity.hierarchicalName || name,
-        description,
-        parent_terms: parents,
-        // DataHub GlossaryTerm is a leaf under GlossaryNode. Never fabricate
-        // child terms when the provider model has no term-to-term hierarchy.
-        child_terms: [],
-        hierarchy_kind: 'LEAF_TERM',
-        asset_count: tableAssetCount === null || columnAssetCount === null
-          ? null
-          : tableAssetCount + columnAssetCount,
-        table_asset_count: tableAssetCount,
-        column_asset_count: columnAssetCount,
-        assets: [],
-        relationship_count: relationshipTotal,
-        relationships,
-        relationships_truncated: relationships.length < relationshipTotal,
-      })
-    }
-    if (providerScroll.complete) break
-    providerCursor = providerScroll.cursor
+  const scope = parameterScope('glossary-live-scroll', searchParameters, ['q', 'limit'])
+  const continuation = cursorValue(searchParameters.get('cursor'), scope)
+  const providerCursor = continuation?.providerCursor
+  const priorScroll = continuation?.scroll ?? { total: undefined, fetched: 0, cursor: null, complete: false }
+  const input = {
+    types: ['GLOSSARY_TERM'], query: query || '*', count: limit, keepAlive: '5m',
+    sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
+    searchFlags: { skipAggregates: true, skipHighlighting: true },
+    ...(providerCursor ? { scrollId: providerCursor } : {}),
   }
-  if (!providerScroll.complete) {
-    throw Object.assign(new Error('DataHub glossary pagination exceeded its bound.'), { statusCode: 502 })
+  const data = await datahubGraphql(datahubGlossaryQuery, { input })
+  const page = data.scrollAcrossEntities
+  if (page?.count > limit) {
+    throw Object.assign(new Error('DataHub glossary page exceeded the requested bound.'), { statusCode: 502 })
   }
-  const sorted = terms.sort((left, right) => (
-    left.name.localeCompare(right.name) || left.urn.localeCompare(right.urn)
-  ))
-  const items = sorted.slice(start, start + limit)
-  const nextOffset = start + items.length
+  const scroll = reconcileDatahubGlossaryScrollPage(page, priorScroll)
+  const items = page.searchResults.map((result) => glossaryTermProjection(result.entity, principal, false))
   return {
     items,
-    total: sorted.length,
-    page: { next_cursor: nextOffset < sorted.length ? String(nextOffset) : null, limit },
+    total: scroll.total,
+    page: {
+      next_cursor: scroll.complete ? null : issueCursor(scope, { providerCursor: scroll.cursor, scroll }),
+      limit,
+    },
     currentness: {
       source: 'DATAHUB_GMS_LIVE',
       observed_at: new Date().toISOString(),
       atomic_snapshot: false,
     },
   }
+}
+
+function glossaryTermProjection(entity, principal, includeDetails) {
+  if (!entity?.urn || entity.type !== 'GLOSSARY_TERM') {
+    throw Object.assign(new Error('DataHub glossary page contained an invalid term.'), { statusCode: 502 })
+  }
+  const name = entity.properties?.name || entity.hierarchicalName || urnTail(entity.urn)
+  const parents = (entity.parentNodes?.nodes || []).flatMap((node) => (
+    node?.urn && node?.properties?.name
+      ? [{ urn: node.urn, name: node.properties.name, description: node.properties.description || '' }]
+      : []
+  )).reverse()
+  const tableAssetCount = includeDetails && principal.role === 'admin'
+    ? Math.max(0, Number(entity.tableAssignments?.total) || 0)
+    : null
+  const columnAssetCount = includeDetails && principal.role === 'admin'
+    ? Math.max(0, Number(entity.columnAssignments?.total) || 0)
+    : null
+  const outgoing = includeDetails ? entity.outgoingRelationships : undefined
+  const relationshipTotal = Math.max(0, Number(outgoing?.total) || 0)
+  const relationshipKeys = new Set()
+  const relationships = (outgoing?.relationships || []).flatMap((relationship) => {
+    if (!['GLOSSARY_TERM', 'GLOSSARY_NODE'].includes(relationship?.entity?.type)
+      || typeof relationship.entity.urn !== 'string') return []
+    const key = `${relationship.type}\u0000${relationship.direction}\u0000${relationship.entity.urn}`
+    if (relationshipKeys.has(key)) return []
+    relationshipKeys.add(key)
+    return [{
+      type: relationship.type,
+      direction: relationship.direction,
+      target_urn: relationship.entity.urn,
+      target_type: relationship.entity.type,
+      target_name: typeof relationship.entity.properties?.name === 'string'
+        ? relationship.entity.properties.name
+        : null,
+    }]
+  })
+  return {
+    urn: entity.urn,
+    name,
+    hierarchical_name: entity.hierarchicalName || name,
+    description: entity.properties?.description || '',
+    parent_terms: parents,
+    child_terms: [],
+    hierarchy_kind: 'LEAF_TERM',
+    asset_count: tableAssetCount === null || columnAssetCount === null ? null : tableAssetCount + columnAssetCount,
+    table_asset_count: tableAssetCount,
+    column_asset_count: columnAssetCount,
+    assets: [],
+    relationship_count: relationshipTotal,
+    relationships,
+    relationships_truncated: relationships.length < relationshipTotal,
+  }
+}
+
+async function datahubGlossaryDetail(searchParameters, principal) {
+  const urn = boundedString(searchParameters.get('urn'), 4_096).trim()
+  if (!urn.startsWith('urn:li:glossaryTerm:')) {
+    throw Object.assign(new Error('A valid DataHub Glossary Term URN is required.'), { statusCode: 400 })
+  }
+  const data = await datahubGraphql(datahubGlossaryTermByUrnQuery, { urn })
+  const entity = data.entity
+  if (!entity || entity.urn !== urn || entity.type !== 'GLOSSARY_TERM'
+    || entity.exists === false || entity.status?.removed === true) {
+    throw Object.assign(new Error('DataHub Glossary Term was not found.'), { statusCode: 404 })
+  }
+  return glossaryTermProjection(entity, principal, true)
 }
 
 async function datahubGlossarySmokeTarget(searchParameters) {
@@ -4721,6 +4752,84 @@ function detailedDatasetAsset(entity) {
       ...datahubAssertionQuality(entity.assertions),
     },
     projection_source_version: 'datahub-live-poc',
+    source_version: 'datahub-live',
+  }
+}
+
+function baseDatasetAsset(entity) {
+  return publicDatahubAsset({
+    ...datasetAsset(entity),
+    ownership: (entity.ownership?.owners || []).map((item) => ({
+      owner: urnTail(item.owner?.urn),
+      type: item.type || 'TECHNICAL_OWNER',
+    })),
+    glossary_terms: (entity.glossaryTerms?.terms || []).map((item) => ({
+      urn: item.term?.urn,
+      name: item.term?.properties?.name || item.term?.name,
+      description: item.term?.properties?.description || '',
+    })),
+    projection_source_version: 'datahub-live-poc',
+    source_version: 'datahub-live',
+  })
+}
+
+async function authorizedCatalogDetailBase(urn, principal) {
+  const entity = await datahubCatalogDetailBaseEntity(urn)
+  if (!entity) throw Object.assign(new Error('DataHub asset was not found.'), { statusCode: 404 })
+  const asset = baseDatasetAsset(entity)
+  if (!canReadAsset(principal, asset, 'catalog')) {
+    throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current Table scope.')
+  }
+  return { entity, asset }
+}
+
+async function datahubCatalogDetailBase(urn, principal) {
+  return (await authorizedCatalogDetailBase(urn, principal)).asset
+}
+
+async function datahubCatalogDetailSchema(urn, principal, requestedOffset = 0, requestedLimit = 100, sourceVersion) {
+  await authorizedCatalogDetailBase(urn, principal)
+  if (sourceVersion && sourceVersion !== 'datahub-live') {
+    throw accessError(409, 'CATALOG_DETAIL_SOURCE_STALE', 'The DataHub detail source version changed; reload the detail.')
+  }
+  const data = await datahubGraphql(datahubCatalogDetailSchemaQuery, { urn })
+  if (!data.entity || data.entity.urn !== urn || data.entity.type !== 'DATASET') {
+    throw Object.assign(new Error('DataHub asset schema was not found.'), { statusCode: 404 })
+  }
+  const fields = datahubSchemaFields(data.entity)
+  const fieldOffset = Math.max(0, Number.isInteger(requestedOffset) ? requestedOffset : 0)
+  const fieldLimit = Math.min(100, Math.max(1, Number.isInteger(requestedLimit) ? requestedLimit : 100))
+  if (fieldOffset > fields.length) {
+    throw accessError(409, 'CATALOG_DETAIL_SOURCE_STALE', 'The requested DataHub schema page is no longer current; reload the detail.')
+  }
+  const pageFields = fields.slice(fieldOffset, fieldOffset + fieldLimit)
+  return {
+    schema_fields: pageFields,
+    schema_fields_total: fields.length,
+    schema_fields_available: fields.length,
+    schema_fields_truncated: false,
+    schema_fields_total_exact: true,
+    schema_fields_offset: fieldOffset,
+    schema_fields_limit: fieldLimit,
+    schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
+    source_version: 'datahub-live',
+  }
+}
+
+async function datahubCatalogDetailQuality(urn, principal, sourceVersion) {
+  const { entity: baseEntity } = await authorizedCatalogDetailBase(urn, principal)
+  if (sourceVersion && sourceVersion !== 'datahub-live') {
+    throw accessError(409, 'CATALOG_DETAIL_SOURCE_STALE', 'The DataHub detail source version changed; reload the detail.')
+  }
+  const data = await datahubGraphql(datahubCatalogDetailQualityQuery, { urn })
+  if (!data.entity || data.entity.urn !== urn || data.entity.type !== 'DATASET') {
+    throw Object.assign(new Error('DataHub asset quality detail was not found.'), { statusCode: 404 })
+  }
+  return {
+    quality: {
+      ...datahubProfileQuality(data.entity.latestFullTableProfile, baseEntity.properties),
+      ...datahubAssertionQuality(data.entity.assertions),
+    },
     source_version: 'datahub-live',
   }
 }
@@ -11815,8 +11924,32 @@ async function api(request, response, url, context) {
     return json(response, 200, {})
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') {
+    const urn = boundedString(url.searchParams.get('urn'), 4096)
+    const detailScope = (url.searchParams.get('detail_scope') || 'FULL').trim().toUpperCase()
+    if (detailScope === 'BASE') {
+      return json(response, 200, await datahubCatalogDetailBase(urn, context.principal))
+    }
+    if (detailScope === 'SCHEMA') {
+      return json(response, 200, await datahubCatalogDetailSchema(
+        urn,
+        context.principal,
+        Number(url.searchParams.get('field_offset') || 0),
+        Number(url.searchParams.get('field_limit') || 100),
+        boundedString(url.searchParams.get('field_source_version'), 200).trim(),
+      ))
+    }
+    if (detailScope === 'QUALITY') {
+      return json(response, 200, await datahubCatalogDetailQuality(
+        urn,
+        context.principal,
+        boundedString(url.searchParams.get('source_version'), 200).trim(),
+      ))
+    }
+    if (detailScope !== 'FULL') {
+      throw accessError(400, 'CATALOG_DETAIL_SCOPE_INVALID', 'Catalog detail_scope must be BASE, SCHEMA, QUALITY, or FULL.')
+    }
     const asset = await datahubAsset(
-      boundedString(url.searchParams.get('urn'), 4096),
+      urn,
       Number(url.searchParams.get('field_offset') || 0),
       Number(url.searchParams.get('field_limit') || 100),
     )

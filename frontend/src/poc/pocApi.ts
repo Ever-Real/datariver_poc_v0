@@ -2048,6 +2048,11 @@ class PocApiClient {
       return monitoringConfiguration
     }
     if (path === '/catalog/export-capability') return { enabled: false }
+    if (path === '/poc/glossary/detail') {
+      return runtimeFlags().datahub
+        ? gatewayRequest(`/poc-api/datahub/glossary?detail=true&${url.searchParams.toString()}`, { signal: options.signal })
+        : undefined
+    }
     if (path === '/poc/glossary/assignments') {
       return runtimeFlags().datahub
         ? gatewayRequest(`/poc-api/datahub/glossary/assignments?${url.searchParams.toString()}`, { signal: options.signal })
@@ -2279,8 +2284,15 @@ class PocApiClient {
         const parameters = new URLSearchParams({ urn: assetId })
         const fieldOffset = url.searchParams.get('field_offset')
         const fieldLimit = url.searchParams.get('field_limit')
+        const fieldSourceVersion = url.searchParams.get('field_source_version')
+        const sourceVersion = url.searchParams.get('source_version')
+        const detailScope = url.searchParams.get('detail_scope')
+          ?? new Headers(options.headers).get('X-DataRiver-Detail-Scope')
         if (fieldOffset) parameters.set('field_offset', fieldOffset)
         if (fieldLimit) parameters.set('field_limit', fieldLimit)
+        if (fieldSourceVersion) parameters.set('field_source_version', fieldSourceVersion)
+        if (sourceVersion) parameters.set('source_version', sourceVersion)
+        if (detailScope) parameters.set('detail_scope', detailScope)
         const asset = await gatewayRequest<CatalogAssetDetail>(
           `/poc-api/datahub/asset?${parameters.toString()}`, { signal: options.signal },
         )

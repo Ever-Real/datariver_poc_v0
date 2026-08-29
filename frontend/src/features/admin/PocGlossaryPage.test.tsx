@@ -51,6 +51,7 @@ describe('PocGlossaryPage', () => {
           schema_name: 'QUALITY',
         }
     const request = vi.fn((path: string) => {
+      if (path.includes('/glossary/detail?')) return Promise.resolve(term)
       if (path.includes('/assignments?') && path.includes('target_type=TABLE')) {
         return Promise.resolve({ items: [table], total: 1, page: { next_cursor: null, limit: 25 } })
       }
