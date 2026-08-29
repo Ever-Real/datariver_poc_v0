@@ -148,6 +148,20 @@ def test_liveness_and_security_headers() -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
+def test_change_request_summary_state_group_http_contract_is_bounded() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+
+    operation = app.openapi()["paths"]["/api/v1/change-requests/summaries"]["get"]
+    parameter = next(value for value in operation["parameters"] if value["name"] == "state_group")
+    schema = parameter["schema"]
+    enum_schema = app.openapi()["components"]["schemas"][
+        schema["anyOf"][0]["$ref"].rsplit("/", 1)[-1]
+    ]
+
+    assert enum_schema["enum"] == ["REGISTERED", "IN_PROGRESS", "COMPLETED", "CLOSED"]
+
+
 @pytest.mark.asyncio
 async def test_classification_policy_summary_route_is_exact_and_private(
     monkeypatch: pytest.MonkeyPatch,

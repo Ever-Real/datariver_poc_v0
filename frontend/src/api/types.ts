@@ -648,6 +648,12 @@ export type ChangeRequestState =
   | 'REJECTED'
   | 'CANCELLED'
 
+export type ChangeRequestStateGroup =
+  | 'REGISTERED'
+  | 'IN_PROGRESS'
+  | 'COMPLETED'
+  | 'CLOSED'
+
 export interface ChangeRequestRecord {
   id: string
   number: string

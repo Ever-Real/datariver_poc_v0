@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self, cast
 from uuid import UUID, uuid4
 
 import pytest
 
+from datariver.application.change_request_read import (
+    CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT,
+    ChangeRequestStateGroup,
+)
 from datariver.application.dto import (
     CatalogMetadataBindingCommand,
     ChangeRequestSummaryRecord,
@@ -217,7 +221,7 @@ class MemoryChangeRequests:
         *,
         workspace_id: UUID,
         maximum_classification: int,
-        state: str | None,
+        states: frozenset[str] | None,
         before_created_at: datetime | None,
         before_id: UUID | None,
         limit: int,
@@ -226,7 +230,7 @@ class MemoryChangeRequests:
             {
                 "workspace_id": workspace_id,
                 "maximum_classification": maximum_classification,
-                "state": state,
+                "states": states,
                 "before_created_at": before_created_at,
                 "before_id": before_id,
                 "limit": limit,
@@ -236,7 +240,7 @@ class MemoryChangeRequests:
             value
             for value in self.summaries
             if value.classification <= Classification(maximum_classification)
-            and (state is None or value.state.value == state)
+            and (states is None or value.state.value in states)
         ]
         if before_created_at is not None and before_id is not None:
             values = [
@@ -481,6 +485,243 @@ async def test_change_request_summary_cursor_is_bounded_and_subject_scoped() -> 
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="summary-page-other-subject",
         )
+
+
+@pytest.mark.asyncio
+async def test_grouped_summary_filter_uses_only_the_bounded_server_state_set() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    actor = replace(subject(workspace_id), allowed_actions=frozenset({Action.CHANGE_READ}))
+    summaries = tuple(
+        replace(
+            change_request_summary(
+                created_at=datetime(2026, 8, 2, 12, index, tzinfo=UTC),
+                system_id=system_id,
+            ),
+            state=state,
+        )
+        for index, state in enumerate(ChangeState)
+    )
+    state: dict[str, object] = {
+        "requests": {},
+        "summaries": summaries,
+        "outbox": [],
+        "idempotency": {},
+    }
+    uow = MemoryUnitOfWork(state)
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+
+    page = await service.list_change_request_summaries(
+        workspace_id=workspace_id,
+        state=None,
+        state_group=ChangeRequestStateGroup.IN_PROGRESS,
+        cursor=None,
+        limit=25,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="summary-group",
+    )
+
+    expected = {
+        ChangeState.IN_REVIEW,
+        ChangeState.TESTING,
+        ChangeState.FINAL_REVIEW,
+        ChangeState.APPLY_QUEUED,
+        ChangeState.APPLYING,
+        ChangeState.APPLY_FAILED,
+        ChangeState.CHANGES_REQUESTED,
+    }
+    assert {item.state for item in page.items} == expected
+    assert uow.change_requests.summary_calls[0]["states"] == frozenset(
+        state.value for state in expected
+    )
+
+    first = await service.list_change_request_summaries(
+        workspace_id=workspace_id,
+        state=None,
+        state_group=ChangeRequestStateGroup.IN_PROGRESS,
+        cursor=None,
+        limit=2,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="summary-group-cursor",
+    )
+    assert first.next_cursor is not None
+    with pytest.raises(ValidationError, match="stale or invalid"):
+        await service.list_change_request_summaries(
+            workspace_id=workspace_id,
+            state=None,
+            state_group=ChangeRequestStateGroup.COMPLETED,
+            cursor=first.next_cursor,
+            limit=2,
+            subject=actor,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="summary-other-group-cursor",
+        )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_counts_all_real_states_after_target_authorization() -> None:
+    workspace_id = uuid4()
+    allowed_system_id = uuid4()
+    denied_system_id = uuid4()
+    actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_READ}),
+        allowed_system_ids=frozenset({allowed_system_id}),
+    )
+    observed_at = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    summaries = (
+        *(
+            replace(
+                change_request_summary(
+                    created_at=observed_at + timedelta(seconds=index),
+                    system_id=allowed_system_id,
+                ),
+                state=state,
+            )
+            for index, state in enumerate(ChangeState)
+        ),
+        change_request_summary(
+            created_at=observed_at + timedelta(minutes=1),
+            system_id=denied_system_id,
+        ),
+    )
+    state: dict[str, object] = {
+        "requests": {},
+        "summaries": summaries,
+        "outbox": [],
+        "idempotency": {},
+    }
+    uow = MemoryUnitOfWork(state)
+    target_authorizer = MemoryTargetAuthorizer()
+    target_authorizer.enforce_full_scope = True
+    target_authorizer.committed = lambda: uow.committed
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    snapshot = await service.change_request_state_counts(
+        workspace_id=workspace_id,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="dashboard-counts",
+    )
+
+    assert snapshot.complete is True
+    assert snapshot.counts == {state: 1 for state in ChangeState}
+    assert target_authorizer.filter_calls == 1
+    assert uow.committed is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_count_ceiling_is_complete_at_the_exact_boundary() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    actor = replace(subject(workspace_id), allowed_actions=frozenset({Action.CHANGE_READ}))
+    observed_at = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    summaries = tuple(
+        change_request_summary(
+            created_at=observed_at + timedelta(seconds=index),
+            system_id=system_id,
+        )
+        for index in range(CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT)
+    )
+    memory: dict[str, object] = {
+        "requests": {},
+        "summaries": summaries,
+        "outbox": [],
+        "idempotency": {},
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(memory)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+
+    snapshot = await service.change_request_state_counts(
+        workspace_id=workspace_id,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="dashboard-count-exact-limit",
+    )
+
+    assert snapshot.complete is True
+    assert snapshot.counts is not None
+    assert sum(snapshot.counts.values()) == CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_dashboard_count_ceiling_returns_unknown_instead_of_partial_totals() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    actor = replace(subject(workspace_id), allowed_actions=frozenset({Action.CHANGE_READ}))
+    observed_at = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    summaries = tuple(
+        change_request_summary(
+            created_at=observed_at + timedelta(seconds=index),
+            system_id=system_id,
+        )
+        for index in range(CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT + 1)
+    )
+    state: dict[str, object] = {
+        "requests": {},
+        "summaries": summaries,
+        "outbox": [],
+        "idempotency": {},
+    }
+    uow = MemoryUnitOfWork(state)
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+
+    snapshot = await service.change_request_state_counts(
+        workspace_id=workspace_id,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="dashboard-count-limit",
+    )
+
+    assert snapshot.complete is False
+    assert snapshot.counts is None
+    assert sum(cast(int, call["limit"]) - 1 for call in uow.change_requests.summary_calls) == (
+        CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_count_denial_happens_before_opening_the_read_model() -> None:
+    workspace_id = uuid4()
+    opened = False
+
+    def uow_factory() -> GovernanceUnitOfWork:
+        nonlocal opened
+        opened = True
+        raise AssertionError("The CR read model must not open after authorization denial.")
+
+    service = GovernanceService(
+        uow_factory,
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+
+    with pytest.raises(ForbiddenError):
+        await service.change_request_state_counts(
+            workspace_id=workspace_id,
+            subject=subject(workspace_id),
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="dashboard-count-denied",
+        )
+
+    assert opened is False
 
 
 @pytest.mark.asyncio

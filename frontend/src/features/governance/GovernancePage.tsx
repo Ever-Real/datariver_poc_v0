@@ -10,9 +10,14 @@ import type {
   ChangeRequestAttachmentList,
   ChangeRequestSchemaOverview,
   ChangeRequestState,
+  ChangeRequestStateGroup,
   GovernanceApplyReport,
 } from '../../api/types'
-import type { Page } from '../../app/navigation'
+import {
+  changeRequestStateGroupFromLocation,
+  pageUrl,
+  type Page,
+} from '../../app/navigation'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -32,6 +37,32 @@ import {
   changeStateOptions,
   type ChangeActionHint,
 } from './changePresentation'
+
+type ChangeRequestFilter = '' | ChangeRequestState | `GROUP:${ChangeRequestStateGroup}`
+
+const changeRequestStatesByGroup: Record<ChangeRequestStateGroup, ReadonlySet<ChangeRequestState>> = {
+  REGISTERED: new Set(['REGISTERED']),
+  IN_PROGRESS: new Set([
+    'IN_REVIEW',
+    'TESTING',
+    'FINAL_REVIEW',
+    'APPLY_QUEUED',
+    'APPLYING',
+    'APPLY_FAILED',
+    'CHANGES_REQUESTED',
+  ]),
+  COMPLETED: new Set(['APPLIED', 'COMPLETED']),
+  CLOSED: new Set(['REJECTED', 'CANCELLED']),
+}
+
+export function requestMatchesStateFilter(
+  state: ChangeRequestState,
+  filter: ChangeRequestFilter,
+): boolean {
+  if (!filter) return true
+  if (!filter.startsWith('GROUP:')) return state === filter
+  return changeRequestStatesByGroup[filter.slice(6) as ChangeRequestStateGroup].has(state)
+}
 import './changeManagement.css'
 
 const columns: ColumnDef<ChangeRequestSummary>[] = [
@@ -195,7 +226,10 @@ export function GovernancePage({
   onEnroll,
   hardwareWebauthnEnabled,
 }: { client: ApiClient; requesterName: string; requesterEmail?: string; onNavigate?: (page: Page) => void } & AssuranceActions) {
-  const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
+  const initialStateGroup = changeRequestStateGroupFromLocation()
+  const [stateFilter, setStateFilter] = useState<ChangeRequestFilter>(
+    initialStateGroup ? `GROUP:${initialStateGroup}` : '',
+  )
   const [textFilter, setTextFilter] = useState('')
   const [requests, setRequests] = useState<ChangeRequestSummary[]>([])
   const [overview, setOverview] = useState<ChangeRequestSchemaOverview[]>([])
@@ -251,7 +285,8 @@ export function GovernancePage({
     setListError(undefined)
     try {
       const query = new URLSearchParams({ limit: '25' })
-      if (stateFilter) query.set('state', stateFilter)
+      if (stateFilter.startsWith('GROUP:')) query.set('state_group', stateFilter.slice(6))
+      else if (stateFilter) query.set('state', stateFilter)
       if (cursor) query.set('cursor', cursor)
       query.set('date_from', dateRange.from)
       query.set('date_to', dateRange.to)
@@ -708,7 +743,9 @@ export function GovernancePage({
       setPendingAction(undefined)
       setDetail(next)
       setRequests((values) => {
-        if (stateFilter && next.state !== stateFilter) return values.filter((item) => item.id !== next.id)
+        if (!requestMatchesStateFilter(next.state, stateFilter)) {
+          return values.filter((item) => item.id !== next.id)
+        }
         return values.map((item) => item.id === next.id
           ? { ...item, state: next.state, version: next.version, current_round_number: next.current_round_number }
           : item)
@@ -732,7 +769,7 @@ export function GovernancePage({
   const visibleRequests = useMemo(() => {
     const query = textFilter.trim().toLocaleLowerCase()
     return requests.filter((request) => {
-      if (stateFilter && request.state !== stateFilter) return false
+      if (!requestMatchesStateFilter(request.state, stateFilter)) return false
       if (!query) return true
       return [
       request.number, request.title, request.requester_id, request.first_item.aspect_name, request.classification,
@@ -750,6 +787,15 @@ export function GovernancePage({
     { label: '적용 완료', state: 'APPLIED' },
     { label: '수동 완료', state: 'COMPLETED' },
   ]
+  const setChangeRequestFilter = (value: ChangeRequestFilter) => {
+    setStateFilter(value)
+    const stateGroup = value.startsWith('GROUP:')
+      ? value.slice(6) as ChangeRequestStateGroup
+      : ''
+    window.history.replaceState({}, '', pageUrl('change-management', {
+      changeRequestStateGroup: stateGroup,
+    }))
+  }
   const schemaKey = (row: ChangeRequestSchemaOverview) => JSON.stringify([
     row.platform,
     row.database_name,
@@ -803,8 +849,16 @@ export function GovernancePage({
         </div>
         <label className="governance-state-filter">
           <span>상태 필터</span>
-          <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value as '' | ChangeRequestState)}>
+          <select value={stateFilter} onChange={(event) => setChangeRequestFilter(event.target.value as ChangeRequestFilter)}>
+            <optgroup label="진행 그룹">
+              <option value="GROUP:REGISTERED">접수 대기 전체</option>
+              <option value="GROUP:IN_PROGRESS">검토·진행 전체</option>
+              <option value="GROUP:COMPLETED">적용·완료 전체</option>
+              <option value="GROUP:CLOSED">반려·종료 전체</option>
+            </optgroup>
+            <optgroup label="개별 상태">
             {changeStateOptions.map((option) => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}
+            </optgroup>
           </select>
         </label>
         <label className="governance-text-filter">
@@ -891,7 +945,7 @@ export function GovernancePage({
           <p>행을 클릭하거나 Enter/Space로 열면 서버가 상세 권한을 다시 확인합니다. 검색은 현재 서버 권한 창 안에서만 필터링합니다.</p>
         </header>
         <div className="governance-stage-filters" aria-label="단계별 CR 필터">
-          {statusBadges.map((item) => <button key={item.label} type="button" className={stateFilter === item.state ? 'active' : ''} onClick={() => setStateFilter((current) => current === item.state ? '' : item.state)}>{item.label}</button>)}
+          {statusBadges.map((item) => <button key={item.label} type="button" className={stateFilter === item.state ? 'active' : ''} onClick={() => setChangeRequestFilter(stateFilter === item.state ? '' : item.state)}>{item.label}</button>)}
         </div>
         <DenseDataTable
           caption="현재 권한 범위의 변경 요청"
@@ -944,7 +998,9 @@ export function GovernancePage({
           setActionError(undefined)
           setDetail(next)
           setRequests((values) => {
-            if (stateFilter && next.state !== stateFilter) return values.filter((item) => item.id !== next.id)
+            if (!requestMatchesStateFilter(next.state, stateFilter)) {
+              return values.filter((item) => item.id !== next.id)
+            }
             return values.map((item) => item.id === next.id
               ? { ...item, state: next.state, version: next.version, current_round_number: next.current_round_number }
               : item)

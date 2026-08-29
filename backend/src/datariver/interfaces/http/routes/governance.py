@@ -16,12 +16,12 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.change_numbers import change_request_number
+from datariver.application.change_request_read import ChangeRequestStateGroup
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.ports import CatalogReaderMode
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
-from datariver.application.services.governance import GovernanceService
 from datariver.application.services.governance_attachments import (
     AttachmentUploadIntent,
     FinalizedAttachment,
@@ -72,6 +72,7 @@ from datariver.infrastructure.db.models.governance import (
 from datariver.infrastructure.db.models.platform import DataSystemModel
 from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
+from datariver.interfaces.http.governance_dependencies import governance_service as _service
 from datariver.interfaces.http.presenters import (
     catalog_detail,
     catalog_summary,
@@ -217,31 +218,6 @@ def _parse_attachment_cursor(
         return created_at, UUID(str(document["attachment_id"]))
     except (ValueError, TypeError, binascii.Error, orjson.JSONDecodeError) as error:
         raise ValidationError("The attachment cursor is stale or invalid.") from error
-
-
-def _service(request: Request, session: AsyncSession | None = None) -> GovernanceService:
-    container = get_container(request)
-    authorization = AuthorizationService(
-        decision_writer=SqlDecisionWriter(container.database.session_factory)
-    )
-    return GovernanceService(
-        lambda: SqlGovernanceUnitOfWork(
-            container.database.session_factory,
-            session=session,
-        ),
-        authorization,
-        target_authorizer=(
-            CatalogChangeTargetAuthorizer(
-                index=SqlCatalogChangeTargetReader(session),
-                classification_access=ClassificationAccessResolver(
-                    SqlClassificationAccessSnapshotReader(session)
-                ),
-                authorization=authorization,
-            )
-            if session is not None
-            else None
-        ),
-    )
 
 
 def _attachment_service(
@@ -555,9 +531,12 @@ async def list_change_request_summaries(
     context: ContextDep,
     session: SessionDep,
     state: Annotated[str | None, Query(max_length=32)] = None,
+    state_group: ChangeRequestStateGroup | None = None,
     cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 25,
 ) -> ChangeRequestSummaryListResponse:
+    if state is not None and state_group is not None:
+        raise ValidationError("Choose either a change-request state or state group filter.")
     try:
         parsed_state = ChangeState(state) if state else None
     except ValueError as error:
@@ -570,6 +549,7 @@ async def list_change_request_summaries(
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
+        state_group=state_group,
     )
     # The shared governance UoW commits after authorization, which clears PostgreSQL
     # SET LOCAL values. Re-establish the request scope before route-level RLS reads.

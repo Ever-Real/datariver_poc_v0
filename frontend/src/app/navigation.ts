@@ -1,4 +1,4 @@
-import type { PocCapability, PocRole } from '../api/types'
+import type { ChangeRequestStateGroup, PocCapability, PocRole } from '../api/types'
 
 export const primaryNavigation = [
   { id: 'catalog', label: '검색', badge: undefined },
@@ -38,6 +38,13 @@ const pageIds = new Set<Page>([
   'knowledge-studio',
   'glossary',
   'profile',
+])
+
+const changeRequestStateGroups = new Set<ChangeRequestStateGroup>([
+  'REGISTERED',
+  'IN_PROGRESS',
+  'COMPLETED',
+  'CLOSED',
 ])
 
 const pocPageCapabilities: Partial<Record<Page, PocCapability>> = {
@@ -89,7 +96,20 @@ export function pageFromLocation(href = window.location.href): Page {
   return candidate && pageIds.has(candidate as Page) ? candidate as Page : 'dashboard'
 }
 
-export function pageUrl(page: Page, options: { query?: string; href?: string } = {}): string {
+export function changeRequestStateGroupFromLocation(
+  href = window.location.href,
+): ChangeRequestStateGroup | undefined {
+  const candidate = new URL(href).searchParams.get('crStateGroup')
+  return candidate && changeRequestStateGroups.has(candidate as ChangeRequestStateGroup)
+    ? candidate as ChangeRequestStateGroup
+    : undefined
+}
+
+export function pageUrl(page: Page, options: {
+  query?: string
+  href?: string
+  changeRequestStateGroup?: ChangeRequestStateGroup | ''
+} = {}): string {
   const url = new URL(options.href ?? window.location.href)
   url.searchParams.set('page', page)
 
@@ -110,6 +130,15 @@ export function pageUrl(page: Page, options: { query?: string; href?: string } =
     url.searchParams.delete('draft')
     url.searchParams.delete('step')
     url.searchParams.delete('asset_id')
+  }
+  if (page === 'change-management' && options.changeRequestStateGroup !== undefined) {
+    if (options.changeRequestStateGroup) {
+      url.searchParams.set('crStateGroup', options.changeRequestStateGroup)
+    } else {
+      url.searchParams.delete('crStateGroup')
+    }
+  } else if (page !== 'change-management') {
+    url.searchParams.delete('crStateGroup')
   }
   return `${url.pathname}${url.search}${url.hash}`
 }

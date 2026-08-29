@@ -3,12 +3,19 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Protocol
 from uuid import UUID
 
+from datariver.application.change_request_read import (
+    CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT,
+    ChangeRequestStateCountSnapshot,
+    ChangeRequestStateGroup,
+    change_request_states_for_group,
+)
 from datariver.application.dto import (
     CatalogMetadataBindingCommand,
     ChangeRequestSummaryPage,
@@ -460,7 +467,10 @@ class GovernanceService:
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
+        state_group: ChangeRequestStateGroup | None = None,
     ) -> ChangeRequestSummaryPage:
+        if state is not None and state_group is not None:
+            raise ValidationError("Choose either a change-request state or state group filter.")
         await self._authorization.authorize(
             subject=subject,
             resource=ResourceAttributes(
@@ -481,6 +491,7 @@ class GovernanceService:
             {
                 "contract": "change-request-summary-cursor-v1",
                 "state": state.value if state else None,
+                "state_group": state_group.value if state_group else None,
                 "subject_id": str(subject.subject_id),
                 "workspace_id": str(workspace_id),
             }
@@ -498,7 +509,15 @@ class GovernanceService:
                 await uow.change_requests.list_summaries(
                     workspace_id=workspace_id,
                     maximum_classification=int(subject.clearance),
-                    state=state.value if state else None,
+                    states=(
+                        frozenset({state.value})
+                        if state is not None
+                        else frozenset(
+                            value.value for value in change_request_states_for_group(state_group)
+                        )
+                        if state_group is not None
+                        else None
+                    ),
                     before_created_at=before_created_at,
                     before_id=before_id,
                     limit=limit + 1,
@@ -526,6 +545,81 @@ class GovernanceService:
             else None
         )
         return ChangeRequestSummaryPage(items=visible, next_cursor=next_cursor)
+
+    async def change_request_state_counts(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> ChangeRequestStateCountSnapshot:
+        """Count only CR summaries that pass the canonical current-target read boundary."""
+
+        await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=workspace_id,
+                workspace_id=workspace_id,
+                resource_type="change_request_collection",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=Classification.PUBLIC,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.CHANGE_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        if self._target_authorizer is None:
+            raise RuntimeError("Change-target authorization is unavailable.")
+
+        counts: Counter[ChangeState] = Counter()
+        batch_size = 200
+        scanned_count = 0
+        before_created_at: datetime | None = None
+        before_id: UUID | None = None
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            while True:
+                remaining = CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT - scanned_count
+                raw = tuple(
+                    await uow.change_requests.list_summaries(
+                        workspace_id=workspace_id,
+                        maximum_classification=int(subject.clearance),
+                        states=None,
+                        before_created_at=before_created_at,
+                        before_id=before_id,
+                        limit=min(batch_size, remaining) + 1,
+                    )
+                )
+                window = raw[: min(batch_size, remaining)]
+                visible = await self._target_authorizer.filter_authorized_summaries(
+                    workspace_id=workspace_id,
+                    subject=subject,
+                    summaries=window,
+                    action=Action.CHANGE_READ,
+                    environment=environment,
+                    request_id=request_id,
+                )
+                counts.update(value.state for value in visible)
+                scanned_count += len(window)
+                if len(raw) <= len(window) or not window:
+                    break
+                if scanned_count >= CHANGE_REQUEST_DASHBOARD_SCAN_LIMIT:
+                    await uow.commit()
+                    return ChangeRequestStateCountSnapshot(counts=None, complete=False)
+                before_created_at = window[-1].created_at
+                before_id = window[-1].change_request_id
+            await uow.commit()
+        return ChangeRequestStateCountSnapshot(
+            counts={state: counts[state] for state in ChangeState},
+            complete=True,
+        )
 
     async def create_change_request(
         self,

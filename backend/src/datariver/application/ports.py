@@ -594,7 +594,7 @@ class ChangeRequestRepository(Protocol):
         *,
         workspace_id: UUID,
         maximum_classification: int,
-        state: str | None,
+        states: frozenset[str] | None,
         before_created_at: datetime | None,
         before_id: UUID | None,
         limit: int,

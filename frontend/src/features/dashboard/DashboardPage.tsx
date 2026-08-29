@@ -15,7 +15,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogSchemaMetric } from '../../api/types'
+import type { CatalogSchemaMetric, ChangeRequestStateGroup } from '../../api/types'
 import { pageUrl, type Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
@@ -27,7 +27,12 @@ const dashboardPeriods = ['1W', '1M', '3M'] as const
 
 interface DashboardSummary {
   observed_at: string
-  changes_by_state: Record<string, number>
+  changes_by_state: Record<string, number> | null
+  change_request_progress?: {
+    total: number | null
+    groups: Record<ChangeRequestStateGroup, number | null>
+    complete: boolean
+  }
   catalog_asset_count: number
   catalog_described_asset_count: number
   catalog_glossary_term_count: number
@@ -108,8 +113,6 @@ export function DashboardPage({
   const descriptionCoverage = summary && summary.catalog_asset_count > 0
     ? Math.round((summary.catalog_described_asset_count / summary.catalog_asset_count) * 100)
     : undefined
-  const changes = summary?.changes_by_state ?? {}
-  const reviewingChanges = countStates(changes, ['IN_REVIEW', 'TESTING', 'FINAL_REVIEW', 'APPLY_QUEUED', 'APPLYING'])
   const qualityCoverage = quality?.table_coverage_basis_points == null
     ? undefined
     : Math.round(quality.table_coverage_basis_points / 100)
@@ -173,14 +176,9 @@ export function DashboardPage({
           page="quality"
           onNavigate={onNavigate}
         />
-        <DashboardStatCard
-          title="CR Status"
-          value={sumValues(changes)}
-          unit="Requests"
-          icon={<ClipboardList size={20} />}
-          description={`신규 ${changes.REGISTERED ?? 0} · 검토/적용 ${reviewingChanges} · 완료 ${changes.APPLIED ?? 0}`}
-          page="change-management"
-          onNavigate={onNavigate}
+        <ChangeRequestProgress
+          value={summary?.change_request_progress}
+          loading={loading && !summary}
         />
       </div>
 
@@ -247,6 +245,54 @@ export function DashboardPage({
         </DashboardSection>
       </div>
     </section>
+  )
+}
+
+const changeRequestGroups: ReadonlyArray<{
+  group: ChangeRequestStateGroup
+  label: string
+  description: string
+}> = [
+  { group: 'REGISTERED', label: '접수 대기', description: 'REGISTERED' },
+  { group: 'IN_PROGRESS', label: '검토·진행', description: '검토, 테스트, 적용 진행·보완' },
+  { group: 'COMPLETED', label: '적용·완료', description: 'APPLIED, COMPLETED' },
+  { group: 'CLOSED', label: '반려·종료', description: 'REJECTED, CANCELLED' },
+]
+
+function ChangeRequestProgress({
+  value,
+  loading,
+}: {
+  value?: DashboardSummary['change_request_progress']
+  loading: boolean
+}) {
+  const countText = (count?: number | null) => count == null
+    ? loading ? '…' : 'UNKNOWN'
+    : count.toLocaleString()
+  return (
+    <article className="dashboard-change-progress" aria-busy={loading}>
+      <header>
+        <span className="dashboard-stat-icon"><ClipboardList size={20} /></span>
+        <div>
+          <p>Change Request Progress</p>
+          <span>{value && !value.complete
+            ? 'UNKNOWN · 안전한 집계 한도를 초과해 전체성을 확인할 수 없습니다.'
+            : '현재 권한 범위의 서버 검증 Snapshot · 기간 추세는 read model 준비 전까지 제공하지 않습니다.'}</span>
+        </div>
+        <a href={pageUrl('change-management', { changeRequestStateGroup: '' })}>
+          <strong>{countText(value?.total)}</strong><small>Total requests</small>
+        </a>
+      </header>
+      <nav aria-label="Change Request 진행 그룹">
+        {changeRequestGroups.map(({ group, label, description }) => (
+          <a key={group} href={pageUrl('change-management', { changeRequestStateGroup: group })}>
+            <span><strong>{label}</strong><small>{description}</small></span>
+            <b>{countText(value?.groups[group])}</b>
+            <ArrowRight size={15} aria-hidden="true" />
+          </a>
+        ))}
+      </nav>
+    </article>
   )
 }
 
@@ -361,14 +407,6 @@ function groupMetricsByPlatform(metrics: CatalogSchemaMetric[]) {
 
 function metricKey(metric: CatalogSchemaMetric): string {
   return [metric.platform, metric.database_name, metric.schema_name].map((part) => part ?? '').join('\u0000')
-}
-
-function sumValues(values: Record<string, number>): number {
-  return Object.values(values).reduce((total, value) => total + value, 0)
-}
-
-function countStates(values: Record<string, number>, states: string[]): number {
-  return states.reduce((total, state) => total + (values[state] ?? 0), 0)
 }
 
 function basisPointsText(value: number | null): string {

@@ -8,6 +8,10 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
+from datariver.application.change_request_read import (
+    ChangeRequestStateGroup,
+    change_request_group_counts,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
@@ -21,8 +25,12 @@ from datariver.infrastructure.db.models.integration import (
     ObjectManifestModel,
     OutboxEventModel,
 )
-from datariver.interfaces.http.dashboard_schemas import DashboardSummaryResponse
+from datariver.interfaces.http.dashboard_schemas import (
+    ChangeRequestProgressResponse,
+    DashboardSummaryResponse,
+)
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
+from datariver.interfaces.http.governance_dependencies import governance_service
 from datariver.interfaces.http.schemas import (
     CatalogSchemaMetricResponse,
     OperationsSummaryResponse,
@@ -209,6 +217,12 @@ async def dashboard(
     """Return bounded home-dashboard facts without operator-only telemetry."""
 
     await _authorize_dashboard(request, context)
+    change_snapshot = await governance_service(request, session).change_request_state_counts(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
     (
         catalog_asset_count,
         catalog_described_asset_count,
@@ -217,11 +231,19 @@ async def dashboard(
     ) = await _catalog_coverage(session, context.workspace_id)
     return DashboardSummaryResponse(
         observed_at=datetime.now(UTC),
-        changes_by_state=await _state_counts(
-            session,
-            ChangeRequestModel.state,
-            ChangeRequestModel.workspace_id,
-            context.workspace_id,
+        changes_by_state=(
+            {state.value: count for state, count in change_snapshot.counts.items()}
+            if change_snapshot.counts is not None
+            else None
+        ),
+        change_request_progress=ChangeRequestProgressResponse(
+            total=(sum(change_snapshot.counts.values()) if change_snapshot.counts else None),
+            groups=(
+                change_request_group_counts(change_snapshot.counts)
+                if change_snapshot.counts is not None
+                else {group: None for group in ChangeRequestStateGroup}
+            ),
+            complete=change_snapshot.complete,
         ),
         catalog_asset_count=catalog_asset_count,
         catalog_described_asset_count=catalog_described_asset_count,

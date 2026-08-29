@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type ApiClient, type RequestOptions } from '../../api/client'
 import type {
   CatalogAsset,
@@ -8,7 +8,7 @@ import type {
   ChangeRequestSummary,
 } from '../../api/types'
 import type { ChangeHistoryEvent } from '../change-history/types'
-import { GovernancePage } from './GovernancePage'
+import { GovernancePage, requestMatchesStateFilter } from './GovernancePage'
 
 vi.mock('./DetectedChangeCrPanel', () => ({
   DetectedChangeCrPanel: ({
@@ -21,6 +21,10 @@ vi.mock('./DetectedChangeCrPanel', () => ({
     <section data-testid="detected-change-cr-panel" data-system-id={selection.systemId ?? ''} data-system-resolution={selection.systemResolution}>{selection.schemaName}</section>
   ) : <section data-testid="detected-change-history-panel">{dateRange?.from}–{dateRange?.to}</section>,
 }))
+
+afterEach(() => {
+  window.history.replaceState({}, '', '/')
+})
 
 function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequestRecord {
   return {
@@ -258,6 +262,37 @@ async function openDetailAfterRender(
 }
 
 describe('GovernancePage', () => {
+  it('keeps live state updates only while they remain in the selected server group', () => {
+    expect(requestMatchesStateFilter('IN_REVIEW', 'GROUP:IN_PROGRESS')).toBe(true)
+    expect(requestMatchesStateFilter('APPLYING', 'GROUP:IN_PROGRESS')).toBe(true)
+    expect(requestMatchesStateFilter('CHANGES_REQUESTED', 'GROUP:IN_PROGRESS')).toBe(true)
+    expect(requestMatchesStateFilter('APPLIED', 'GROUP:IN_PROGRESS')).toBe(false)
+    expect(requestMatchesStateFilter('COMPLETED', 'GROUP:COMPLETED')).toBe(true)
+    expect(requestMatchesStateFilter('CANCELLED', 'GROUP:CLOSED')).toBe(true)
+  })
+
+  it('initializes a bounded server group from the deep link without exact-state eviction', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?page=change-management&crStateGroup=IN_PROGRESS',
+    )
+    const reviewing = changeRequest({ id: 'change-review', number: 'CR-REVIEW', state: 'IN_REVIEW' })
+    const applying = changeRequest({ id: 'change-apply', number: 'CR-APPLY', state: 'APPLYING' })
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25&state_group=IN_PROGRESS') {
+        return Promise.resolve(summaryList([reviewing, applying]))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    renderPage(apiClient(request))
+
+    expect(await screen.findByText('CR-REVIEW')).toBeInTheDocument()
+    expect(screen.getByText('CR-APPLY')).toBeInTheDocument()
+    expect(screen.getByLabelText('상태 필터')).toHaveValue('GROUP:IN_PROGRESS')
+  })
+
   it('renders one consolidated overview while keeping Monitoring independently navigable', async () => {
     const onNavigate = vi.fn()
     const request = vi.fn((path: string): Promise<unknown> => {

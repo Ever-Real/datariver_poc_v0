@@ -8,6 +8,12 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ClauseElement
 
+from datariver.application.change_request_read import (
+    ChangeRequestStateGroup,
+    change_request_group_counts,
+)
+from datariver.domain.governance import ChangeState
+from datariver.interfaces.http.dashboard_schemas import ChangeRequestProgressResponse
 from datariver.interfaces.http.routes.operations import (
     _catalog_coverage,
     _catalog_glossary_term_count,
@@ -25,6 +31,50 @@ class FakeResult:
     def all(self) -> list[tuple[object, ...]]:
         assert isinstance(self.value, list)
         return self.value
+
+
+def test_change_request_progress_groups_every_canonical_state_once() -> None:
+    counts = {state: index + 1 for index, state in enumerate(ChangeState)}
+
+    groups = change_request_group_counts(counts)
+
+    assert groups == {
+        "REGISTERED": counts[ChangeState.REGISTERED],
+        "IN_PROGRESS": sum(
+            counts[state]
+            for state in {
+                ChangeState.IN_REVIEW,
+                ChangeState.TESTING,
+                ChangeState.FINAL_REVIEW,
+                ChangeState.APPLY_QUEUED,
+                ChangeState.APPLYING,
+                ChangeState.APPLY_FAILED,
+                ChangeState.CHANGES_REQUESTED,
+            }
+        ),
+        "COMPLETED": counts[ChangeState.APPLIED] + counts[ChangeState.COMPLETED],
+        "CLOSED": counts[ChangeState.REJECTED] + counts[ChangeState.CANCELLED],
+    }
+    assert sum(groups.values()) == sum(counts.values())
+
+
+def test_incomplete_change_request_progress_serializes_unknown_without_identifiers() -> None:
+    response = ChangeRequestProgressResponse(
+        total=None,
+        groups={group: None for group in ChangeRequestStateGroup},
+        complete=False,
+    )
+
+    assert response.model_dump(mode="json") == {
+        "total": None,
+        "groups": {
+            "REGISTERED": None,
+            "IN_PROGRESS": None,
+            "COMPLETED": None,
+            "CLOSED": None,
+        },
+        "complete": False,
+    }
 
 
 class FakeCoverageSession:

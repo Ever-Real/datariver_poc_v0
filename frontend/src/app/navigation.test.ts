@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  changeRequestStateGroupFromLocation,
   pageFromLocation,
   pageUrl,
   pocAuthorizationAllowsPage,
@@ -20,6 +21,22 @@ describe('navigation contract', () => {
     expect(pageUrl('change-management', {
       href: 'https://catalog.example/app?page=monitoring&workspace=workspace-1',
     })).toBe('/app?page=change-management&workspace=workspace-1')
+  })
+
+  it('builds and validates bounded Change Request group deep links', () => {
+    expect(pageUrl('change-management', {
+      changeRequestStateGroup: 'IN_PROGRESS',
+      href: 'https://catalog.example/app?page=dashboard&workspace=workspace-1',
+    })).toBe('/app?page=change-management&workspace=workspace-1&crStateGroup=IN_PROGRESS')
+    expect(changeRequestStateGroupFromLocation(
+      'https://catalog.example/app?page=change-management&crStateGroup=IN_PROGRESS',
+    )).toBe('IN_PROGRESS')
+    expect(changeRequestStateGroupFromLocation(
+      'https://catalog.example/app?page=change-management&crStateGroup=OPEN',
+    )).toBeUndefined()
+    expect(pageUrl('dashboard', {
+      href: 'https://catalog.example/app?page=change-management&crStateGroup=CLOSED',
+    })).toBe('/app?page=dashboard')
   })
 
   it('encodes a global query without preloading catalog data', () => {

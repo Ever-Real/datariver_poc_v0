@@ -593,7 +593,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
         *,
         workspace_id: UUID,
         maximum_classification: int,
-        state: str | None,
+        states: frozenset[str] | None,
         before_created_at: datetime | None,
         before_id: UUID | None,
         limit: int,
@@ -617,8 +617,8 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             ChangeRequestModel.workspace_id == workspace_id,
             ChangeRequestModel.classification <= maximum_classification,
         )
-        if state is not None:
-            statement = statement.where(ChangeRequestModel.state == state)
+        if states is not None:
+            statement = statement.where(ChangeRequestModel.state.in_(states))
         if before_created_at is not None and before_id is not None:
             statement = statement.where(
                 or_(

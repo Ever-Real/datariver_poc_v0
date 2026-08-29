@@ -9,7 +9,25 @@ import { DashboardPage } from './DashboardPage'
 function summary(overrides: Record<string, unknown> = {}) {
   return {
     observed_at: '2026-07-18T00:00:00Z',
-    changes_by_state: { REGISTERED: 2, IN_REVIEW: 3, APPLIED: 4 },
+    changes_by_state: {
+      REGISTERED: 1,
+      IN_REVIEW: 1,
+      TESTING: 1,
+      FINAL_REVIEW: 1,
+      APPLY_QUEUED: 1,
+      APPLYING: 1,
+      APPLIED: 1,
+      APPLY_FAILED: 1,
+      COMPLETED: 1,
+      CHANGES_REQUESTED: 1,
+      REJECTED: 1,
+      CANCELLED: 1,
+    },
+    change_request_progress: {
+      total: 12,
+      groups: { REGISTERED: 1, IN_PROGRESS: 7, COMPLETED: 2, CLOSED: 2 },
+      complete: true,
+    },
     catalog_asset_count: 10,
     catalog_described_asset_count: 7,
     catalog_glossary_term_count: 6,
@@ -155,6 +173,22 @@ describe('DashboardPage', () => {
     expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Metadata Audit Summary' })).not.toBeInTheDocument()
     expect(request).not.toHaveBeenCalledWith('/capabilities')
+    expect(screen.getByRole('link', { name: /접수 대기REGISTERED1/ })).toHaveAttribute(
+      'href',
+      '/?page=change-management&crStateGroup=REGISTERED',
+    )
+    expect(screen.getByRole('link', { name: /검토·진행검토, 테스트, 적용 진행·보완7/ })).toHaveAttribute(
+      'href',
+      '/?page=change-management&crStateGroup=IN_PROGRESS',
+    )
+    expect(screen.getByRole('link', { name: /적용·완료APPLIED, COMPLETED2/ })).toHaveAttribute(
+      'href',
+      '/?page=change-management&crStateGroup=COMPLETED',
+    )
+    expect(screen.getByRole('link', { name: /반려·종료REJECTED, CANCELLED2/ })).toHaveAttribute(
+      'href',
+      '/?page=change-management&crStateGroup=CLOSED',
+    )
   })
 
   it('shows UNKNOWN only when the current active asset denominator is zero', async () => {
@@ -195,6 +229,52 @@ describe('DashboardPage', () => {
     renderDashboard(apiClient(request))
 
     expect(await screen.findByText(/안전한 화면 한도\(200개\)/)).toBeInTheDocument()
+  })
+
+  it('distinguishes a known zero CR snapshot from an unavailable progress contract', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary({
+        changes_by_state: {},
+        change_request_progress: {
+          total: 0,
+          groups: { REGISTERED: 0, IN_PROGRESS: 0, COMPLETED: 0, CLOSED: 0 },
+          complete: true,
+        },
+      }))
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const { rerender } = renderDashboard(apiClient(request))
+
+    expect(await screen.findAllByText('0')).toHaveLength(5)
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <DashboardPage
+          client={apiClient((path) => path === '/operations/dashboard'
+            ? Promise.resolve(summary({
+              changes_by_state: null,
+              change_request_progress: {
+                total: null,
+                groups: { REGISTERED: null, IN_PROGRESS: null, COMPLETED: null, CLOSED: null },
+                complete: false,
+              },
+            }))
+            : path === '/quality/capability'
+              ? Promise.resolve(capability())
+              : Promise.resolve(quality()))}
+          workspaceId="workspace-two"
+          subjectId="subject-two"
+          securityEpoch={8}
+          authorizationRevision={12}
+          onNavigate={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    expect((await screen.findAllByText('UNKNOWN')).length).toBeGreaterThanOrEqual(5)
+    expect(screen.getByText(/안전한 집계 한도를 초과해 전체성을 확인할 수 없습니다/)).toBeInTheDocument()
   })
 
   it('delegates Governance Center navigation to the SPA shell without a document navigation', async () => {
