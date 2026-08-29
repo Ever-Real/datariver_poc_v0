@@ -1,6 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { SafeGovernanceHtml } from './SafeGovernanceHtml'
+
+const governanceDocumentsCss = readFileSync(
+  resolve('src/features/governance-documents/governanceDocuments.css'),
+  'utf8',
+)
 
 describe('SafeGovernanceHtml', () => {
   it('renders the allowlisted document structure without an HTML injection sink', () => {
@@ -32,19 +39,66 @@ describe('SafeGovernanceHtml', () => {
     expect(container.querySelectorAll('hr')).toHaveLength(1)
   })
 
-  it('renders only the imported static presentation allowlist', () => {
+  it('renders only static presentation tokens without an inline style attribute', () => {
     const { container } = render(<SafeGovernanceHtml
-      html={'<h2 data-governance-style="color:#123456;padding:12px;position:fixed;background-image:url(https://evil.test/x)">정적 디자인</h2>'}
+      html={'<h2 data-governance-style="font-size:18px;padding-left:2em;text-align:center;position:fixed;background-image:url(https://evil.test/x)">정적 디자인</h2>'}
       contentHash={'e'.repeat(64)}
       sanitizerPolicyVersion="POC_STATIC_PRESENTATION_V1"
     />)
 
-    expect(screen.getByRole('heading', { name: '정적 디자인' })).toHaveStyle({
-      color: '#123456',
-      padding: '12px',
+    expect(screen.getByRole('heading', { name: '정적 디자인' })).toHaveAttribute(
+      'data-governance-style',
+      'font-size:18px;padding-left:2em;text-align:center',
+    )
+    expect(container.querySelector('h2')).not.toHaveAttribute('style')
+  })
+
+  it('keeps legacy V2 canonical markup readable without presentation attributes', () => {
+    const { container } = render(<SafeGovernanceHtml
+      html={'<h2>Legacy policy</h2><p><strong>Approved</strong> body</p>'}
+      contentHash={'f'.repeat(64)}
+      sanitizerPolicyVersion="GOVERNANCE_HTML_SANITIZER_V2_BLEACH"
+    />)
+
+    expect(screen.getByRole('heading', { name: 'Legacy policy' })).toBeInTheDocument()
+    expect(screen.getByText(/Approved/)).toBeInTheDocument()
+    expect(container.querySelector('[style], [data-governance-style]')).toBeNull()
+  })
+
+  it('maps every accepted presentation token to a static CSS rule', () => {
+    const tokens = [
+      ['font-size:10px', 'font-size: 10px'],
+      ['font-size:12px', 'font-size: 12px'],
+      ['font-size:14px', 'font-size: 14px'],
+      ['font-size:16px', 'font-size: 16px'],
+      ['font-size:18px', 'font-size: 18px'],
+      ['font-size:24px', 'font-size: 24px'],
+      ['font-size:32px', 'font-size: 32px'],
+      ['padding-left:2em', 'padding-left: 2em'],
+      ['padding-left:4em', 'padding-left: 4em'],
+      ['padding-left:6em', 'padding-left: 6em'],
+      ['padding-left:8em', 'padding-left: 8em'],
+      ['padding-left:10em', 'padding-left: 10em'],
+      ['padding-left:12em', 'padding-left: 12em'],
+      ['text-align:center', 'text-align: center'],
+      ['text-align:right', 'text-align: right'],
+    ] as const
+    const { container } = render(<SafeGovernanceHtml
+      html={tokens.map(([token], index) => (
+        `<p data-governance-style="${token}">Token ${index}</p>`
+      )).join('')}
+      contentHash={'1'.repeat(64)}
+      sanitizerPolicyVersion="GOVERNANCE_HTML_SANITIZER_V3_PRESENTATION_TOKENS"
+    />)
+
+    Array.from(container.querySelectorAll<HTMLElement>('p')).forEach((element, index) => {
+      const [token, declaration] = tokens[index]!
+      expect(governanceDocumentsCss).toContain(
+        `.governance-safe-html [data-governance-style*="${token}"]`,
+      )
+      expect(governanceDocumentsCss).toContain(`{ ${declaration}; }`)
+      expect(element).not.toHaveAttribute('style')
     })
-    expect(container.querySelector('h2')).not.toHaveStyle({ position: 'fixed' })
-    expect(container.querySelector('h2')?.getAttribute('style')).not.toMatch(/background-image|url/i)
   })
 
   it('suppresses executable, embedded, form and active-media subtrees', () => {

@@ -5,7 +5,7 @@ import type { ApiClient } from '../../api/client'
 import { PolicyGovernancePage } from './PolicyGovernancePage'
 
 describe('PolicyGovernancePage', () => {
-  it('shows document viewing and the server policy table without document management', async () => {
+  it('shows document viewing without duplicate role policy or document management', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/governance/documents/capability') {
         return Promise.resolve(capability(false))
@@ -19,34 +19,9 @@ describe('PolicyGovernancePage', () => {
     renderPage(request)
 
     expect(await screen.findByRole('tab', { name: '문서 조회' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '역할별 권한 정책' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '역할별 권한 정책' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: '문서 관리' })).not.toBeInTheDocument()
     expect(await screen.findByText(/승인·게시된 문서가 없습니다/)).toBeInTheDocument()
-  })
-
-  it('loads and renders the server-managed profile policy only when its tab is selected', async () => {
-    const request = vi.fn((path: string) => {
-      if (path === '/governance/documents/capability') {
-        return Promise.resolve(capability(false))
-      }
-      if (path === '/governance/documents?limit=100&kind=DOCUMENT&state=ACTIVE') {
-        return Promise.resolve(documentList())
-      }
-      if (path === '/admin/profile-role-policy') {
-        return Promise.resolve(profileRolePolicy())
-      }
-      throw new Error(`unexpected request: ${path}`)
-    })
-
-    renderPage(request)
-
-    await screen.findByRole('tab', { name: '역할별 권한 정책' })
-    expect(request).not.toHaveBeenCalledWith('/admin/profile-role-policy', expect.anything())
-    fireEvent.click(screen.getByRole('tab', { name: '역할별 권한 정책' }))
-
-    expect(await screen.findByText('Engineer / Steward')).toBeInTheDocument()
-    expect(screen.getByText('PROFILE_ROLE_POLICY_V1')).toBeInTheDocument()
-    expect(screen.getByText(/등록 · 수정 · 검토/)).toBeInTheDocument()
   })
 
   it('renames both tabs and opens the separately authorized management workspace', async () => {
@@ -96,6 +71,10 @@ describe('PolicyGovernancePage', () => {
               attachments: [],
               parent_document: null,
               child_documents: [],
+              subject_display_names: {
+                'author-one': '문서 담당자',
+                'reviewer-one': '문서 승인자',
+              },
             },
             cache_scope: cacheScope,
             observed_at: now,
@@ -113,6 +92,8 @@ describe('PolicyGovernancePage', () => {
     expect(screen.getByRole('heading', { name: '승인 본문' })).toBeInTheDocument()
     expect(screen.getByText('v1')).toBeInTheDocument()
     expect(screen.getByText('ACTIVE')).toBeInTheDocument()
+    expect(screen.getAllByText('문서 담당자')).not.toHaveLength(0)
+    expect(screen.getByText('문서 승인자')).toBeInTheDocument()
   })
 })
 
@@ -170,25 +151,6 @@ function documentList(items: unknown[] = []) {
     cache_scope: cacheScope,
     observed_at: new Date(Date.now() - 1_000).toISOString(),
     authorization_valid_until: new Date(Date.now() + 30_000).toISOString(),
-  }
-}
-
-function profileRolePolicy() {
-  return {
-    policy_version: 'PROFILE_ROLE_POLICY_V1',
-    items: [{
-      tier: 'ENGINEER_STEWARD',
-      label: 'Engineer / Steward',
-      description: '담당 System 범위의 등록·변경·품질 관리',
-      allowed_actions: ['change.read', 'change.create', 'change.edit', 'change.review'],
-      services: [{
-        service_key: 'change',
-        service_label: '변경관리',
-        action_labels: ['조회', '등록', '수정', '검토'],
-      }],
-      assignable_to_system: true,
-      lifecycle_note: '취소·이력 보존',
-    }],
   }
 }
 

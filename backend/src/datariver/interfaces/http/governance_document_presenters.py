@@ -126,6 +126,7 @@ def governance_document_detail_response(
         child_documents=[
             governance_document_summary_response(item) for item in value.child_documents
         ],
+        subject_display_names=dict(value.subject_display_names),
     )
 
 

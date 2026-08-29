@@ -13,7 +13,7 @@ from bleach.sanitizer import Cleaner  # type: ignore[import-untyped]
 
 from datariver.domain.common import ValidationError, canonical_json_hash
 
-GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V2_BLEACH"
+GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V3_PRESENTATION_TOKENS"
 
 _ALLOWED_TAGS: Final = frozenset(
     {
@@ -47,11 +47,19 @@ _ALLOWED_TAGS: Final = frozenset(
     }
 )
 _TAG_ALIASES: Final = {"b": "strong", "i": "em"}
+_PRESENTATION_TAGS: Final = frozenset({"h1", "h2", "h3", "h4", "h5", "h6", "p"})
+_PRESENTATION_VALUES: Final = {
+    "font-size": frozenset({"10px", "12px", "14px", "16px", "18px", "24px", "32px"}),
+    "padding-left": frozenset({"2em", "4em", "6em", "8em", "10em", "12em"}),
+    "text-align": frozenset({"center", "right"}),
+}
+_PRESENTATION_PROPERTY_ORDER: Final = ("font-size", "padding-left", "text-align")
 _ALLOWED_ATTRIBUTES: Final = {
     "a": frozenset({"href", "title"}),
     "ol": frozenset({"start"}),
     "td": frozenset({"colspan", "rowspan"}),
     "th": frozenset({"colspan", "rowspan", "scope"}),
+    **{tag: frozenset({"data-governance-style"}) for tag in _PRESENTATION_TAGS},
 }
 _ALLOWED_URL_SCHEMES: Final = frozenset({"https"})
 _DROP_CONTENT_TAGS: Final = frozenset(
@@ -188,6 +196,9 @@ def governance_html_policy_sha256(
             "drop_content_tags": sorted(_DROP_CONTENT_TAGS),
             "limits": asdict(limits),
             "policy_version": GOVERNANCE_HTML_SANITIZER_POLICY_VERSION,
+            "presentation_values": {
+                key: sorted(values) for key, values in sorted(_PRESENTATION_VALUES.items())
+            },
             "tag_aliases": dict(sorted(_TAG_ALIASES.items())),
         }
     )
@@ -418,6 +429,8 @@ class _GovernanceHtmlCanonicalizer(HTMLParser):
         if tag == "th" and name == "scope":
             lowered = value.lower()
             return lowered if lowered in {"col", "colgroup", "row", "rowgroup"} else None
+        if tag in _PRESENTATION_TAGS and name == "data-governance-style":
+            return _sanitize_presentation(value)
         return value
 
     def _count_node(self) -> None:
@@ -505,6 +518,24 @@ def _sanitize_href(value: str) -> str | None:
 
 def _normalize_attribute_value(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _sanitize_presentation(value: str) -> str | None:
+    declarations: dict[str, str] = {}
+    for raw_declaration in value[:256].split(";"):
+        property_name, delimiter, raw_candidate = raw_declaration.partition(":")
+        if not delimiter:
+            continue
+        normalized_property = property_name.strip().lower()
+        normalized_candidate = raw_candidate.strip().lower()
+        if normalized_candidate in _PRESENTATION_VALUES.get(normalized_property, frozenset()):
+            declarations[normalized_property] = normalized_candidate
+    canonical = ";".join(
+        f"{property_name}:{declarations[property_name]}"
+        for property_name in _PRESENTATION_PROPERTY_ORDER
+        if property_name in declarations
+    )
+    return canonical or None
 
 
 def _bounded_positive_integer(value: str, *, maximum: int) -> str | None:

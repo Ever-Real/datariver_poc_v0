@@ -2,9 +2,23 @@ from __future__ import annotations
 
 import json
 import runpy
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
+from datariver.domain.authz import Classification
+from datariver.domain.governance_documents import (
+    GovernanceDocumentCategory,
+    GovernanceDocumentDetail,
+    GovernanceDocumentKind,
+    GovernanceDocumentState,
+    GovernanceDocumentSummary,
+)
+from datariver.interfaces.http.governance_document_presenters import (
+    governance_document_detail_response,
+)
 from datariver.interfaces.http.governance_document_schemas import (
+    GovernanceDocumentDetailItemResponse,
     GovernanceDocumentExportResponse,
 )
 
@@ -12,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0079_governance_document_management.py"
 CANONICAL = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
+REPOSITORY = ROOT / "backend/src/datariver/infrastructure/db/governance_documents.py"
 
 
 def test_additive_management_migration_has_bounded_backfill_and_immutable_parent() -> None:
@@ -70,3 +85,50 @@ def test_export_schema_has_no_object_store_coordinates_or_signing_fields() -> No
         '"endpoint"',
     ):
         assert prohibited not in schema
+
+
+def test_detail_schema_and_presenter_expose_only_canonical_subject_display_names() -> None:
+    subject_id = uuid4()
+    now = datetime.now(UTC)
+    summary = GovernanceDocumentSummary(
+        document_id=uuid4(),
+        workspace_id=uuid4(),
+        kind=GovernanceDocumentKind.DOCUMENT,
+        category=GovernanceDocumentCategory.POLICY,
+        title="Policy",
+        summary="Managed policy",
+        classification=Classification.INTERNAL,
+        state=GovernanceDocumentState.ACTIVE,
+        owner_subject_id=subject_id,
+        current_published_version_id=None,
+        current_version_number=None,
+        created_at=now,
+        updated_at=now,
+        version=1,
+        allowed_actions=("read",),
+    )
+
+    response = governance_document_detail_response(
+        GovernanceDocumentDetail(
+            document=summary,
+            versions=(),
+            reviews=(),
+            attachments=(),
+            parent_document=None,
+            child_documents=(),
+            subject_display_names=((subject_id, "Data Steward"),),
+        )
+    )
+
+    assert response.subject_display_names == {subject_id: "Data Steward"}
+    assert "subject_display_names" in GovernanceDocumentDetailItemResponse.model_json_schema()[
+        "required"
+    ]
+
+
+def test_detail_repository_resolves_names_through_workspace_scoped_iam_membership() -> None:
+    source = REPOSITORY.read_text(encoding="utf-8")
+
+    assert "select(SubjectModel.id, SubjectModel.display_name)" in source
+    assert "WorkspaceMembershipModel.subject_id == SubjectModel.id" in source
+    assert "WorkspaceMembershipModel.workspace_id == document.workspace_id" in source

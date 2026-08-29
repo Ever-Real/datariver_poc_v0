@@ -132,4 +132,28 @@ describe('GovernanceHtmlEditor', () => {
     expect(tiptap?.getHTML()).not.toContain('javascript:')
     expect(tiptap?.getHTML()).not.toContain('<a')
   })
+
+  it('sanitizes pasted HTML before it enters the editor document', async () => {
+    let tiptap: Editor | undefined
+    render(<GovernanceHtmlEditor
+      initialHtml="<p>기존 본문</p>"
+      disabled={false}
+      onHtmlChange={vi.fn()}
+      onEditorReady={(editor) => { tiptap = editor }}
+    />)
+    const surface = await screen.findByRole('textbox', { name: '문서 본문' })
+    await waitFor(() => expect(tiptap).toBeDefined())
+
+    fireEvent.paste(surface, {
+      clipboardData: {
+        getData: (format: string) => format === 'text/html'
+          ? '<p style="font-size:18px;text-align:center;position:fixed">붙여넣기<script>alert(1)</script></p>'
+          : format === 'text/plain' ? '붙여넣기' : '',
+        types: ['text/html', 'text/plain'],
+      },
+    })
+
+    await waitFor(() => expect(tiptap?.getHTML()).toContain('붙여넣기'))
+    expect(tiptap?.getHTML()).not.toMatch(/script|position|style=/i)
+  })
 })

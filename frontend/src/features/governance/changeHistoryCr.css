@@ -38,7 +38,8 @@
 .detected-change-pagination { display: flex; justify-content: flex-end; gap: 6px; }
 .detected-change-drawer .detected-change-linker form { grid-template-columns: 1fr; }
 .detected-change-history-table { width: 100%; min-width: 0; overflow-x: hidden; }
-.detected-change-history-table .dense-data-table { width: 100%; min-width: 0; table-layout: fixed; font-size: 11px; }
+.detected-change-history-table .dense-data-table { width: 100%; min-width: 0; table-layout: fixed; color: var(--text-700); font-size: 13px; line-height: 1.45; }
+.detected-change-history-table .dense-data-table th { color: var(--text-600); font-size: 11px; }
 .detected-change-history-table .dense-data-table th:nth-child(1), .detected-change-history-table .dense-data-table td:nth-child(1) { width: 9% !important; }
 .detected-change-history-table .dense-data-table th:nth-child(2), .detected-change-history-table .dense-data-table td:nth-child(2) { width: 13% !important; }
 .detected-change-history-table .dense-data-table th:nth-child(3), .detected-change-history-table .dense-data-table td:nth-child(3) { width: 11% !important; }

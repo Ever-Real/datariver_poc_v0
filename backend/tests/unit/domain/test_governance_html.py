@@ -41,6 +41,71 @@ def test_sanitizer_canonicalizes_safe_policy_markup_and_attributes() -> None:
     assert result.policy_sha256 == GOVERNANCE_HTML_SANITIZER_POLICY_SHA256
 
 
+def test_sanitizer_persists_only_static_presentation_tokens_without_inline_style() -> None:
+    result = sanitize_governance_html(
+        '<p style="font-size:32px" '
+        'data-governance-style="text-align:CENTER;position:fixed;font-size:18px;'
+        'padding-left:2em;background:url(https://evil.test/x)">Policy</p>'
+        '<table><tr><td data-governance-style="font-size:18px">Cell</td></tr></table>'
+    )
+
+    assert result.html == (
+        '<p data-governance-style="font-size:18px;padding-left:2em;text-align:center">Policy</p>'
+        '<table><tbody><tr><td>Cell</td></tr></tbody></table>'
+    )
+    assert " style=" not in result.html
+    assert "position" not in result.html
+    assert "url(" not in result.html
+
+
+@pytest.mark.parametrize(
+    ("presentation", "expected"),
+    [
+        ("font-size:10px", "font-size:10px"),
+        ("font-size:12px", "font-size:12px"),
+        ("font-size:14px", "font-size:14px"),
+        ("font-size:16px", "font-size:16px"),
+        ("font-size:18px", "font-size:18px"),
+        ("font-size:24px", "font-size:24px"),
+        ("font-size:32px", "font-size:32px"),
+        ("padding-left:2em", "padding-left:2em"),
+        ("padding-left:4em", "padding-left:4em"),
+        ("padding-left:6em", "padding-left:6em"),
+        ("padding-left:8em", "padding-left:8em"),
+        ("padding-left:10em", "padding-left:10em"),
+        ("padding-left:12em", "padding-left:12em"),
+        ("text-align:center", "text-align:center"),
+        ("text-align:right", "text-align:right"),
+        ("font-size:11px", None),
+        ("padding-left:3em", None),
+        ("text-align:justify", None),
+    ],
+)
+def test_presentation_token_contract_is_exact(
+    presentation: str,
+    expected: str | None,
+) -> None:
+    result = sanitize_governance_html(
+        f'<p data-governance-style="{presentation}">Policy</p>'
+    )
+
+    attribute = f' data-governance-style="{expected}"' if expected else ""
+    assert result.html == f"<p{attribute}>Policy</p>"
+
+
+def test_legacy_v2_canonical_html_remains_safe_when_resanitized_by_v3() -> None:
+    legacy_v2_html = (
+        '<h2>Legacy policy</h2><p><strong>Approved</strong> body</p>'
+        '<a href="/governance/policy">Evidence</a>'
+    )
+
+    result = sanitize_governance_html(legacy_v2_html)
+
+    assert result.html == legacy_v2_html
+    assert result.policy_version == GOVERNANCE_HTML_SANITIZER_POLICY_VERSION
+    assert sanitize_governance_html(result.html) == result
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

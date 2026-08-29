@@ -161,6 +161,7 @@ class GovernanceDocumentDetailItemResponse(BaseModel):
     attachments: list[GovernanceDocumentAttachmentResponse]
     parent_document: GovernanceDocumentSummaryResponse | None
     child_documents: list[GovernanceDocumentSummaryResponse]
+    subject_display_names: dict[UUID, str]
 
 
 class GovernanceDocumentReadMetadata(BaseModel):

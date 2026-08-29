@@ -27,7 +27,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import { safeGovernancePresentation } from './governancePresentationStyle'
-import { safeGovernanceHref } from './governanceDocumentMarkup'
+import { importGovernanceHtml, safeGovernanceHref } from './governanceDocumentMarkup'
 
 const fontSizes = ['10px', '12px', '14px', '16px', '18px', '24px', '32px'] as const
 const maximumIndentLevel = 6
@@ -49,9 +49,7 @@ const GovernanceBlockPresentation = Extension.create({
                 ? attributes.governancePresentation
                 : '',
             )
-            return presentation
-              ? { 'data-governance-style': presentation, style: presentation }
-              : {}
+            return presentation ? { 'data-governance-style': presentation } : {}
           },
         },
       },
@@ -177,6 +175,7 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
       TableKit.configure({ table: { resizable: true } }),
     ],
     editorProps: {
+      transformPastedHTML: importGovernanceHtml,
       attributes: {
         class: 'governance-editor-surface',
         role: 'textbox',

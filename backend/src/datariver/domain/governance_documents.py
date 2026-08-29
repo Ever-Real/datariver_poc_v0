@@ -259,6 +259,7 @@ class GovernanceDocumentDetail:
     attachments: tuple[GovernanceDocumentAttachment, ...]
     parent_document: GovernanceDocumentSummary | None
     child_documents: tuple[GovernanceDocumentSummary, ...]
+    subject_display_names: tuple[tuple[UUID, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

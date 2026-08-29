@@ -165,6 +165,7 @@ export interface GovernanceDocumentDetail {
   attachments: GovernanceDocumentAttachment[]
   parent_document: GovernanceDocumentSummary | null
   child_documents: GovernanceDocumentSummary[]
+  subject_display_names: Record<string, string>
 }
 
 export interface GovernanceDocumentDetailResponse extends GovernanceReadEnvelope {

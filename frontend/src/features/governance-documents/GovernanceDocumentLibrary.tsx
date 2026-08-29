@@ -918,7 +918,7 @@ function DocumentDetailDialog({
         <div><dt>게시 버전</dt><dd>{detail.document.current_version_number === null ? '—' : `v${detail.document.current_version_number}`}</dd></div>
         <div><dt>서버 변경 조건</dt><dd>{detailEtag ? 'ETag 확인됨' : 'ETag 없음 · 변경 잠김'}</dd></div>
         <div><dt>분류</dt><dd>{classificationLabel(detail.document.classification)}</dd></div>
-        <div><dt>소유자</dt><dd>{shortId(detail.document.owner_subject_id)}</dd></div>
+        <div><dt>소유자</dt><dd>{subjectName(detail, detail.document.owner_subject_id)}</dd></div>
         <div><dt>생성일</dt><dd>{dateTime(detail.document.created_at)}</dd></div>
         <div><dt>수정일</dt><dd>{dateTime(detail.document.updated_at)}</dd></div>
         <div><dt>상위 문서</dt><dd>{detail.parent_document?.title ?? '—'}</dd></div>
@@ -948,7 +948,7 @@ function DocumentDetailDialog({
                 <DocumentStatus value={version.state} />
                 <span>{version.source_format}</span>
                 <small>{dateTime(version.created_at)}</small>
-                <small>수정자 {shortId(version.author_id)}</small>
+                <small>수정자 {subjectName(detail, version.author_id)}</small>
                 <small>Object {version.artifact_state} · Knowledge {version.knowledge_state}</small>
               </button>
             </li>)}</ul>}
@@ -961,11 +961,11 @@ function DocumentDetailDialog({
           {!selectedVersion && <p role="status">표시할 버전을 선택하세요.</p>}
           {selectedVersion && <>
             <dl className="governance-document-meta governance-version-meta">
-              <div><dt>버전 수정자</dt><dd>{shortId(selectedVersion.author_id)}</dd></div>
+              <div><dt>버전 수정자</dt><dd>{subjectName(detail, selectedVersion.author_id)}</dd></div>
               <div><dt>버전 생성일</dt><dd>{dateTime(selectedVersion.created_at)}</dd></div>
               <div><dt>결재 상태</dt><dd>{selectedVersion.state}</dd></div>
               <div><dt>결재 상신일</dt><dd>{selectedVersion.submitted_at ? dateTime(selectedVersion.submitted_at) : '—'}</dd></div>
-              <div><dt>결재자</dt><dd>{selectedVersion.reviewed_by ? shortId(selectedVersion.reviewed_by) : '—'}</dd></div>
+              <div><dt>결재자</dt><dd>{selectedVersion.reviewed_by ? subjectName(detail, selectedVersion.reviewed_by) : '—'}</dd></div>
               <div><dt>결재일</dt><dd>{selectedVersion.reviewed_at ? dateTime(selectedVersion.reviewed_at) : '—'}</dd></div>
               <div><dt>적용 범위</dt><dd>{selectedVersion.applicability_scope || '—'}</dd></div>
               <div><dt>상위 문서 연결</dt><dd>{selectedVersion.parent_document_id ? shortId(selectedVersion.parent_document_id) : '—'}</dd></div>
@@ -1011,7 +1011,7 @@ function DocumentDetailDialog({
           : <ul>{reviews.map((review) => <li key={review.review_id}>
             <strong>{review.decision}</strong>
             <span>{review.reason}</span>
-            <span>{shortId(review.reviewer_id)}</span>
+            <span>{subjectName(detail, review.reviewer_id)}</span>
             <span>{dateTime(review.created_at)}</span>
           </li>)}</ul>}
       </section>
@@ -1159,6 +1159,21 @@ function EditorDialog({
     {Boolean(error) && <ErrorNotice error={error} />}
     {Boolean(importError) && <ErrorNotice error={importError} />}
     <div className="governance-editor-layout">
+      <main className="governance-editor-main">
+        <header><div><span className="eyebrow">Safe document canvas</span><h3>문서 본문</h3></div><span>{formatBytes(htmlBytes)} / {formatBytes(maximumHtmlBytes)}</span></header>
+        {!templateVersionId && !importFile && <GovernanceHtmlEditor
+          key={editorKey}
+          initialHtml={initialHtml}
+          disabled={busy || importing}
+          onHtmlChange={(value) => {
+            setHtmlBytes(utf8Bytes(value))
+            onHtmlChange(value)
+          }}
+        />}
+        {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
+        {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
+        {importFile && <div className="governance-import-pending"><strong>{importFile.name}</strong><p>Word 문서는 저장할 때 서버에서 변환되므로 편집 preview가 제공되지 않습니다.</p></div>}
+      </main>
       <aside className="governance-editor-sidebar" aria-label="문서 속성과 가져오기 설정">
         <section className="governance-editor-card">
           <header><span>01</span><div><strong>문서 정보</strong><small>식별과 게시 범위를 설정합니다.</small></div></header>
@@ -1209,21 +1224,6 @@ function EditorDialog({
           {attachmentFile && !attachmentValid && <p role="alert">선택한 별첨이 서버 허용 크기를 초과합니다.</p>}
         </section>}
       </aside>
-      <main className="governance-editor-main">
-        <header><div><span className="eyebrow">Safe document canvas</span><h3>문서 본문</h3></div><span>{formatBytes(htmlBytes)} / {formatBytes(maximumHtmlBytes)}</span></header>
-        {!templateVersionId && !importFile && <GovernanceHtmlEditor
-          key={editorKey}
-          initialHtml={initialHtml}
-          disabled={busy || importing}
-          onHtmlChange={(value) => {
-            setHtmlBytes(utf8Bytes(value))
-            onHtmlChange(value)
-          }}
-        />}
-        {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
-        {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
-        {importFile && <div className="governance-import-pending"><strong>{importFile.name}</strong><p>Word 문서는 저장할 때 서버에서 변환되므로 편집 preview가 제공되지 않습니다.</p></div>}
-      </main>
     </div>
   </Dialog>
 }
@@ -1386,6 +1386,10 @@ function dateTime(value: string): string {
 
 function shortId(value: string): string {
   return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+function subjectName(detail: GovernanceDocumentDetail, subjectId: string): string {
+  return detail.subject_display_names?.[subjectId] ?? shortId(subjectId)
 }
 
 function formatBytes(value: number): string {

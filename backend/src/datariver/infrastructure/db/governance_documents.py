@@ -61,6 +61,7 @@ from datariver.infrastructure.db.models.governance_documents import (
     GovernanceDocumentVersionModel,
 )
 from datariver.infrastructure.db.models.integration import OutboxEventModel
+from datariver.infrastructure.db.models.platform import SubjectModel, WorkspaceMembershipModel
 from datariver.infrastructure.db.rls import set_security_context
 
 _CREATE_OPERATION = "governance.document.create.v1"
@@ -1549,6 +1550,27 @@ class SqlGovernanceDocumentRepository(
                 version=relationship_version,
                 subject=subject,
             )
+        subject_ids = {
+            document.owner_subject_id,
+            *(value.author_id for value in versions),
+            *(value.reviewed_by for value in versions if value.reviewed_by is not None),
+            *(value.reviewer_id for value in reviews),
+            *(value.uploaded_by for value in attachments),
+        }
+        subject_rows = (
+            await self._session.execute(
+                select(SubjectModel.id, SubjectModel.display_name)
+                .join(
+                    WorkspaceMembershipModel,
+                    and_(
+                        WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                        WorkspaceMembershipModel.workspace_id == document.workspace_id,
+                    ),
+                )
+                .where(SubjectModel.id.in_(subject_ids))
+                .order_by(SubjectModel.id)
+            )
+        ).all()
         return GovernanceDocumentDetail(
             document=_summary(document, current_version_number=current_number),
             versions=versions,
@@ -1556,6 +1578,9 @@ class SqlGovernanceDocumentRepository(
             attachments=attachments,
             parent_document=parent_document,
             child_documents=child_documents,
+            subject_display_names=tuple(
+                (subject_id, display_name) for subject_id, display_name in subject_rows
+            ),
         )
 
     async def _relationships(

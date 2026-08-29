@@ -4,7 +4,7 @@ import {
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react'
-import { governancePresentationReactStyle } from './governancePresentationStyle'
+import { safeGovernancePresentation } from './governancePresentationStyle'
 
 const allowedElements = new Set([
   'p',
@@ -79,6 +79,7 @@ const suppressedElements = new Set([
   'xmp',
 ])
 const voidElements = new Set(['br', 'hr'])
+const presentationElements = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
 
 export function SafeGovernanceHtml({
   html,
@@ -124,7 +125,10 @@ function safeNode(node: Node, key: string): ReactNode[] {
   const children = Array.from(node.childNodes).flatMap((child, index) => (
     safeNode(child, `${key}-${index}`)
   ))
-  const style = governancePresentationReactStyle(node.getAttribute('data-governance-style'))
+  const presentation = presentationElements.has(tag)
+    ? safeGovernancePresentation(node.getAttribute('data-governance-style'))
+    : ''
+  const presentationProps = presentation ? { 'data-governance-style': presentation } : {}
   if (!allowedElements.has(tag)) return children
   if (tag === 'a') {
     const href = safeHref(node.getAttribute('href'))
@@ -134,20 +138,20 @@ function safeNode(node: Node, key: string): ReactNode[] {
       rel: 'noopener noreferrer',
     }
     if (/^https?:\/\//i.test(href)) props.target = '_blank'
-    return [createElement('a', { ...props, key, ...(style ? { style } : {}) }, children)]
+    return [createElement('a', { ...props, key, ...presentationProps }, children)]
   }
   if (tag === 'th' || tag === 'td') {
     const span = boundedSpan(node.getAttribute('colspan'))
     const rowSpan = boundedSpan(node.getAttribute('rowspan'))
     return [createElement(tag, {
       key,
-      ...(style ? { style } : {}),
+      ...presentationProps,
       ...(span ? { colSpan: span } : {}),
       ...(rowSpan ? { rowSpan } : {}),
     }, children)]
   }
-  if (voidElements.has(tag)) return [createElement(tag, { key, ...(style ? { style } : {}) })]
-  return [createElement(tag, { key, ...(style ? { style } : {}) }, children)]
+  if (voidElements.has(tag)) return [createElement(tag, { key, ...presentationProps })]
+  return [createElement(tag, { key, ...presentationProps }, children)]
 }
 
 function safeHref(value: string | null): string | undefined {

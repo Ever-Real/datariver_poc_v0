@@ -189,10 +189,10 @@ export function GovernanceDocumentViewer({
           <dl className="governance-document-meta governance-viewer-meta">
             <div><dt>문서 생성일</dt><dd>{dateTime(currentDetail.document.created_at)}</dd></div>
             <div><dt>수정일</dt><dd>{dateTime(currentDetail.document.updated_at)}</dd></div>
-            <div><dt>초기 등록자</dt><dd>{shortId(currentDetail.document.owner_subject_id)}</dd></div>
+            <div><dt>초기 등록자</dt><dd>{subjectName(currentDetail.subject_display_names, currentDetail.document.owner_subject_id)}</dd></div>
             <div><dt>현재 버전</dt><dd>{publishedVersion.version_tag}</dd></div>
-            <div><dt>버전 작성자</dt><dd>{shortId(publishedVersion.author_id)}</dd></div>
-            <div><dt>승인자</dt><dd>{publishedVersion.reviewed_by ? shortId(publishedVersion.reviewed_by) : '—'}</dd></div>
+            <div><dt>버전 작성자</dt><dd>{subjectName(currentDetail.subject_display_names, publishedVersion.author_id)}</dd></div>
+            <div><dt>승인자</dt><dd>{publishedVersion.reviewed_by ? subjectName(currentDetail.subject_display_names, publishedVersion.reviewed_by) : '—'}</dd></div>
             <div><dt>결재 상태</dt><dd><span className="badge">ACTIVE</span></dd></div>
             <div><dt>게시일</dt><dd>{publishedVersion.published_at ? dateTime(publishedVersion.published_at) : '—'}</dd></div>
             <div><dt>상위 문서</dt><dd>{currentDetail.parent_document?.title ?? '—'}</dd></div>
@@ -267,4 +267,8 @@ function dateTime(value: string) {
 
 function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+function subjectName(names: Record<string, string> | undefined, subjectId: string) {
+  return names?.[subjectId] ?? shortId(subjectId)
 }

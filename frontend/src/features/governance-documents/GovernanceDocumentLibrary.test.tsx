@@ -110,6 +110,11 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     expect(
       await screen.findByRole('combobox', { name: '게시 템플릿 선택' }),
     ).toBeInTheDocument()
+    const editor = await screen.findByRole('textbox', { name: '문서 본문' })
+    const sidebar = screen.getByLabelText('문서 속성과 가져오기 설정')
+    expect(editor.compareDocumentPosition(sidebar) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(editor.closest('.governance-editor-content')).toBeInTheDocument()
   })
 })
 

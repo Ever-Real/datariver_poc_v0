@@ -14,6 +14,7 @@ const allowedElements = new Set([
   'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'hr', 'br', 'table',
   'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'a',
 ])
+const presentationElements = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
 
 const suppressedElements = new Set([
   'applet', 'area', 'script', 'style', 'iframe', 'object', 'embed', 'details',
@@ -40,7 +41,7 @@ export async function governanceMarkupFromFile(file: File): Promise<GovernanceMa
   throw new Error('HTML 또는 Markdown 파일만 편집기에서 미리 볼 수 있습니다.')
 }
 
-function importGovernanceHtml(value: string): string {
+export function importGovernanceHtml(value: string): string {
   if (typeof DOMParser === 'undefined') return ''
   const parsed = new DOMParser().parseFromString(
     value.slice(0, MAXIMUM_MARKUP_CHARACTERS),
@@ -215,7 +216,9 @@ function sanitizeNode(node: Node, output: Document): Node | undefined {
     return anchor
   }
   const element = output.createElement(tag)
-  const presentation = safeGovernancePresentation(node.getAttribute('data-governance-style'))
+  const presentation = presentationElements.has(tag)
+    ? safeGovernancePresentation(node.getAttribute('data-governance-style'))
+    : ''
   if (presentation) element.setAttribute('data-governance-style', presentation)
   if (tag === 'th' || tag === 'td') {
     const colSpan = boundedSpan(node.getAttribute('colspan'))
