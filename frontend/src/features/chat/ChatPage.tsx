@@ -941,19 +941,26 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 <ChatWorkflowRail isStreaming={loading} steps={visibleWorkflow} />
               </section>
               {visiblePerformance && (
-                <dl className="chat-performance-summary" aria-label="현재 응답 처리 시간">
-                  <div><dt>경로 선택</dt><dd>{visiblePerformance.routing_ms ?? '—'} ms</dd></div>
-                  <div><dt>Catalog 탐색</dt><dd>{visiblePerformance.catalog_discovery_ms ?? '—'} ms</dd></div>
-                  <div><dt>Vector</dt><dd>{visiblePerformance.vector_ms ?? '—'} ms</dd></div>
-                  <div><dt>검색</dt><dd>{visiblePerformance.retrieval_ms ?? '—'} ms</dd></div>
-                  <div><dt>재정렬</dt><dd>{visiblePerformance.reranking_ms ?? '—'} ms</dd></div>
-                  <div><dt>답변 생성</dt><dd>{visiblePerformance.composition_ms ?? '—'} ms</dd></div>
-                  <div><dt>프롬프트 조립</dt><dd>{visiblePerformance.prompt_assembly_ms ?? '—'} ms</dd></div>
-                  <div><dt>요청 직렬화</dt><dd>{visiblePerformance.provider_request_serialization_ms ?? '—'} ms</dd></div>
-                  <div><dt>Provider 응답 대기</dt><dd>{visiblePerformance.provider_response_wait_ms ?? '—'} ms</dd></div>
-                  <div><dt>Provider 응답 읽기</dt><dd>{visiblePerformance.provider_response_body_ms ?? '—'} ms</dd></div>
-                  <div><dt>전체</dt><dd>{visiblePerformance.total_ms} ms</dd></div>
-                </dl>
+                <>
+                  <dl className="chat-performance-summary" aria-label="현재 응답 처리 시간">
+                    <div><dt>경로 선택</dt><dd>{visiblePerformance.routing_ms ?? '—'} ms</dd></div>
+                    <div><dt>Catalog 탐색</dt><dd>{visiblePerformance.catalog_discovery_ms ?? '—'} ms</dd></div>
+                    <div><dt>Vector</dt><dd>{visiblePerformance.vector_ms ?? '—'} ms</dd></div>
+                    <div><dt>검색</dt><dd>{visiblePerformance.retrieval_ms ?? '—'} ms</dd></div>
+                    <div><dt>재정렬</dt><dd>{visiblePerformance.reranking_ms ?? '—'} ms</dd></div>
+                    <div><dt>답변 생성</dt><dd>{visiblePerformance.composition_ms ?? '—'} ms</dd></div>
+                    <div><dt>전체</dt><dd>{visiblePerformance.total_ms} ms</dd></div>
+                  </dl>
+                  <details>
+                    <summary>상세 처리 시간</summary>
+                    <dl className="chat-performance-summary" aria-label="상세 처리 시간 항목">
+                      <div><dt>프롬프트 조립</dt><dd>{visiblePerformance.prompt_assembly_ms ?? '—'} ms</dd></div>
+                      <div><dt>요청 직렬화</dt><dd>{visiblePerformance.provider_request_serialization_ms ?? '—'} ms</dd></div>
+                      <div><dt>Provider 응답 대기</dt><dd>{visiblePerformance.provider_response_wait_ms ?? '—'} ms</dd></div>
+                      <div><dt>Provider 응답 읽기</dt><dd>{visiblePerformance.provider_response_body_ms ?? '—'} ms</dd></div>
+                    </dl>
+                  </details>
+                </>
               )}
               {visibleEvidenceGraph && (
                 <section className="chat-graph-evidence" aria-label="답변에 사용된 인가 그래프 근거">
