@@ -9224,7 +9224,7 @@ async function knowledgeGraphRag(scope, body, signal) {
   }
 }
 
-async function mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag) {
+async function mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag) {
   if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'MCP requires POST.')
   if (!mcpSubjectId || !mcpWorkspaceId) {
     return problem(response, 503, 'MCP_SERVER_MISCONFIGURED', 'Dedicated MCP subject and workspace are required.')
@@ -9512,12 +9512,13 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         if (q.length < 2 || q.length > 4000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
           throw { code: -32602, message: 'Invalid params' }
         }
-        const evidence = await datahubChatEvidence(q, {
+        const evidence = await mcpMetadataSearch(q, {
           selected_mode: 'VECTOR',
           intent: 'SEMANTIC_DISCOVERY',
           entity_resolution_required: true,
           semantic_retrieval_required: true,
         }, limit, requestContext.principal)
+        if (!Array.isArray(evidence)) throw new Error('Invalid')
         const result = {
           items: evidence.slice(0, limit).map((item) => ({
             id: item.id,
@@ -11541,6 +11542,7 @@ export function createPocServer({
   mcpServiceToken = process.env.POC_MCP_SERVICE_TOKEN || '',
   mcpSubjectId = process.env.POC_MCP_SUBJECT_ID || '',
   mcpWorkspaceId = process.env.POC_MCP_WORKSPACE_ID || '',
+  mcpMetadataSearch = datahubChatEvidence,
   mcpKnowledgeChatScope = knowledgeChatScope,
   mcpKnowledgeChatSnapshot = knowledgeChatSnapshot,
   mcpKnowledgeGraphRag = knowledgeGraphRag,
@@ -11593,7 +11595,7 @@ export function createPocServer({
         return await api(request, response, url, baseContext)
       }
       if (url.pathname === '/api/v1/mcp') {
-        return await mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag)
+        return await mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag)
       }
       if (url.pathname === '/poc-api' || url.pathname.startsWith('/poc-api/')
         || url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {

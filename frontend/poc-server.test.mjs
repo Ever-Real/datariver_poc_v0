@@ -2758,6 +2758,8 @@ test('MCP adapter bounded implementation', async () => {
   projection.access.value.active_subject_id = 'admin-sub'
   projection.access.value.users.push({ subject_id: mcpSubjectId, role: 'developer', active: true, provider_owner_refs: [] })
   projection.access.value.users.push({ subject_id: 'other', role: 'developer', active: true, provider_owner_refs: [] })
+  const grantedTableUrn = 'urn:li:dataset:(urn:li:dataPlatform:generic,mcp.authorized_table,PROD)'
+  let mcpGrants = [{ active: true, tableUrn: grantedTableUrn }]
   let writeCalled = false
   const mcpCredentials = new Map([
     [mcpSubjectId, { subjectId: mcpSubjectId, loginEnabled: true, lockedUntil: null }],
@@ -2770,7 +2772,7 @@ test('MCP adapter bounded implementation', async () => {
     async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
     async readChangeHistoryProjection() { return structuredClone(projection) },
     async write() { writeCalled = true },
-    async listUserTableGrants() { return [] },
+    async listUserTableGrants(subjectId) { return subjectId === mcpSubjectId ? mcpGrants : [] },
     async readFeatureSecurityPolicy() { return null },
     async readLocalCredential(subjectId) { return mcpCredentials.get(subjectId) || null },
   }
@@ -2801,6 +2803,29 @@ test('MCP adapter bounded implementation', async () => {
   const mcpToken = 'A'.repeat(32)
   const airflowToken = 'B'.repeat(32)
   const rotatedToken = 'C'.repeat(32)
+  const providerToken = 'provider-token-must-not-leak'
+  const providerBody = 'provider-body-must-not-leak'
+  const metadataSearchCalls = []
+  const mcpMetadataSearch = async (question, route, limit, principal) => {
+    metadataSearchCalls.push({ question, route, limit, principal })
+    if (question === 'provider unavailable') throw new Error(`DataHub unavailable: ${providerBody}; ${providerToken}`)
+    if (question === 'provider timeout') {
+      throw Object.assign(new Error(`DataHub timeout: ${providerBody}`), { name: 'TimeoutError' })
+    }
+    if (question === 'malformed response') return { items: [] }
+    if (!principal.activeTableGrantUrns.has(grantedTableUrn)) return []
+    return [{
+      id: grantedTableUrn,
+      external_urn: grantedTableUrn,
+      name: 'Authorized synthetic table',
+      dataset_kind: 'TABLE',
+      provider_description: 'Authorized metadata',
+      classification: 'PUBLIC',
+      retrieval_method: 'DATAHUB_GMS',
+      raw_provider_body: providerBody,
+      provider_token: providerToken,
+    }]
+  }
 
   const srvMissing = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
   await new Promise((resolve) => srvMissing.listen(0, '127.0.0.1', resolve))
@@ -2862,6 +2887,7 @@ test('MCP adapter bounded implementation', async () => {
     mcpServiceToken: mcpToken,
     mcpSubjectId,
     mcpWorkspaceId,
+    mcpMetadataSearch,
     mcpKnowledgeChatScope,
     mcpKnowledgeChatSnapshot,
     mcpKnowledgeGraphRag,
@@ -2930,6 +2956,42 @@ test('MCP adapter bounded implementation', async () => {
 
     const assets = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_graph_assets', arguments: {} }, id: 10 }, h)
     assert.deepEqual(assets.body.result.structuredContent.items, [])
+
+    const metadata = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query: 'authorized table', limit: 3 } }, id: 12 }, h)
+    assert.equal(metadata.status, 200)
+    assert.deepEqual(metadata.body.result.structuredContent.items, [{
+      id: grantedTableUrn,
+      external_urn: grantedTableUrn,
+      name: 'Authorized synthetic table',
+      entity_type: 'TABLE',
+      description: 'Authorized metadata',
+      classification: 'PUBLIC',
+      retrieval_method: 'DATAHUB_GMS',
+      source: 'DataHub',
+    }])
+    assert.equal(metadataSearchCalls.at(-1).principal.subjectId, mcpSubjectId)
+    assert.deepEqual([...metadataSearchCalls.at(-1).principal.activeTableGrantUrns], [grantedTableUrn])
+    assert.equal(metadataSearchCalls.at(-1).limit, 3)
+    assert.equal(JSON.stringify(metadata).includes(providerBody), false)
+    assert.equal(JSON.stringify(metadata).includes(providerToken), false)
+    assert.equal(JSON.stringify(metadata).includes(mcpToken), false)
+
+    mcpGrants = []
+    const zeroScope = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query: 'authorized table' } }, id: 13 }, h)
+    assert.deepEqual(zeroScope.body.result.structuredContent.items, [])
+    assert.deepEqual([...metadataSearchCalls.at(-1).principal.activeTableGrantUrns], [])
+    mcpGrants = [{ active: true, tableUrn: grantedTableUrn }]
+
+    for (const [query, id] of [['provider unavailable', 14], ['provider timeout', 15], ['malformed response', 16]]) {
+      const failedSearch = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'metadata_search', arguments: { query } }, id }, h)
+      assert.equal(failedSearch.status, 200)
+      assert.equal(failedSearch.body.error.code, -32603)
+      assert.equal(failedSearch.body.error.message, 'Internal error')
+      const serialized = JSON.stringify(failedSearch)
+      assert.equal(serialized.includes(providerBody), false)
+      assert.equal(serialized.includes(providerToken), false)
+      assert.equal(serialized.includes(mcpToken), false)
+    }
 
     const badEnv = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 1, extra: 1 }, h)
     assert.equal(badEnv.body.error.code, -32600)
