@@ -72,6 +72,7 @@ describe('PocGlossaryPage', () => {
     expect(screen.getByRole('row', { name: /Semiconductor/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Manufacturing/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Wafermanufacturing\.wafer/ })).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /Wafermanufacturing\.wafer/ }).querySelector('[style]')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Semiconductor 하위 용어 접기' }))
     expect(screen.queryByRole('row', { name: /Wafermanufacturing\.wafer/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Semiconductor 하위 용어 펼치기' }))

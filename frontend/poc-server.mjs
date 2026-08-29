@@ -4228,10 +4228,20 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
       throw Object.assign(new Error('DataHub glossary assignments changed during the bounded read.'), { statusCode: 502 })
     }
     providerTotal = relationships.total
+    const relationshipDatasetUrns = [...new Set(relationships.relationships.flatMap((relationship) => (
+      relationship.entity?.type === 'DATASET' && typeof relationship.entity.urn === 'string'
+        ? [relationship.entity.urn]
+        : []
+    )))]
+    const confirmedTables = new Map((relationshipDatasetUrns.length
+      ? await currentDatahubTables(relationshipDatasetUrns)
+      : []).map((table) => [table.id, table]))
     for (const relationship of relationships.relationships) {
       const entity = relationship.entity
       if (!entity?.urn || entity.type !== 'DATASET') continue
-      const asset = datasetAsset(entity)
+      const confirmed = confirmedTables.get(entity.urn)
+      if (!confirmed) continue
+      const asset = { ...datasetAsset(entity), ...confirmed }
       if (!canReadAsset(principal, asset, 'governance')) continue
       if (targetType === 'TABLE') {
         add(asset)

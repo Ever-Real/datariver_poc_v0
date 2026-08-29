@@ -186,14 +186,21 @@ function providerHandler(request, response) {
     if (url.pathname === '/api/graphql') {
       const payload = JSON.parse(body.toString('utf8'))
       if (payload.query.includes('DataRiverPocCurrentTables')) {
-        return sendJson(response, { data: { entities: payload.variables.urns.map((urn) => ({
-          urn,
-          type: 'DATASET',
-          subTypes: { typeNames: ['Table'] },
-          properties: { customProperties: [] },
-          schemaMetadata: { name: 'wafer_events' },
-          globalTags: { tags: [{ tag: { urn: 'urn:li:tag:credential', name: 'credential' } }] },
-        })) } })
+        return sendJson(response, { data: { entities: payload.variables.urns.map((urn) => (
+          urn.includes('removed-assignment-fixture')
+            ? {
+                urn, type: 'DATASET', exists: false, status: { removed: true },
+                subTypes: { typeNames: ['Table'] }, properties: { customProperties: [] },
+                schemaMetadata: { name: 'removed_fixture' }, globalTags: { tags: [] },
+              }
+            : {
+                urn, type: 'DATASET', exists: true, status: { removed: false },
+                subTypes: { typeNames: ['Table'] },
+                properties: { customProperties: [] },
+                schemaMetadata: { name: 'wafer_events' },
+                globalTags: { tags: [{ tag: { urn: 'urn:li:tag:credential', name: 'credential' } }] },
+              }
+        )) } })
       }
       if (payload.query.includes('DataRiverPocCatalog')) {
         if (hideExactFromTextSearch && payload.variables.input.query !== '*') {
@@ -376,8 +383,11 @@ function providerHandler(request, response) {
         } })
       }
       if (payload.query.includes('DataRiverPocGlossaryAssignments')) {
+        const removedFixture = payload.variables.urn === 'urn:li:glossaryTerm:removed-assignment-fixture'
         const entity = {
-              urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)',
+              urn: removedFixture
+                ? 'urn:li:dataset:(urn:li:dataPlatform:generic,removed-assignment-fixture,PROD)'
+                : 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)',
               type: 'DATASET', name: 'wafer_events',
               platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
               properties: { name: 'wafer_events' },
@@ -855,6 +865,8 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(columnAssignments.total, 1)
   assert.equal(columnAssignments.items[0].target_type, 'COLUMN')
   assert.equal(columnAssignments.items[0].field_path, 'wafer_id')
+  const removedAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${encodeURIComponent('urn:li:glossaryTerm:removed-assignment-fixture')}&target_type=TABLE&limit=25`)).json()
+  assert.equal(removedAssignments.total, 0)
   const technicalGlossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=manufacturing_wafer`)).json()
   assert.equal(technicalGlossary.items[0].name, 'Wafer')
 })
@@ -2143,6 +2155,8 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     const catalog = await getJson('/poc-api/datahub/catalog?limit=20')
     assert.equal(catalog.total, 1)
     assert.deepEqual(catalog.items.map((item) => item.id), [waferUrn])
+    const glossaryTerm = encodeURIComponent('urn:li:glossaryTerm:wafer')
+    assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 1)
     const exactAllowed = await getJson(`/poc-api/datahub/catalog?limit=20&urn=${encodeURIComponent(waferUrn)}`)
     assert.deepEqual(exactAllowed.items.map((item) => item.id), [waferUrn])
     const exactHidden = await getJson(`/poc-api/datahub/catalog?limit=20&urn=${encodeURIComponent(inspectionUrn)}`)
@@ -2187,8 +2201,10 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
 
     await writeAccess('normal')
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 0)
     await writeAccess('credential')
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
+    assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 1)
 
     await stateStore.applyUserTableGrantCommand({
       subjectId,

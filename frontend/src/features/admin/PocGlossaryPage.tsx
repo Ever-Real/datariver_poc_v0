@@ -182,7 +182,7 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
     setColumnsExpanded(true)
   }, [])
   const columns = useMemo<ColumnDef<PocGlossaryTreeRow>[]>(() => [
-    { accessorKey: 'name', header: '용어 계층', size: 300, cell: ({ row }) => <div className="poc-glossary-tree-name" style={{ paddingLeft: `${row.depth * 16}px` }}>
+    { accessorKey: 'name', header: '용어 계층', size: 300, cell: ({ row }) => <div className={`poc-glossary-tree-name poc-glossary-depth-${Math.min(row.depth, 8)}`}>
       {row.getCanExpand() ? <button
         type="button"
         className="poc-glossary-expander"
