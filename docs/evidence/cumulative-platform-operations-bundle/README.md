@@ -155,3 +155,50 @@ Focused release/deploy/handoff tests are `137/137` PASS, the image-local
 Airflow runtime module import is PASS, and the artifact was exported from the
 already-built exact image without rebuild or pull. TEST accepted-state resume,
 6/6 smoke and same-command rerun remain pending and are not claimed here.
+
+## TEST accepted-state runtime result
+
+The corrected Product resumed the preserved `EXISTING_OWNED_INCOMPLETE` state
+through the canonical command. It used the checksum-pinned archive, performed
+no source build or pull, and completed all six smoke stages in `210s`:
+
+- host health and administrator login PASS;
+- bounded DataHub inventory and runtime-discovered, read-only GlossaryTerm PASS;
+- both canonical K9 graphs and semantic index PASS;
+- MCL source/checkpoint continuity PASS;
+- GENERAL routing/provider PASS.
+
+The immediate same-command rerun classified the target
+`EXISTING_ACCEPTED_RUNNING` and completed the same six stages in `204s`.
+The Web container is healthy with restart count `0`, runtime user `1000:1000`,
+and exact Product revision/platform. Environment hash and the three canonical
+volume identities are unchanged. Credential count remains `3`, K9 policy count
+`2`, K9 run count `4`, Chat rows remain `10` messages in `3` sessions, and the
+MCL ledger remains `62/62` unique events. Its single checkpoint advanced
+contiguously from offset `78581` to `78678` with the same source identity.
+GlossaryTerm smoke reports `mutation_performed=false`.
+
+The existing TEST administrator credential did not match the operator-provided
+TEST-only value. Under the user's explicit instruction, one bounded Product
+credential rotation used canonical Argon2id hashing, exact-subject/version CAS
+and session revocation. It changed credential version `17` to `18`, revoked
+four existing sessions and created no identity. The credential value was not
+written to repository files, release inputs, dashboard, evidence or shell
+history. This operator action is separate from deploy: deploy itself performed
+no reset, resecret or credential replacement.
+
+One stale mode-`0600`, unreferenced temporary effective-environment file from an
+earlier interrupted attempt was deleted after verifying no process held it.
+Canonical target env, generated runtime secrets and persistent volumes were not
+deleted or changed.
+
+### Backend migration applicability gap
+
+The PREP39083 POC artifact packages the Node POC server and its Product-owned
+`public.poc_*` schema. It does not package or start the Python backend/Alembic
+runtime. Therefore this TEST acceptance proves the POC owned-schema integrity
+gate and preserved rows, but cannot truthfully prove that backend migration
+`0101` ran on the accepted TEST database. `0101` remains locally and in
+disposable PostgreSQL verified; runtime application requires a backend-bearing
+target. No ad-hoc Alembic execution or direct schema mutation was introduced to
+manufacture a TEST PASS.
