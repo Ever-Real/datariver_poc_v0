@@ -88,7 +88,7 @@ describe('POC compatibility application', () => {
     expect(await screen.findByLabelText('POC mode')).toHaveTextContent('[poc]')
     expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
     expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
-    expect(providerRequestPaths()).toEqual([])
+    expect(providerRequestPaths()).toEqual(['/api/v1/change-history/summary'])
   })
 
   it('uses the viewer projection for menus and rejects a forged direct Admin URL', async () => {
@@ -168,7 +168,7 @@ describe('POC compatibility application', () => {
 
     const results = screen.getByRole('region', { name: '카탈로그 검색 결과' })
     expect(await within(results).findByText('검색 조건에 맞는 허용 자산이 없습니다.')).toBeVisible()
-    expect(providerRequestPaths()).toEqual([])
+    expect(providerRequestPaths()).toEqual(['/api/v1/change-history/summary'])
   })
 
   it('preserves primary pages and moves admin-oriented pages under the authenticated POC user', async () => {
@@ -213,7 +213,10 @@ describe('POC compatibility application', () => {
     expect(await screen.findByText(/검증 불가: LLM Chat 연결을 설정해야 합니다/)).toBeVisible()
     expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
-    expect(providerRequestPaths()).toEqual(['/poc-api/chat/sessions'])
+    expect(providerRequestPaths()).toEqual([
+      '/api/v1/change-history/summary',
+      '/poc-api/chat/sessions',
+    ])
   })
 
   it('shows the bounded POC user and system settings administration surfaces', async () => {

@@ -85,7 +85,7 @@ def _event(**overrides: object) -> NormalizedLedgerEvent:
 def test_change_history_metadata_is_the_minimal_t03_contract() -> None:
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert "change_history.source_events" not in Base.metadata.tables
-    assert REQUIRED_DATABASE_REVISION == "0096"
+    assert REQUIRED_DATABASE_REVISION == "0101"
 
     for name in EXPECTED_TABLES:
         table = Base.metadata.tables[name]

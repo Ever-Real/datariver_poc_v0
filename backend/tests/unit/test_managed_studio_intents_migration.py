@@ -18,7 +18,7 @@ def _migration() -> ModuleType:
 def test_migration_0097_targets_canonical_tables() -> None:
     from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
-    assert REQUIRED_DATABASE_REVISION == "0097", (
+    assert REQUIRED_DATABASE_REVISION == "0101", (
         "Packaged runtime readiness constant must match migration head"
     )
 
