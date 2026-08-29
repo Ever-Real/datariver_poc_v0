@@ -489,6 +489,16 @@ class SqlQualityReadRepository(QualityReadRepository):
                     ),
                 )
             )
+        total_count = (
+            None
+            if cursor
+            else int(
+                await self._session.scalar(
+                    select(func.count()).select_from(AssetProjectionModel).where(and_(*conditions))
+                )
+                or 0
+            )
+        )
         rows = list(
             (
                 await self._session.scalars(
@@ -510,7 +520,11 @@ class SqlQualityReadRepository(QualityReadRepository):
                 limit=limit,
                 boundary={"name": selected[-1].name, "id": str(selected[-1].id)},
             )
-        return QualityAssetPage(items=items, next_cursor=next_cursor)
+        return QualityAssetPage(
+            items=items,
+            next_cursor=next_cursor,
+            total_count=total_count,
+        )
 
     async def get_assets(
         self, *, context: QualityReadContext, asset_ids: tuple[UUID, ...]

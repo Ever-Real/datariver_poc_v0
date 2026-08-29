@@ -273,6 +273,10 @@ class QualityReadMetadata(BaseModel):
     authorization_valid_until: datetime
 
 
+class QualityAssetPageMeta(PageMeta):
+    total_count: int | None = Field(default=None, ge=0)
+
+
 class QualityDashboardResponse(QualityReadMetadata):
     contract_version: Literal["QUALITY_DASHBOARD_V1"] = "QUALITY_DASHBOARD_V1"
     as_of: datetime
@@ -289,7 +293,7 @@ class QualityDashboardResponse(QualityReadMetadata):
 
 class QualityAssetListResponse(QualityReadMetadata):
     items: list[QualityAssetResponse]
-    page: PageMeta
+    page: QualityAssetPageMeta
 
 
 class QualityAssetSummaryBatchRequest(BaseModel):

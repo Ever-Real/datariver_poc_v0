@@ -31,7 +31,7 @@ describe('QualityCommonRulesTab', () => {
           authorization_valid_until: validUntil,
         })
       }
-      if (path === '/quality/assets?limit=100') return Promise.resolve(list(assets, 100))
+      if (path === '/quality/assets?limit=25') return Promise.resolve(list(assets, 25))
       if (path === '/quality/assets/asset-one' || path === '/quality/assets/asset-two') {
         const assetId = path.endsWith('one') ? 'asset-one' : 'asset-two'
         return Promise.resolve({
@@ -170,7 +170,8 @@ describe('QualityCommonRulesTab', () => {
   })
 
   it('previews a bounded exact metadata scope and selects only filtered compatible fields', async () => {
-    const filteredPath = '/quality/assets?limit=100&q=event&platform=postgres&database=analytics&schema=public'
+    const filteredPath = '/quality/assets?limit=25&q=event&platform=postgres&database=analytics&schema=public'
+    const nextPath = `${filteredPath}&cursor=next-page`
     const typedAssets: QualityAsset[] = [{
       ...assets[0]!,
       name: '이벤트',
@@ -195,8 +196,9 @@ describe('QualityCommonRulesTab', () => {
           authorization_valid_until: validUntil,
         })
       }
-      if (path === '/quality/assets?limit=100') return Promise.resolve(list([], 100))
-      if (path === filteredPath) return Promise.resolve(list(typedAssets, 100))
+      if (path === '/quality/assets?limit=25') return Promise.resolve(list([], 25))
+      if (path === filteredPath) return Promise.resolve(list(typedAssets, 25, 137, 'next-page'))
+      if (path === nextPath) return Promise.resolve(list([], 25, null))
       if (path === '/quality/assets/asset-one') {
         return Promise.resolve({
           item: typedAssets[0],
@@ -243,8 +245,23 @@ describe('QualityCommonRulesTab', () => {
 
     expect(screen.getByRole('checkbox', { name: '이벤트 event_name 선택' })).toBeChecked()
     expect(screen.queryByRole('checkbox', { name: '이벤트 event_count 선택' })).not.toBeInTheDocument()
-    expect(screen.getByText(/nullable 조건은 provider가 검증 가능한/)).toBeInTheDocument()
+    expect(screen.getByText(/설명·태그·용어·nullable 조건은 사용할 수 없습니다/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('설명')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Tag')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Term')).not.toBeInTheDocument()
+    expect(screen.getByText(/인가된 대상 전체 137개 · 현재 미리보기 1페이지 1개/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '다음 미리보기' }))
+    expect(await screen.findByText(/인가된 대상 전체 137개 · 현재 미리보기 2페이지 0개/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '이전 미리보기' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '이전 미리보기' }))
+    expect(await screen.findByText(/인가된 대상 전체 137개 · 현재 미리보기 1페이지 1개/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('기술 세부 정보'))
+    expect(screen.getByText('DESCRIPTION_FILTER_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText('TAG_REFERENCE_SOURCE_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText('TERM_REFERENCE_SOURCE_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText('NULLABILITY_SOURCE_UNAVAILABLE')).toBeInTheDocument()
     expect(request).toHaveBeenCalledWith(filteredPath, expect.anything())
+    expect(request).toHaveBeenCalledWith(nextPath, expect.anything())
   })
 })
 
@@ -273,10 +290,15 @@ function renderTab(
   )
 }
 
-function list<T>(items: T[], limit: number): QualityListResponse<T> {
+function list<T>(
+  items: T[],
+  limit: number,
+  totalCount: number | null = items.length,
+  nextCursor: string | null = null,
+): QualityListResponse<T> {
   return {
     items,
-    page: { next_cursor: null, limit },
+    page: { next_cursor: nextCursor, limit, total_count: totalCount },
     cache_scope: boundary.cacheScope,
     observed_at: now,
     authorization_valid_until: validUntil,

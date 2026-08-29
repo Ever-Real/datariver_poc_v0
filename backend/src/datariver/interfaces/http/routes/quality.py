@@ -45,6 +45,7 @@ from datariver.interfaces.http.quality_schemas import (
     QualityAssetAuthoringResponse,
     QualityAssetDetailResponse,
     QualityAssetListResponse,
+    QualityAssetPageMeta,
     QualityAssetSummaryBatchRequest,
     QualityAssetSummaryBatchResponse,
     QualityAssetWorkspaceResponse,
@@ -249,7 +250,11 @@ async def list_quality_assets(
     )
     return QualityAssetListResponse(
         items=[quality_asset_response(value) for value in page.items],
-        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        page=QualityAssetPageMeta(
+            next_cursor=page.next_cursor,
+            limit=limit,
+            total_count=page.total_count,
+        ),
         cache_scope=read_context.cache_scope,
         observed_at=read_context.observed_at,
         authorization_valid_until=read_context.authorization_valid_until,

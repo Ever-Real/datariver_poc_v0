@@ -2547,6 +2547,7 @@ export interface QualityOverview {
 export interface QualityPageMeta {
   next_cursor: string | null
   limit: number
+  total_count?: number | null
 }
 
 export interface QualityListResponse<T> {

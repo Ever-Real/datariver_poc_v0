@@ -41,6 +41,8 @@ export interface QualitySecurityBoundary {
   cacheScope: string
 }
 
+export type QualityAssetPreviewResponse = QualityListResponse<QualityAsset>
+
 export type QualityResource =
   | 'overview'
   | 'dashboard'
@@ -167,6 +169,30 @@ export class QualityApi {
         ...(filters?.schema ? { schema: filters.schema } : {}),
       },
     })
+  }
+
+  async assetPreview(
+    cursor: string | undefined,
+    signal: AbortSignal | undefined,
+    filters: {
+      query?: string
+      platform?: string
+      database?: string
+      schema?: string
+      limit: number
+    },
+  ): Promise<QualityAssetPreviewResponse> {
+    const value = await this.assets(cursor, signal, filters)
+    if (!cursor && (
+      !Number.isSafeInteger(value.page.total_count)
+      || Number(value.page.total_count) < value.items.length
+    )) {
+      throw new Error('인가된 품질 대상 전체 건수를 확인할 수 없습니다.')
+    }
+    if (cursor && value.page.total_count != null) {
+      throw new Error('후속 품질 미리보기 페이지가 전체 건수를 다시 계산했습니다.')
+    }
+    return value
   }
 
   async assetSummaries(

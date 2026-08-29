@@ -194,25 +194,66 @@ describe('QualityApi authorization contracts', () => {
   })
 
   it('binds the authorized asset cursor to exact metadata scope filters', async () => {
-    const request = vi.fn().mockResolvedValue({
-      items: [],
-      page: { next_cursor: null, limit: 25 },
-      cache_scope: cacheScope,
-      observed_at: '2026-07-30T00:00:00Z',
-      authorization_valid_until: '2026-07-30T00:00:30Z',
-    })
+    const request = vi.fn()
+      .mockResolvedValueOnce({
+        items: [],
+        page: { next_cursor: 'next-page', limit: 25, total_count: 137 },
+        cache_scope: cacheScope,
+        observed_at: '2026-07-30T00:00:00Z',
+        authorization_valid_until: '2026-07-30T00:00:30Z',
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        page: { next_cursor: null, limit: 25, total_count: null },
+        cache_scope: cacheScope,
+        observed_at: '2026-07-30T00:00:00Z',
+        authorization_valid_until: '2026-07-30T00:00:30Z',
+      })
     const api = new QualityApi({ request })
 
-    await api.assets(undefined, undefined, {
+    const preview = await api.assetPreview(undefined, undefined, {
       query: 'event',
       platform: 'postgres',
       database: 'analytics',
       schema: 'public',
+      limit: 25,
+    })
+    const next = await api.assetPreview('next-page', undefined, {
+      query: 'event',
+      platform: 'postgres',
+      database: 'analytics',
+      schema: 'public',
+      limit: 25,
     })
 
-    expect(request).toHaveBeenCalledWith(
+    expect(preview.page.total_count).toBe(137)
+    expect(next.page.total_count).toBeNull()
+
+    expect(request).toHaveBeenNthCalledWith(
+      1,
       '/quality/assets?limit=25&q=event&platform=postgres&database=analytics&schema=public',
       { cache: 'no-store', signal: undefined },
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      '/quality/assets?limit=25&q=event&platform=postgres&database=analytics&schema=public&cursor=next-page',
+      { cache: 'no-store', signal: undefined },
+    )
+  })
+
+  it('rejects a metadata preview without an exact authorized total', async () => {
+    const api = new QualityApi({
+      request: vi.fn().mockResolvedValue({
+        items: [],
+        page: { next_cursor: null, limit: 25 },
+        cache_scope: cacheScope,
+        observed_at: '2026-07-30T00:00:00Z',
+        authorization_valid_until: '2026-07-30T00:00:30Z',
+      }),
+    })
+
+    await expect(api.assetPreview(undefined, undefined, { limit: 25 })).rejects.toThrow(
+      '전체 건수',
     )
   })
 
@@ -374,6 +415,7 @@ describe('QualityApi authorization contracts', () => {
       }),
     ])
   })
+
 })
 
 const capabilityAxes = [

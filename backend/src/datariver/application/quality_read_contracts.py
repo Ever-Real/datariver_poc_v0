@@ -376,6 +376,7 @@ class QualityIssueSummary:
 class QualityAssetPage:
     items: tuple[QualityAssetSummary, ...]
     next_cursor: str | None
+    total_count: int | None
 
 
 @dataclass(frozen=True, slots=True)

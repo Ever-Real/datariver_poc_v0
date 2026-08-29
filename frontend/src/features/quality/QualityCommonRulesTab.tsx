@@ -391,6 +391,10 @@ function MappingDialog({
   const [platform, setPlatform] = useState('')
   const [database, setDatabase] = useState('')
   const [schema, setSchema] = useState('')
+  const [previewCursors, setPreviewCursors] = useState<Array<string | undefined>>([undefined])
+  const [previewPage, setPreviewPage] = useState(0)
+  const previewCursor = previewCursors[previewPage]
+  const [authorizedTotal, setAuthorizedTotal] = useState<number>()
   const [fieldQuery, setFieldQuery] = useState('')
   const [fieldType, setFieldType] = useState('ALL')
   const [selected, setSelected] = useState<string[]>([])
@@ -407,13 +411,14 @@ function MappingDialog({
       platform,
       database,
       schema,
+      previewCursor,
     ),
-    queryFn: ({ signal }) => api.assets(undefined, signal, {
+    queryFn: ({ signal }) => api.assetPreview(previewCursor, signal, {
       query,
       platform,
       database,
       schema,
-      limit: 100,
+      limit: 25,
     }),
     enabled: open,
     staleTime: 0,
@@ -484,6 +489,9 @@ function MappingDialog({
     setPlatform('')
     setDatabase('')
     setSchema('')
+    setPreviewCursors([undefined])
+    setPreviewPage(0)
+    setAuthorizedTotal(undefined)
     setFieldQuery('')
     setFieldType('ALL')
     setSelected([])
@@ -498,6 +506,11 @@ function MappingDialog({
       onBoundaryInvalid()
     }
   }, [assets.error, authorizationError, onBoundaryInvalid])
+  useEffect(() => {
+    if (previewPage === 0 && Number.isSafeInteger(assets.data?.page.total_count)) {
+      setAuthorizedTotal(Number(assets.data?.page.total_count))
+    }
+  }, [assets.data?.page.total_count, previewPage])
 
   const search = (event: FormEvent) => {
     event.preventDefault()
@@ -505,6 +518,12 @@ function MappingDialog({
     setPlatform(draftPlatform.trim())
     setDatabase(draftDatabase.trim())
     setSchema(draftSchema.trim())
+    setPreviewCursors([undefined])
+    setPreviewPage(0)
+    setAuthorizedTotal(undefined)
+    setSelected([])
+    setSelectedFields(new Set())
+    lastFieldIndex.current = undefined
   }
   const toggle = (assetId: string, checked: boolean) => {
     setSelected((current) => {
@@ -549,12 +568,26 @@ function MappingDialog({
   }
   const allVisibleFieldsSelected = visibleFieldCandidates.length > 0
     && visibleFieldCandidates.every((field) => selectedFields.has(fieldSelectionKey(field)))
+  const changePreviewPage = (nextPage: number, nextCursor?: string) => {
+    if (nextPage < 0) return
+    if (nextPage > previewPage) {
+      if (!nextCursor) return
+      setPreviewCursors((current) => [
+        ...current.slice(0, previewPage + 1),
+        nextCursor,
+      ])
+    }
+    setPreviewPage(nextPage)
+    setSelected([])
+    setSelectedFields(new Set())
+    lastFieldIndex.current = undefined
+  }
 
   return <>
   <Dialog
     open={open && !parameterOpen}
     title={`${template.name} · 여러 테이블에 적용`}
-    description="메타데이터 조건으로 인가된 대상을 좁히고, 미리보기에서 최대 25개 테이블을 확인한 뒤 적용합니다."
+    description="메타데이터 조건으로 인가된 전체 건수와 25개 단위 cursor 미리보기를 확인합니다."
     size="large"
     onRequestClose={onClose}
     footer={<>
@@ -575,9 +608,20 @@ function MappingDialog({
       <button className="button" type="submit">검색</button>
     </form>
     <p className="quality-mapping-condition-note">
-      현재 배포 소유 필드 계약은 논리 타입을 제공합니다. nullable 조건은 provider가 검증 가능한 필드 identity로 제공할 때까지 선택할 수 없습니다.
+      Table·Platform·Database·Schema 조건은 현재 인가 범위에서 서버가 교집합으로 적용합니다. 선택한 Table의 Column·datatype은 아래의 현재 필드 메타데이터에서 다시 좁힙니다.
+      현재 정식 메타데이터 원본에서 정확한 값을 증명할 수 없어 설명·태그·용어·nullable 조건은 사용할 수 없습니다.
     </p>
+    <details className="quality-mapping-technical-details">
+      <summary>기술 세부 정보</summary>
+      <code>DESCRIPTION_FILTER_UNAVAILABLE</code>{' · '}
+      <code>TAG_REFERENCE_SOURCE_UNAVAILABLE</code>{' · '}
+      <code>TERM_REFERENCE_SOURCE_UNAVAILABLE</code>{' · '}
+      <code>NULLABILITY_SOURCE_UNAVAILABLE</code>
+    </details>
     {assets.error && <ErrorNotice error={assets.error} />}
+    {assets.data && authorizedTotal !== undefined && <div className="quality-mapping-selection" role="status">
+      인가된 대상 전체 {countText(authorizedTotal)}개 · 현재 미리보기 {previewPage + 1}페이지 {countText(assets.data.items.length)}개
+    </div>}
     <div className="quality-mapping-table-scroll">
       <table className="quality-compact-table">
         <thead><tr><th>선택</th><th>테이블</th><th>Platform</th><th>Database</th><th>Schema</th><th>호환성</th></tr></thead>
@@ -597,6 +641,18 @@ function MappingDialog({
       {assets.isPending && <p className="quality-loading">적용 대상을 검색하는 중입니다.</p>}
       {!assets.isPending && assets.data?.items.length === 0 && <p className="quality-empty">검색 조건에 맞는 테이블이 없습니다.</p>}
     </div>
+    <nav className="cursor-pagination" aria-label="인가된 대상 미리보기 페이지">
+      <button
+        type="button"
+        disabled={previewPage === 0 || assets.isPending}
+        onClick={() => changePreviewPage(previewPage - 1)}
+      >이전 미리보기</button>
+      <button
+        type="button"
+        disabled={!assets.data?.page.next_cursor || assets.isPending}
+        onClick={() => changePreviewPage(previewPage + 1, assets.data?.page.next_cursor ?? undefined)}
+      >다음 미리보기</button>
+    </nav>
     {fieldCandidates.length > 0 && <section className="quality-mapping-fields">
       <header><strong>필드 선택</strong><span>Shift로 연속 선택 · 테이블별 최대 100개 룰</span></header>
       <div className="quality-field-toolbar">

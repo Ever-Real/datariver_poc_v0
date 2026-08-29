@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -11,6 +12,10 @@ from fastapi.routing import APIRoute
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.classification_access import static_classification_access_floor
+from datariver.application.quality_read_contracts import QualityReadContext
+from datariver.domain.authz import Classification, SubjectAttributes
+from datariver.domain.common import ValidationError
 from datariver.infrastructure.db.models.quality import (
     QualityExpectationResultModel,
     QualityRuleSetModel,
@@ -21,6 +26,8 @@ from datariver.infrastructure.db.quality_read import (
     _asset_cursor_resource,
     _AssetQualityAggregate,
     _DashboardRuleMetric,
+    _decode_cursor,
+    _encode_cursor,
     _field_run_quality,
     _FieldQualityAggregate,
     _managed_rule_sets,
@@ -85,6 +92,12 @@ def test_quality_asset_cursor_is_bound_to_every_metadata_filter() -> None:
     )
 
     assert base != _asset_cursor_resource(
+        query="orders",
+        platform="postgres",
+        database_name="analytics",
+        schema_name="public",
+    )
+    assert base != _asset_cursor_resource(
         query="customer",
         platform="snowflake",
         database_name="analytics",
@@ -102,6 +115,224 @@ def test_quality_asset_cursor_is_bound_to_every_metadata_filter() -> None:
         database_name="analytics",
         schema_name="reporting",
     )
+
+
+def test_quality_asset_cursor_rejects_another_authorization_scope() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="DATA_STEWARD",
+        clearance=Classification.RESTRICTED,
+    )
+    now = datetime(2026, 7, 30, tzinfo=UTC)
+    context = QualityReadContext(
+        subject=subject,
+        access=static_classification_access_floor(),
+        observed_at=now,
+        authorization_valid_until=now,
+        cache_scope="a" * 64,
+        profile_allowed=False,
+    )
+    cursor = _encode_cursor(
+        resource=_asset_cursor_resource(
+            query="orders",
+            platform="postgres",
+            database_name="analytics",
+            schema_name="public",
+        ),
+        context=context,
+        limit=25,
+        boundary={"name": "orders", "id": str(uuid4())},
+    )
+    changed_scope = QualityReadContext(
+        subject=subject,
+        access=context.access,
+        observed_at=now,
+        authorization_valid_until=now,
+        cache_scope="b" * 64,
+        profile_allowed=False,
+    )
+
+    with pytest.raises(ValidationError, match="stale or does not match"):
+        _decode_cursor(
+            cursor,
+            resource=_asset_cursor_resource(
+                query="orders",
+                platform="postgres",
+                database_name="analytics",
+                schema_name="public",
+            ),
+            context=changed_scope,
+            limit=25,
+        )
+
+
+class _EmptyScalarRows:
+    def all(self) -> list[Any]:
+        return []
+
+
+class _MetadataPreviewSession:
+    def __init__(self) -> None:
+        self.statement: Any = None
+        self.count_statement: Any = None
+        self.scalar_calls = 0
+        self.scalars_calls = 0
+
+    async def scalar(self, statement: Any) -> int:
+        self.scalar_calls += 1
+        self.count_statement = statement
+        return 137
+
+    async def scalars(self, statement: Any) -> _EmptyScalarRows:
+        self.scalars_calls += 1
+        self.statement = statement
+        return _EmptyScalarRows()
+
+
+@pytest.mark.asyncio
+async def test_authorized_asset_preview_intersects_canonical_metadata_conditions() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="DATA_STEWARD",
+        clearance=Classification.RESTRICTED,
+    )
+    now = datetime(2026, 7, 30, tzinfo=UTC)
+    context = QualityReadContext(
+        subject=subject,
+        access=static_classification_access_floor(),
+        observed_at=now,
+        authorization_valid_until=now,
+        cache_scope="a" * 64,
+        profile_allowed=False,
+    )
+    session = _MetadataPreviewSession()
+
+    page = await SqlQualityReadRepository(cast(AsyncSession, session)).list_assets(
+        context=context,
+        limit=25,
+        cursor=None,
+        query="orders",
+        platform="postgres",
+        database_name="analytics",
+        schema_name="public",
+    )
+
+    assert page.items == ()
+    assert page.total_count == 137
+    assert session.scalar_calls == 1
+    assert session.scalars_calls == 1
+    sql = " ".join(str(session.statement).split())
+    count_sql = " ".join(str(session.count_statement).split())
+    assert "lower(catalog.assets_projection.name) LIKE lower" in sql
+    assert "catalog.assets_projection.platform =" in sql
+    assert "catalog.assets_projection.database_name =" in sql
+    assert "catalog.assets_projection.schema_name =" in sql
+    assert "catalog.assets_projection.workspace_id =" in sql
+    assert "catalog.assets_projection.platform =" in count_sql
+    assert "catalog.assets_projection.database_name =" in count_sql
+    assert "catalog.assets_projection.schema_name =" in count_sql
+    assert "catalog.assets_projection.workspace_id =" in count_sql
+    assert "lower(catalog.assets_projection.description)" not in sql
+    assert "catalog.assets_projection.tags @>" not in sql
+    assert "catalog.assets_projection.glossary_terms @>" not in sql
+
+
+@pytest.mark.asyncio
+async def test_authorized_asset_preview_next_page_does_not_recount() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="DATA_STEWARD",
+        clearance=Classification.RESTRICTED,
+    )
+    now = datetime(2026, 7, 30, tzinfo=UTC)
+    context = QualityReadContext(
+        subject=subject,
+        access=static_classification_access_floor(),
+        observed_at=now,
+        authorization_valid_until=now,
+        cache_scope="a" * 64,
+        profile_allowed=False,
+    )
+    cursor = _encode_cursor(
+        resource=_asset_cursor_resource(
+            query="orders",
+            platform="postgres",
+            database_name="analytics",
+            schema_name="public",
+        ),
+        context=context,
+        limit=25,
+        boundary={"name": "orders", "id": str(uuid4())},
+    )
+    session = _MetadataPreviewSession()
+
+    page = await SqlQualityReadRepository(cast(AsyncSession, session)).list_assets(
+        context=context,
+        limit=25,
+        cursor=cursor,
+        query="orders",
+        platform="postgres",
+        database_name="analytics",
+        schema_name="public",
+    )
+
+    assert page.items == ()
+    assert page.total_count is None
+    assert session.scalar_calls == 0
+    assert session.scalars_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_authorized_asset_preview_invalid_cursor_makes_no_database_calls() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="DATA_STEWARD",
+        clearance=Classification.RESTRICTED,
+    )
+    now = datetime(2026, 7, 30, tzinfo=UTC)
+    context = QualityReadContext(
+        subject=subject,
+        access=static_classification_access_floor(),
+        observed_at=now,
+        authorization_valid_until=now,
+        cache_scope="a" * 64,
+        profile_allowed=False,
+    )
+    session = _MetadataPreviewSession()
+
+    with pytest.raises(ValidationError, match="stale or does not match"):
+        await SqlQualityReadRepository(cast(AsyncSession, session)).list_assets(
+            context=context,
+            limit=25,
+            cursor="invalid",
+            query="orders",
+            platform="postgres",
+            database_name="analytics",
+            schema_name="public",
+        )
+
+    assert session.scalar_calls == 0
+    assert session.scalars_calls == 0
 
 
 class _AggregateRows:
