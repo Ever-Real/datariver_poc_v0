@@ -5084,6 +5084,14 @@ function isAirflowDagTransitionOutcomeUnknown(error) {
     || error?.code === 'AIRFLOW_DAG_CONTRACT_INVALID'
 }
 
+async function bestEffortAirflowReceiptWrite(write) {
+  try {
+    return await write()
+  } catch {
+    return null
+  }
+}
+
 // Registration owns this separate service-only execution contract. It is not
 // reachable through the administrator Airflow control routes above.
 async function triggerAirflowDag(dagId, body) {
@@ -11695,43 +11703,57 @@ async function api(request, response, url, context) {
       return json(response, 200, { replayed: true, receipt: claim.receipt })
     }
     if (claim.action === 'RECONCILE') {
+      let run
       try {
-        const run = await context.airflowProvider.readRun(dagId, claim.receipt.run_id)
-        if (run) {
+        run = await context.airflowProvider.readRun(dagId, claim.receipt.run_id)
+      } catch {
+        await bestEffortAirflowReceiptWrite(() => control.requireReconciliation(
+          claim.receipt.operation_id, 'AIRFLOW_RUN_RECONCILIATION_FAILED',
+        ))
+        throw accessError(502, 'AIRFLOW_RUN_RECONCILIATION_FAILED', 'The Airflow run could not be reconciled.')
+      }
+      if (run) {
+        try {
           const receipt = await control.acceptTrigger(claim.receipt.operation_id, run.state)
           return json(response, 200, { replayed: true, reconciled: true, run, receipt })
+        } catch {
+          await bestEffortAirflowReceiptWrite(() => control.requireReconciliation(
+            claim.receipt.operation_id, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+          ))
+          throw accessError(502, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN', 'The reconciled Airflow run receipt could not be finalized.')
         }
-      } catch (error) {
-        await control.requireReconciliation(
-          claim.receipt.operation_id,
-          error?.code || 'AIRFLOW_RUN_RECONCILIATION_FAILED',
-        )
-        throw error
       }
     }
+    let run
     try {
-      const run = await context.airflowProvider.trigger(dagId, claim.receipt.run_id)
-      const receipt = await control.acceptTrigger(claim.receipt.operation_id, run.state)
-      return json(response, claim.action === 'TRIGGER' ? 202 : 200, {
-        replayed: claim.action !== 'TRIGGER',
-        reconciled: claim.action === 'RECONCILE',
-        run,
-        receipt,
-      })
+      run = await context.airflowProvider.trigger(dagId, claim.receipt.run_id)
     } catch (error) {
       if (isAirflowTriggerOutcomeUnknown(error)) {
-        await control.requireReconciliation(
-          claim.receipt.operation_id,
-          'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
-        )
+        await bestEffortAirflowReceiptWrite(() => control.requireReconciliation(
+          claim.receipt.operation_id, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+        ))
         throw accessError(502, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN', 'The Airflow trigger outcome requires reconciliation.')
       }
-      await control.failTrigger(
-        claim.receipt.operation_id,
-        'AIRFLOW_TRIGGER_REJECTED',
-      )
+      await bestEffortAirflowReceiptWrite(() => control.failTrigger(
+        claim.receipt.operation_id, 'AIRFLOW_TRIGGER_REJECTED',
+      ))
       throw accessError(502, 'AIRFLOW_TRIGGER_REJECTED', 'The Airflow trigger was rejected.')
     }
+    let receipt
+    try {
+      receipt = await control.acceptTrigger(claim.receipt.operation_id, run.state)
+    } catch {
+      await bestEffortAirflowReceiptWrite(() => control.requireReconciliation(
+        claim.receipt.operation_id, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN',
+      ))
+      throw accessError(502, 'AIRFLOW_TRIGGER_OUTCOME_UNKNOWN', 'Airflow accepted the trigger but its receipt could not be finalized.')
+    }
+    return json(response, claim.action === 'TRIGGER' ? 202 : 200, {
+      replayed: claim.action !== 'TRIGGER',
+      reconciled: claim.action === 'RECONCILE',
+      run,
+      receipt,
+    })
   }
   const airflowDagMatch = url.pathname.match(/^\/poc-api\/airflow\/dags\/([^/]+)$/)
   if (request.method === 'PATCH' && airflowDagMatch) {
@@ -11764,31 +11786,38 @@ async function api(request, response, url, context) {
         receipt: claim.receipt,
       })
     }
+    let dag
     try {
-      const dag = await context.airflowProvider.setPaused(dagId, body.action === 'PAUSE')
-      const receipt = await control.acceptDagTransition(claim.receipt.operation_id)
-      return json(response, claim.action === 'TRANSITION' ? 202 : 200, {
-        system_id: AIRFLOW_SYSTEM_ID,
-        action: body.action,
-        replayed: claim.action !== 'TRANSITION',
-        reconciled: claim.action === 'RECONCILE',
-        dag,
-        receipt,
-      })
+      dag = await context.airflowProvider.setPaused(dagId, body.action === 'PAUSE')
     } catch (error) {
       if (isAirflowDagTransitionOutcomeUnknown(error)) {
-        await control.requireDagTransitionReconciliation(
-          claim.receipt.operation_id,
-          'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
-        )
+        await bestEffortAirflowReceiptWrite(() => control.requireDagTransitionReconciliation(
+          claim.receipt.operation_id, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
+        ))
         throw accessError(502, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN', 'The Airflow DAG transition requires reconciliation.')
       }
-      await control.failDagTransition(
-        claim.receipt.operation_id,
-        'AIRFLOW_DAG_TRANSITION_REJECTED',
-      )
+      await bestEffortAirflowReceiptWrite(() => control.failDagTransition(
+        claim.receipt.operation_id, 'AIRFLOW_DAG_TRANSITION_REJECTED',
+      ))
       throw accessError(502, 'AIRFLOW_DAG_TRANSITION_REJECTED', 'The Airflow DAG transition was rejected.')
     }
+    let receipt
+    try {
+      receipt = await control.acceptDagTransition(claim.receipt.operation_id)
+    } catch {
+      await bestEffortAirflowReceiptWrite(() => control.requireDagTransitionReconciliation(
+        claim.receipt.operation_id, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN',
+      ))
+      throw accessError(502, 'AIRFLOW_DAG_TRANSITION_OUTCOME_UNKNOWN', 'Airflow applied the DAG transition but its receipt could not be finalized.')
+    }
+    return json(response, claim.action === 'TRANSITION' ? 202 : 200, {
+      system_id: AIRFLOW_SYSTEM_ID,
+      action: body.action,
+      replayed: claim.action !== 'TRANSITION',
+      reconciled: claim.action === 'RECONCILE',
+      dag,
+      receipt,
+    })
   }
   const minioPart = url.pathname.match(/^\/poc-api\/minio\/uploads\/([a-zA-Z0-9_-]+)\/parts\/(\d+)$/)
   if (request.method === 'PUT' && minioPart) {

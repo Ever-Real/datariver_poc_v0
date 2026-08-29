@@ -85,12 +85,14 @@ export function normalizeAirflowDagStatus(payload, expectedDagId, version) {
     || payload.dag_id !== dagId || typeof payload.is_paused !== 'boolean') {
     throw controlError(502, 'AIRFLOW_DAG_CONTRACT_INVALID', 'Airflow returned an incompatible DAG status document.')
   }
-  const nextLogicalDate = version === 'v2'
-    ? timestamp(payload.next_dagrun_logical_date, 'next DAG logical date')
-    : null
-  const nextRunAfter = version === 'v2'
-    ? timestamp(payload.next_dagrun_run_after, 'next DAG run-after time')
-    : null
+  const nextLogicalDate = timestamp(
+    version === 'v2' ? payload.next_dagrun_logical_date : payload.next_dagrun,
+    'next DAG logical date',
+  )
+  const nextRunAfter = timestamp(
+    version === 'v2' ? payload.next_dagrun_run_after : payload.next_dagrun_create_after,
+    'next DAG run-after time',
+  )
   return {
     system_id: AIRFLOW_SYSTEM_ID,
     dag_id: dagId,
