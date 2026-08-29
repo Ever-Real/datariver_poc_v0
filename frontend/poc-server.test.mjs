@@ -1,4 +1,4 @@
-/* global Buffer, fetch, setTimeout, structuredClone */
+/* global Buffer, Response, fetch, setTimeout, structuredClone */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -1289,6 +1289,9 @@ test('commits the PostgreSQL Embedding generation and active pointer in one fenc
 test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {
   const missing = await fetch(new URL('/poc-api/arbitrary-proxy', origin))
   assert.equal(missing.status, 404)
+  const dags = await fetch(new URL('/poc-api/airflow/dags', origin))
+  assert.equal(dags.status, 503)
+  assert.equal((await dags.json()).code, 'AIRFLOW_NOT_CONFIGURED')
   const dag = await fetch(new URL('/poc-api/airflow/dags/arbitrary/runs', origin), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1300,6 +1303,49 @@ test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {
     body: Buffer.from('sample'),
   })
   assert.equal(minio.status, 503)
+})
+
+test('normalizes only reviewed Airflow DAG status documents and preserves missing DAGs', async () => {
+  const {
+    collectAllowedAirflowDagStatuses,
+    normalizeAirflowDagStatus,
+  } = await import('./poc-server.mjs?airflow-read-only-status-contract')
+  const observed = await collectAllowedAirflowDagStatuses('v2', async (dagId) => {
+    if (dagId === 'datariver_catalog_probe') return new Response(null, { status: 404 })
+    return new Response(JSON.stringify({
+      dag_id: dagId,
+      is_paused: dagId === 'datariver_manual_metadata_apply',
+      next_dagrun: '2026-08-30T02:00:00+09:00',
+      last_parsed_time: '2026-08-29T12:00:00Z',
+      provider_only_field: 'ignored',
+    }), { status: 200 })
+  })
+  assert.equal(observed.api_mode, 'V2')
+  assert.deepEqual(observed.items.map((item) => item.dag_id), [
+    'datariver_bulk_registration_prepare',
+    'datariver_catalog_probe',
+    'datariver_catalog_sync',
+    'datariver_manual_metadata_apply',
+    'datariver_quality_dispatch',
+  ])
+  assert.deepEqual(observed.items.find((item) => item.dag_id === 'datariver_catalog_probe'), {
+    dag_id: 'datariver_catalog_probe', state: 'MISSING', paused: null,
+    next_run_at: null, last_parsed_at: null,
+  })
+  assert.equal(
+    observed.items.find((item) => item.dag_id === 'datariver_manual_metadata_apply').paused,
+    true,
+  )
+  assert.equal(observed.items[0].next_run_at, '2026-08-29T17:00:00.000Z')
+  assert.equal(observed.items[0].last_parsed_at, '2026-08-29T12:00:00.000Z')
+  assert.throws(
+    () => normalizeAirflowDagStatus({ dag_id: 'unexpected', is_paused: false }, 'reviewed'),
+    { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
+  )
+  assert.throws(
+    () => normalizeAirflowDagStatus({ dag_id: 'reviewed', is_paused: false, next_dagrun: 1 }, 'reviewed'),
+    { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
+  )
 })
 
 test('fails closed when local authentication is not explicitly constructed', async () => {

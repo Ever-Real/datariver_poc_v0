@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 90)
+  assert.equal(POC_ROUTE_REGISTRY.length, 91)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 8,
     AUTHENTICATED: 3,
-    CAPABILITY_PROTECTED: 77,
+    CAPABILITY_PROTECTED: 78,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -140,6 +140,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/previews', 'knowledge.abox.preview'],
     ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.create'],
     ['GET', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.list'],
+    ['GET', '/poc-api/airflow/dags', 'provider.airflow.dags'],
 
     ['PUT', '/poc-api/state/core', 'state.write'],
     ['GET', '/poc-api/datahub/asset', 'catalog.asset'],
@@ -152,6 +153,14 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['PUT', '/poc-api/minio/uploads/upload-1/parts/1', 'provider.minio.part'],
   ]
   for (const [method, path, expected] of cases) assert.equal(resolvePocRoute(method, path)?.id, expected)
+  assert.doesNotThrow(() => assertPocRouteAuthorization(
+    resolvePocRoute('GET', '/poc-api/airflow/dags'),
+    principal('admin', 'admin'),
+  ))
+  assert.throws(() => assertPocRouteAuthorization(
+    resolvePocRoute('GET', '/poc-api/airflow/dags'),
+    principal('manager', 'manager'),
+  ), { code: 'CAPABILITY_REQUIRED' })
   assert.equal(resolvePocRoute('GET', '/poc-api/not-a-route'), null)
   assert.throws(() => assertPocRouteAuthorization(null, principal('admin', 'admin')), { code: 'NOT_FOUND' })
 })

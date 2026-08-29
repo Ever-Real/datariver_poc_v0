@@ -4921,8 +4921,15 @@ let airflowApiVersion
 let airflowAccessToken
 let airflowAccessTokenExpiresAt = 0
 
+function airflowNotConfigured() {
+  return Object.assign(new Error('Airflow is not configured.'), {
+    statusCode: 503,
+    code: 'AIRFLOW_NOT_CONFIGURED',
+  })
+}
+
 async function airflowV2Token(forceRefresh = false) {
-  if (!airflow) throw Object.assign(new Error('Airflow is not configured.'), { statusCode: 503 })
+  if (!airflow) throw airflowNotConfigured()
   if (!forceRefresh && airflowAccessToken && airflowAccessTokenExpiresAt > Date.now()) return airflowAccessToken
   const response = await providerFetch(joinProviderUrl(airflow.url, '/auth/token'), {
     method: 'POST',
@@ -4940,7 +4947,7 @@ async function airflowV2Token(forceRefresh = false) {
 }
 
 async function airflowFetch(path, options = {}, version = airflowApiVersion) {
-  if (!airflow) throw Object.assign(new Error('Airflow is not configured.'), { statusCode: 503 })
+  if (!airflow) throw airflowNotConfigured()
   const authorization = version === 'v2'
     ? `Bearer ${await airflowV2Token()}`
     : basicAuthorization(airflow)
@@ -4968,6 +4975,7 @@ async function airflowFetch(path, options = {}, version = airflowApiVersion) {
 
 async function detectAirflowApiVersion() {
   if (airflowApiVersion) return airflowApiVersion
+  if (!airflow) throw airflowNotConfigured()
   const probes = [
     { version: 'v2', path: '/api/v2/dags?limit=1' },
     { version: 'v1', path: '/api/v1/dags?limit=1' },
@@ -4989,6 +4997,72 @@ async function detectAirflowApiVersion() {
     new Error(`Airflow REST API probe failed (${statuses.join(', ')}).`),
     { detailCode: 'AIRFLOW_REST_API_PROBE_FAILED' },
   )
+}
+
+function normalizedAirflowTimestamp(value, fieldName) {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value !== 'string') {
+    throw Object.assign(new Error(`Airflow ${fieldName} has an invalid type.`), {
+      statusCode: 502,
+      code: 'AIRFLOW_DAG_CONTRACT_INVALID',
+    })
+  }
+  const milliseconds = Date.parse(value)
+  if (!Number.isFinite(milliseconds)) {
+    throw Object.assign(new Error(`Airflow ${fieldName} is not a valid timestamp.`), {
+      statusCode: 502,
+      code: 'AIRFLOW_DAG_CONTRACT_INVALID',
+    })
+  }
+  return new Date(milliseconds).toISOString()
+}
+
+export function normalizeAirflowDagStatus(payload, expectedDagId) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || payload.dag_id !== expectedDagId || typeof payload.is_paused !== 'boolean') {
+    throw Object.assign(new Error('Airflow returned an incompatible DAG status document.'), {
+      statusCode: 502,
+      code: 'AIRFLOW_DAG_CONTRACT_INVALID',
+    })
+  }
+  return {
+    dag_id: expectedDagId,
+    state: 'READY',
+    paused: payload.is_paused,
+    next_run_at: normalizedAirflowTimestamp(
+      payload.next_dagrun ?? payload.next_dagrun_create_after,
+      'next run',
+    ),
+    last_parsed_at: normalizedAirflowTimestamp(
+      payload.last_parsed_time ?? payload.last_parsed,
+      'last parsed time',
+    ),
+  }
+}
+
+export async function collectAllowedAirflowDagStatuses(version, fetchDag) {
+  if (!['v1', 'v2'].includes(version) || typeof fetchDag !== 'function') {
+    throw new TypeError('Airflow DAG inventory requires a supported API mode and fetch function.')
+  }
+  const items = await Promise.all([...allowedAirflowDags].sort().map(async (dagId) => {
+    const response = await fetchDag(dagId, version)
+    if (response.status === 404) {
+      return { dag_id: dagId, state: 'MISSING', paused: null, next_run_at: null, last_parsed_at: null }
+    }
+    await requireOk(response, `Airflow ${version} DAG status`)
+    return normalizeAirflowDagStatus(await response.json(), dagId)
+  }))
+  return { api_mode: version.toUpperCase(), items }
+}
+
+async function airflowDagInventory() {
+  const version = await detectAirflowApiVersion()
+  const inventory = await collectAllowedAirflowDagStatuses(version, (dagId, selectedVersion) => airflowFetch(
+    `/api/${selectedVersion}/dags/${encodeURIComponent(dagId)}`,
+    {},
+    selectedVersion,
+  ))
+  return { ...inventory, observed_at: new Date().toISOString() }
 }
 
 async function triggerAirflowDag(dagId, body) {
@@ -11328,6 +11402,10 @@ async function api(request, response, url, context) {
       })
     }
     return response.end()
+  }
+  if (request.method === 'GET' && url.pathname === '/poc-api/airflow/dags') {
+    if (url.search) return problem(response, 400, 'AIRFLOW_DAG_QUERY_INVALID', 'Airflow DAG inventory does not accept query parameters.')
+    return json(response, 200, await airflowDagInventory())
   }
   const airflowMatch = url.pathname.match(/^\/poc-api\/airflow\/dags\/([^/]+)\/runs$/)
   if (request.method === 'POST' && airflowMatch) {
