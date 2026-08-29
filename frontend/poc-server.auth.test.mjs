@@ -9,6 +9,8 @@ import { createPocStateStore } from './poc-state-store.mjs'
 import { changeHistoryAccessCoreProjection, privateChangeHistoryAccess } from './poc-access-document.mjs'
 
 const AIRFLOW_SERVICE_TOKEN = 'airflow-worker-token-1234567890abcdef'
+const MCP_SERVICE_TOKEN = 'mcp-service-token-1234567890abcdef'
+const MCP_WORKSPACE_ID = '00000000-0000-4000-8000-000000000061'
 const CURRENT_TABLE_URN = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table_c,PROD)'
 
 function getWithHost(url, host) {
@@ -112,6 +114,9 @@ async function serverFixture(canonicalOrigin = null) {
     stateStore,
     authenticator,
     airflowServiceToken: AIRFLOW_SERVICE_TOKEN,
+    mcpServiceToken: MCP_SERVICE_TOKEN,
+    mcpSubjectId: 'subject-two',
+    mcpWorkspaceId: MCP_WORKSPACE_ID,
     currentDatahubInventory: async () => {
       if (currentProviderError) throw currentProviderError
       return structuredClone(currentProviderInventory)
@@ -175,6 +180,43 @@ test('separates loopback transport from canonical intranet Origin for authentica
       headers: { Cookie: canonical.cookie, Origin: fixture.canonicalOrigin },
     })
     assert.equal(logout.status, 200)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('user MCP requires a real local session and exact canonical Origin while service MCP remains bearer-only', async () => {
+  const fixture = await serverFixture('http://17.20.30.40:39083')
+  try {
+    const rpc = { jsonrpc: '2.0', method: 'initialize', id: 1 }
+    const anonymous = await fetch(`${fixture.origin}/api/v1/mcp/user`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: fixture.canonicalOrigin }, body: JSON.stringify(rpc),
+    })
+    assert.equal(anonymous.status, 401)
+    const login = await fixture.login('first@example.com', 'first correct password')
+    assert.equal(login.response.status, 200)
+    const missingOrigin = await fetch(`${fixture.origin}/api/v1/mcp/user`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: login.cookie }, body: JSON.stringify(rpc),
+    })
+    assert.equal(missingOrigin.status, 403)
+    assert.equal((await missingOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+    const wrongOrigin = await fetch(`${fixture.origin}/api/v1/mcp/user`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: login.cookie, Origin: fixture.origin }, body: JSON.stringify(rpc),
+    })
+    assert.equal(wrongOrigin.status, 403)
+    assert.equal((await wrongOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+    const user = await fetch(`${fixture.origin}/api/v1/mcp/user`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: login.cookie, Origin: fixture.canonicalOrigin }, body: JSON.stringify(rpc),
+    })
+    const userBody = await user.json()
+    assert.equal(user.status, 200, JSON.stringify(userBody))
+    assert.equal(userBody.result.serverInfo.name, 'datariver-k8-mcp')
+
+    const service = await fetch(`${fixture.origin}/api/v1/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MCP_SERVICE_TOKEN}` }, body: JSON.stringify(rpc),
+    })
+    assert.equal(service.status, 200)
+    assert.equal((await service.json()).result.serverInfo.name, 'datariver-k8-mcp')
   } finally {
     await fixture.close()
   }

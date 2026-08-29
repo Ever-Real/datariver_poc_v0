@@ -358,6 +358,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const initSql = readFileSync(new URL('../deploy/poc/postgres-init/001-poc-state.sql', import.meta.url), 'utf8')
   const knowledgeInitSql = readFileSync(new URL('../deploy/poc/postgres-init/002-poc-knowledge-ingestion.sql', import.meta.url), 'utf8')
   const securityInitSql = readFileSync(new URL('../deploy/poc/postgres-init/004-poc-local-security-events.sql', import.meta.url), 'utf8')
+  const mcpInitSql = readFileSync(new URL('../deploy/poc/postgres-init/005-poc-mcp-read-receipts.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -379,6 +380,8 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   assert.match(knowledgeInitSql, /COMMIT;\s*$/)
   assert.match(securityInitSql, /^BEGIN;/)
   assert.match(securityInitSql, /COMMIT;\s*$/)
+  assert.match(mcpInitSql, /^BEGIN;/)
+  assert.match(mcpInitSql, /COMMIT;\s*$/)
   for (const contract of [
     'PRIMARY KEY (source_identity_hash, topic_contract, source_partition)',
     'UNIQUE (source_identity_hash, source_event_identity, deterministic_ordinal)',
@@ -417,10 +420,13 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     runtimeSecurityStart,
     startupSql.indexOf('\nBEGIN', runtimeSecurityStart),
   )
-  const initSecurityDdl = securityInitSql.slice(
+  const initSecurityDdl = `${securityInitSql.slice(
     securityInitSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events'),
     securityInitSql.indexOf('INSERT INTO poc_state'),
-  )
+  )}\n${mcpInitSql.slice(
+    mcpInitSql.indexOf('CREATE OR REPLACE FUNCTION poc_reject_schema_receipt_mutation'),
+    mcpInitSql.indexOf('INSERT INTO poc_state'),
+  )}`
   assert.equal(normalizedDdl(runtimeSecurityDdl), normalizedDdl(initSecurityDdl))
   for (const contract of [
     "event_type = 'SELF_PASSWORD_CHANGED_V1'",
@@ -437,8 +443,10 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'RETURN NEW',
   ]) {
     assert.ok(normalizedDdl(startupSql).includes(normalizedDdl(contract)), contract)
-    assert.ok(normalizedDdl(securityInitSql).includes(normalizedDdl(contract)), contract)
+    assert.ok(normalizedDdl(`${securityInitSql}\n${mcpInitSql}`).includes(normalizedDdl(contract)), contract)
   }
+  assert.match(mcpInitSql, /OLD\.scope LIKE 'mcp-read-receipt-v1:%'/)
+  assert.match(mcpInitSql, /NEW\.scope LIKE 'mcp-read-receipt-v1:%'/)
   const eventColumns = [...initEventTable.matchAll(/^\s+([a-z_]+) (?:uuid|text|timestamptz|bigint)/gm)]
     .map((match) => match[1])
   assert.deepEqual(eventColumns, [
@@ -1570,4 +1578,35 @@ test('CAS-replaces in-memory core state and rejects a stale retry without changi
   )
   assert.deepEqual(await store.read('core'), { value: { sequence: 1 }, version: 1 })
   assert.equal(await store.writeIfVersion('core', { sequence: 2 }, 1), 2)
+})
+
+test('appends immutable bounded MCP read receipts and rejects conflicting replay', async () => {
+  const store = createPocStateStore()
+  const receipt = {
+    contract: 'DATARIVER_MCP_READ_RECEIPT_V1',
+    receipt_id: '1'.repeat(64),
+    service_subject_hash: '2'.repeat(64),
+    actor_subject_hash: '3'.repeat(64),
+    workspace_hash: '4'.repeat(64),
+    idempotency_key_hash: '5'.repeat(64),
+    request_hash: '6'.repeat(64),
+    authorization_hash: '7'.repeat(64),
+    response_hash: '8'.repeat(64),
+    tool_name: 'metadata_search',
+    outcome: 'SUCCEEDED',
+    reason_code: null,
+    occurred_at: '2026-08-29T00:00:00.000Z',
+  }
+  assert.equal((await store.appendMcpReadReceipt(receipt)).created, true)
+  assert.deepEqual(await store.readMcpReadReceipt(receipt.receipt_id), receipt)
+  assert.equal((await store.appendMcpReadReceipt(receipt)).created, false)
+  await assert.rejects(
+    store.appendMcpReadReceipt({ ...receipt, response_hash: '9'.repeat(64) }),
+    { code: 'MCP_READ_RECEIPT_CONFLICT' },
+  )
+  await assert.rejects(
+    store.write(`mcp-read-receipt-v1:${receipt.receipt_id}`, receipt),
+    { code: 'MCP_READ_RECEIPT_IMMUTABLE' },
+  )
+  assert.equal(JSON.stringify(receipt).includes('urn:li:'), false)
 })

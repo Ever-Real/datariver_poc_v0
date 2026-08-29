@@ -6,14 +6,19 @@ export const POC_POSTGRES_SCHEMA_V1_REVISION = 1
 export const POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE = 'product-owned-schema-contract-v1'
 export const POC_POSTGRES_SCHEMA_V1_FINGERPRINT = '8d9d48438541c838e93b19dc6651305e34040b0a995764727c172b39d0948bd1'
 
-export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V2'
-export const POC_POSTGRES_SCHEMA_REVISION = 2
-export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v2'
+export const POC_POSTGRES_SCHEMA_V2_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V2'
+export const POC_POSTGRES_SCHEMA_V2_REVISION = 2
+export const POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE = 'product-owned-schema-contract-v2'
+export const POC_POSTGRES_SCHEMA_V2_FINGERPRINT = 'b19760b2ca0857e572e5c16684747a2f76ec43d46988b52af649b997d4991dc1'
+
+export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V3'
+export const POC_POSTGRES_SCHEMA_REVISION = 3
+export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v3'
 
 // Generated from the pinned PostgreSQL 17 / pgvector 0.8.2 canonical init contract.
 // The fingerprint covers only public Product-owned objects whose names use the reserved
 // poc_ prefix. Unrelated schemas, tables, extensions and rows are deliberately excluded.
-export const POC_POSTGRES_SCHEMA_FINGERPRINT = 'b19760b2ca0857e572e5c16684747a2f76ec43d46988b52af649b997d4991dc1'
+export const POC_POSTGRES_SCHEMA_FINGERPRINT = '80a64380b21040a1a308301a236fd74bb5d8aad210be675f97ffba87523c6e48'
 export const POC_POSTGRES_MIGRATABLE_FINGERPRINTS = new Set([
   'd96eab3a780b05349bbccdbf1e2ee25e0d9da4d4b8c63c5cfd9c4fe97935d30b',
 ])
@@ -160,11 +165,11 @@ function validateReceipt(receipt, { contract, revision, fingerprint }) {
   return true
 }
 
-function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint }) {
+function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint, v3Fingerprint }) {
   const rows = legacyReceipt === undefined
     ? receipts
     : [{ scope: POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, value: legacyReceipt }]
-  if (!Array.isArray(rows) || rows.length > 3) {
+  if (!Array.isArray(rows) || rows.length > 4) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt set is malformed.',
@@ -179,7 +184,7 @@ function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint }
         'The Product-owned PostgreSQL schema receipt set is malformed.',
       )
     }
-    if (![POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE].includes(row.scope)) {
+    if (![POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE].includes(row.scope)) {
       const revision = /^product-owned-schema-contract-v([0-9]+)$/.exec(row.scope)?.[1]
       throw schemaError(
         revision && Number(revision) > POC_POSTGRES_SCHEMA_REVISION
@@ -191,7 +196,8 @@ function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint }
     values.set(row.scope, row.value)
   }
   const v1 = values.get(POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE)
-  const v2 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
+  const v2 = values.get(POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE)
+  const v3 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
   if (v1 !== undefined) {
     validateReceipt(v1, {
       contract: POC_POSTGRES_SCHEMA_V1_CONTRACT,
@@ -201,12 +207,19 @@ function receiptValues(receipts, legacyReceipt, { v1Fingerprint, v2Fingerprint }
   }
   if (v2 !== undefined) {
     validateReceipt(v2, {
-      contract: POC_POSTGRES_SCHEMA_CONTRACT,
-      revision: POC_POSTGRES_SCHEMA_REVISION,
+      contract: POC_POSTGRES_SCHEMA_V2_CONTRACT,
+      revision: POC_POSTGRES_SCHEMA_V2_REVISION,
       fingerprint: v2Fingerprint,
     })
   }
-  return { v1, v2 }
+  if (v3 !== undefined) {
+    validateReceipt(v3, {
+      contract: POC_POSTGRES_SCHEMA_CONTRACT,
+      revision: POC_POSTGRES_SCHEMA_REVISION,
+      fingerprint: v3Fingerprint,
+    })
+  }
+  return { v1, v2, v3 }
 }
 
 export function classifyPocPostgresOwnedSchema({
@@ -215,15 +228,17 @@ export function classifyPocPostgresOwnedSchema({
   receipt,
   expectedFingerprint = POC_POSTGRES_SCHEMA_FINGERPRINT,
   v1Fingerprint = POC_POSTGRES_SCHEMA_V1_FINGERPRINT,
+  v2Fingerprint = POC_POSTGRES_SCHEMA_V2_FINGERPRINT,
   migratableFingerprints = POC_POSTGRES_MIGRATABLE_FINGERPRINTS,
 } = {}) {
   const normalized = canonicalizePocOwnedSchemaRows(rows)
   const receiptSet = receiptValues(receipts, receipt, {
     v1Fingerprint,
-    v2Fingerprint: expectedFingerprint,
+    v2Fingerprint,
+    v3Fingerprint: expectedFingerprint,
   })
   if (normalized.length === 0) {
-    if (receiptSet.v1 !== undefined || receiptSet.v2 !== undefined) {
+    if (receiptSet.v1 !== undefined || receiptSet.v2 !== undefined || receiptSet.v3 !== undefined) {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
         'A Product schema receipt exists without its owned schema.',
@@ -233,13 +248,21 @@ export function classifyPocPostgresOwnedSchema({
   }
   const fingerprint = fingerprintPocOwnedSchema(normalized)
   if (fingerprint === expectedFingerprint) {
-    const state = receiptSet.v2 !== undefined
+    const state = receiptSet.v3 !== undefined
       ? 'CURRENT'
-      : receiptSet.v1 !== undefined ? 'V2_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
+      : receiptSet.v2 !== undefined ? 'V3_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
     return Object.freeze({
       state,
       fingerprint,
     })
+  }
+  if (fingerprint === v2Fingerprint
+    && receiptSet.v2 !== undefined && receiptSet.v3 === undefined) {
+    return Object.freeze({ state: 'RECEIPTED_V2', fingerprint })
+  }
+  if (fingerprint === v2Fingerprint
+    && receiptSet.v1 !== undefined && receiptSet.v2 === undefined && receiptSet.v3 === undefined) {
+    return Object.freeze({ state: 'V2_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v1Fingerprint
     && receiptSet.v1 !== undefined && receiptSet.v2 === undefined) {
@@ -313,16 +336,37 @@ export async function recordPocPostgresV1SchemaReceipt(client) {
   }
 }
 
+export async function recordPocPostgresV2SchemaReceipt(client) {
+  const receipt = {
+    contract: POC_POSTGRES_SCHEMA_V2_CONTRACT,
+    revision: POC_POSTGRES_SCHEMA_V2_REVISION,
+    fingerprint: POC_POSTGRES_SCHEMA_V2_FINGERPRINT,
+  }
+  const inserted = await client.query(
+    `INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+      RETURNING scope`,
+    [POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, JSON.stringify(receipt)],
+  )
+  if (inserted.rows.length !== 1 || inserted.rows[0]?.scope !== POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE) {
+    throw schemaError(
+      'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+      'The Product-owned PostgreSQL schema V2 receipt was not inserted.',
+    )
+  }
+}
+
 export async function convergePocPostgresOwnedSchema(client, {
   applyFreshSchema,
   applyKnownOlderSchema,
   applyV2Schema,
+  applyV3Schema,
   inspect = inspectPocPostgresOwnedSchema,
   recordV1Receipt = recordPocPostgresV1SchemaReceipt,
+  recordV2Receipt = recordPocPostgresV2SchemaReceipt,
   recordReceipt = recordPocPostgresOwnedSchemaReceipt,
 } = {}) {
   if (typeof applyFreshSchema !== 'function' || typeof applyKnownOlderSchema !== 'function'
-    || typeof applyV2Schema !== 'function') {
+    || typeof applyV2Schema !== 'function' || typeof applyV3Schema !== 'function') {
     throw new Error('Product-owned PostgreSQL schema convergence callbacks are required.')
   }
   try {
@@ -363,6 +407,22 @@ export async function convergePocPostgresOwnedSchema(client, {
           'Product-owned PostgreSQL schema V1 to V2 migration was incomplete.',
         )
       }
+      await recordV2Receipt(client)
+      const v2Current = await inspect(client)
+      if (v2Current.state !== 'RECEIPTED_V2') {
+        throw schemaError(
+          'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+          'The Product-owned PostgreSQL schema V2 receipt was not durable.',
+        )
+      }
+      await applyV3Schema(client)
+      const v3Pending = await inspect(client)
+      if (v3Pending.state !== 'V3_RECEIPT_PENDING') {
+        throw schemaError(
+          'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+          'Product-owned PostgreSQL schema V2 to V3 migration was incomplete.',
+        )
+      }
       await recordReceipt(client)
     } else if (before.state === 'RECEIPTED_V1') {
       await applyV2Schema(client)
@@ -371,6 +431,32 @@ export async function convergePocPostgresOwnedSchema(client, {
         throw schemaError(
           'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
           'Product-owned PostgreSQL schema V1 to V2 migration was incomplete.',
+        )
+      }
+      await recordV2Receipt(client)
+      const v2Current = await inspect(client)
+      if (v2Current.state !== 'RECEIPTED_V2') {
+        throw schemaError(
+          'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+          'The Product-owned PostgreSQL schema V2 receipt was not durable.',
+        )
+      }
+      await applyV3Schema(client)
+      const v3Pending = await inspect(client)
+      if (v3Pending.state !== 'V3_RECEIPT_PENDING') {
+        throw schemaError(
+          'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+          'Product-owned PostgreSQL schema V2 to V3 migration was incomplete.',
+        )
+      }
+      await recordReceipt(client)
+    } else if (before.state === 'RECEIPTED_V2') {
+      await applyV3Schema(client)
+      const after = await inspect(client)
+      if (after.state !== 'V3_RECEIPT_PENDING') {
+        throw schemaError(
+          'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+          'Product-owned PostgreSQL schema V2 to V3 migration was incomplete.',
         )
       }
       await recordReceipt(client)
@@ -384,7 +470,7 @@ export async function convergePocPostgresOwnedSchema(client, {
     if (current.state !== 'CURRENT') {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
-        'The Product-owned PostgreSQL schema V2 receipt was not durable.',
+        'The Product-owned PostgreSQL schema V3 receipt was not durable.',
       )
     }
     await client.query('COMMIT')

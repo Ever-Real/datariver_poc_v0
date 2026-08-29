@@ -7,12 +7,15 @@ import {
   POC_POSTGRES_SCHEMA_RECEIPT_SCOPE,
   POC_POSTGRES_SCHEMA_V1_CONTRACT,
   POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE,
+  POC_POSTGRES_SCHEMA_V2_CONTRACT,
+  POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE,
   canonicalizePocOwnedSchemaRows,
   classifyPocPostgresOwnedSchema,
   convergePocPostgresOwnedSchema,
   fingerprintPocOwnedSchema,
   recordPocPostgresOwnedSchemaReceipt,
   recordPocPostgresV1SchemaReceipt,
+  recordPocPostgresV2SchemaReceipt,
 } from './poc-postgres-schema-integrity.mjs'
 
 function ownedSchemaRows() {
@@ -40,9 +43,19 @@ function v1Receipt(fingerprint, overrides = {}) {
 
 function v2Receipt(fingerprint, overrides = {}) {
   return receipt(
+    overrides.scope ?? POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE,
+    overrides.contract ?? POC_POSTGRES_SCHEMA_V2_CONTRACT,
+    overrides.revision ?? 2,
+    overrides.fingerprint ?? fingerprint,
+    overrides.extra,
+  )
+}
+
+function v3Receipt(fingerprint, overrides = {}) {
+  return receipt(
     overrides.scope ?? POC_POSTGRES_SCHEMA_RECEIPT_SCOPE,
     overrides.contract ?? POC_POSTGRES_SCHEMA_CONTRACT,
-    overrides.revision ?? 2,
+    overrides.revision ?? 3,
     overrides.fingerprint ?? fingerprint,
     overrides.extra,
   )
@@ -54,14 +67,20 @@ function versionedSchemas() {
     ...v1Rows,
     { kind: 'COLUMN', identity: 'poc_alpha.2.receipt', definition: 'uuid|true|||' },
   ]
+  const v3Rows = [
+    ...v2Rows,
+    { kind: 'FUNCTION', identity: 'poc_reject_schema_receipt_mutation()', definition: 'trigger|plpgsql|volatile|unsafe|synthetic-v3' },
+  ]
   const olderRows = v1Rows.slice(0, -1)
   return {
     olderRows,
     v1Rows,
     v2Rows,
+    v3Rows,
     olderFingerprint: fingerprintPocOwnedSchema(olderRows),
     v1Fingerprint: fingerprintPocOwnedSchema(v1Rows),
     v2Fingerprint: fingerprintPocOwnedSchema(v2Rows),
+    v3Fingerprint: fingerprintPocOwnedSchema(v3Rows),
   }
 }
 
@@ -70,17 +89,18 @@ function classifyVersioned(rows, receipts = [], overrides = {}) {
   return classifyPocPostgresOwnedSchema({
     rows,
     receipts,
-    expectedFingerprint: versions.v2Fingerprint,
+    expectedFingerprint: versions.v3Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
+    v2Fingerprint: versions.v2Fingerprint,
     migratableFingerprints: new Set([versions.olderFingerprint]),
     ...overrides,
   })
 }
 
-test('accepts only exact receipted V2 as current and identifies internal receipt boundaries', () => {
+test('accepts only exact receipted V3 as current and identifies internal receipt boundaries', () => {
   const versions = versionedSchemas()
   assert.equal(classifyVersioned([], []).state, 'FRESH')
-  assert.equal(classifyVersioned(versions.v2Rows, []).state, 'CURRENT_UNVERSIONED')
+  assert.equal(classifyVersioned(versions.v3Rows, []).state, 'CURRENT_UNVERSIONED')
   assert.equal(classifyVersioned(
     versions.v2Rows,
     [v1Receipt(versions.v1Fingerprint)],
@@ -88,10 +108,13 @@ test('accepts only exact receipted V2 as current and identifies internal receipt
   assert.equal(classifyVersioned(
     versions.v2Rows,
     [v2Receipt(versions.v2Fingerprint)],
-  ).state, 'CURRENT')
-  assert.equal(classifyVersioned(versions.v2Rows, [
+  ).state, 'RECEIPTED_V2')
+  assert.equal(classifyVersioned(versions.v3Rows, [
     v1Receipt(versions.v1Fingerprint),
     v2Receipt(versions.v2Fingerprint),
+  ]).state, 'V3_RECEIPT_PENDING')
+  assert.equal(classifyVersioned(versions.v3Rows, [
+    v3Receipt(versions.v3Fingerprint),
   ]).state, 'CURRENT')
 })
 
@@ -119,15 +142,17 @@ test('maps the legacy single receipt argument to V1 scope compatibility', () => 
   assert.equal(classifyPocPostgresOwnedSchema({
     rows: versions.v1Rows,
     receipt: legacyReceipt,
-    expectedFingerprint: versions.v2Fingerprint,
+    expectedFingerprint: versions.v3Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
+    v2Fingerprint: versions.v2Fingerprint,
     migratableFingerprints: new Set(),
   }).state, 'RECEIPTED_V1')
   assert.equal(classifyPocPostgresOwnedSchema({
     rows: versions.v2Rows,
     receipt: legacyReceipt,
-    expectedFingerprint: versions.v2Fingerprint,
+    expectedFingerprint: versions.v3Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
+    v2Fingerprint: versions.v2Fingerprint,
     migratableFingerprints: new Set(),
   }).state, 'V2_RECEIPT_PENDING')
 })
@@ -157,13 +182,13 @@ test('fails closed for missing, malformed, wrong, partial and newer receipt sets
     { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
   )
   assert.throws(
-    () => classifyVersioned(versions.v2Rows, [v2Receipt(versions.v2Fingerprint, { revision: 3 })]),
+    () => classifyVersioned(versions.v3Rows, [v3Receipt(versions.v3Fingerprint, { revision: 4 })]),
     { code: 'POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED' },
   )
   assert.throws(
     () => classifyVersioned(versions.v2Rows, [{
-      scope: 'product-owned-schema-contract-v3',
-      value: { contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V3', revision: 3, fingerprint: '0'.repeat(64) },
+      scope: 'product-owned-schema-contract-v4',
+      value: { contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V4', revision: 4, fingerprint: '0'.repeat(64) },
     }]),
     { code: 'POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED' },
   )
@@ -172,32 +197,36 @@ test('fails closed for missing, malformed, wrong, partial and newer receipt sets
 test('fails closed for missing columns, type drift, constraints and critical indexes', () => {
   const versions = versionedSchemas()
   const invalidCases = [
-    versions.v2Rows.filter((row) => row.kind !== 'COLUMN'),
-    versions.v2Rows.map((row) => row.kind === 'COLUMN' ? { ...row, definition: 'text|true|||' } : row),
-    versions.v2Rows.filter((row) => row.kind !== 'CONSTRAINT'),
-    versions.v2Rows.filter((row) => row.kind !== 'INDEX'),
+    versions.v3Rows.filter((row) => row.kind !== 'COLUMN'),
+    versions.v3Rows.map((row) => row.kind === 'COLUMN' ? { ...row, definition: 'text|true|||' } : row),
+    versions.v3Rows.filter((row) => row.kind !== 'CONSTRAINT'),
+    versions.v3Rows.filter((row) => row.kind !== 'INDEX'),
   ]
   for (const invalidRows of invalidCases) {
     assert.throws(
-      () => classifyVersioned(invalidRows, [v2Receipt(versions.v2Fingerprint)]),
+      () => classifyVersioned(invalidRows, [v3Receipt(versions.v3Fingerprint)]),
       { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
     )
   }
 })
 
-test('converges exact V1, known older and fresh schemas to durable V2 in order', async () => {
+test('converges exact V1/V2, known older and fresh schemas to durable V3 in order', async () => {
   const scenarios = [
     {
-      states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V2_DDL', 'V2_RECEIPT'],
+      states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT'],
     },
     {
-      states: ['KNOWN_OLDER_MIGRATABLE', 'V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V1_DDL', 'V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT'],
+      states: ['KNOWN_OLDER_MIGRATABLE', 'V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V1_DDL', 'V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT'],
+    },
+    {
+      states: ['RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V3_DDL', 'V3_RECEIPT'],
     },
     {
       states: ['FRESH', 'CURRENT_UNVERSIONED', 'CURRENT'],
-      actions: ['FRESH_DDL', 'V2_RECEIPT'],
+      actions: ['FRESH_DDL', 'V3_RECEIPT'],
     },
   ]
   for (const scenario of scenarios) {
@@ -209,8 +238,10 @@ test('converges exact V1, known older and fresh schemas to durable V2 in order',
       applyFreshSchema: async () => { calls.push('FRESH_DDL') },
       applyKnownOlderSchema: async () => { calls.push('V1_DDL') },
       applyV2Schema: async () => { calls.push('V2_DDL') },
+      applyV3Schema: async () => { calls.push('V3_DDL') },
       recordV1Receipt: async () => { calls.push('V1_RECEIPT') },
-      recordReceipt: async () => { calls.push('V2_RECEIPT') },
+      recordV2Receipt: async () => { calls.push('V2_RECEIPT') },
+      recordReceipt: async () => { calls.push('V3_RECEIPT') },
     })
     assert.deepEqual(calls, ['BEGIN', ...scenario.actions, 'COMMIT'])
     assert.equal(states.length, 0)
@@ -224,8 +255,10 @@ test('converges exact V1, known older and fresh schemas to durable V2 in order',
     applyFreshSchema: async () => { assert.fail('restart must not apply fresh DDL') },
     applyKnownOlderSchema: async () => { assert.fail('restart must not apply V1 DDL') },
     applyV2Schema: async () => { assert.fail('restart must not apply V2 DDL') },
+    applyV3Schema: async () => { assert.fail('restart must not apply V3 DDL') },
     recordV1Receipt: async () => { assert.fail('restart must not insert a V1 receipt') },
-    recordReceipt: async () => { assert.fail('restart must not insert another V2 receipt') },
+    recordV2Receipt: async () => { assert.fail('restart must not insert a V2 receipt') },
+    recordReceipt: async () => { assert.fail('restart must not insert another V3 receipt') },
   })
   assert.deepEqual(restartCalls, ['BEGIN', 'COMMIT'])
 })
@@ -251,7 +284,9 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
       applyFreshSchema: async () => {},
       applyKnownOlderSchema: async () => {},
       applyV2Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
+      applyV3Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
       recordV1Receipt: async () => { if (scenario.v1ReceiptError) throw scenario.v1ReceiptError },
+      recordV2Receipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
       recordReceipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
     }))
     assert.equal(calls[0], 'BEGIN')
@@ -260,9 +295,10 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
   }
 })
 
-test('inserts immutable V1 and insert-only V2 receipts without overwrite SQL', async () => {
+test('inserts immutable V1, V2 and V3 receipts without overwrite SQL', async () => {
   for (const [record, expectedScope] of [
     [recordPocPostgresV1SchemaReceipt, POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE],
+    [recordPocPostgresV2SchemaReceipt, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE],
     [recordPocPostgresOwnedSchemaReceipt, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE],
   ]) {
     const calls = []

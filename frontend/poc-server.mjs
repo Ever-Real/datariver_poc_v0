@@ -9512,7 +9512,96 @@ async function knowledgeGraphRag(scope, body, signal) {
   }
 }
 
-async function mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag) {
+const mcpReadToolCapabilities = Object.freeze({
+  metadata_search: 'catalog.read',
+  knowledge_graph_assets: 'knowledge.read',
+  knowledge_lineage_traversal: 'knowledge.read',
+  knowledge_release_snapshot: 'knowledge.read',
+  knowledge_release_graphrag: 'knowledge.read',
+})
+
+function mcpAuthorizationFingerprint(context) {
+  const principal = context.principal
+  return canonicalHash({
+    subject_id: principal.subjectId,
+    role: principal.role,
+    maximum_security_grade: principal.maxSecurityGrade,
+    capabilities: [...principal.capabilitySet].sort(),
+    systems: [...principal.systemIds].sort(),
+    table_grants: [...principal.activeTableGrantUrns].sort(),
+    feature_cells: [...principal.allowedFeatureSecurityCells].sort(),
+  })
+}
+
+function assertMcpReadToolAuthorized(context, toolName) {
+  const capability = mcpReadToolCapabilities[toolName]
+  if (!capability || !context.principal.capabilitySet.has(capability)) {
+    throw accessError(403, 'MCP_TOOL_FORBIDDEN', 'The requested MCP read tool is not authorized.')
+  }
+}
+
+function intersectMcpAssets(serviceAssets, userAssets) {
+  const userIds = new Set(userAssets.map((asset) => asset.id))
+  return serviceAssets.filter((asset) => userIds.has(asset.id))
+}
+
+function intersectMcpKnowledgeScopes(serviceScope, userScope) {
+  if (serviceScope.graphId !== userScope.graphId
+    || serviceScope.studioReleaseId !== userScope.studioReleaseId
+    || serviceScope.projectionEvidenceHash !== userScope.projectionEvidenceHash
+    || Boolean(serviceScope.managed) !== Boolean(userScope.managed)) {
+    throw knowledgeChatNotFound()
+  }
+  if (!serviceScope.managed) return serviceScope
+  const userNodes = new Map(userScope.canonicalRelease.nodes.map((node) => [node.id, canonicalHash(node)]))
+  const nodes = serviceScope.canonicalRelease.nodes.filter((node) => userNodes.get(node.id) === canonicalHash(node))
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const userEdges = new Map(userScope.canonicalRelease.edges.map((edge) => [edge.id, canonicalHash(edge)]))
+  const edges = serviceScope.canonicalRelease.edges.filter((edge) => (
+    userEdges.get(edge.id) === canonicalHash(edge)
+      && nodeIds.has(edge.source)
+      && nodeIds.has(edge.target)
+  ))
+  return Object.freeze({
+    ...serviceScope,
+    canonicalRelease: Object.freeze({ ...serviceScope.canonicalRelease, nodes, edges }),
+  })
+}
+
+function mcpUserReceiptIdentity(requestContext, userContext, workspaceId, idempotencyKey, rpc) {
+  const serviceSubjectHash = canonicalHash(requestContext.principal.subjectId)
+  const actorSubjectHash = canonicalHash(userContext.principal.subjectId)
+  const workspaceHash = canonicalHash(workspaceId)
+  const idempotencyKeyHash = canonicalHash(idempotencyKey)
+  return Object.freeze({
+    serviceSubjectHash,
+    actorSubjectHash,
+    workspaceHash,
+    idempotencyKeyHash,
+    receiptId: canonicalHash({ serviceSubjectHash, actorSubjectHash, workspaceHash, idempotencyKeyHash }),
+    requestHash: canonicalHash(rpc),
+    authorizationHash: canonicalHash({
+      service: mcpAuthorizationFingerprint(requestContext),
+      user: mcpAuthorizationFingerprint(userContext),
+    }),
+  })
+}
+
+function mcpReceiptReason(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR') return 'MCP_UPSTREAM_TIMEOUT'
+  if (error?.code === 'MCP_UPSTREAM_MALFORMED') return 'MCP_UPSTREAM_MALFORMED'
+  if (error?.statusCode === 401) return 'MCP_AUTHENTICATION_REQUIRED'
+  if (error?.statusCode === 403 || error?.statusCode === 404) return 'MCP_AUTHORIZATION_DENIED'
+  if (error?.code === -32601) return 'MCP_TOOL_NOT_FOUND'
+  if (error?.code === -32602 || error?.statusCode === 400) return 'MCP_REQUEST_INVALID'
+  return 'MCP_UPSTREAM_FAILED'
+}
+
+async function mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag, {
+  authenticator = null,
+  userAuthenticated = false,
+  timeoutMs = 60_000,
+} = {}) {
   if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'MCP requires POST.')
   if (!mcpSubjectId || !mcpWorkspaceId) {
     return problem(response, 503, 'MCP_SERVER_MISCONFIGURED', 'Dedicated MCP subject and workspace are required.')
@@ -9520,13 +9609,19 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
   if (url.searchParams.has('workspace') || url.searchParams.has('workspace_id') || request.headers['x-workspace-id']) {
     return problem(response, 403, 'MCP_CALLER_OVERRIDE_REJECTED', 'MCP callers cannot override workspace.')
   }
-  try {
-    exactServiceToken(request, mcpServiceToken, 'MCP_SERVICE_AUTH_NOT_CONFIGURED', 'MCP service authentication is not configured.')
-  } catch (err) {
-    return problem(response, err.statusCode || 401, err.code || 'UNAUTHORIZED', err.message)
+  let humanAuthentication = null
+  if (userAuthenticated) {
+    humanAuthentication = await authenticator.authenticate(request)
+    authenticator.assertOrigin(request)
+  } else {
+    try {
+      exactServiceToken(request, mcpServiceToken, 'MCP_SERVICE_AUTH_NOT_CONFIGURED', 'MCP service authentication is not configured.')
+    } catch (err) {
+      return problem(response, err.statusCode || 401, err.code || 'UNAUTHORIZED', err.message)
+    }
   }
 
-  const credential = await baseContext.stateStore.readLocalCredential(mcpSubjectId)
+  const credential = await baseContext.stateStore.readLocalCredentialForSubject(mcpSubjectId)
   if (!credential || credential.subjectId !== mcpSubjectId || credential.loginEnabled !== true || (credential.lockedUntil && Date.now() < new Date(credential.lockedUntil).getTime())) {
     return problem(response, 401, 'SERVICE_AUTHENTICATION_FAILED', 'Valid service authentication is required.')
   }
@@ -9543,6 +9638,13 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
   const profile = authenticatedPocProfile(requestContext.accessUser)
   if (profile.default_workspace_id !== mcpWorkspaceId) {
     return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'Configured MCP workspace does not match the subject default workspace.')
+  }
+  const userContext = userAuthenticated ? {
+    ...await authenticatedRequestContext(baseContext, humanAuthentication),
+    knowledgeAdapter: 'MCP',
+  } : null
+  if (userContext && authenticatedPocProfile(userContext.accessUser).default_workspace_id !== mcpWorkspaceId) {
+    return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'The authenticated user workspace does not match the MCP workspace.')
   }
   rejectProtectedAccessClaims(request, url)
 
@@ -9603,6 +9705,82 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     return m
   }
 
+  let activeSignal
+  const authorizeTool = (toolName) => {
+    assertMcpReadToolAuthorized(requestContext, toolName)
+    if (userContext) assertMcpReadToolAuthorized(userContext, toolName)
+  }
+  const effectiveAssets = async () => {
+    const serviceAssets = await managedK9Assets(requestContext)
+    if (!userContext) return serviceAssets
+    return intersectMcpAssets(serviceAssets, await managedK9Assets(userContext))
+  }
+  const publicMcpAsset = (asset) => ({
+    id: asset.id,
+    name: asset.name,
+    graph_type: asset.graph_type,
+    source: asset.source,
+    status: asset.status,
+    version: asset.version,
+    node_count: asset.node_count,
+    edge_count: asset.edge_count,
+    supported_intents: asset.supported_intents,
+    semantic_capabilities: asset.semantic_capabilities,
+    supported_entity_types: asset.supported_entity_types,
+  })
+  const effectiveScope = async (graphId, releaseId) => {
+    const serviceScope = await mcpKnowledgeChatScope(requestContext, graphId, releaseId)
+    if (!userContext) return serviceScope
+    return intersectMcpKnowledgeScopes(
+      serviceScope,
+      await mcpKnowledgeChatScope(userContext, graphId, releaseId),
+    )
+  }
+  const assertEffectiveScopeResult = (scope, result) => {
+    if (!userContext || !scope.managed) return
+    const allowedNodes = new Set(scope.canonicalRelease.nodes.map((node) => node.id))
+    const allowedEdges = new Set(scope.canonicalRelease.edges.map((edge) => edge.id))
+    if ((result.nodes || []).some((node) => !allowedNodes.has(node.id))
+      || (result.edges || []).some((edge) => (
+        !allowedEdges.has(edge.id)
+          || !allowedNodes.has(edge.source_id)
+          || !allowedNodes.has(edge.target_id)
+      ))) {
+      throw knowledgeProjectionError(502, 'MCP_UPSTREAM_MALFORMED', 'The MCP tool returned data outside its authorized release scope.')
+    }
+    if (Array.isArray(result.citations)) {
+      const evidence = new Map([
+        ...(result.nodes || []).map((node) => [`node:${node.id}`, node]),
+        ...(result.edges || []).map((edge) => [`relation:${edge.id}`, edge]),
+      ])
+      if (result.citations.some((citation) => {
+        const item = evidence.get(citation.evidence_id)
+        return !item || !item.provenance.some((entry) => (
+          entry.source_locator === citation.source_locator
+            && entry.source_version === citation.source_version
+        ))
+      })) {
+        throw knowledgeProjectionError(502, 'MCP_UPSTREAM_MALFORMED', 'The MCP tool returned citation evidence outside its authorized release scope.')
+      }
+    }
+  }
+  const effectiveMetadataSearch = async (question, route, limit) => {
+    // The user boundary intersects two independently authorized, bounded views.
+    // It intentionally exposes no total: a maximum of 20 candidates per principal
+    // is not proof of the exhaustive authorized catalog cardinality.
+    const serviceEvidence = await mcpMetadataSearch(
+      question, route, userContext ? 20 : limit, requestContext.principal, activeSignal,
+    )
+    if (!Array.isArray(serviceEvidence)) throw new Error('Invalid')
+    if (!userContext) return serviceEvidence.slice(0, limit)
+    const userEvidence = await mcpMetadataSearch(
+      question, route, 20, userContext.principal, activeSignal,
+    )
+    if (!Array.isArray(userEvidence)) throw new Error('Invalid')
+    const userIds = new Set(userEvidence.map((item) => item?.id).filter((id) => typeof id === 'string'))
+    return serviceEvidence.filter((item) => typeof item?.id === 'string' && userIds.has(item.id)).slice(0, limit)
+  }
+
   const mcpResponse = async () => {
     if (rpc.method === 'initialize') {
       if (rpc.params !== undefined) throw { code: -32602, message: 'Invalid params' }
@@ -9614,7 +9792,8 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     }
     if (rpc.method === 'resources/list') {
       if (rpc.params !== undefined) throw { code: -32602, message: 'Invalid params' }
-      const assets = await managedK9Assets(requestContext)
+      authorizeTool('knowledge_graph_assets')
+      const assets = await effectiveAssets()
       return {
         resources: assets.map((asset) => ({
           uri: `datariver://knowledge/assets/${asset.id}`,
@@ -9631,9 +9810,16 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
       if (typeof params.uri !== 'string') throw { code: -32602, message: 'Invalid params' }
       const match = params.uri.match(/^datariver:\/\/knowledge\/assets\/([^/]+)$/)
       if (!match) throw { code: -32602, message: 'Invalid params' }
-      const asset = (await managedK9Assets(requestContext)).find((item) => item.id === decodeURIComponent(match[1]))
+      authorizeTool('knowledge_graph_assets')
+      const asset = (await effectiveAssets()).find((item) => item.id === decodeURIComponent(match[1]))
       if (!asset) throw knowledgeChatNotFound()
-      return { contents: [{ uri: params.uri, mimeType: 'application/json', text: JSON.stringify(asset) }] }
+      return {
+        contents: [{
+          uri: params.uri,
+          mimeType: 'application/json',
+          text: JSON.stringify(userContext ? publicMcpAsset(asset) : asset),
+        }],
+      }
     }
     if (rpc.method === 'tools/list') {
       if (rpc.params !== undefined) throw { code: -32602, message: 'Invalid params' }
@@ -9672,11 +9858,10 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         additionalProperties: false,
         required: ['id', 'source_id', 'target_id', 'edge_type', 'properties', 'classification', 'provenance']
       }
-      return {
-        tools: [
+      const tools = [
           {
             name: 'metadata_search',
-            description: 'Authorization-filtered metadata entity resolution and semantic search through the shared DataHub core service',
+            description: 'Authorization-filtered metadata search over at most 20 intersected candidates; this tool does not report an exhaustive result total',
             inputSchema: {
               type: 'object',
               properties: {
@@ -9782,7 +9967,14 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
               required: ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit']
             }
           }
-        ]
+      ]
+      return {
+        tools: userContext
+          ? tools.filter((tool) => (
+            requestContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
+              && userContext.principal.capabilitySet.has(mcpReadToolCapabilities[tool.name])
+          ))
+          : tools,
       }
     }
     if (rpc.method === 'tools/call') {
@@ -9792,6 +9984,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
       const toolName = params.name
       const args = params.arguments
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw { code: -32602, message: 'Invalid params' }
+      if (Object.hasOwn(mcpReadToolCapabilities, toolName)) authorizeTool(toolName)
 
       if (toolName === 'metadata_search') {
         try { exactBodyKeys(args, ['query', 'limit'], ['query']) } catch { throw { code: -32602, message: 'Invalid params' } }
@@ -9800,13 +9993,12 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         if (q.length < 2 || q.length > 4000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
           throw { code: -32602, message: 'Invalid params' }
         }
-        const evidence = await mcpMetadataSearch(q, {
+        const evidence = await effectiveMetadataSearch(q, {
           selected_mode: 'VECTOR',
           intent: 'SEMANTIC_DISCOVERY',
           entity_resolution_required: true,
           semantic_retrieval_required: true,
-        }, limit, requestContext.principal)
-        if (!Array.isArray(evidence)) throw new Error('Invalid')
+        }, limit)
         const result = {
           items: evidence.slice(0, limit).map((item) => ({
             id: item.id,
@@ -9824,19 +10016,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
       if (toolName === 'knowledge_graph_assets') {
         try { exactBodyKeys(args, []) } catch { throw { code: -32602, message: 'Invalid params' } }
         const result = {
-          items: (await managedK9Assets(requestContext)).map((asset) => ({
-            id: asset.id,
-            name: asset.name,
-            graph_type: asset.graph_type,
-            source: asset.source,
-            status: asset.status,
-            version: asset.version,
-            node_count: asset.node_count,
-            edge_count: asset.edge_count,
-            supported_intents: asset.supported_intents,
-            semantic_capabilities: asset.semantic_capabilities,
-            supported_entity_types: asset.supported_entity_types,
-          })),
+          items: (await effectiveAssets()).map(publicMcpAsset),
         }
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
       }
@@ -9860,7 +10040,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
           throw { code: -32602, message: 'Invalid params' }
         }
         assertPocRouteAuthorization(resolvePocRoute('GET', `/poc-api/knowledge/graphs/${g}/releases/${r}/snapshot`), requestContext.principal)
-        const scope = await mcpKnowledgeChatScope(requestContext, g, r)
+        const scope = await effectiveScope(g, r)
         const snapshot = await mcpKnowledgeChatSnapshot(scope, 200, startNodeId, maximumHops)
         const traversal = knowledgeChatTraversal(snapshot, {
           startNodeId,
@@ -9876,6 +10056,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
           edges: traversal.edges.map(enforceEdge),
           truncated: traversal.truncated,
         }
+        assertEffectiveScopeResult(scope, result)
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
       }
       if (toolName === 'knowledge_release_snapshot') {
@@ -9887,7 +10068,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > 200)) throw { code: -32602, message: 'Invalid params' }
 
         assertPocRouteAuthorization(resolvePocRoute('GET', `/poc-api/knowledge/graphs/${g}/releases/${r}/snapshot`), requestContext.principal)
-        const scope = await mcpKnowledgeChatScope(requestContext, g, r)
+        const scope = await effectiveScope(g, r)
         const requested = args.maximum_nodes || 200
         const result = await mcpKnowledgeChatSnapshot(scope, requested)
 
@@ -9897,6 +10078,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         result.release = enforceRelease(result.release, g, r)
         result.nodes.forEach(enforceNode)
         result.edges.forEach(enforceEdge)
+        assertEffectiveScopeResult(scope, result)
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
       }
       if (toolName === 'knowledge_release_graphrag') {
@@ -9913,7 +10095,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > 20)) throw { code: -32602, message: 'Invalid params' }
 
         assertPocRouteAuthorization(resolvePocRoute('POST', `/poc-api/knowledge/graphs/${g}/releases/${r}/graphrag`), requestContext.principal)
-        const scope = await mcpKnowledgeChatScope(requestContext, g, r)
+        const scope = await effectiveScope(g, r)
         const result = await mcpKnowledgeGraphRag(scope, {
           question: q,
           start_node_id: args.start_node_id?.trim(),
@@ -9921,7 +10103,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
           edge_types: args.edge_types,
           maximum_hops: args.maximum_hops,
           maximum_nodes: args.maximum_nodes
-        })
+        }, activeSignal)
 
         if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid')
         try { exactBodyKeys(result, ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit'], ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit']) } catch { throw new Error('Invalid') }
@@ -9931,6 +10113,7 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
         result.edges.forEach(enforceEdge)
         result.citations.forEach(enforceCitation)
         result.model_audit = enforceModelAudit(result.model_audit)
+        assertEffectiveScopeResult(scope, result)
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
       }
       throw { code: -32601, message: 'Method not found' }
@@ -9938,9 +10121,121 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     throw { code: -32601, message: 'Method not found' }
   }
 
+  const userToolCall = Boolean(userContext && rpc.method === 'tools/call')
+  const rawToolName = userToolCall && typeof rpc.params?.name === 'string' ? rpc.params.name : null
+  const receiptToolName = rawToolName && Object.hasOwn(mcpReadToolCapabilities, rawToolName) ? rawToolName : 'UNKNOWN'
+  let receiptIdentity = null
+  let existingReceipt = null
+  if (userToolCall) {
+    if (typeof baseContext.stateStore.readMcpReadReceipt !== 'function'
+      || typeof baseContext.stateStore.appendMcpReadReceipt !== 'function') {
+      return problem(response, 503, 'MCP_AUDIT_NOT_CONFIGURED', 'Durable MCP read audit is required.')
+    }
+    const idempotencyKey = request.headers['idempotency-key']
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1 || idempotencyKey.length > 128
+      || hasAccessControlCharacter(idempotencyKey)) {
+      return problem(response, 400, 'MCP_IDEMPOTENCY_KEY_INVALID', 'A bounded Idempotency-Key is required for MCP read calls.')
+    }
+    receiptIdentity = mcpUserReceiptIdentity(requestContext, userContext, mcpWorkspaceId, idempotencyKey, rpc)
+    existingReceipt = await baseContext.stateStore.readMcpReadReceipt(receiptIdentity.receiptId)
+    if (existingReceipt && (existingReceipt.request_hash !== receiptIdentity.requestHash
+      || existingReceipt.authorization_hash !== receiptIdentity.authorizationHash
+      || existingReceipt.tool_name !== receiptToolName)) {
+      return problem(response, 409, 'MCP_READ_REPLAY_CONFLICT', 'The MCP read replay no longer matches its request-time authorization.')
+    }
+    if (existingReceipt && existingReceipt.outcome !== 'SUCCEEDED') {
+      return json(response, 200, {
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Request denied', data: { reason: existingReceipt.reason_code } },
+        id: rpc.id ?? null,
+      })
+    }
+  }
+
+  const executeMcpResponse = async () => {
+    if (!userToolCall) return mcpResponse()
+    const controller = new AbortController()
+    activeSignal = controller.signal
+    let timer
+    try {
+      return await Promise.race([
+        mcpResponse(),
+        new Promise((resolvePromise, rejectPromise) => {
+          timer = setTimeout(() => {
+            controller.abort()
+            rejectPromise(Object.assign(new Error('MCP upstream timeout.'), { name: 'TimeoutError' }))
+          }, timeoutMs)
+          timer.unref?.()
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+      activeSignal = undefined
+    }
+  }
+
   try {
-    return json(response, 200, { jsonrpc: '2.0', result: await mcpResponse(), id: rpc.id ?? null })
+    const result = await executeMcpResponse()
+    if (!userToolCall) return json(response, 200, { jsonrpc: '2.0', result, id: rpc.id ?? null })
+    const responseHash = canonicalHash(result)
+    if (existingReceipt) {
+      if (existingReceipt.response_hash !== responseHash) {
+        return problem(response, 409, 'MCP_READ_REPLAY_RESPONSE_DRIFT', 'The MCP read replay result changed after its immutable receipt.')
+      }
+    } else {
+      await baseContext.stateStore.appendMcpReadReceipt({
+        contract: 'DATARIVER_MCP_READ_RECEIPT_V1',
+        receipt_id: receiptIdentity.receiptId,
+        service_subject_hash: receiptIdentity.serviceSubjectHash,
+        actor_subject_hash: receiptIdentity.actorSubjectHash,
+        workspace_hash: receiptIdentity.workspaceHash,
+        idempotency_key_hash: receiptIdentity.idempotencyKeyHash,
+        request_hash: receiptIdentity.requestHash,
+        authorization_hash: receiptIdentity.authorizationHash,
+        response_hash: responseHash,
+        tool_name: receiptToolName,
+        outcome: 'SUCCEEDED',
+        reason_code: null,
+        occurred_at: new Date().toISOString(),
+      })
+    }
+    return json(response, 200, {
+      jsonrpc: '2.0',
+      result: {
+        ...result,
+        _meta: {
+          audit_receipt: {
+            receipt_id: receiptIdentity.receiptId,
+            outcome: 'SUCCEEDED',
+            replayed: Boolean(existingReceipt),
+          },
+        },
+      },
+      id: rpc.id ?? null,
+    })
   } catch (error) {
+    if (userToolCall && receiptIdentity && !existingReceipt) {
+      const reasonCode = mcpReceiptReason(error)
+      try {
+        await baseContext.stateStore.appendMcpReadReceipt({
+          contract: 'DATARIVER_MCP_READ_RECEIPT_V1',
+          receipt_id: receiptIdentity.receiptId,
+          service_subject_hash: receiptIdentity.serviceSubjectHash,
+          actor_subject_hash: receiptIdentity.actorSubjectHash,
+          workspace_hash: receiptIdentity.workspaceHash,
+          idempotency_key_hash: receiptIdentity.idempotencyKeyHash,
+          request_hash: receiptIdentity.requestHash,
+          authorization_hash: receiptIdentity.authorizationHash,
+          response_hash: canonicalHash({ outcome: error?.statusCode === 403 || error?.statusCode === 404 || error?.code === -32601 || error?.code === -32602 ? 'DENIED' : 'FAILED', reason_code: reasonCode }),
+          tool_name: receiptToolName,
+          outcome: error?.statusCode === 403 || error?.statusCode === 404 || error?.code === -32601 || error?.code === -32602 ? 'DENIED' : 'FAILED',
+          reason_code: reasonCode,
+          occurred_at: new Date().toISOString(),
+        })
+      } catch {
+        return problem(response, 503, 'MCP_AUDIT_PERSIST_FAILED', 'The durable MCP read receipt could not be persisted.')
+      }
+    }
     if (error?.statusCode === 401 || error?.statusCode === 403 || error?.statusCode === 404) {
       return problem(response, error.statusCode, error.code || 'POC_ERROR', error.message)
     }
@@ -11999,11 +12294,15 @@ export function createPocServer({
   mcpKnowledgeChatScope = knowledgeChatScope,
   mcpKnowledgeChatSnapshot = knowledgeChatSnapshot,
   mcpKnowledgeGraphRag = knowledgeGraphRag,
+  mcpUserTimeoutMs = 60_000,
   currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
   currentDatahubTables: currentDatahubTablesProvider = currentDatahubTables,
   k9SchedulerConfig = null,
   k9SchedulerStatus = null,
 } = {}) {
+  if (!Number.isSafeInteger(mcpUserTimeoutMs) || mcpUserTimeoutMs < 1 || mcpUserTimeoutMs > 60_000) {
+    throw new Error('MCP user timeout must be between 1 and 60,000 ms.')
+  }
   if (stateStore) pocStateStore = stateStore
   const baseContext = {
     stateStore: stateStore ?? pocStateStore,
@@ -12050,6 +12349,13 @@ export function createPocServer({
       }
       if (url.pathname === '/api/v1/mcp') {
         return await mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag)
+      }
+      if (url.pathname === '/api/v1/mcp/user') {
+        return await mcpHandler(
+          request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId,
+          mcpMetadataSearch, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag,
+          { authenticator, userAuthenticated: true, timeoutMs: mcpUserTimeoutMs },
+        )
       }
       if (url.pathname === '/poc-api' || url.pathname.startsWith('/poc-api/')
         || url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {

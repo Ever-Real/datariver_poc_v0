@@ -25,6 +25,7 @@ const CHANGE_HISTORY_ACCESS_SCOPE = 'change-history-access-v1'
 const CHANGE_HISTORY_ACCESS_SCOPES = [CHANGE_HISTORY_ACCESS_SCOPE, 'core']
 const CHANGE_HISTORY_CAPTURE_STATUS_SCOPE = 'change-history-capture-status-v1'
 const CHANGE_HISTORY_RUNTIME_STATUS_SCOPE = 'change-history-runtime-status-v1'
+const MCP_READ_RECEIPT_SCOPE_PREFIX = 'mcp-read-receipt-v1:'
 const CHANGE_HISTORY_CAPTURE_STATES = new Set([
   'CONTIGUOUS_CAPTURE_RECORDED',
   'CAPTURE_CATCHING_UP',
@@ -430,6 +431,30 @@ const LOCAL_SECURITY_EVENT_SCHEMA = [
   `,
 ]
 
+const MCP_READ_RECEIPT_SCHEMA = [
+  `
+    CREATE OR REPLACE FUNCTION poc_reject_schema_receipt_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF OLD.scope LIKE 'product-owned-schema-contract-v%'
+        OR OLD.scope LIKE 'mcp-read-receipt-v1:%'
+        OR (TG_OP = 'UPDATE' AND (
+          NEW.scope LIKE 'product-owned-schema-contract-v%'
+          OR NEW.scope LIKE 'mcp-read-receipt-v1:%'
+        )) THEN
+        RAISE EXCEPTION 'POC Product schema and MCP read receipts are immutable';
+      END IF;
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `,
+]
+
 const CHAT_HISTORY_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS poc_chat_sessions (
@@ -685,6 +710,7 @@ async function applyPocPostgresV1Schema(client) {
 async function applyPocPostgresSchema(client) {
   await applyPocPostgresV1Schema(client)
   for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await client.query(statement)
+  for (const statement of MCP_READ_RECEIPT_SCHEMA) await client.query(statement)
 }
 
 async function initializePocPostgresSchema(pool, integrityRequired) {
@@ -699,6 +725,9 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
       applyKnownOlderSchema: applyPocPostgresV1Schema,
       applyV2Schema: async (migrationClient) => {
         for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await migrationClient.query(statement)
+      },
+      applyV3Schema: async (migrationClient) => {
+        for (const statement of MCP_READ_RECEIPT_SCHEMA) await migrationClient.query(statement)
       },
     })
   } finally {
@@ -805,6 +834,9 @@ export function createPocStateStore({ databasePool } = {}) {
 
   async function write(scope, value) {
     await startDatabase()
+    if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
+      throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
+    }
     if (scope === 'core') return writeCoreWithAccessFence(value)
     if (pool) {
       const result = await pool.query(`
@@ -823,6 +855,9 @@ export function createPocStateStore({ databasePool } = {}) {
   async function writeIfVersion(scope, value, expectedVersion) {
     requireNonnegativeInteger(expectedVersion, 'expectedVersion')
     await startDatabase()
+    if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
+      throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
+    }
     if (scope === 'core') return writeCoreWithAccessFence(value, expectedVersion)
     if (pool) {
       const client = await pool.connect()
@@ -857,6 +892,46 @@ export function createPocStateStore({ databasePool } = {}) {
     const version = current.version + 1
     memory.set(scope, { value, version })
     return version
+  }
+
+  async function readMcpReadReceipt(receiptIdValue) {
+    const receiptId = requireSha256(receiptIdValue, 'receiptId')
+    const record = await read(`${MCP_READ_RECEIPT_SCOPE_PREFIX}${receiptId}`)
+    return record.value === null ? null : normalizeMcpReadReceipt(record.value)
+  }
+
+  async function appendMcpReadReceipt(receiptValue) {
+    const receipt = normalizeMcpReadReceipt(receiptValue)
+    const scope = `${MCP_READ_RECEIPT_SCOPE_PREFIX}${receipt.receipt_id}`
+    await startDatabase()
+    if (pool) {
+      const inserted = await pool.query(`
+        INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+        ON CONFLICT (scope) DO NOTHING
+        RETURNING value
+      `, [scope, JSON.stringify(receipt)])
+      if (inserted.rows[0]) return { created: true, receipt: normalizeMcpReadReceipt(inserted.rows[0].value) }
+      const existing = await pool.query('SELECT value FROM poc_state WHERE scope = $1', [scope])
+      const stored = existing.rows[0]?.value ? normalizeMcpReadReceipt(existing.rows[0].value) : null
+      if (!stored || stableJson(stored) !== stableJson(receipt)) {
+        throw Object.assign(new Error('The MCP read receipt identity conflicts with prior evidence.'), {
+          code: 'MCP_READ_RECEIPT_CONFLICT',
+        })
+      }
+      return { created: false, receipt: stored }
+    }
+    const current = memory.get(scope)
+    if (current) {
+      const stored = normalizeMcpReadReceipt(current.value)
+      if (stableJson(stored) !== stableJson(receipt)) {
+        throw Object.assign(new Error('The MCP read receipt identity conflicts with prior evidence.'), {
+          code: 'MCP_READ_RECEIPT_CONFLICT',
+        })
+      }
+      return { created: false, receipt: stored }
+    }
+    memory.set(scope, { value: receipt, version: 1 })
+    return { created: true, receipt }
   }
 
   async function writeCoreWithAccessFence(value, expectedVersion) {
@@ -3401,6 +3476,8 @@ export function createPocStateStore({ databasePool } = {}) {
     readFeatureSecurityPolicy,
     write,
     writeIfVersion,
+    readMcpReadReceipt,
+    appendMcpReadReceipt,
     cacheGet,
     cacheSet,
     cacheDelete,
@@ -3467,6 +3544,57 @@ export function createPocStateStore({ databasePool } = {}) {
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
+}
+
+const MCP_READ_RECEIPT_TOOLS = new Set([
+  'UNKNOWN',
+  'metadata_search',
+  'knowledge_graph_assets',
+  'knowledge_lineage_traversal',
+  'knowledge_release_snapshot',
+  'knowledge_release_graphrag',
+])
+
+function normalizeMcpReadReceipt(value) {
+  if (!isPlainObject(value)) throw new Error('The MCP read receipt must be an object.')
+  if (value.contract !== 'DATARIVER_MCP_READ_RECEIPT_V1') {
+    throw new Error('The MCP read receipt contract is invalid.')
+  }
+  const keys = [
+    'contract', 'receipt_id', 'service_subject_hash', 'actor_subject_hash', 'workspace_hash',
+    'idempotency_key_hash', 'request_hash', 'authorization_hash', 'response_hash', 'tool_name',
+    'outcome', 'reason_code', 'occurred_at',
+  ]
+  const observed = Object.keys(value).sort()
+  if (observed.length !== keys.length || keys.sort().some((key, index) => key !== observed[index])) {
+    throw new Error('The MCP read receipt shape is invalid.')
+  }
+  const toolName = requireBoundedString(value.tool_name, 'receipt.tool_name', 80)
+  if (!MCP_READ_RECEIPT_TOOLS.has(toolName)) throw new Error('The MCP read receipt tool is invalid.')
+  const outcome = requireOneOf(value.outcome, 'receipt.outcome', ['SUCCEEDED', 'DENIED', 'FAILED'])
+  const reasonCode = value.reason_code == null
+    ? null
+    : requireBoundedString(value.reason_code, 'receipt.reason_code', 80)
+  if ((reasonCode !== null && !/^[A-Z][A-Z0-9_]*$/.test(reasonCode))
+    || (outcome === 'SUCCEEDED' && reasonCode !== null)
+    || (outcome !== 'SUCCEEDED' && reasonCode === null)) {
+    throw new Error('The MCP read receipt reason is invalid.')
+  }
+  return Object.freeze({
+    contract: value.contract,
+    receipt_id: requireSha256(value.receipt_id, 'receipt.receipt_id'),
+    service_subject_hash: requireSha256(value.service_subject_hash, 'receipt.service_subject_hash'),
+    actor_subject_hash: requireSha256(value.actor_subject_hash, 'receipt.actor_subject_hash'),
+    workspace_hash: requireSha256(value.workspace_hash, 'receipt.workspace_hash'),
+    idempotency_key_hash: requireSha256(value.idempotency_key_hash, 'receipt.idempotency_key_hash'),
+    request_hash: requireSha256(value.request_hash, 'receipt.request_hash'),
+    authorization_hash: requireSha256(value.authorization_hash, 'receipt.authorization_hash'),
+    response_hash: requireSha256(value.response_hash, 'receipt.response_hash'),
+    tool_name: toolName,
+    outcome,
+    reason_code: reasonCode,
+    occurred_at: requireTimestamp(value.occurred_at, 'receipt.occurred_at'),
+  })
 }
 
 function normalizeChatTurn(value) {
