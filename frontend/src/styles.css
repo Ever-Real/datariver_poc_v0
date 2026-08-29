@@ -1059,7 +1059,7 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
 .quality-template-rule-editor .button { align-self: end; }
 .quality-mapping-search { display: grid; grid-template-columns: auto minmax(180px, 1.2fr) repeat(3, minmax(120px, .8fr)) auto; align-items: end; gap: 8px; margin-bottom: 10px; }
 .quality-mapping-search label { display: grid; gap: 4px; color: var(--text-500); font-size: 8px; font-weight: 900; }
-.quality-mapping-condition-note { margin: 0 0 10px; color: var(--text-500); font-size: 8px; line-height: 1.5; }
+.quality-mapping-condition-note { margin: 0 0 10px; color: var(--text-500); font-size: 11px; line-height: 1.5; }
 .quality-mapping-selection { margin-right: auto; color: var(--text-600); font-size: 9px; font-weight: 900; }
 .quality-compatibility { color: var(--text-500); font-size: 8px; }
 .quality-compatibility.compatible, .quality-compatibility.mapped { color: #2f6b47; font-weight: 900; }

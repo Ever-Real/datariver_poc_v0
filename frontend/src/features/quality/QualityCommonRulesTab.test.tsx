@@ -13,6 +13,7 @@ import { QualityCommonRulesTab } from './QualityCommonRulesTab'
 
 describe('QualityCommonRulesTab', () => {
   it('searches, checks compatibility, and maps multiple tables atomically', async () => {
+    let mappingAttempts = 0
     const request = vi.fn().mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/quality/common-rule-templates') {
         return Promise.resolve({
@@ -56,6 +57,8 @@ describe('QualityCommonRulesTab', () => {
         path === '/quality/common-rule-templates/template-one/mappings'
         && options?.method === 'POST'
       ) {
+        mappingAttempts += 1
+        if (mappingAttempts === 1) return Promise.reject(new Error('mapping response unavailable'))
         return Promise.resolve({
           items: [
             {
@@ -92,13 +95,17 @@ describe('QualityCommonRulesTab', () => {
     const apply = await screen.findByRole('button', { name: '룰 적용' })
     expect(screen.getByText(/스케줄 등록은 현재 read-only/)).toBeInTheDocument()
     fireEvent.click(apply)
+    await waitFor(() => expect(mappingAttempts).toBe(1))
+    await waitFor(() => expect(apply).toBeEnabled())
+    fireEvent.click(apply)
 
     await screen.findByText('2개 테이블에 적용했습니다.')
-    const mappingCall = request.mock.calls.find(([path, options]) => (
+    const mappingCalls = request.mock.calls.filter(([path, options]) => (
       path === '/quality/common-rule-templates/template-one/mappings'
       && (options as RequestInit | undefined)?.method === 'POST'
     ))
-    const mappingOptions = mappingCall?.[1] as {
+    expect(mappingCalls).toHaveLength(2)
+    const mappingOptions = mappingCalls[0]?.[1] as {
       body?: string
       idempotencyKey?: string
     }
@@ -121,6 +128,9 @@ describe('QualityCommonRulesTab', () => {
       ],
     })
     expect(mappingOptions.idempotencyKey).toMatch(/^quality-template-field-map-/)
+    expect((mappingCalls[1]?.[1] as { idempotencyKey?: string }).idempotencyKey).toBe(
+      mappingOptions.idempotencyKey,
+    )
   })
 
   it('keeps template creation usable while explaining deployment mapping readiness', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type {
   QualityCapabilityAxis,
@@ -56,6 +56,7 @@ export function QualityFieldBulkApplyDialog({
   const [parameters, setParameters] = useState<Record<string, RangeParameters>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>()
+  const submissionIdentity = useRef<{ signature: string; key: string } | undefined>(undefined)
   const templates = useQuery({
     queryKey: qualityQueryKey(boundary, 'common-rule-templates', 'field-bulk-dialog'),
     queryFn: ({ signal }) => api.commonRuleTemplates(boundary.cacheScope, signal),
@@ -98,6 +99,7 @@ export function QualityFieldBulkApplyDialog({
     setSeverity('BLOCKING')
     setParameters({})
     setError(undefined)
+    submissionIdentity.current = undefined
   }, [lockedTemplate, open])
   useEffect(() => {
     setParameters((current) => {
@@ -134,20 +136,24 @@ export function QualityFieldBulkApplyDialog({
     setError(undefined)
     try {
       const result = mode === 'TEMPLATE' && template
-        ? await api.mapCommonRuleTemplate(
-            template.template_id,
-            {
-              targets: groupedTemplateTargets,
-            },
-            idempotencyKey('quality-template-field-map'),
-          )
-        : await api.proposeTargetedRuleSets(
-            {
+        ? await (() => {
+            const payload = { targets: groupedTemplateTargets }
+            return api.mapCommonRuleTemplate(
+              template.template_id,
+              payload,
+              stableSubmissionKey(submissionIdentity, 'quality-template-field-map', payload),
+            )
+          })()
+        : await (() => {
+            const payload = {
               name_prefix: name.trim(),
               targets: groupedNewTargets,
-            },
-            idempotencyKey('quality-field-rule'),
-          )
+            }
+            return api.proposeTargetedRuleSets(
+              payload,
+              stableSubmissionKey(submissionIdentity, 'quality-field-rule', payload),
+            )
+          })()
       await onApplied(result.items.length, result.replayed)
     } catch (next) {
       if (isAuthorizationBoundaryError(next)) onBoundaryInvalid()
@@ -190,8 +196,8 @@ export function QualityFieldBulkApplyDialog({
     </section>}
     <RangeParameterEditor entries={rangeEntries} parameters={parameters} onChange={setParameters} />
     <section className="quality-bulk-schedule-readiness">
-      <strong>3. Dry-run 미리보기</strong>
-      <p>{countText(targetGroups.length)}개 테이블의 server-authoritative 룰 제안만 생성합니다. GX 실행과 스케줄 등록은 이 확인에 포함되지 않습니다.</p>
+      <strong>3. 적용 전 확인</strong>
+      <p>확인 후 적용하면 {countText(targetGroups.length)}개 테이블의 server-authoritative PROPOSED 룰셋과 매핑을 저장합니다. GX 실행과 스케줄 등록은 포함되지 않습니다.</p>
       <p>스케줄 등록은 현재 read-only입니다. {axes.get('scheduling')?.reason_code ?? 'SCHEDULE_PROFILE_ATTESTATION_UNAVAILABLE'}</p>
     </section>
     {!withinServerBounds && <p className="callout" role="status">
@@ -342,6 +348,14 @@ function bindingKey(selection: QualityFieldSelection, ordinal: number): string {
   return `${selectionKey(selection)}:${ordinal}`
 }
 
-function idempotencyKey(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`
+function stableSubmissionKey(
+  identity: { current: { signature: string; key: string } | undefined },
+  prefix: string,
+  payload: unknown,
+): string {
+  const signature = `${prefix}:${JSON.stringify(payload)}`
+  if (identity.current?.signature !== signature) {
+    identity.current = { signature, key: `${prefix}-${crypto.randomUUID()}` }
+  }
+  return identity.current.key
 }
