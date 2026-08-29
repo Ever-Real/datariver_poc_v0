@@ -76,6 +76,7 @@ export function CatalogPage({
   initialQuery = '',
   onQueryChange,
   catalogExportWorkerEnabled = false,
+  catalogExportMaximumRows,
   workspaceId = '',
   subjectId = '',
   securityEpoch = 0,
@@ -85,6 +86,7 @@ export function CatalogPage({
   initialQuery?: string
   onQueryChange?: (query: string) => void
   catalogExportWorkerEnabled?: boolean
+  catalogExportMaximumRows?: number
   workspaceId?: string
   subjectId?: string
   securityEpoch?: number
@@ -495,6 +497,7 @@ export function CatalogPage({
           client={client}
           compact
           workerEnabled={catalogExportWorkerEnabled}
+          maximumRows={catalogExportMaximumRows}
           disabled={!hasSearchTargets}
           query={query}
           assetType={filters.assetType || undefined}

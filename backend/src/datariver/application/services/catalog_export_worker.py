@@ -9,7 +9,7 @@ from datariver.application.catalog_export_csv import (
     catalog_export_csv_header,
     encode_catalog_export_csv_row,
 )
-from datariver.application.catalog_export_xlsx import encode_catalog_export_xlsx
+from datariver.application.catalog_export_xlsx import iter_catalog_export_xlsx
 from datariver.application.dto import CatalogExportClaim
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import CatalogExportObjectStore, CatalogExportWorkerStore
@@ -107,11 +107,10 @@ class CatalogExportWorker:
                     yield encode_catalog_export_csv_row(row)
                 return
             if format_name == "XLSX":
-                workbook_rows = [row async for row in rows()]
-                yield encode_catalog_export_xlsx(
-                    workbook_rows,
-                    maximum_bytes=self._maximum_bytes,
-                )
+                async for chunk in iter_catalog_export_xlsx(
+                    rows(), maximum_bytes=self._maximum_bytes
+                ):
+                    yield chunk
                 return
             raise ValidationError("The catalog export format is not supported.")
 
@@ -128,6 +127,11 @@ class CatalogExportWorker:
                     "format": format_name,
                 },
                 maximum_bytes=self._maximum_bytes,
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    if format_name == "XLSX"
+                    else "text/csv; charset=utf-8"
+                ),
             )
             completed_object = True
             if not await self._store.snapshot_is_current(claim=claim):

@@ -467,6 +467,8 @@ class SqlCatalogExportWorkerStore(CatalogExportWorkerStore):
     async def _snapshot_is_current(
         self, *, session: AsyncSession, claim: CatalogExportClaim
     ) -> bool:
+        if not await _claim_is_active(session=session, claim=claim, now=utc_now()):
+            return False
         export = await session.get(CatalogExportModel, claim.export.export_id)
         if export is None:
             return False
@@ -485,6 +487,21 @@ class SqlCatalogExportWorkerStore(CatalogExportWorkerStore):
             access_hash=catalog_classification_access_hash(access),
             now=utc_now(),
         )
+
+
+async def _claim_is_active(
+    *,
+    session: AsyncSession,
+    claim: CatalogExportClaim,
+    now: datetime,
+) -> bool:
+    job = await session.get(JobModel, claim.export.job_id)
+    attempt = await session.get(JobAttemptModel, claim.attempt_id)
+    return bool(
+        job is not None
+        and attempt is not None
+        and _claim_can_complete(job=job, attempt=attempt, claim=claim, now=now)
+    )
 
 
 async def _current_subject(session: AsyncSession, export: CatalogExportModel) -> SubjectAttributes:

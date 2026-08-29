@@ -898,7 +898,7 @@ describe('catalog workspace', () => {
 
     fireEvent.click(await screen.findByText('wafer_events'))
     expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toBeInTheDocument()
-    fireEvent.mouseDown(document.body)
+    fireEvent.click(document.body)
 
     await waitFor(() => expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument())
     expect(screen.getByRole('table', { name: '카탈로그 검색 결과' })).toHaveTextContent('wafer_events')
@@ -1058,11 +1058,67 @@ describe('catalog workspace', () => {
     expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
 
     // 5. Clicking outside restores that tr
-    fireEvent.mouseDown(document.body)
+    fireEvent.click(document.body)
     expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
     expect(row).toHaveFocus()
 
     // Reset
     window.history.replaceState({}, '', '/')
+  })
+
+  it('keeps detail open for selection, drag, internal, and allowed portal interactions', async () => {
+    render(<TestCatalogPage client={clientWith(defaultRequest)} initialQuery="wafer" />)
+
+    fireEvent.click(await screen.findByText('wafer_events'))
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    fireEvent.click(await within(detail).findByRole('tab', { name: 'Table Details' }))
+    expect(detail).toBeInTheDocument()
+
+    const portal = document.createElement('div')
+    portal.setAttribute('data-catalog-detail-interaction', '')
+    document.body.append(portal)
+    fireEvent.click(portal)
+    expect(detail).toBeInTheDocument()
+    portal.remove()
+
+    const getSelection = vi.spyOn(document, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+    } as Selection)
+    fireEvent.click(document.body)
+    expect(detail).toBeInTheDocument()
+    getSelection.mockRestore()
+
+    fireEvent.pointerDown(document.body, { button: 0, isPrimary: true, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(document.body, { isPrimary: true, clientX: 30, clientY: 30 })
+    fireEvent.pointerUp(document.body, { button: 0, isPrimary: true, clientX: 30, clientY: 30 })
+    fireEvent.click(document.body)
+    expect(detail).toBeInTheDocument()
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    fireEvent.click(document.body)
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+  })
+
+  it('navigates directly to another result detail without treating its row click as dismissal', async () => {
+    const nextAsset: CatalogAsset = { ...asset, id: 'next-result', name: 'next_result' }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({
+        items: [asset, nextAsset], page: { limit: 50 }, total: 2, meta, match_mode: 'ALL',
+      })
+      if (path === `/catalog/assets/${asset.id}`) return Promise.resolve(detailFor(asset))
+      if (path === `/catalog/assets/${nextAsset.id}`) return Promise.resolve(detailFor(nextAsset))
+      return defaultRequest(path)
+    })
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    fireEvent.click(await screen.findByText(asset.name))
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(asset.name)).toBeInTheDocument()
+    fireEvent.click(screen.getByText(nextAsset.name))
+
+    const nextDetail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(nextDetail).findByText(nextAsset.name)).toBeInTheDocument()
+    expect(nextDetail).toBeVisible()
   })
 })

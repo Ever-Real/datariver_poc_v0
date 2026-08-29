@@ -38,10 +38,14 @@ export class CatalogExportApi {
   }
 }
 
-export async function catalogExportCapabilityEnabled(client: CatalogExportApiClient) {
+export async function catalogExportCapability(client: CatalogExportApiClient): Promise<CatalogExportCapability> {
   try {
-    return (await new CatalogExportApi(client).capability()).enabled === true
+    const capability = await new CatalogExportApi(client).capability()
+    if (!Number.isSafeInteger(capability.maximum_rows) || capability.maximum_rows < 1) {
+      return { enabled: false, maximum_rows: 0 }
+    }
+    return { enabled: capability.enabled === true, maximum_rows: capability.maximum_rows }
   } catch {
-    return false
+    return { enabled: false, maximum_rows: 0 }
   }
 }

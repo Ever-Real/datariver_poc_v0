@@ -1,16 +1,28 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CatalogExportCreateRequest } from '../../api/types'
-import { CatalogExportApi, catalogExportCapabilityEnabled } from './catalogExportApi'
+import { CatalogExportApi, catalogExportCapability } from './catalogExportApi'
 
 describe('CatalogExportApi', () => {
   it('discovers export availability through its separately authorized endpoint and fails closed', async () => {
-    const allowed = vi.fn().mockResolvedValue({ enabled: true })
+    const allowed = vi.fn().mockResolvedValue({ enabled: true, maximum_rows: 250_000 })
     const denied = vi.fn().mockRejectedValue(new Error('forbidden'))
 
-    await expect(catalogExportCapabilityEnabled({ request: allowed })).resolves.toBe(true)
-    await expect(catalogExportCapabilityEnabled({ request: denied })).resolves.toBe(false)
+    await expect(catalogExportCapability({ request: allowed })).resolves.toEqual({
+      enabled: true, maximum_rows: 250_000,
+    })
+    await expect(catalogExportCapability({ request: denied })).resolves.toEqual({
+      enabled: false, maximum_rows: 0,
+    })
     expect(allowed).toHaveBeenCalledWith('/catalog/export-capability')
     expect(denied).toHaveBeenCalledWith('/catalog/export-capability')
+  })
+
+  it('fails closed when the server omits the explicit export row ceiling', async () => {
+    const malformed = vi.fn().mockResolvedValue({ enabled: true })
+
+    await expect(catalogExportCapability({ request: malformed })).resolves.toEqual({
+      enabled: false, maximum_rows: 0,
+    })
   })
 
   it('creates a server-managed CSV export with one idempotency key', async () => {

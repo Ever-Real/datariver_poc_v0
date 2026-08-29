@@ -47,7 +47,12 @@ def _subject() -> SubjectAttributes:
     )
 
 
-def _claim(*, snapshot_valid: bool = True, format_name: str = "CSV") -> CatalogExportClaim:
+def _claim(
+    *,
+    snapshot_valid: bool = True,
+    format_name: str = "CSV",
+    filters: dict[str, str] | None = None,
+) -> CatalogExportClaim:
     subject = _subject()
     access = static_classification_access_floor()
     export_id = uuid4()
@@ -57,7 +62,11 @@ def _claim(*, snapshot_valid: bool = True, format_name: str = "CSV") -> CatalogE
             workspace_id=WORKSPACE_ID,
             job_id=uuid4(),
             requested_by=SUBJECT_ID,
-            request=CatalogExportRequest(query="wafer", filters={}, format=format_name),
+            request=CatalogExportRequest(
+                query="wafer",
+                filters=filters or {},
+                format=format_name,
+            ),
             request_hash="a" * 64,
             permission_scope_hash=catalog_permission_scope_hash(subject),
             classification_access_hash=catalog_classification_access_hash(access),
@@ -129,11 +138,16 @@ class FakeWorkerStore:
         self.current_after_write = current_after_write
         self.completed: list[dict[str, object]] = []
         self.failed: list[dict[str, object]] = []
+        self.read_cursors: list[str | None] = []
+        self.read_requests: list[CatalogExportRequest] = []
 
     async def claim_next(self, **_: object) -> CatalogExportClaim | None:
         return self.claim
 
-    async def read_page(self, **_: object) -> CatalogPage:
+    async def read_page(self, **values: object) -> CatalogPage:
+        self.read_cursors.append(cast(str | None, values.get("cursor")))
+        read_claim = cast(CatalogExportClaim, values["claim"])
+        self.read_requests.append(read_claim.export.request)
         return self.pages.pop(0)
 
     async def snapshot_is_current(self, **_: object) -> bool:
@@ -151,15 +165,18 @@ class FakeExportObjects:
         self.content = b""
         self.deleted: list[tuple[str, str]] = []
         self.written_object_key: str | None = None
+        self.content_type: str | None = None
 
     async def write_export(
         self,
         *,
         object_key: str,
         chunks: AsyncIterator[bytes],
+        content_type: str,
         **_: object,
     ) -> CatalogExportArtifact:
         self.written_object_key = object_key
+        self.content_type = content_type
         content = bytearray()
         async for chunk in chunks:
             content.extend(chunk)
@@ -213,6 +230,47 @@ async def test_worker_streams_fixed_csv_and_completes_verified_artifact() -> Non
     assert objects.written_object_key is not None
     assert f"/attempts/{store.claim.attempt_id}/" in objects.written_object_key
     assert store.failed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("format_name", ["CSV", "XLSX"])
+async def test_worker_exports_every_authorized_page_in_canonical_cursor_order(
+    format_name: str,
+) -> None:
+    store = FakeWorkerStore(
+        _claim(
+            format_name=format_name,
+            filters={"platform": "generic-platform", "schema_name": "generic-schema"},
+        ),
+        pages=(
+            CatalogPage(items=(_asset("first"),), next_cursor="next-page", observed_at=NOW),
+            CatalogPage(items=(_asset("second"),), next_cursor=None, observed_at=NOW),
+        ),
+    )
+    objects = FakeExportObjects()
+
+    assert await _worker(store, objects).run_once()
+
+    assert store.read_cursors == [None, "next-page"]
+    assert [request.document() for request in store.read_requests] == [
+        {
+            "query": "wafer",
+            "filters": {"platform": "generic-platform", "schema_name": "generic-schema"},
+            "sort": "NAME_ASC",
+            "format": format_name,
+        },
+    ] * 2
+    assert store.completed[0]["row_count"] == 2
+    if format_name == "CSV":
+        assert b"first" in objects.content and b"second" in objects.content
+        assert objects.content_type == "text/csv; charset=utf-8"
+    else:
+        with ZipFile(BytesIO(objects.content)) as workbook:
+            sheet = workbook.read("xl/worksheets/sheet1.xml")
+        assert b"first" in sheet and b"second" in sheet
+        assert objects.content_type == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 
 @pytest.mark.asyncio

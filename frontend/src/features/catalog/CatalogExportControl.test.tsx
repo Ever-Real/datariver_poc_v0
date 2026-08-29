@@ -145,6 +145,49 @@ describe('CatalogExportControl', () => {
     expect(request).toHaveBeenCalledOnce()
   })
 
+  it('states the complete-result ceiling and explains an over-limit failure', async () => {
+    const request = vi.fn().mockResolvedValue({
+      ...completed,
+      state: 'FAILED',
+      last_error_code: 'EXPORT_ROW_LIMIT',
+      completed_at: null,
+    })
+    render(<CatalogExportControl
+      client={{ request } as unknown as ApiClient}
+      compact
+      workerEnabled
+      maximumRows={250_000}
+      query="wafer"
+    />)
+
+    expect(screen.getByText(/전체 허용 결과/)).toHaveTextContent('최대 250,000건')
+    fireEvent.click(screen.getByRole('button', { name: 'CSV 저장' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '검색 결과가 내보내기 한도(최대 250,000건)를 초과했습니다.',
+    )
+  })
+
+  it('explains the typed artifact byte ceiling instead of exposing only a worker code', async () => {
+    const request = vi.fn().mockResolvedValue({
+      ...completed,
+      state: 'FAILED',
+      last_error_code: 'EXPORT_BYTE_LIMIT',
+      completed_at: null,
+    })
+    render(<CatalogExportControl
+      client={{ request } as unknown as ApiClient}
+      compact
+      workerEnabled
+      maximumRows={250_000}
+      query="wafer"
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'CSV 저장' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '생성된 파일이 서버 내보내기 용량 한도를 초과했습니다.',
+    )
+  })
+
   it('clears the prior workspace export and ignores its late response when the client changes', async () => {
     let finishOldRequest: ((value: unknown) => void) | undefined
     const oldRequest = vi.fn(() => new Promise((resolve) => { finishOldRequest = resolve }))

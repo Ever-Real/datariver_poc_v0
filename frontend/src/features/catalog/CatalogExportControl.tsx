@@ -26,6 +26,7 @@ type ExportRecord = CatalogExportCreateResponse | CatalogExportStatus
 interface CatalogExportControlProps {
   client: ApiClient
   workerEnabled: boolean
+  maximumRows?: number
   query: string
   assetType?: string
   platform?: string
@@ -44,6 +45,7 @@ interface CatalogExportControlProps {
 export function CatalogExportControl({
   client,
   workerEnabled,
+  maximumRows,
   query,
   assetType,
   platform,
@@ -144,7 +146,10 @@ export function CatalogExportControl({
     ? '관리형 Catalog Export를 사용할 수 없습니다. catalog.export 권한 또는 운영자의 분리된 DB·Object Storage 자격증명과 worker 설정을 확인하세요.'
     : restricted
       ? 'RESTRICTED 자산은 Search 명시 권한과 무관하게 CSV 내보내기와 XLSX 내보내기가 금지됩니다.'
-      : '현재 검색 조건과 권한 스냅샷을 서버에서 검증한 뒤 CSV 또는 XLSX를 생성합니다.'
+      : `현재 검색 조건의 전체 허용 결과를 서버에서 검증해 CSV 또는 XLSX로 생성합니다.${maximumRows ? ` 최대 ${maximumRows.toLocaleString()}건입니다.` : ''}`
+  const failureMessage = record && 'last_error_code' in record
+    ? catalogExportFailureMessage(record.last_error_code, maximumRows)
+    : undefined
 
   if (compact) return <section className="catalog-export-control catalog-export-control-compact" aria-label="카탈로그 내보내기">
     <p className="sr-only" id="catalog-export-description">{disabledReason}</p>
@@ -154,6 +159,7 @@ export function CatalogExportControl({
       {!disabled && workerEnabled && record?.state === 'COMPLETED' && <button type="button" className="button" disabled={downloading} onClick={() => void download()}><Download size={13} aria-hidden="true" />{downloading ? 'URL 확인 중…' : `${artifactFormat} 다운로드`}</button>}
     </div>
     {!disabled && workerEnabled && record && <div className="catalog-export-status" role="status" aria-live="polite"><span className={`badge badge-soft export-state-${record.state.toLowerCase()}`}>{stateLabels[record.state] ?? record.state}</span></div>}
+    {failureMessage && <p className="catalog-export-failure" role="alert">{failureMessage}</p>}
     <ErrorNotice error={error} />
   </section>
 
@@ -170,6 +176,7 @@ export function CatalogExportControl({
       {'size_bytes' in record && record.size_bytes != null && <span>{formatBytes(record.size_bytes)}</span>}
       {'last_error_code' in record && record.last_error_code && <code>{record.last_error_code}</code>}
     </div>}
+    {failureMessage && <p className="catalog-export-failure" role="alert">{failureMessage}</p>}
     <div className="catalog-export-actions">
       <label className="catalog-export-format">형식<select aria-label="내보내기 형식" value={exportFormat} disabled={disabled || creating || pending} onChange={(event) => setExportFormat(event.target.value as 'CSV' | 'XLSX')}><option value="CSV">CSV</option><option value="XLSX">Excel (.xlsx)</option></select></label>
       <button
@@ -194,6 +201,20 @@ export function CatalogExportControl({
     </div>
     <ErrorNotice error={error} />
   </section>
+}
+
+export function catalogExportFailureMessage(
+  code: string | null,
+  maximumRows?: number,
+): string | undefined {
+  if (code === 'EXPORT_ROW_LIMIT') {
+    const limit = maximumRows ? `최대 ${maximumRows.toLocaleString()}건` : '서버 최대 행 수'
+    return `검색 결과가 내보내기 한도(${limit})를 초과했습니다. 필터를 좁힌 뒤 다시 생성하세요.`
+  }
+  if (code === 'EXPORT_BYTE_LIMIT') {
+    return '생성된 파일이 서버 내보내기 용량 한도를 초과했습니다. 필터를 좁힌 뒤 다시 생성하세요.'
+  }
+  return undefined
 }
 
 export function safeCatalogExportDownloadUrl(value: string): string {

@@ -94,6 +94,13 @@ browser-side table dump. The buttons are disabled when the API reports the
 feature unavailable, including the default local setting
 `CATALOG_EXPORT_WORKER_ENABLED=false`.
 
+The capability response also reports the deployment-configured row ceiling. A
+job walks the complete authorized filtered and canonical name-sorted cursor set,
+not the visible browser page. CSV is streamed and XLSX spills beyond a small
+memory window to bounded temporary storage; either format fails closed when its
+row or artifact byte ceiling is exceeded. The browser shows the current row
+ceiling and asks the user to narrow filters after an over-limit failure.
+
 To activate it, an operations owner must first provision the isolated
 `datariver_export` database credentials and the required object-storage secret
 references, then enable the flag for both API capability reporting and the

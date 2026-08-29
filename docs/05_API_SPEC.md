@@ -220,7 +220,7 @@ Export never includes the bucket, key, VersionId, endpoint, credential or a Pres
 | `POST /catalog/assets/{asset_id}/description-previews` | `catalog.read` + `change.create` | read live `datasetProperties`, preserve every provider field, and return only the typed description diff, source/hash evidence and opaque quoted preview ETag; `Cache-Control: no-store, private` |
 | `POST /catalog/assets/{asset_id}/description-change-requests` | `catalog.read` + `change.create` | require the exact preview `If-Match`, re-read DataHub, share-lock/revalidate the path asset and create one server-classified governed request |
 | `GET /catalog/assets/{asset_id}/lineage?direction=UPSTREAM\|DOWNSTREAM\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
-| `GET /catalog/export-capability` | `catalog.export` | separately authorized feature state; missing permission, dependency error or disabled worker is fail-closed in the UI |
+| `GET /catalog/export-capability` | `catalog.export` | separately authorized feature state and configured `maximum_rows`; missing permission, malformed bound, dependency error or disabled worker is fail-closed in the UI |
 | `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV or XLSX job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
 | `GET /catalog/exports/{export_id}` | `catalog.export` + owner | bounded job/artifact status; never returns bucket, object key or a source cursor |
 | `POST /catalog/exports/{export_id}/download` | `catalog.export` + owner | revalidate current permission/policy/projection and object metadata, then issue a 60-second URL with `Cache-Control: no-store` |
@@ -870,7 +870,10 @@ classification-policy, built-in-policy, format-safety and projection snapshots i
 as its job, outbox event and idempotency result. The worker reads only the local authorized
 projection, always excludes `RESTRICTED`, emits one fixed CSV or XLSX column schema, fails closed on stale
 snapshots and uses an attempt-unique private object key. Row, record and object-byte ceilings are
-enforced. A stale/superseded lease cannot complete or overwrite a newer attempt.
+enforced. CSV streams directly; XLSX uses a small memory spool and bounded temporary-disk package
+before bounded upload chunks. A stale/superseded/expired lease is cancelled between pages and cannot
+complete or overwrite a newer attempt. The UI reports the configured row ceiling and translates an
+over-limit terminal state into a filter-narrowing action rather than exposing only a worker code.
 
 Status is requester-owned. Download repeats authorization and snapshot checks, reconciles the stored
 size, request metadata and provider ETag, and returns no storage coordinate other than the bounded

@@ -2007,7 +2007,9 @@ def test_catalog_export_openapi_is_server_managed_and_does_not_expose_storage_co
     assert set(download["properties"]) == {"url", "expires_seconds"}
 
     capability = document["components"]["schemas"]["CatalogExportCapabilityResponse"]
-    assert set(capability["properties"]) == {"enabled"}
+    assert set(capability["properties"]) == {"enabled", "maximum_rows"}
+    assert capability["properties"]["maximum_rows"]["minimum"] == 1
+    assert capability["properties"]["maximum_rows"]["maximum"] == 5_000_000
 
 
 def test_knowledge_source_job_openapi_is_durable_bounded_and_non_disclosing() -> None:

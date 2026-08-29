@@ -63,6 +63,28 @@ function fieldFlag(field: Record<string, unknown>, key: string): boolean {
   return field[key] === true
 }
 
+const allowedDetailInteractionSelector = [
+  '[data-catalog-detail-interaction]',
+  'dialog[open]',
+  '[role="listbox"]',
+  '[role="tooltip"]',
+  '.controlled-vocabulary-menu',
+  '.catalog-results tbody tr.interactive',
+].join(',')
+
+function detailInteractionIsAllowed(event: Event, panel: HTMLElement | null): boolean {
+  return event.composedPath().some((entry) => (
+    entry === panel
+    || (entry instanceof Node && Boolean(panel?.contains(entry)))
+    || (entry instanceof Element && entry.matches(allowedDetailInteractionSelector))
+  ))
+}
+
+function documentHasSelection(): boolean {
+  const selection = document.getSelection()
+  return Boolean(selection && !selection.isCollapsed)
+}
+
 export function snapDetailWidth(raw: number): number {
   const buckets = [320, 400, 480, 550, 640, 720, 800, 900]
   let closest = 320
@@ -158,6 +180,11 @@ export function CatalogDetailPane({
   useEffect(() => {
     if (!asOverlay && !asModal) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    let pointerStart: { x: number; y: number } | undefined
+    let dragged = false
+    let suppressClick = false
+    let clickListenerAttached = false
+    let disposed = false
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -166,27 +193,53 @@ export function CatalogDetailPane({
       }
     }
 
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!event.isPrimary || event.button !== 0) return
+      pointerStart = { x: event.clientX, y: event.clientY }
+      dragged = false
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!pointerStart) return
+      if (
+        Math.abs(event.clientX - pointerStart.x) > 4
+        || Math.abs(event.clientY - pointerStart.y) > 4
+      ) dragged = true
+    }
+
+    const handlePointerUp = () => {
+      if (dragged) {
+        suppressClick = true
+        window.setTimeout(() => { suppressClick = false }, 0)
+      }
+      pointerStart = undefined
+      dragged = false
+    }
+
     const handleClickOutside = (event: MouseEvent) => {
       if (!asOverlay) return
-      const target = event.target
-      if (target instanceof Element && (
-        target.closest('dialog[open]') ||
-        target.closest('.controlled-vocabulary-menu') ||
-        target.closest('[role="tooltip"]') ||
-        target.closest('[role="listbox"]')
-      )) return
-      if (target instanceof Node && !panelRef.current?.contains(target)) {
-        onCloseRef.current()
-      }
+      if (suppressClick || documentHasSelection()) return
+      if (!detailInteractionIsAllowed(event, panelRef.current)) onCloseRef.current()
     }
 
     document.addEventListener('keydown', handleKeyDown)
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+    queueMicrotask(() => {
+      if (disposed) return
+      document.addEventListener('click', handleClickOutside)
+      clickListenerAttached = true
+    })
 
     return () => {
+      disposed = true
       document.removeEventListener('keydown', handleKeyDown)
-      document.removeEventListener('mousedown', handleClickOutside)
-      opener?.focus()
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      if (clickListenerAttached) document.removeEventListener('click', handleClickOutside)
+      if (opener?.isConnected) opener.focus()
     }
   }, [asOverlay, asModal])
 

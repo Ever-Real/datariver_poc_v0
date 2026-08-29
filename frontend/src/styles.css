@@ -123,12 +123,14 @@
 .catalog-export-actions .button:disabled { cursor: not-allowed; }
 .catalog-export-status { color: var(--text-600); white-space: nowrap; font-size: 9px; }
 .catalog-export-status code { color: var(--danger-700); font-size: 9px; }
+.catalog-export-control .catalog-export-failure { grid-column: 1 / -1; margin: 0; border: 1px solid #efb6ad; border-radius: var(--radius); padding: 6px 8px; color: var(--danger-700); background: #fff4f2; }
 .export-state-completed { color: #1f6b2a; background: #e5f3e5; }
 .export-state-failed { color: var(--danger-700); background: #fbe9e5; }
 .catalog-export-control > .notice { grid-column: 1 / -1; margin: 0; }
 .catalog-export-control-compact { position: relative; min-width: 0; display: flex; align-items: center; gap: 5px; margin: 0; border: 0; padding: 0; }
 .catalog-export-control-compact .catalog-export-actions { gap: 5px; }
 .catalog-export-control-compact .catalog-export-status { order: 2; }
+.catalog-export-control-compact > .catalog-export-failure { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; width: min(420px, calc(100vw - 24px)); }
 .catalog-export-control-compact > .notice { position: absolute; z-index: 30; top: 100%; right: 9px; left: 9px; }
 .catalog-workspace { --catalog-workspace-height: clamp(520px, calc(100vh - 240px), 860px); min-width: 0; max-width: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; gap: 8px; }
 .catalog-workspace.with-detail { grid-template-columns: 300px minmax(560px, 1fr) minmax(420px, var(--catalog-detail-width, 550px)); }

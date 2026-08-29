@@ -106,7 +106,11 @@ vi.mock('./features/dashboard/DashboardPage', () => ({
 
 vi.mock('./features/catalog/CatalogPage', () => ({
   CatalogPage: ({ initialQuery }: { initialQuery: string }) => (
-    <section aria-label="Catalog route" data-query={initialQuery} />
+    <section
+      aria-label="Catalog route"
+      data-query={initialQuery}
+      data-detail={new URL(window.location.href).searchParams.get('catalogAsset') ?? ''}
+    />
   ),
 }))
 
@@ -429,14 +433,19 @@ describe('App authentication-bound Admin orchestration', () => {
 
     render(<App />)
 
-    expect(await screen.findByRole('region', { name: 'Catalog route' })).toHaveAttribute('data-query', 'retained')
+    const initialCatalog = await screen.findByRole('region', { name: 'Catalog route' })
+    expect(initialCatalog).toHaveAttribute('data-query', 'retained')
+    expect(initialCatalog).toHaveAttribute('data-detail', 'transient-detail')
     fireEvent.click(screen.getByRole('button', { name: 'Navigate dashboard' }))
     expect(await screen.findByRole('region', { name: 'Dashboard route' })).toBeInTheDocument()
     expect(new URL(window.location.href).searchParams.get('q')).toBe('retained')
     expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Navigate catalog' }))
-    expect(await screen.findByRole('region', { name: 'Catalog route' })).toHaveAttribute('data-query', 'retained')
+    const returnedCatalog = await screen.findByRole('region', { name: 'Catalog route' })
+    expect(returnedCatalog).toHaveAttribute('data-query', 'retained')
+    expect(returnedCatalog).toHaveAttribute('data-detail', '')
+    expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
   })
 
   it('renders the local credential form and clears its controlled password after submit', () => {

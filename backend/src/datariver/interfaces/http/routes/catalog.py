@@ -213,7 +213,10 @@ async def catalog_export_capability(
         environment=context.environment,
         request_id=context.request_id,
     )
-    return CatalogExportCapabilityResponse(enabled=enabled)
+    return CatalogExportCapabilityResponse(
+        enabled=enabled,
+        maximum_rows=get_container(request).settings.catalog_export_maximum_rows,
+    )
 
 
 @router.post(

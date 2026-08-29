@@ -444,6 +444,7 @@ class CatalogExportDownloadResponse(BaseModel):
 
 class CatalogExportCapabilityResponse(BaseModel):
     enabled: bool
+    maximum_rows: int = Field(ge=1, le=5_000_000)
 
 
 class ChangeItemRequest(BaseModel):

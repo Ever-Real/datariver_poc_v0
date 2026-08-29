@@ -83,6 +83,7 @@ export interface PocAuthorization {
 
 export interface CatalogExportCapability {
   enabled: boolean
+  maximum_rows: number
 }
 
 export interface OperationsSummary {

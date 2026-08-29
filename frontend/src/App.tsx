@@ -5,6 +5,7 @@ import type {
   AdminOperation,
   AdminReadContext,
   CapabilitiesResponse,
+  CatalogExportCapability,
   ExternalSystemLink,
   PocCapability,
   PocRole,
@@ -17,7 +18,7 @@ import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
 import { publicRuntimeConfig } from './runtimeConfig'
 import { allowedAdminSections } from './features/admin/adminSections'
-import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
+import { catalogExportCapability } from './features/catalog/catalogExportApi'
 import { knowledgeStudioUrl } from './features/knowledge/routes/knowledgeLocation'
 
 const AdminPage = lazy(() => import('./features/admin/AdminPage').then((module) => ({ default: module.AdminPage })))
@@ -73,7 +74,10 @@ export function App() {
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
   const [capabilities, setCapabilities] = useState<CapabilitiesResponse['items']>([])
   const [deploymentTier, setDeploymentTier] = useState<CapabilitiesResponse['deployment_tier']>('SINGLE_NODE_PILOT')
-  const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
+  const [catalogExport, setCatalogExport] = useState<CatalogExportCapability>({
+    enabled: false,
+    maximum_rows: 0,
+  })
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
     subject: string
@@ -282,13 +286,13 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    setCatalogExportWorkerEnabled(false)
+    setCatalogExport({ enabled: false, maximum_rows: 0 })
     if (
       !activeWorkspace
       || (pocMode && !pocCapabilities.includes('catalog.manage'))
     ) return () => { active = false }
-    void catalogExportCapabilityEnabled(client)
-      .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
+    void catalogExportCapability(client)
+      .then((capability) => { if (active) setCatalogExport(capability) })
     return () => { active = false }
   }, [
     activeWorkspace,
@@ -518,7 +522,8 @@ export function App() {
           client={client}
           initialQuery={catalogQuery}
           onQueryChange={searchCatalog}
-          catalogExportWorkerEnabled={catalogExportWorkerEnabled}
+          catalogExportWorkerEnabled={catalogExport.enabled}
+          catalogExportMaximumRows={catalogExport.maximum_rows || undefined}
           workspaceId={activeWorkspace}
           subjectId={authenticatedSubject}
           securityEpoch={auth.securityEpoch}
