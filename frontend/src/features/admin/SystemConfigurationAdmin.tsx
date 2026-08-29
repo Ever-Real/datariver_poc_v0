@@ -80,7 +80,7 @@ function applyMethodLabel(method: DeploymentEnvironment['apply_method']) {
 }
 
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
-  const { api, reportError } = props
+  const { api, reportError, requestConfirmation } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
   const [capabilities, setCapabilities] = useState<Capability[]>([])
   const [deploymentEnvironment, setDeploymentEnvironment] = useState<DeploymentEnvironment>()
@@ -663,7 +663,9 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                 </button>
               </div>
               {renderTestResult(selected)}
-              {selected.system_id === 'AIRFLOW' && <AirflowDagStatusPanel api={api} />}
+              {selected.system_id === 'AIRFLOW' && (
+                <AirflowDagStatusPanel api={api} requestConfirmation={requestConfirmation} />
+              )}
               <small className="muted">
                 전체 옵션 설명: <code>docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md</code>
               </small>

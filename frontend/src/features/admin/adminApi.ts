@@ -92,17 +92,56 @@ export interface VersionedSiteBranding extends SiteBranding {
 }
 
 export interface AirflowDagStatus {
+  system_id: 'AIRFLOW'
   dag_id: string
   state: 'READY' | 'MISSING'
   paused: boolean | null
   next_run_at: string | null
   last_parsed_at: string | null
+  latest_run: AirflowRun | null
+}
+
+export interface AirflowRun {
+  system_id: 'AIRFLOW'
+  dag_id: string
+  run_id: string
+  state: 'DEFERRED' | 'FAILED' | 'NONE' | 'QUEUED' | 'REMOVED' | 'RESTARTING' | 'RUNNING' | 'SCHEDULED' | 'SKIPPED' | 'SUCCESS' | 'UP_FOR_RESCHEDULE' | 'UP_FOR_RETRY' | 'UPSTREAM_FAILED'
+  logical_date: string | null
+  started_at: string | null
+  ended_at: string | null
 }
 
 export interface AirflowDagInventory {
+  system_id: 'AIRFLOW'
   api_mode: 'V1' | 'V2'
   observed_at: string
   items: AirflowDagStatus[]
+}
+
+export interface AirflowConnectionProjection {
+  system_id: 'AIRFLOW'
+  state: 'CONFIGURED' | 'NOT_CONFIGURED'
+  base_url: string | null
+  api_mode: 'V1' | 'V2' | null
+  auth: {
+    mode: 'SERVER_OWNED_PASSWORD'
+    secret_references: string[]
+  }
+}
+
+export interface AirflowOperationReceipt {
+  operation_id: string
+  operation: 'TRIGGER' | 'PAUSE' | 'UNPAUSE'
+  system_id: 'AIRFLOW'
+  dag_id: string
+  run_id: string | null
+  target_paused: boolean | null
+  state: 'PENDING' | 'RECONCILE_REQUIRED' | 'ACCEPTED' | 'FAILED'
+  provider_state: AirflowRun['state'] | null
+  failure_code: string | null
+  created_at: string
+  updated_at: string
+  audit_events: Array<{ event: string; at: string; code?: string }>
 }
 
 export interface AdminCursorPage<T> {
@@ -733,6 +772,40 @@ export class AdminApi {
     return this.client.request<AirflowDagInventory>(
       '/poc-api/airflow/dags',
       { signal, cache: 'no-store' },
+    )
+  }
+
+  getAirflowConnection(signal?: AbortSignal) {
+    return this.client.request<AirflowConnectionProjection>(
+      '/poc-api/airflow/connection',
+      { signal, cache: 'no-store' },
+    )
+  }
+
+  triggerAirflowDag(dagId: string, idempotencyKey: string) {
+    return this.client.request<{
+      replayed: boolean
+      reconciled?: boolean
+      run?: AirflowRun
+      receipt: AirflowOperationReceipt
+    }>(`/poc-api/airflow/dags/${encodeURIComponent(dagId)}/runs`, {
+      method: 'POST',
+      idempotencyKey,
+      body: JSON.stringify({}),
+    })
+  }
+
+  transitionAirflowDag(dagId: string, action: 'PAUSE' | 'UNPAUSE', idempotencyKey: string) {
+    return this.client.request<{
+      system_id: 'AIRFLOW'
+      action: 'PAUSE' | 'UNPAUSE'
+      replayed: boolean
+      reconciled?: boolean
+      dag?: Omit<AirflowDagStatus, 'latest_run'>
+      receipt: AirflowOperationReceipt
+    }>(
+      `/poc-api/airflow/dags/${encodeURIComponent(dagId)}`,
+      { method: 'PATCH', idempotencyKey, body: JSON.stringify({ action }) },
     )
   }
 

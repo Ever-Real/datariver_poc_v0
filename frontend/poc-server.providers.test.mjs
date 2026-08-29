@@ -1350,7 +1350,7 @@ test('routes general Korean conversation without probing DataHub as arbitrary as
   assert.equal(requests.filter((request) => request.path === '/api/graphql').length, graphqlBefore)
 })
 
-test('holds reviewed Airflow DAG triggers without parsing conf or contacting the provider', async () => {
+test('requires the durable Airflow receipt store before parsing a trigger or contacting the provider', async () => {
   const airflowRequestsBefore = requests.filter((request) => request.path.includes('/airflow/')).length
   const dag = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs`, {
     method: 'POST',
@@ -1359,8 +1359,8 @@ test('holds reviewed Airflow DAG triggers without parsing conf or contacting the
   })
   assert.equal(dag.status, 503)
   assert.deepEqual(await dag.json(), {
-    code: 'AIRFLOW_TRIGGER_SAFETY_HOLD',
-    detail: 'Manual Airflow triggers remain disabled until a durable idempotency, audit, retention, and recovery contract is approved.',
+    code: 'AIRFLOW_RECEIPT_STORE_REQUIRED',
+    detail: 'Durable PostgreSQL Airflow receipts are required before provider contact.',
     status: 503,
     title: 'POC integration request failed',
   })
@@ -1372,7 +1372,7 @@ test('holds reviewed Airflow DAG triggers without parsing conf or contacting the
     body: '{"conf":',
   })
   assert.equal(retry.status, 503)
-  assert.equal((await retry.json()).code, 'AIRFLOW_TRIGGER_SAFETY_HOLD')
+  assert.equal((await retry.json()).code, 'AIRFLOW_RECEIPT_STORE_REQUIRED')
   assert.equal(requests.filter((request) => request.path.includes('/airflow/')).length, airflowRequestsBefore)
 
   const query = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs?conf=forbidden`, {

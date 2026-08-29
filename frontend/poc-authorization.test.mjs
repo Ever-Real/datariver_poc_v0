@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 91)
+  assert.equal(POC_ROUTE_REGISTRY.length, 94)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 8,
     AUTHENTICATED: 3,
-    CAPABILITY_PROTECTED: 78,
+    CAPABILITY_PROTECTED: 81,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -140,7 +140,10 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/previews', 'knowledge.abox.preview'],
     ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.create'],
     ['GET', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.list'],
+    ['GET', '/poc-api/airflow/connection', 'provider.airflow.connection'],
+    ['GET', '/poc-api/airflow/operations', 'provider.airflow.operations'],
     ['GET', '/poc-api/airflow/dags', 'provider.airflow.dags'],
+    ['PATCH', '/poc-api/airflow/dags/datariver_quality_dispatch', 'provider.airflow.dag-transition'],
     ['POST', '/poc-api/airflow/dags/datariver_quality_dispatch/runs', 'provider.airflow'],
 
     ['PUT', '/poc-api/state/core', 'state.write'],

@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../../api/client'
 import type { AdminReadContext, SystemConfigurationEntry } from '../../api/types'
 import { AdminApi } from './adminApi'
+import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import { getAdminMessages } from './messages'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 
@@ -73,7 +74,10 @@ function probeResult(
   }
 }
 
-function renderAdmin(request: ReturnType<typeof vi.fn>) {
+function renderAdmin(
+  request: ReturnType<typeof vi.fn>,
+  requestConfirmation: (mutation: PendingAdminMutation) => void = vi.fn(),
+) {
   const routedRequest = (path: string, options?: RequestInit) => {
     if (path === '/capabilities') {
       return Promise.resolve({
@@ -105,7 +109,7 @@ function renderAdmin(request: ReturnType<typeof vi.fn>) {
       api={api}
       context={context}
       messages={getAdminMessages('ko')}
-      requestConfirmation={vi.fn()}
+      requestConfirmation={requestConfirmation}
       keyFor={vi.fn(() => 'unused')}
       clearKey={vi.fn()}
       reportError={vi.fn()}
@@ -305,28 +309,59 @@ describe('SystemConfigurationAdmin', () => {
       label: 'Airflow',
     }
     let inventoryCall = 0
+    let triggerCall = 0
+    let pending: PendingAdminMutation | undefined
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
       if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
+      if (path === '/poc-api/airflow/connection') return Promise.resolve({
+        system_id: 'AIRFLOW', state: 'CONFIGURED', base_url: 'https://airflow.example.internal',
+        api_mode: 'V2', auth: {
+          mode: 'SERVER_OWNED_PASSWORD',
+          secret_references: ['env:AIRFLOW_USERNAME', 'env:AIRFLOW_PASSWORD'],
+        },
+      })
+      if (path === '/poc-api/airflow/dags/datariver_catalog_sync/runs') {
+        triggerCall += 1
+        return Promise.resolve({
+          replayed: false,
+          receipt: {
+            operation_id: 'a'.repeat(64), operation: 'TRIGGER', system_id: 'AIRFLOW',
+            dag_id: 'datariver_catalog_sync', run_id: 'datariver__run', state: 'ACCEPTED',
+            target_paused: null, provider_state: 'QUEUED', failure_code: null,
+            created_at: '2026-08-29T12:00:00Z', updated_at: '2026-08-29T12:00:00Z',
+            audit_events: [],
+          },
+        })
+      }
       if (path === '/poc-api/airflow/dags') {
         inventoryCall += 1
         return Promise.resolve({
+          system_id: 'AIRFLOW',
           api_mode: 'V2',
           observed_at: '2026-08-29T12:00:00Z',
           items: [
             {
+              system_id: 'AIRFLOW',
               dag_id: 'datariver_catalog_sync',
               state: 'READY',
               paused: false,
               next_run_at: '2026-08-30T02:00:00Z',
               last_parsed_at: '2026-08-29T11:59:00Z',
+              latest_run: {
+                system_id: 'AIRFLOW', dag_id: 'datariver_catalog_sync', run_id: 'scheduled__1',
+                state: 'SUCCESS', logical_date: '2026-08-29T00:00:00Z',
+                started_at: null, ended_at: null,
+              },
             },
             {
+              system_id: 'AIRFLOW',
               dag_id: 'datariver_quality_dispatch',
               state: 'MISSING',
               paused: null,
               next_run_at: null,
               last_parsed_at: null,
+              latest_run: null,
             },
           ],
         })
@@ -334,7 +369,7 @@ describe('SystemConfigurationAdmin', () => {
       throw new Error(`unexpected request: ${path}`)
     })
 
-    renderAdmin(request)
+    renderAdmin(request, (next) => { pending = next })
 
     await screen.findByText('datariver_catalog_sync')
     const table = screen.getByRole('table', { name: '검토된 Airflow DAG 목록' })
@@ -343,11 +378,25 @@ describe('SystemConfigurationAdmin', () => {
     expect(table).toHaveTextContent('datariver_quality_dispatch')
     expect(table).toHaveTextContent('찾을 수 없음')
     expect(screen.getByRole('status', { name: 'Airflow DAG 조회 정보' })).toHaveTextContent('API V2')
-    expect(screen.getByRole('note')).toHaveTextContent('멱등성·감사·보존·복구 계약')
-    expect(screen.queryByRole('button', { name: /DAG 실행/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent('멱등성·감사·실패 조정 receipt')
+    expect(screen.getByText('System ID')).toBeVisible()
+    expect(screen.getByText('env:AIRFLOW_PASSWORD')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'DAG 실행' }))
+    expect(triggerCall).toBe(0)
+    expect(pending?.summary).toEqual(expect.arrayContaining([
+      'System ID: AIRFLOW',
+      '검토된 DAG: datariver_catalog_sync',
+      '작업: TRIGGER',
+    ]))
+    if (!pending) throw new Error('Airflow confirmation was not requested')
+    const confirmed = pending
+    await act(async () => { await confirmed.execute() })
+    await waitFor(() => expect(triggerCall).toBe(1))
+    expect(await screen.findByText(/실행이 접수되었습니다/)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'DAG 상태 새로고침' }))
-    await waitFor(() => expect(inventoryCall).toBe(2))
+    await waitFor(() => expect(inventoryCall).toBeGreaterThanOrEqual(3))
     expect(request).toHaveBeenCalledWith(
       '/poc-api/airflow/dags',
       expect.objectContaining({ cache: 'no-store' }),
@@ -363,6 +412,10 @@ describe('SystemConfigurationAdmin', () => {
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') return Promise.resolve(inventory([airflowEntry]))
       if (path.endsWith('/test-deployment')) return Promise.resolve(probeResult('AIRFLOW'))
+      if (path === '/poc-api/airflow/connection') return Promise.resolve({
+        system_id: 'AIRFLOW', state: 'CONFIGURED', base_url: 'https://airflow.example.internal',
+        api_mode: 'V2', auth: { mode: 'SERVER_OWNED_PASSWORD', secret_references: [] },
+      })
       if (path === '/poc-api/airflow/dags') throw new Error('Airflow DAG 상태를 불러오지 못했습니다.')
       throw new Error(`unexpected request: ${path}`)
     })

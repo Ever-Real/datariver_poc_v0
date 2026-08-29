@@ -1309,7 +1309,7 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
   const {
     collectAllowedAirflowDagStatuses,
     normalizeAirflowDagStatus,
-  } = await import('./poc-server.mjs?airflow-read-only-status-contract')
+  } = await import('./poc-airflow-control.mjs?airflow-read-only-status-contract')
   const observed = await collectAllowedAirflowDagStatuses('v2', async (dagId) => {
     if (dagId === 'datariver_catalog_probe') return new Response(null, { status: 404 })
     return new Response(JSON.stringify({
@@ -1319,7 +1319,9 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
       last_parsed_time: '2026-08-29T12:00:00Z',
       provider_only_field: 'ignored',
     }), { status: 200 })
-  })
+  }, async (dagId) => new Response(JSON.stringify({
+    dag_runs: [{ dag_id: dagId, dag_run_id: `scheduled__${dagId}`, state: 'success' }],
+  }), { status: 200 }))
   assert.equal(observed.api_mode, 'V2')
   assert.deepEqual(observed.items.map((item) => item.dag_id), [
     'datariver_bulk_registration_prepare',
@@ -1329,8 +1331,8 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
     'datariver_quality_dispatch',
   ])
   assert.deepEqual(observed.items.find((item) => item.dag_id === 'datariver_catalog_probe'), {
-    dag_id: 'datariver_catalog_probe', state: 'MISSING', paused: null,
-    next_run_at: null, last_parsed_at: null,
+    system_id: 'AIRFLOW', dag_id: 'datariver_catalog_probe', state: 'MISSING', paused: null,
+    next_run_at: null, last_parsed_at: null, latest_run: null,
   })
   assert.equal(
     observed.items.find((item) => item.dag_id === 'datariver_manual_metadata_apply').paused,
@@ -1339,11 +1341,17 @@ test('normalizes only reviewed Airflow DAG status documents and preserves missin
   assert.equal(observed.items[0].next_run_at, '2026-08-29T17:00:00.000Z')
   assert.equal(observed.items[0].last_parsed_at, '2026-08-29T12:00:00.000Z')
   assert.throws(
-    () => normalizeAirflowDagStatus({ dag_id: 'unexpected', is_paused: false }, 'reviewed'),
+    () => normalizeAirflowDagStatus(
+      { dag_id: 'unexpected', is_paused: false },
+      'datariver_catalog_sync',
+    ),
     { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
   )
   assert.throws(
-    () => normalizeAirflowDagStatus({ dag_id: 'reviewed', is_paused: false, next_dagrun: 1 }, 'reviewed'),
+    () => normalizeAirflowDagStatus(
+      { dag_id: 'datariver_catalog_sync', is_paused: false, next_dagrun: 1 },
+      'datariver_catalog_sync',
+    ),
     { code: 'AIRFLOW_DAG_CONTRACT_INVALID' },
   )
 })
