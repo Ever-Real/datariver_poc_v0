@@ -63,6 +63,20 @@ function fieldFlag(field: Record<string, unknown>, key: string): boolean {
   return field[key] === true
 }
 
+export function snapDetailWidth(raw: number): number {
+  const buckets = [320, 400, 480, 550, 640, 720, 800, 900]
+  let closest = 320
+  let minDiff = Infinity
+  for (const b of buckets) {
+    const diff = Math.abs(b - raw)
+    if (diff < minDiff) {
+      minDiff = diff
+      closest = b
+    }
+  }
+  return closest
+}
+
 export function CatalogDetailPane({
   client,
   assetId,
@@ -136,20 +150,45 @@ export function CatalogDetailPane({
     gcTime: 10 * 60 * 1000,
   })
 
+  const onCloseRef = useRef(onClose)
   useEffect(() => {
-    if (!asOverlay) return
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target
-      if (target instanceof Node && !panelRef.current?.contains(target)) {
-        onClose()
+    onCloseRef.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
+    if (!asOverlay && !asModal) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current()
       }
     }
-    // mousedown으로 캡처 (클릭이 뒤쪽 요소에 전달되기 전에 먼저 닫힘)
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!asOverlay) return
+      const target = event.target
+      if (target instanceof Element && (
+        target.closest('dialog[open]') ||
+        target.closest('.controlled-vocabulary-menu') ||
+        target.closest('[role="tooltip"]') ||
+        target.closest('[role="listbox"]')
+      )) return
+      if (target instanceof Node && !panelRef.current?.contains(target)) {
+        onCloseRef.current()
+      }
     }
-  }, [asOverlay, onClose])
+
+    document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('mousedown', handleClickOutside)
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('mousedown', handleClickOutside)
+      opener?.focus()
+    }
+  }, [asOverlay, asModal])
 
   useEffect(() => {
     if (pagedAssetId.current !== assetId) {
@@ -182,8 +221,7 @@ export function CatalogDetailPane({
       const input = document.createElement('textarea')
       input.value = detail.external_urn
       input.setAttribute('readonly', '')
-      input.style.position = 'fixed'
-      input.style.opacity = '0'
+      input.className = 'catalog-copy-fallback'
       document.body.append(input)
       input.select()
       document.execCommand('copy')
@@ -202,7 +240,7 @@ export function CatalogDetailPane({
     target.setPointerCapture(event.pointerId)
     const startX = event.clientX
     const startWidth = width ?? 550
-    const move = (next: PointerEvent) => onResizeWidth(startWidth + startX - next.clientX)
+    const move = (next: PointerEvent) => onResizeWidth(snapDetailWidth(startWidth + startX - next.clientX))
     const stop = (stopEvent: PointerEvent) => {
       target.releasePointerCapture(stopEvent.pointerId)
       window.removeEventListener('pointermove', move)
@@ -218,9 +256,8 @@ export function CatalogDetailPane({
       {/* Backdrop: 오버레이 모드에서 배경 dimming + 본문 스크롤 잠금 */}
       {asOverlay && (
         <div
-          className="catalog-detail-backdrop"
+          className="catalog-detail-backdrop catalog-detail-backdrop--inert"
           aria-hidden="true"
-          style={{ pointerEvents: 'none' }}
         />
       )}
       {/* URN 복사 Toast 알림 */}
@@ -231,13 +268,12 @@ export function CatalogDetailPane({
       )}
       <aside
         ref={panelRef}
-        className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}${asModal ? ' catalog-detail--modal' : ''}`}
+        className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}${asModal ? ' catalog-detail--modal' : ''} ${width ? `catalog-detail-w${snapDetailWidth(width)}` : ''}`}
         aria-label="카탈로그 상세"
-        style={{ width: width ? `${width}px` : undefined }}
       >
       {onResizeWidth && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
-        if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth((width ?? 550) + 24) }
-        if (event.key === 'ArrowRight') { event.preventDefault(); onResizeWidth((width ?? 550) - 24) }
+        if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth(snapDetailWidth((width ?? 550) + 50)) }
+        if (event.key === 'ArrowRight') { event.preventDefault(); onResizeWidth(snapDetailWidth((width ?? 550) - 50)) }
       }} onPointerDown={startResize} title="왼쪽으로 끌어 상세 폭 조절" type="button" />}
       <header>
         <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>

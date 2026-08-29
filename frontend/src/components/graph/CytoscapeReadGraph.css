@@ -47,3 +47,20 @@
 .cy-read-graph-entity-list button[aria-pressed="true"] { border-color: var(--blue-700); outline: 2px solid #b9d4e8; background: var(--blue-100); }
 .cy-read-graph-entity-list button span { color: var(--text-500); font-size: 8px; }
 @media (max-width: 640px) { .cy-read-graph-toolbar { align-items: stretch; flex-direction: column; } .cy-read-graph-toolbar form { width: 100%; max-width: none; } .cy-read-graph-tool-buttons { align-self: flex-end; } }
+
+.cy-group-color-dataset { --graph-group-color: #4e79a7; }
+.cy-group-color-view { --graph-group-color: #59a14f; }
+.cy-group-color-column { --graph-group-color: #f28e2b; }
+.cy-group-color-glossary_term { --graph-group-color: #b07aa1; }
+.cy-group-color-tag { --graph-group-color: #e15759; }
+.cy-group-color-domain { --graph-group-color: #76b7b2; }
+.cy-group-color-unit { --graph-group-color: #edc948; }
+.cy-group-color-container { --graph-group-color: #9c755f; }
+.cy-group-color-platform { --graph-group-color: #79706e; }
+.cy-group-color-entity { --graph-group-color: #6b7280; }
+
+.cy-graph-h250 { height: 250px; }
+.cy-graph-h390 { height: 390px; }
+.cy-graph-h420 { height: 420px; }
+.cy-graph-h430 { height: 430px; }
+.cy-graph-h440 { height: 440px; }

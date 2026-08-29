@@ -1223,3 +1223,26 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
     justify-self: start;
   }
 }
+
+.catalog-match-preview-wrapper { flex: 1; min-width: 0; }
+.catalog-match-carousel-counter { font-size: 9px; color: var(--text-400); flex-shrink: 0; white-space: nowrap; }
+.catalog-detail-backdrop--inert { pointer-events: none; }
+
+.tree-depth-0 { padding-left: 8px; }
+.tree-depth-1 { padding-left: 20px; }
+.tree-depth-2 { padding-left: 32px; }
+.tree-depth-3 { padding-left: 44px; }
+
+.catalog-detail-w320 { width: min(320px, calc(100vw - 24px)); }
+.catalog-detail-w400 { width: min(400px, calc(100vw - 24px)); }
+.catalog-detail-w480 { width: min(480px, calc(100vw - 24px)); }
+.catalog-detail-w550 { width: min(550px, calc(100vw - 24px)); }
+.catalog-detail-w640 { width: min(640px, calc(100vw - 24px)); }
+.catalog-detail-w720 { width: min(720px, calc(100vw - 24px)); }
+.catalog-detail-w800 { width: min(800px, calc(100vw - 24px)); }
+.catalog-detail-w900 { width: min(900px, calc(100vw - 24px)); }
+
+.catalog-copy-fallback {
+  position: fixed;
+  opacity: 0;
+}

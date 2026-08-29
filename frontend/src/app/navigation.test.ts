@@ -27,9 +27,22 @@ describe('navigation contract', () => {
       query: '웨이퍼 A&B',
       href: 'https://catalog.example/app?page=dashboard#result',
     })).toBe('/app?page=catalog&q=%EC%9B%A8%EC%9D%B4%ED%8D%BC+A%26B#result')
-    expect(pageUrl('dashboard', {
+
+    // Explicit empty query removes q
+    expect(pageUrl('catalog', {
+      query: '',
       href: 'https://catalog.example/app?page=catalog&q=stale',
-    })).toBe('/app?page=dashboard')
+    })).toBe('/app?page=catalog')
+
+    // Omitted query preserves existing q
+    expect(pageUrl('catalog', {
+      href: 'https://catalog.example/app?page=catalog&q=preserve',
+    })).toBe('/app?page=catalog&q=preserve')
+
+    // Leaving catalog preserves q but deletes catalogAsset
+    expect(pageUrl('dashboard', {
+      href: 'https://catalog.example/app?page=catalog&q=stale&catalogAsset=asset-1',
+    })).toBe('/app?page=dashboard&q=stale')
   })
 
   it('cleans only Knowledge-owned route state when leaving its surfaces', () => {

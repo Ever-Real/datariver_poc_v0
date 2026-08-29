@@ -57,7 +57,7 @@ export function CatalogMatchPreview({
           <ChevronLeft size={12} />
         </button>
       )}
-      <span className="catalog-match-preview catalog-match-preview--single-line" style={{ flex: 1, minWidth: 0 }}>
+      <span className="catalog-match-preview catalog-match-preview--single-line catalog-match-preview-wrapper">
         <span key={`${fragment.field}-${index}-${fragment.text}`}>
           <b>{labels[fragment.field]}</b>
           <HighlightedText text={fragment.text} terms={fragment.matched_terms} />
@@ -75,7 +75,7 @@ export function CatalogMatchPreview({
         </button>
       )}
       {hasControls && (
-        <span style={{ fontSize: 9, color: 'var(--text-400)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+        <span className="catalog-match-carousel-counter">
           {index + 1}/{fragments.length}
         </span>
       )}

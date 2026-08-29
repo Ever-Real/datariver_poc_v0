@@ -156,6 +156,14 @@ describe('CytoscapeReadGraph', () => {
     expect(select).toHaveBeenCalled()
   })
 
+  it('maps default height to a known class and does not assign inline styles to the container', () => {
+    const { container } = render(<CytoscapeReadGraph ariaLabel="Layout" graph={graph} />)
+    const graphDiv = container.querySelector('.cy-read-graph-canvas')
+    expect(graphDiv).not.toBeNull()
+    expect(graphDiv).toHaveClass('cy-graph-h440')
+    expect(graphDiv).not.toHaveAttribute('style')
+  })
+
   it('provides accessible DOM controls, legend, detail and render metrics', async () => {
     render(<CytoscapeReadGraph ariaLabel="Data lineage" graph={graph} selectedElementId="node-a" />)
 

@@ -795,7 +795,7 @@ describe('catalog workspace', () => {
     const detail = screen.getByRole('complementary', { name: '카탈로그 상세' })
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1_500 })
     fireEvent.keyDown(resizer, { key: 'ArrowLeft' })
-    expect(detail).toHaveStyle('width: 574px')
+    expect(detail).toHaveClass('catalog-detail-w640')
     const detailScroll = document.querySelector<HTMLElement>('.catalog-detail-scroll')
     expect(detailScroll).not.toBeNull()
     expect(detailScroll).not.toContainElement(resizer)
@@ -805,7 +805,7 @@ describe('catalog workspace', () => {
     fireEvent.pointerDown(resizer, { clientX: 900, pointerId: 7 })
     fireEvent.pointerMove(window, { clientX: 860, pointerId: 7 })
     fireEvent.pointerUp(window, { clientX: 860, pointerId: 7 })
-    expect(detail).toHaveStyle('width: 614px')
+    expect(detail).toHaveClass('catalog-detail-w640')
     expect(request.mock.calls.some(([path]) => String(path).includes('/lineage?'))).toBe(false)
     fireEvent.click(screen.getByRole('tab', { name: 'Lineage' }))
     const lineageGraph = await screen.findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
@@ -888,5 +888,43 @@ describe('catalog workspace', () => {
     expect(within(detail).getAllByLabelText('정보 없음')).toHaveLength(8)
     expect(within(detail).getAllByText('Profile 미수집')).toHaveLength(2)
     expect(within(detail).getByText('메타데이터 미등록')).toBeInTheDocument()
+  })
+
+  it('updates the URL when selecting and closing a detail pane and restores focus via Escape or outside click', async () => {
+    const client = clientWith(defaultRequest)
+    // 1. Simulate opening detail from explicit URL
+    const explicitUrl = new URL(window.location.href)
+    explicitUrl.searchParams.set('page', 'catalog')
+    explicitUrl.searchParams.set('catalogAsset', asset.id)
+    window.history.pushState({}, '', explicitUrl.toString())
+    render(<TestCatalogPage client={client} initialQuery="wafer" />)
+
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toBeVisible()
+    expect(new URL(window.location.href).searchParams.get('catalogAsset')).toBe(asset.id)
+
+    // 2. Closing via Escape uses replaceState and clears catalogAsset
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
+
+    // 3. Focus the actual interactive tr before row activation
+    const innerText = await screen.findByText('wafer_events')
+    const row = innerText.closest('tr')
+    expect(row).not.toBeNull()
+    row!.focus()
+    expect(row).toHaveFocus()
+
+    // 4. Activate the row (opens transiently, does not push URL)
+    fireEvent.click(row!)
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toBeVisible()
+    expect(new URL(window.location.href).searchParams.has('catalogAsset')).toBe(false)
+
+    // 5. Clicking outside restores that tr
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(row).toHaveFocus()
+
+    // Reset
+    window.history.replaceState({}, '', '/')
   })
 })

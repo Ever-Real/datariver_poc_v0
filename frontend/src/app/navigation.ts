@@ -92,8 +92,16 @@ export function pageFromLocation(href = window.location.href): Page {
 export function pageUrl(page: Page, options: { query?: string; href?: string } = {}): string {
   const url = new URL(options.href ?? window.location.href)
   url.searchParams.set('page', page)
-  if (page === 'catalog' && options.query) url.searchParams.set('q', options.query)
-  else url.searchParams.delete('q')
+
+  if (page === 'catalog') {
+    if (options.query !== undefined) {
+      if (options.query) url.searchParams.set('q', options.query)
+      else url.searchParams.delete('q')
+    }
+  } else {
+    url.searchParams.delete('catalogAsset')
+  }
+
   if (page !== 'knowledge') {
     url.searchParams.delete('asset')
     url.searchParams.delete('drawerTab')

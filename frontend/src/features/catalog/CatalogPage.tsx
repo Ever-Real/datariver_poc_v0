@@ -384,11 +384,11 @@ export function CatalogPage({
     const current = new URL(window.location.href)
     if (selectedAssetId && !current.searchParams.has('catalogAsset')) {
       current.searchParams.set('catalogAsset', selectedAssetId)
-      window.history.replaceState(window.history.state, '', current)
+      window.history.replaceState(window.history.state, '', current.toString())
     }
     const destination = new URL(window.location.href)
     destination.searchParams.set('catalogAsset', assetId)
-    window.history.pushState(window.history.state, '', destination)
+    window.history.pushState(window.history.state, '', destination.toString())
     selectAsset(assetId)
   }
 
@@ -415,6 +415,11 @@ export function CatalogPage({
 
   const closeSelectedAsset = () => {
     setSelectedAssetId(undefined)
+    const current = new URL(window.location.href)
+    if (current.searchParams.has('catalogAsset')) {
+      current.searchParams.delete('catalogAsset')
+      window.history.replaceState(window.history.state, '', current.toString())
+    }
   }
 
 

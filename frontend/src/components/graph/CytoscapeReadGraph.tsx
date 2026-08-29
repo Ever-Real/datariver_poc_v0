@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
@@ -22,7 +21,7 @@ import type {
 import {
   cytoscapeLayout,
   lineageRoleGaps,
-  nodeGroupColor,
+  canonicalNodeGroup,
   toCytoscapeElements,
   type ReadGraphEdge,
   type ReadGraphModel,
@@ -119,7 +118,7 @@ export function graphStyles(
         content: 'data(canvasLabel)',
         'font-family': 'Inter, Pretendard, system-ui, sans-serif',
         'font-size': CYTOSCAPE_NODE_GEOMETRY.fontSize,
-        'font-weight': 650,
+        'font-weight': 600,
         height: CYTOSCAPE_NODE_GEOMETRY.height,
         label: 'data(canvasLabel)',
         'line-height': 1.18,
@@ -212,7 +211,7 @@ export function graphStyles(
           'border-width': 2,
           color: navy,
           'font-size': 10,
-          'font-weight': 750,
+          'font-weight': 700,
           height: 52,
           padding: '7px',
           shape: 'round-rectangle',
@@ -800,11 +799,10 @@ export function CytoscapeReadGraph({
       </div>
       <div
         aria-label={`${ariaLabel} canvas. +, -, 0 키로 확대, 축소, 초기화할 수 있습니다.`}
-        className="cy-read-graph-canvas"
+        className={`cy-read-graph-canvas cy-graph-h${height}`}
         data-testid="cytoscape-read-graph-canvas"
         onKeyDown={keyboardControl}
         role="img"
-        style={{ height }}
         tabIndex={0}
       >
         <div aria-hidden="true" className="cy-read-graph-canvas-host" ref={containerRef} />
@@ -826,7 +824,7 @@ export function CytoscapeReadGraph({
         {visualProfile !== 'SEARCH_LINEAGE_CLASSIC' && entityTypes.map((entityType) => <span
           key={entityType}
           data-shape="entity"
-          style={{ '--graph-group-color': nodeGroupColor(entityType) } as CSSProperties}
+          className={`cy-group-color-${canonicalNodeGroup(entityType).toLowerCase()}`}
         >{entityType}</span>)}
       </div>
       {graph.nodes.length > 0 && <details className="cy-read-graph-entity-list">

@@ -351,14 +351,12 @@ export function CatalogResourceTree({
       {rows.map((row) => {
         if (row.type === 'LIMIT') return <div
           key={`${row.parent.id}-limit`}
-          className="catalog-tree-state"
-          style={{ paddingLeft: `${8 + row.depth * 12}px` }}
+          className={`catalog-tree-state tree-depth-${Math.min(row.depth, 3)}`}
         >메모리 보호를 위해 이 분기의 200개 항목만 표시합니다. 검색을 사용하세요.</div>
         if (row.type === 'MORE') return <button
           key={`${row.parent.id}-more`}
           type="button"
-          className="tree-load-more"
-          style={{ paddingLeft: `${8 + row.depth * 12}px` }}
+          className={`tree-load-more tree-depth-${Math.min(row.depth, 3)}`}
           onClick={() => void loadBranch(row.parent, true)}
         ><span className="tree-expander" /><span>+</span><span>하위 항목 더 보기</span></button>
         const { node, depth } = row
@@ -366,8 +364,7 @@ export function CatalogResourceTree({
         return <button
           key={node.id}
           type="button"
-          className={`${node.asset?.id === selectedAssetId ? 'selected' : ''} tree-kind-${node.kind.toLowerCase()}`}
-          style={{ paddingLeft: `${8 + depth * 12}px` }}
+          className={`${node.asset?.id === selectedAssetId ? 'selected' : ''} tree-kind-${node.kind.toLowerCase()} tree-depth-${Math.min(depth, 3)}`}
           aria-expanded={node.has_children ? isExpanded : undefined}
           onClick={() => toggle(node)}
         >
