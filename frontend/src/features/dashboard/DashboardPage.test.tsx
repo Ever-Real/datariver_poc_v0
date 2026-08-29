@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '../../api/client'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError, type ApiClient } from '../../api/client'
 import type { QualityCapability } from '../../api/types'
 import type { QualityDashboard } from '../quality/qualityDashboardTypes'
 import { DashboardPage } from './DashboardPage'
@@ -93,6 +93,73 @@ function quality(overrides: Partial<QualityDashboard> = {}): QualityDashboard {
   }
 }
 
+function currentWeekChangeSummary(weekStart: string, overrides: Record<string, unknown> = {}) {
+  const weekEnd = new Date(`${weekStart}T00:00:00.000Z`)
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + 7)
+  return {
+    week_start: weekStart,
+    week_end_exclusive: weekEnd.toISOString().slice(0, 10),
+    timezone: 'Asia/Seoul',
+    as_of: '2026-08-31T01:00:00.000Z',
+    policy_version: 1,
+    policy_hash: '4'.repeat(64),
+    count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION',
+    total_count: 9,
+    unlinked_count: 9,
+    received_count: 0,
+    recheck_count: 0,
+    testing_count: 0,
+    final_review_count: 0,
+    completed_count: 0,
+    time_unknown_count: 0,
+    schema_change_count: 4,
+    metadata_change_count: 5,
+    event_count: 11,
+    distinct_asset_count: 6,
+    precision_counts: {
+      EXACT_TIMELINE: 0,
+      EXACT_MCL: 9,
+      DRIFT_DETECTED: 0,
+      BACKFILLED_BEST_EFFORT: 0,
+      INITIAL_BASELINE: 0,
+    },
+    category_counts: {
+      TECHNICAL_SCHEMA: 4,
+      DOCUMENTATION: 5,
+      TAG: 0,
+      GLOSSARY_TERM: 0,
+      DOMAIN: 0,
+      OWNERSHIP: 0,
+      LIFECYCLE: 0,
+    },
+    operation_counts: { CREATE: 0, UPDATE: 9, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
+    capture_state: 'CONTIGUOUS_CAPTURE_RECORDED',
+    sync_status: 'CONTIGUOUS_CAPTURE_RECORDED',
+    capture_failure_classification: null,
+    capture_failure_stage: null,
+    capture_failure_detail_code: null,
+    capture_failure_record_shape: null,
+    source_generation: '5'.repeat(64),
+    source_observed_at: '2026-08-31T01:00:00.000Z',
+    source_occurred_at: '2026-08-31T00:30:00.000Z',
+    detected_at: '2026-08-31T00:31:00.000Z',
+    captured_at: '2026-08-31T00:32:00.000Z',
+    effective_week_start: weekStart,
+    history_available_from: null,
+    ledger_guarantee_from: null,
+    first_exact_capture_at: null,
+    first_timeline_checkpoint: null,
+    first_mcl_offsets: null,
+    last_successful_capture_at: '2026-08-31T00:32:00.000Z',
+    ...overrides,
+  }
+}
+
+function changeSummaryForPath(path: string, overrides: Record<string, unknown> = {}) {
+  const weekStart = new URL(path, 'https://datariver.invalid').searchParams.get('week_start') ?? ''
+  return currentWeekChangeSummary(weekStart, overrides)
+}
+
 function apiClient(request: (path: string) => Promise<unknown>): ApiClient {
   return { request } as unknown as ApiClient
 }
@@ -140,9 +207,12 @@ function renderDashboard(client: ApiClient, onNavigate = vi.fn()) {
 }
 
 describe('DashboardPage', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('renders source-derived catalog and quality dashboard facts', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
@@ -206,6 +276,7 @@ describe('DashboardPage', () => {
           term_asset_count: 0,
         }],
       }))
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
@@ -222,6 +293,7 @@ describe('DashboardPage', () => {
   it('states the bounded hierarchy result instead of silently omitting it', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary({ catalog_schema_metrics_truncated: true }))
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
@@ -241,6 +313,7 @@ describe('DashboardPage', () => {
           complete: true,
         },
       }))
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
@@ -262,6 +335,8 @@ describe('DashboardPage', () => {
                 complete: false,
               },
             }))
+            : path.startsWith('/change-history/summary?')
+              ? Promise.resolve(changeSummaryForPath(path))
             : path === '/quality/capability'
               ? Promise.resolve(capability())
               : Promise.resolve(quality()))}
@@ -277,9 +352,91 @@ describe('DashboardPage', () => {
     expect(screen.getByText(/안전한 집계 한도를 초과해 전체성을 확인할 수 없습니다/)).toBeInTheDocument()
   })
 
+  it('renders the canonical current KST week summary with its exact authorized Table scope and warnings', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-30T15:30:00.000Z'))
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) {
+        return Promise.resolve(changeSummaryForPath(path, { time_unknown_count: 2 }))
+      }
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDashboard(apiClient(request))
+
+    await waitFor(() => expect(request.mock.calls.map(([path]) => path)).toContain(
+      '/change-history/summary?week_start=2026-08-31',
+    ))
+    const heading = screen.getByRole('heading', { name: '이번 주 데이터 변경' })
+    const section = heading.closest('section')
+    expect(section).not.toBeNull()
+    expect(within(section!).getByText(/현재 사용자가 열람 권한을 가진, Table↔System이 정확히 매핑된 Table 범위 · change.read/)).toBeInTheDocument()
+    expect(within(section!).getByText('[2026-08-31 00:00, 2026-09-07 00:00) KST (Asia/Seoul)')).toBeInTheDocument()
+    expect(within(section!).getByText('Distinct normalized total').parentElement).toHaveTextContent('9')
+    expect(within(section!).getByText('Schema changes').parentElement).toHaveTextContent('4')
+    expect(within(section!).getByText('Metadata changes').parentElement).toHaveTextContent('5')
+    expect(within(section!).getAllByText(/연속 캡처 기록됨 · CONTIGUOUS_CAPTURE_RECORDED/)).toHaveLength(2)
+    expect(within(section!).getByText(/발생 시각 미확정 2건은 이번 주 합계에서 제외/)).toBeInTheDocument()
+    expect(within(section!).getByText(/이 주의 시작부터 연속된 완전한 이력은 보장되지 않습니다/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '1W' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '1M' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '3M' })).toBeDisabled()
+  })
+
+  it('distinguishes a measured zero current-week summary from section-local unavailability', async () => {
+    const zeroRequest = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) {
+        return Promise.resolve(changeSummaryForPath(path, {
+          total_count: 0,
+          unlinked_count: 0,
+          schema_change_count: 0,
+          metadata_change_count: 0,
+        }))
+      }
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const { unmount } = renderDashboard(apiClient(zeroRequest))
+
+    const zeroHeading = await screen.findByRole('heading', { name: '이번 주 데이터 변경' })
+    const zeroSection = zeroHeading.closest('section')
+    await waitFor(() => expect(within(zeroSection!).getAllByText('0')).toHaveLength(3))
+    expect(within(zeroSection!).queryByText('—')).not.toBeInTheDocument()
+    unmount()
+
+    const denied = new ApiError({
+      type: 'about:blank',
+      title: 'Forbidden',
+      status: 403,
+      detail: 'change.read is required.',
+      code: 'FORBIDDEN',
+      request_id: 'request-denied',
+    })
+    const deniedRequest = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) return Promise.reject(denied)
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDashboard(apiClient(deniedRequest))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('현재 사용자의 change.read 권한 범위에서는 이 집계를 조회할 수 없습니다.')
+    expect(within(alert).getAllByText('—')).toHaveLength(3)
+    expect(screen.getByText('설명 완성도 70%')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
+    expect(deniedRequest.mock.calls.filter(([path]) => String(path).startsWith('/change-history/')).length).toBe(1)
+  })
+
   it('delegates Governance Center navigation to the SPA shell without a document navigation', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)

@@ -14,11 +14,13 @@ import {
   ShieldCheck,
   Terminal,
 } from 'lucide-react'
-import type { ApiClient } from '../../api/client'
+import { ApiError, type ApiClient } from '../../api/client'
 import type { CatalogSchemaMetric, ChangeRequestStateGroup } from '../../api/types'
 import { pageUrl, type Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { ChangeHistoryApi } from '../change-history/changeHistoryApi'
+import type { ChangeHistorySummary, ChangeHistorySyncStatus } from '../change-history/types'
 import { QualityApi, qualityQueryKey } from '../quality/qualityApi'
 import { useQualityAuthorizationLease } from '../quality/useQualityAuthorizationLease'
 import { isAuthorizationBoundaryError } from '../quality/useBoundedQualityRunPolling'
@@ -59,6 +61,18 @@ export function DashboardPage({
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
   const [expandedPlatforms, setExpandedPlatforms] = useState<Record<string, boolean>>({})
+  const changeHistoryApi = useMemo(() => new ChangeHistoryApi(client), [client])
+  const [currentWeekStart, setCurrentWeekStart] = useState(currentKstWeekStart)
+  const changeSummaryQuery = useQuery({
+    queryKey: [
+      'change-history', 'home-current-week', workspaceId, subjectId,
+      securityEpoch, authorizationRevision, currentWeekStart,
+    ],
+    queryFn: ({ signal }) => changeHistoryApi.summary(currentWeekStart, signal),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
   const qualityApi = useMemo(() => new QualityApi(client), [client])
   const qualityLease = useQualityAuthorizationLease({
     api: qualityApi,
@@ -134,9 +148,12 @@ export function DashboardPage({
               type="button"
               onClick={() => {
                 void refresh()
+                const nextWeekStart = currentKstWeekStart()
+                if (nextWeekStart === currentWeekStart) void changeSummaryQuery.refetch()
+                else setCurrentWeekStart(nextWeekStart)
                 qualityLease.refresh()
               }}
-              disabled={loading || qualityLease.loading}
+              disabled={loading || changeSummaryQuery.isFetching || qualityLease.loading}
             >
               새로고침
             </button>
@@ -180,6 +197,13 @@ export function DashboardPage({
           value={summary?.change_request_progress}
           loading={loading && !summary}
         />
+        <DashboardSection title="이번 주 데이터 변경" icon={<Activity size={16} />} wide>
+          <CurrentWeekChangeSummary
+            summary={changeSummaryQuery.data}
+            loading={changeSummaryQuery.isPending}
+            error={changeSummaryQuery.error}
+          />
+        </DashboardSection>
       </div>
 
       <DashboardSection title="Asset Distribution & Health Metrics by Database" icon={<Layers size={16} />}>
@@ -245,6 +269,79 @@ export function DashboardPage({
         </DashboardSection>
       </div>
     </section>
+  )
+}
+
+function CurrentWeekChangeSummary({
+  summary,
+  loading,
+  error,
+}: {
+  summary?: ChangeHistorySummary
+  loading: boolean
+  error: unknown
+}) {
+  if (loading && !summary) return <DashboardLoading label="이번 주 변경 원장 요약을 조회하고 있습니다." />
+  if (error || !summary) {
+    return (
+      <div className="dashboard-audit-unavailable" role="alert">
+        <ShieldCheck size={18} aria-hidden="true" />
+        <div>
+          <strong>이번 주 데이터 변경을 표시할 수 없습니다.</strong>
+          <p>{changeSummaryUnavailableText(error)}</p>
+          <div className="dashboard-operation-grid" aria-label="사용할 수 없는 이번 주 변경 집계">
+            <OperationFact label="Distinct normalized total" value="—" />
+            <OperationFact label="Schema changes" value="—" />
+            <OperationFact label="Metadata changes" value="—" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const incompleteHistory = !historyGuaranteedFromWeekStart(summary)
+    || summary.sync_status !== 'CONTIGUOUS_CAPTURE_RECORDED'
+  return (
+    <div aria-label="현재 사용자 권한 범위의 이번 주 데이터 변경">
+      <p className="dashboard-contract-note">
+        현재 사용자가 열람 권한을 가진, Table↔System이 정확히 매핑된 Table 범위 · change.read
+      </p>
+      <p>
+        집계 구간 <strong>{`[${summary.week_start} 00:00, ${summary.week_end_exclusive} 00:00) KST (Asia/Seoul)`}</strong>
+      </p>
+      <div className="dashboard-operation-grid" aria-label="이번 주 distinct normalized change transaction 집계">
+        <OperationFact label="Distinct normalized total" value={summary.total_count.toLocaleString()} />
+        <OperationFact label="Schema changes" value={summary.schema_change_count.toLocaleString()} />
+        <OperationFact label="Metadata changes" value={summary.metadata_change_count.toLocaleString()} />
+      </div>
+      <div className="dashboard-capabilities" aria-label="변경 원장 캡처 및 동기화 상태">
+        <StatusFact label="캡처 상태" value={summary.capture_state} />
+        <StatusFact label="동기화 상태" value={summary.sync_status} />
+      </div>
+      {summary.time_unknown_count > 0 && (
+        <p className="notice" role="status">
+          발생 시각 미확정 {summary.time_unknown_count.toLocaleString()}건은 이번 주 합계에서 제외되었습니다.
+        </p>
+      )}
+      {incompleteHistory && (
+        <p className="notice" role="status">
+          이 주의 시작부터 연속된 완전한 이력은 보장되지 않습니다. 원장 보장 시작: {formatKstTimestamp(summary.ledger_guarantee_from)}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function OperationFact({ label, value }: { label: string; value: string }) {
+  return <div className="dashboard-operation-fact"><small>{label}</small><strong>{value}</strong></div>
+}
+
+function StatusFact({ label, value }: { label: string; value: ChangeHistorySyncStatus }) {
+  const healthy = value === 'CONTIGUOUS_CAPTURE_RECORDED'
+  return (
+    <span className={`dashboard-capability ${healthy ? 'state-healthy' : 'state-unavailable'}`}>
+      <i aria-hidden="true" /><b>{label}</b><small>{syncStatusLabel(value)} · {value}</small>
+    </span>
   )
 }
 
@@ -329,9 +426,19 @@ function DashboardStatCard({
   )
 }
 
-function DashboardSection({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+function DashboardSection({
+  title,
+  icon,
+  children,
+  wide = false,
+}: {
+  title: string
+  icon: ReactNode
+  children: ReactNode
+  wide?: boolean
+}) {
   return (
-    <section className="dashboard-section">
+    <section className={`dashboard-section${wide ? ' dashboard-change-progress' : ''}`}>
       <header><span>{icon}</span><h2>{title}</h2></header>
       <div className="dashboard-section-body">{children}</div>
     </section>
@@ -412,4 +519,59 @@ function metricKey(metric: CatalogSchemaMetric): string {
 function basisPointsText(value: number | null): string {
   if (value == null) return '근거 없음'
   return `${(value / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
+}
+
+function currentKstWeekStart(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now)
+  const year = Number(parts.find((part) => part.type === 'year')?.value)
+  const month = Number(parts.find((part) => part.type === 'month')?.value)
+  const day = Number(parts.find((part) => part.type === 'day')?.value)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  calendarDate.setUTCDate(calendarDate.getUTCDate() - ((calendarDate.getUTCDay() + 6) % 7))
+  return calendarDate.toISOString().slice(0, 10)
+}
+
+function historyGuaranteedFromWeekStart(summary: ChangeHistorySummary): boolean {
+  if (summary.ledger_guarantee_from === null) return false
+  return Date.parse(summary.ledger_guarantee_from)
+    <= Date.parse(`${summary.week_start}T00:00:00+09:00`)
+}
+
+function formatKstTimestamp(value: string | null): string {
+  if (value === null) return '기록 없음'
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value))
+}
+
+function syncStatusLabel(value: ChangeHistorySyncStatus): string {
+  const labels: Record<ChangeHistorySyncStatus, string> = {
+    SOURCE_NOT_CONFIGURED: '소스 미구성',
+    SOURCE_AMBIGUOUS: '소스 모호',
+    CHECKPOINT_NOT_AVAILABLE: '체크포인트 없음',
+    CHECKPOINT_INVALID: '체크포인트 오류',
+    CAPTURE_PENDING: '캡처 대기',
+    CONTIGUOUS_CAPTURE_RECORDED: '연속 캡처 기록됨',
+    DISCOVERY_FAILED: '소스 탐색 실패',
+    CAPTURE_FAILED: '캡처 실패',
+  }
+  return labels[value]
+}
+
+function changeSummaryUnavailableText(error: unknown): string {
+  if (error instanceof ApiError && [401, 403].includes(error.problem.status)) {
+    return '현재 사용자의 change.read 권한 범위에서는 이 집계를 조회할 수 없습니다. 다른 데이터 카드에는 영향을 주지 않습니다.'
+  }
+  return '권한 필터가 적용된 변경 이력 원장을 현재 사용할 수 없습니다. 0건으로 해석하지 않습니다.'
 }
