@@ -88,6 +88,17 @@ function TestCatalogPage(props: ComponentProps<typeof CatalogPage>) {
   )
 }
 
+function ControlledCatalogPage(props: Omit<ComponentProps<typeof CatalogPage>, 'initialQuery' | 'onQueryChange'> & { initialQuery: string }) {
+  const [query, setQuery] = useState(props.initialQuery)
+  return <TestCatalogPage {...props} initialQuery={query} onQueryChange={(value) => {
+    const nextUrl = new URL(window.location.href)
+    if (value) nextUrl.searchParams.set('q', value)
+    else nextUrl.searchParams.delete('q')
+    window.history.replaceState(window.history.state, '', nextUrl)
+    setQuery(value)
+  }} />
+}
+
 function defaultRequest(path: string, options?: RequestOptions): Promise<unknown> {
   void options
   if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [asset], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
@@ -776,18 +787,32 @@ describe('catalog workspace', () => {
     expect(platform).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('keeps filtered Search Results intact while exact-reading and focusing a Resource Tree table without opening detail', async () => {
-    const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
-    const assets = [...Array.from({ length: 50 }, (_, index) => ({
+  it('explicitly returns filtered Search Results to authorized default browse and locates the exact Tree table without opening detail', async () => {
+    const treeAsset: CatalogAsset = {
       ...asset,
+      id: 'tree-asset',
+      external_urn: 'urn:li:dataset:selected-report',
+      name: 'selected_report',
+      description: 'Selected reporting dataset',
+      platform: 'cloud_epsilon',
+      database_name: 'reporting',
+      schema_name: 'published',
+      owner: 'urn:li:corpGroup:reporting',
+      domain: 'urn:li:domain:reporting',
+      tags: ['certified'],
+      terms: ['report'],
+      matches: [],
+    }
+    const assets = [...Array.from({ length: 50 }, (_, index) => ({
+      ...treeAsset,
       id: `first-page-${index}`,
-      name: `first_page_${index}`,
+      external_urn: `urn:li:dataset:report-${index}`,
+      name: `report_${index}`,
     })), treeAsset]
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options
       if (path.startsWith('/catalog/assets?')) {
         const parameters = new URL(path, 'http://catalog.test').searchParams
-        if (parameters.get('q') === treeAsset.name) return Promise.resolve({ items: [treeAsset], page: { limit: Number(parameters.get('limit')) }, total: 1, meta, match_mode: 'ALL' })
         const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
         const limit = Number(parameters.get('limit'))
         const items = assets.slice(offset, offset + limit)
@@ -800,27 +825,37 @@ describe('catalog workspace', () => {
           match_mode: 'ALL',
         })
       }
+      if (path.startsWith('/catalog/assets/locate?')) return Promise.resolve({
+        asset_id: treeAsset.id,
+        item_index: 50,
+        page_index: 1,
+        cursors: [null, 'offset-50'],
+        meta,
+      })
       if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: treeAsset.name, asset_count: 1, has_children: false, asset: treeAsset }], page: { limit: 100 }, meta })
       if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve(detailFor(treeAsset))
       return defaultRequest(path)
     })
-    const onQueryChange = vi.fn()
-    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" onQueryChange={onQueryChange} />)
+    const originalUrl = window.location.href
+    const filteredUrl = new URL(originalUrl)
+    filteredUrl.search = '?page=catalog&q=archived+reports'
+    window.history.replaceState({}, '', filteredUrl)
+    render(<ControlledCatalogPage client={clientWith(request)} initialQuery="archived reports" />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    fireEvent.click(await within(tree).findByRole('button', { name: /tree_selected_table/ }))
+    fireEvent.click(await within(tree).findByRole('button', { name: treeAsset.name }))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     await waitFor(() => expect(within(tree).getByRole('button', { name: treeAsset.name })).toHaveAttribute('aria-pressed', 'true'))
     expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
-    expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name)
-    expect(table).toHaveTextContent('first_page_0')
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(51)
-    expect(screen.getByRole('status')).toHaveTextContent('Resource Tree에서 선택한 인가 자산 1건')
-    expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('wafer')
-    expect(onQueryChange).not.toHaveBeenCalled()
+    await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name))
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent('Search Results를 기본 인가 탐색으로 전환')
+    expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue('')
+    expect(new URL(window.location.href).searchParams.get('q')).toBeNull()
     expect(request.mock.calls.some(([path]) => path === `/catalog/assets/${treeAsset.id}`)).toBe(true)
-    expect(request.mock.calls.some(([path]) => String(path).includes(`q=${treeAsset.name}`))).toBe(false)
+    expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/assets/locate?'))).toBe(true)
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/tree/') && String(path).includes('q='))).toBe(false)
+    window.history.replaceState({}, '', originalUrl)
   })
 
   it('uses the bounded server locate seam to focus the default-result page without replacing neighboring rows', async () => {

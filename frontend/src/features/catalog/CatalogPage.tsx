@@ -134,6 +134,8 @@ export function CatalogPage({
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const browserDetailEntryCreated = useRef(false)
+  const activeTreeAssetId = useRef<string | undefined>(undefined)
+  const pendingTreeQuerySync = useRef<{ assetId: string; query: string } | undefined>(undefined)
   const initialQueryRef = useRef(initialQuery)
   const hasSearchTargets = filters.searchFields.length > 0
   const isDefaultResultState = query.trim() === ''
@@ -152,13 +154,20 @@ export function CatalogPage({
     setFocusedAssetId(undefined)
     setDetailHistory([])
     browserDetailEntryCreated.current = false
+    activeTreeAssetId.current = undefined
+    pendingTreeQuerySync.current = undefined
     clearCatalogAssetUrl()
   }
 
   useEffect(() => {
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
-    setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
+    const pendingSync = pendingTreeQuerySync.current
+    pendingTreeQuerySync.current = undefined
+    setDraftQuery(initialQuery); setQuery(initialQuery)
+    if (pendingSync?.query === initialQuery && pendingSync.assetId === activeTreeAssetId.current) return
+    setCursors([undefined]); setPageIndex(0)
+    activeTreeAssetId.current = undefined
     setTreeAssetId(undefined); setSelectedAssetId(undefined); setFocusedAssetId(undefined)
     setDetailHistory([]); browserDetailEntryCreated.current = false
     clearCatalogAssetUrl()
@@ -233,14 +242,7 @@ export function CatalogPage({
     setFocusedAssetId(treeAsset.id)
   }, [treeAsset, treeAssetId])
 
-  const searchItems = hasSearchTargets ? result?.items ?? [] : []
-  const focusedTreeAsset = treeAssetId && treeAsset?.id === treeAssetId ? treeAsset : undefined
-  const treeAssetIncluded = Boolean(
-    focusedTreeAsset && !searchItems.some((item) => item.id === focusedTreeAsset.id),
-  )
-  const displayedItems = focusedTreeAsset && treeAssetIncluded
-    ? [focusedTreeAsset, ...searchItems]
-    : searchItems
+  const displayedItems = hasSearchTargets ? result?.items ?? [] : []
 
   const qualityAssetIds = useMemo(() => {
     return hasSearchTargets ? result?.items.map((item) => item.id) ?? [] : []
@@ -408,7 +410,10 @@ export function CatalogPage({
   }
 
   const selectAsset = (assetId: string) => {
-    if (treeAssetId && treeAssetId !== assetId) setTreeAssetId(undefined)
+    if (treeAssetId && treeAssetId !== assetId) {
+      activeTreeAssetId.current = undefined
+      setTreeAssetId(undefined)
+    }
     setFocusedAssetId(assetId)
     setSelectedAssetId(assetId)
   }
@@ -452,6 +457,7 @@ export function CatalogPage({
     const restoreAsset = () => {
       const assetId = new URL(window.location.href).searchParams.get('catalogAsset')
       if (assetId) {
+        activeTreeAssetId.current = undefined
         setTreeAssetId(undefined)
         setFocusedAssetId(assetId)
         setSelectedAssetId(assetId)
@@ -466,8 +472,20 @@ export function CatalogPage({
 
   const focusTreeAsset = (assetId: string) => {
     resetTransientDetail()
+    setFilters(emptyFilters)
+    setDraftQuery('')
+    setQuery('')
+    setSuggestions([])
+    setSuggestionIndex(-1)
+    setCursors([undefined])
+    setPageIndex(0)
+    activeTreeAssetId.current = assetId
     setTreeAssetId(assetId)
     setError(undefined)
+    if (onQueryChange) {
+      pendingTreeQuerySync.current = { assetId, query: '' }
+      onQueryChange('')
+    }
   }
 
   const selectTreeScope = (node: CatalogTreeNode) => {
@@ -595,7 +613,7 @@ export function CatalogPage({
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{hasSearchTargets && result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={displayedItems} getRowId={(item) => item.id} loading={(hasSearchTargets && loading) || treeAssetLoading} emptyMessage={!hasSearchTargets ? '검색 대상을 하나 이상 선택하세요.' : query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={focusedAssetId} onRowActivate={(item) => navigateAsset(item.id)} />
-        {treeAssetIncluded && <p className="catalog-local-table-note" role="status">Resource Tree에서 선택한 인가 자산 1건을 현재 검색 창 앞에 고정했습니다.</p>}
+        {treeAssetId && treeAsset?.id === treeAssetId && treeLocation?.asset_id === treeAssetId && <p className="catalog-local-table-note" role="status">Resource Tree 테이블 선택으로 Search Results를 기본 인가 탐색으로 전환해 정확한 위치를 표시했습니다.</p>}
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {displayedItems.length.toLocaleString()}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />
         {hasSearchTargets && result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at ?? undefined}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
