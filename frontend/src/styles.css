@@ -655,6 +655,22 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
 .admin-two-column .dense-data-table td { min-width: 0; border-top: 1px solid var(--line-200); padding: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-two-column .dense-data-table tr.interactive { cursor: pointer; }
 .admin-two-column .dense-data-table tr.interactive:hover, .admin-two-column .dense-data-table tr.selected { background: var(--blue-100); }
+.admin-feature-permissions .section-heading { align-items: flex-start; }
+.admin-feature-permissions .notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.admin-feature-filters { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(130px, .45fr)) auto; align-items: end; gap: 10px; margin-bottom: 8px; border: 1px solid var(--line-300); padding: 10px; background: #f8fafb; }
+.admin-feature-filters label { display: grid; gap: 5px; color: var(--text-600); font-size: 12px; font-weight: 800; }
+.admin-feature-filters input, .admin-feature-filters select { width: 100%; min-width: 0; height: 34px; border: 1px solid var(--line-300); padding: 5px 8px; color: var(--text-700); background: #fff; font: inherit; }
+.admin-feature-result-count { margin: 0 0 6px; color: var(--text-500); font-size: 12px; }
+.admin-feature-permissions .dense-table-frame { max-height: 520px; overflow: auto; border: 1px solid var(--line-300); }
+.admin-feature-permissions .dense-data-table { min-width: 990px; font-size: 12px; }
+.admin-feature-permissions .dense-data-table th { font-size: 11px; }
+.admin-feature-cell { display: grid; gap: 2px; min-width: 0; }
+.admin-feature-cell > strong, .admin-feature-cell > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-feature-cell > span { color: var(--text-500); }
+.admin-feature-permission-toggle { display: inline-flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer; }
+.admin-feature-permission-toggle:has(input:disabled) { cursor: not-allowed; }
+.admin-feature-permission-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue-700); }
+.admin-feature-permission-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .section-heading h3 { margin: 0; }
 .checkbox-line { grid-template-columns: auto 1fr !important; align-items: center; }
@@ -676,6 +692,7 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 800px) {
   .panel-grid, .inline-form, .audit-grid, .admin-two-column, .admin-context, .admin-system-settings-workspace, .admin-system-assignment-grid { grid-template-columns: 1fr; }
+  .admin-feature-filters { grid-template-columns: 1fr; }
   .governance-toolbar, .governance-summary-grid, .governance-status-overview { grid-template-columns: 1fr; }
   .knowledge-create-form, .knowledge-operation-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .governance-registration-link { align-items: stretch; flex-direction: column; }
