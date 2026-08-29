@@ -8,6 +8,7 @@ import { AccordionItem } from '../../components/common/Accordion'
 import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
+import { CatalogMetadataRecommendationPanel } from './CatalogMetadataRecommendationPanel'
 import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { basisPointsText, dateTimeText, QualityStatus } from '../quality/QualityShared'
 
@@ -445,6 +446,9 @@ export function CatalogDetailPane({
               <button className="button button-secondary" disabled={!detail.schema_fields_has_more} onClick={() => setFieldOffset((detail.schema_fields_offset ?? 0) + (detail.schema_fields_limit ?? 100))} type="button">다음 컬럼</button>
             </nav>}
           </div>
+        </AccordionItem>
+        <AccordionItem itemId="recommendations" title="Metadata recommendations" summary="review required" expanded={expanded.has('recommendations')} onToggle={() => toggle('recommendations')}>
+          {expanded.has('recommendations') && <CatalogMetadataRecommendationPanel client={client} detail={detail} />}
         </AccordionItem>
       </section>
       <section aria-labelledby="catalog-lineage-tab" hidden={activeTab !== 'lineage'} id="catalog-lineage-panel" role="tabpanel">

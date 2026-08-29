@@ -21,7 +21,7 @@ from datariver.application.services.catalog_recommendations import (
     CatalogRecommendationApprovalTarget,
     CatalogRecommendationProvider,
     CatalogRecommendationService,
-    UnavailableCatalogRecommendationProvider,
+    DeterministicCatalogRecommendationProvider,
 )
 from datariver.application.services.catalog_sync import CatalogSyncService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
@@ -212,7 +212,7 @@ def _recommendation_service(
         getattr(
             request.app.state,
             "catalog_recommendation_provider",
-            UnavailableCatalogRecommendationProvider(),
+            DeterministicCatalogRecommendationProvider(),
         ),
     )
     return CatalogRecommendationService(

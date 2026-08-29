@@ -634,6 +634,41 @@ export interface CatalogMetadataVocabularyPage {
   }
 }
 
+export type CatalogRecommendationKind = 'TAG' | 'TERM'
+export type CatalogRecommendationState = 'NEEDS_DECISION' | 'APPROVED' | 'REJECTED'
+
+export interface CatalogMetadataRecommendation {
+  recommendation_id: string
+  asset_id: string
+  field_path: string | null
+  vocabulary_id: string
+  kind: CatalogRecommendationKind
+  source_version: string
+  confidence: number
+  reason: string
+  evidence: string[]
+  provider: string
+  model: string
+  prompt_version: string
+  rule_version: string
+  state: CatalogRecommendationState
+  version: number
+  change_request_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CatalogMetadataRecommendationPreview {
+  items: CatalogMetadataRecommendation[]
+  auto_application: 'DISABLED_NEEDS_DECISION'
+}
+
+export interface CatalogMetadataRecommendationApproval {
+  change_request_id: string
+  items: CatalogMetadataRecommendation[]
+  auto_application: 'DISABLED_NEEDS_DECISION'
+}
+
 export type ChangeRequestState =
   | 'REGISTERED'
   | 'IN_REVIEW'

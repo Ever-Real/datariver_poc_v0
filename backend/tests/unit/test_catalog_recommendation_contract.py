@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
+from datariver.application.services.catalog_recommendations import (
+    DeterministicCatalogRecommendationProvider,
+)
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.catalog_recommendations import (
+    CatalogRecommendationContext,
     CatalogRecommendationDraft,
+    CatalogRecommendationKind,
     CatalogRecommendationProviderResult,
+    CatalogRecommendationVocabulary,
 )
 from datariver.domain.common import ValidationError
 from datariver.interfaces.http.schemas import (
@@ -117,7 +124,6 @@ def test_catalog_atomic_extension_is_narrow_and_wired_to_one_request_session() -
     assert "finalize_decision" not in specialized.parameters
     assert "before_commit" not in specialized.parameters
     assert "recommendation_finalizer" in specialized.parameters
-
     root = Path(__file__).resolve().parents[3]
     route = (root / "backend/src/datariver/interfaces/http/routes/catalog.py").read_text(
         encoding="utf-8"
@@ -128,3 +134,72 @@ def test_catalog_atomic_extension_is_narrow_and_wired_to_one_request_session() -
     assert "transaction_session = session" in factory
     assert "session=transaction_session" in factory
     assert "SqlCatalogRecommendationStore(transaction_session)" in factory
+    assert "DeterministicCatalogRecommendationProvider()" in factory
+
+
+@pytest.mark.asyncio
+async def test_local_provider_is_deterministic_bounded_and_returns_only_exact_candidates() -> None:
+    selected = (
+        CatalogRecommendationVocabulary(
+            uuid4(), CatalogRecommendationKind.TERM, "Customer Name", "v1"
+        ),
+        CatalogRecommendationVocabulary(uuid4(), CatalogRecommendationKind.TAG, "Sensitive", "v2"),
+        CatalogRecommendationVocabulary(uuid4(), CatalogRecommendationKind.TAG, "Unrelated", "v3"),
+    )
+    context = CatalogRecommendationContext(
+        asset_id=uuid4(),
+        source_version="catalog-v1",
+        provider_source_version="provider-v1",
+        name="customer_profile",
+        description="Contains a customer name and sensitive contact data",
+        platform="generic",
+        database_name="application",
+        schema_name="public",
+        field_path="customerName",
+        field_native_type="STRING",
+        vocabulary=selected,
+        assigned_vocabulary_ids=(),
+    )
+    provider = DeterministicCatalogRecommendationProvider()
+
+    first = await provider.recommend(context=context)
+    second = await provider.recommend(
+        context=replace(context, vocabulary=tuple(reversed(selected)))
+    )
+
+    assert first == second
+    assert tuple(value.vocabulary_id for value in first.recommendations) == (
+        selected[0].vocabulary_id,
+        selected[1].vocabulary_id,
+    )
+    assert all(
+        value.vocabulary_id in {item.vocabulary_id for item in selected}
+        for value in first.recommendations
+    )
+    assert all(0 <= value.confidence <= 1 for value in first.recommendations)
+    assert first.provider == "datariver_local_similarity"
+
+
+@pytest.mark.asyncio
+async def test_local_provider_does_not_repeat_an_exact_existing_assignment() -> None:
+    assigned = CatalogRecommendationVocabulary(
+        uuid4(), CatalogRecommendationKind.TAG, "Sensitive", "v1"
+    )
+    context = CatalogRecommendationContext(
+        asset_id=uuid4(),
+        source_version="catalog-v1",
+        provider_source_version="provider-v1",
+        name="sensitive_records",
+        description=None,
+        platform=None,
+        database_name=None,
+        schema_name=None,
+        field_path=None,
+        field_native_type=None,
+        vocabulary=(assigned,),
+        assigned_vocabulary_ids=(assigned.vocabulary_id,),
+    )
+
+    result = await DeterministicCatalogRecommendationProvider().recommend(context=context)
+
+    assert result.recommendations == ()

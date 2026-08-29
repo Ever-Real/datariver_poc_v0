@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -42,6 +44,7 @@ from datariver.domain.catalog_recommendations import (
     MAXIMUM_RECOMMENDATIONS,
     CatalogRecommendation,
     CatalogRecommendationContext,
+    CatalogRecommendationDraft,
     CatalogRecommendationKind,
     CatalogRecommendationProviderResult,
     CatalogRecommendationState,
@@ -236,6 +239,102 @@ class UnavailableCatalogRecommendationProvider:
             retryable=False,
             provider_code="NOT_CONFIGURED",
         )
+
+
+class DeterministicCatalogRecommendationProvider:
+    """Rank caller-selected local vocabulary without disclosing metadata externally.
+
+    This intentionally uses only the already-authorized, bounded context assembled by the
+    service.  It cannot discover or invent provider identities, and an exact assignment is
+    still suppressed again by the service before a durable preview is written.
+    """
+
+    maximum_classification = Classification.RESTRICTED
+    _provider = "datariver_local_similarity"
+    _model = "normalized_token_overlap_v1"
+    _prompt_version = "none"
+    _rule_version = "catalog-recommendation-local-v1"
+
+    async def recommend(
+        self,
+        *,
+        context: CatalogRecommendationContext,
+    ) -> CatalogRecommendationProviderResult:
+        assigned = set(context.assigned_vocabulary_ids)
+        fields = tuple(
+            (label, _recommendation_tokens(value))
+            for label, value in (
+                ("asset name", context.name),
+                ("description", context.description),
+                ("platform", context.platform),
+                ("database", context.database_name),
+                ("schema", context.schema_name),
+                ("field path", context.field_path),
+                ("field type", context.field_native_type),
+            )
+            if value
+        )
+        drafts: list[tuple[float, str, str, CatalogRecommendationDraft]] = []
+        for vocabulary in context.vocabulary:
+            if vocabulary.vocabulary_id in assigned:
+                continue
+            candidate_tokens = _recommendation_tokens(vocabulary.display_name)
+            if not candidate_tokens:
+                continue
+            matches = tuple(
+                (label, len(candidate_tokens.intersection(tokens)))
+                for label, tokens in fields
+                if candidate_tokens.intersection(tokens)
+            )
+            matched_tokens = sum(count for _, count in matches)
+            covered_tokens = len(set().union(*(
+                candidate_tokens.intersection(tokens) for _, tokens in fields
+            ))) if fields else 0
+            coverage = covered_tokens / len(candidate_tokens)
+            if matched_tokens == 0 or coverage < 0.5:
+                continue
+            confidence = min(0.95, 0.5 + (coverage * 0.3) + min(len(matches), 3) * 0.05)
+            evidence = tuple(
+                f"{label}: normalized token overlap {count}/{len(candidate_tokens)}"
+                for label, count in matches[:3]
+            )
+            draft = CatalogRecommendationDraft(
+                vocabulary_id=vocabulary.vocabulary_id,
+                confidence=round(confidence, 4),
+                reason=(
+                    "The selected controlled-vocabulary label overlaps the current authorized "
+                    "catalog metadata. Review is required before a governed change request."
+                ),
+                evidence=evidence,
+            )
+            drafts.append(
+                (
+                    -draft.confidence,
+                    vocabulary.kind.value,
+                    unicodedata.normalize("NFKC", vocabulary.display_name).casefold(),
+                    draft,
+                )
+            )
+        drafts.sort(key=lambda value: (value[0], value[1], value[2], str(value[3].vocabulary_id)))
+        return CatalogRecommendationProviderResult(
+            recommendations=tuple(value[3] for value in drafts[:MAXIMUM_RECOMMENDATIONS]),
+            provider=self._provider,
+            model=self._model,
+            prompt_version=self._prompt_version,
+            rule_version=self._rule_version,
+        )
+
+
+def _recommendation_tokens(value: str) -> frozenset[str]:
+    normalized = unicodedata.normalize("NFKC", value)
+    # Split camelCase before replacing punctuation, while retaining non-Latin word tokens.
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", normalized)
+    normalized = normalized.casefold()
+    return frozenset(
+        token
+        for token in re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
+        if len(token) >= 2
+    )
 
 
 @dataclass(frozen=True, slots=True)
