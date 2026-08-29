@@ -130,8 +130,7 @@ class _ChatRequestTimingObserver:
         # A phase may contain multiple sequential calls; report their bounded wall-clock sum.
         self._metric_ms[metric] = min(
             _MAXIMUM_CHAT_TIMING_MS,
-            self._metric_ms.get(metric, 0)
-            + min(_MAXIMUM_CHAT_TIMING_MS, max(0, duration_ms)),
+            self._metric_ms.get(metric, 0) + min(_MAXIMUM_CHAT_TIMING_MS, max(0, duration_ms)),
         )
 
     def response(self) -> ChatRequestPerformanceResponse:

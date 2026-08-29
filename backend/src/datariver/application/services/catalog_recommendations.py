@@ -287,9 +287,11 @@ class DeterministicCatalogRecommendationProvider:
                 if candidate_tokens.intersection(tokens)
             )
             matched_tokens = sum(count for _, count in matches)
-            covered_tokens = len(set().union(*(
-                candidate_tokens.intersection(tokens) for _, tokens in fields
-            ))) if fields else 0
+            covered_tokens = (
+                len(set().union(*(candidate_tokens.intersection(tokens) for _, tokens in fields)))
+                if fields
+                else 0
+            )
             coverage = covered_tokens / len(candidate_tokens)
             if matched_tokens == 0 or coverage < 0.5:
                 continue
@@ -331,9 +333,7 @@ def _recommendation_tokens(value: str) -> frozenset[str]:
     normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", normalized)
     normalized = normalized.casefold()
     return frozenset(
-        token
-        for token in re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
-        if len(token) >= 2
+        token for token in re.findall(r"[^\W_]+", normalized, flags=re.UNICODE) if len(token) >= 2
     )
 
 
