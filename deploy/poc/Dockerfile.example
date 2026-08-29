@@ -51,6 +51,7 @@ COPY frontend/poc-access-document.mjs ./poc-access-document.mjs
 COPY frontend/poc-table-system-mappings.mjs ./poc-table-system-mappings.mjs
 COPY frontend/poc-datahub-current-table.mjs ./poc-datahub-current-table.mjs
 COPY frontend/poc-feature-security-policy.mjs ./poc-feature-security-policy.mjs
+COPY frontend/poc-site-branding.mjs ./poc-site-branding.mjs
 COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
 COPY frontend/poc-prep-bootstrap.mjs ./poc-prep-bootstrap.mjs
 COPY frontend/poc-provider-preflight.mjs ./poc-provider-preflight.mjs
