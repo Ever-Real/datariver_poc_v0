@@ -172,6 +172,26 @@ describe('ChatPage', () => {
     vi.restoreAllMocks()
   })
 
+  it('consumes a home question once and sends it as the first message of a new session', async () => {
+    const { client, requestEventStream } = chatClient()
+    const consumed = vi.fn()
+    render(
+      <ChatPage
+        client={client}
+        initialQuestion="  current metadata를 찾아줘  "
+        onInitialQuestionConsumed={consumed}
+      />,
+    )
+
+    await waitFor(() => expect(requestEventStream).toHaveBeenCalledTimes(1))
+    expect(requestBody(requestEventStream.mock.calls[0]?.[1])).toEqual({
+      question: 'current metadata를 찾아줘',
+      maximum_evidence: 5,
+      mode: 'AUTO',
+    })
+    expect(consumed).toHaveBeenCalledTimes(1)
+  })
+
   it('describes General as retrieval-free and Graph as an authorized Knowledge or lineage route', async () => {
     const { client } = chatClient()
     render(<ChatPage client={client} />)

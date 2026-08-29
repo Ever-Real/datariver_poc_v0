@@ -188,7 +188,7 @@ function capability(): QualityCapability {
   }
 }
 
-function renderDashboard(client: ApiClient, onNavigate = vi.fn()) {
+function renderDashboard(client: ApiClient, onNavigate = vi.fn(), onStartChat?: (question: string) => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -201,6 +201,7 @@ function renderDashboard(client: ApiClient, onNavigate = vi.fn()) {
         securityEpoch={7}
         authorizationRevision={11}
         onNavigate={onNavigate}
+        onStartChat={onStartChat}
       />
     </QueryClientProvider>,
   )
@@ -217,16 +218,22 @@ describe('DashboardPage', () => {
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
     })
-    renderDashboard(apiClient(request))
+    const navigate = vi.fn()
+    renderDashboard(apiClient(request), navigate)
 
     expect(await screen.findByText('설명 완성도 70%')).toBeInTheDocument()
-    expect(screen.getAllByText('10')).toHaveLength(2)
-    expect(screen.getByText('활성화된 서버 동기화 용어')).toBeInTheDocument()
+    expect(screen.getAllByText('10')).toHaveLength(1)
+    expect(screen.getByText('현재 용어사전의 조회 가능한 용어')).toBeInTheDocument()
     expect(await screen.findByText('룰셋 적용 7 / 10 테이블')).toBeInTheDocument()
     expect(screen.getAllByText('70')).toHaveLength(1)
     expect(screen.queryByText('94.2')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '1W' })).toBeDisabled()
 
+    const totalDatasets = screen.getByRole('button', { name: /Total Datasets.*10.*Assets/i })
+    totalDatasets.focus()
+    fireEvent.click(totalDatasets)
+    expect(await screen.findByRole('dialog', { name: 'Asset Distribution & Health Metrics by Database' })).toBeInTheDocument()
+    expect(screen.getAllByText('10')).toHaveLength(2)
     fireEvent.click(screen.getByRole('button', { name: /Platformpostgres10Assets/i }))
     expect(await screen.findByText('warehouse / core')).toBeInTheDocument()
     expect(screen.getAllByText('70%')).toHaveLength(2)
@@ -240,6 +247,10 @@ describe('DashboardPage', () => {
       'title',
       '용어 1개 이상 연결 자산(분자) 4개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개',
     )
+    fireEvent.click(screen.getByRole('button', { name: '닫기' }))
+    expect(totalDatasets).toHaveFocus()
+    fireEvent.click(screen.getByRole('link', { name: /Business Glossary.*6.*Terms/i }))
+    expect(navigate).toHaveBeenCalledWith('glossary')
     expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Metadata Audit Summary' })).not.toBeInTheDocument()
     expect(request).not.toHaveBeenCalledWith('/capabilities')
@@ -283,7 +294,8 @@ describe('DashboardPage', () => {
     })
     renderDashboard(apiClient(request))
 
-    fireEvent.click(await screen.findByRole('button', { name: /Platformpostgres0Assets/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*0.*Assets/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Platformpostgres0Assets/i }))
 
     expect(screen.getAllByText('UNKNOWN')).toHaveLength(3)
     const explanation = '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 0개 · 분모가 0이므로 계산할 수 없습니다.'
@@ -300,6 +312,7 @@ describe('DashboardPage', () => {
     })
     renderDashboard(apiClient(request))
 
+    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*10.*Assets/i }))
     expect(await screen.findByText(/안전한 화면 한도\(200개\)/)).toBeInTheDocument()
   })
 
@@ -458,5 +471,25 @@ describe('DashboardPage', () => {
 
     fireEvent.click(screen.getByRole('link', { name: /CR변경요청/i }))
     expect(navigate).toHaveBeenCalledWith('change-management')
+  })
+
+  it('starts a new Chat request from the compact home search without sending blank text', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const startChat = vi.fn()
+    renderDashboard(apiClient(request), vi.fn(), startChat)
+
+    const input = await screen.findByRole('searchbox', { name: 'Chat에 질문하기' })
+    const submit = screen.getByRole('button', { name: '새 Chat에서 질문하기' })
+    expect(submit).toBeDisabled()
+    fireEvent.change(input, { target: { value: '   current metadata를 찾아줘   ' } })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    expect(startChat).toHaveBeenCalledWith('current metadata를 찾아줘')
   })
 })

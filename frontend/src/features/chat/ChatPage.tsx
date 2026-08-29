@@ -236,8 +236,16 @@ function authorizedEvidenceGraph(evidence: ChatEvidence[]): ReadGraphModel | und
   }
 }
 
-export function ChatPage({ client }: { client: ApiClient }) {
-  const [question, setQuestion] = useState('')
+export function ChatPage({
+  client,
+  initialQuestion,
+  onInitialQuestionConsumed,
+}: {
+  client: ApiClient
+  initialQuestion?: string
+  onInitialQuestionConsumed?: () => void
+}) {
+  const [question, setQuestion] = useState(() => initialQuestion?.trim() ?? '')
   const [mode, setMode] = useState<ChatMode>('AUTO')
   const [sessionId, setSessionId] = useState<string>()
   const [sessions, setSessions] = useState<ChatSession[]>([])
@@ -262,6 +270,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const messageElementsRef = useRef(new Map<string, HTMLElement>())
   const answerFocusEnabledRef = useRef(false)
   const activeRequestRef = useRef<AbortController | undefined>(undefined)
+  const initialQuestionHandledRef = useRef(false)
+  const composerFormRef = useRef<HTMLFormElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const refreshSessions = useCallback(async (signal?: AbortSignal) => {
@@ -306,6 +316,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
     textarea.style.height = `${Math.min(textarea.scrollHeight, maximumHeight)}px`
     textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? 'auto' : 'hidden'
   }, [question])
+
+  useEffect(() => {
+    const normalized = initialQuestion?.trim()
+    if (initialQuestionHandledRef.current || !normalized) return
+    initialQuestionHandledRef.current = true
+    onInitialQuestionConsumed?.()
+    const frame = requestAnimationFrame(() => composerFormRef.current?.requestSubmit())
+    return () => cancelAnimationFrame(frame)
+  }, [initialQuestion, onInitialQuestionConsumed])
 
   const latestAssistant = useMemo(() => lastAssistant(messages), [messages])
   const selectedAssistant = useMemo(
@@ -851,7 +870,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
               {copyFeedback.label} {copyFeedback.status === 'SUCCESS' ? '복사 완료' : '복사 실패'}
             </p>
           )}
-          <form className="chat-composer" onSubmit={(event) => void submit(event)}>
+          <form ref={composerFormRef} className="chat-composer" onSubmit={(event) => void submit(event)}>
             <ChatRouteMenu
               disabled={loading}
               onChange={setMode}

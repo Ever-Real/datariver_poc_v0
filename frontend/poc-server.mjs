@@ -4116,9 +4116,12 @@ async function datahubFacets(searchParameters, principal) {
 }
 
 async function datahubDashboard(principal) {
-  const assets = filterAssetsForPrincipal(principal, await datahubInventory(), 'monitoring')
+  const [inventory, glossaryPage] = await Promise.all([
+    datahubInventory(),
+    datahubGlossary(new URLSearchParams({ limit: '1' }), principal),
+  ])
+  const assets = filterAssetsForPrincipal(principal, inventory, 'monitoring')
   const schemaMetrics = new Map()
-  const glossaryTerms = new Set()
   for (const asset of assets) {
     const key = [asset.platform, asset.database_name, asset.schema_name].join('\u0000')
     const current = schemaMetrics.get(key) || {
@@ -4131,7 +4134,6 @@ async function datahubDashboard(principal) {
     current.asset_count += 1
     if (asset.description?.trim()) current.described_asset_count += 1
     schemaMetrics.set(key, current)
-    for (const term of asset.terms || []) glossaryTerms.add(term)
   }
   const meta = catalogMeta({ projection: true })
   return {
@@ -4139,7 +4141,7 @@ async function datahubDashboard(principal) {
     changes_by_state: {},
     catalog_asset_count: assets.length,
     catalog_described_asset_count: assets.filter((asset) => asset.description?.trim()).length,
-    catalog_glossary_term_count: glossaryTerms.size,
+    catalog_glossary_term_count: glossaryPage.total,
     catalog_schema_metrics: [...schemaMetrics.values()].slice(0, 200),
     catalog_schema_metrics_truncated: schemaMetrics.size > 200,
     meta,

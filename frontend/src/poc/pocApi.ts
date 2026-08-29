@@ -19,6 +19,7 @@ import type {
   ChangeRequestSchemaOverview,
   ChangeRequestSummary,
   ChangeRequestState,
+  ChangeRequestStateGroup,
   ChatMode,
   CapabilitiesResponse,
   ClassificationPolicySummary,
@@ -357,6 +358,59 @@ let changeRecords: ChangeRequestRecord[] = []
 let uploadRecords: Array<Record<string, unknown>> = []
 let manualSubmissionReports: Array<Record<string, unknown>> = []
 let monitoringConfiguration: MonitoringConfiguration | undefined
+
+const changeRequestGroupByState: Readonly<Record<ChangeRequestState, ChangeRequestStateGroup>> = {
+  REGISTERED: 'REGISTERED',
+  IN_REVIEW: 'IN_PROGRESS',
+  TESTING: 'IN_PROGRESS',
+  FINAL_REVIEW: 'IN_PROGRESS',
+  APPLY_QUEUED: 'IN_PROGRESS',
+  APPLYING: 'IN_PROGRESS',
+  APPLIED: 'COMPLETED',
+  APPLY_FAILED: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED',
+  CHANGES_REQUESTED: 'IN_PROGRESS',
+  REJECTED: 'CLOSED',
+  CANCELLED: 'CLOSED',
+}
+
+export function changeRequestDashboardProgress(
+  records: ReadonlyArray<Pick<ChangeRequestRecord, 'state'>>,
+): {
+  changes_by_state: Record<string, number> | null
+  change_request_progress: {
+    total: number | null
+    groups: Record<ChangeRequestStateGroup, number | null>
+    complete: boolean
+  }
+} {
+  const stateCounts: Record<string, number> = {}
+  const groups: Record<ChangeRequestStateGroup, number> = {
+    REGISTERED: 0,
+    IN_PROGRESS: 0,
+    COMPLETED: 0,
+    CLOSED: 0,
+  }
+  for (const record of records) {
+    const group = changeRequestGroupByState[record.state]
+    if (!group) {
+      return {
+        changes_by_state: null,
+        change_request_progress: {
+          total: null,
+          groups: { REGISTERED: null, IN_PROGRESS: null, COMPLETED: null, CLOSED: null },
+          complete: false,
+        },
+      }
+    }
+    stateCounts[record.state] = (stateCounts[record.state] ?? 0) + 1
+    groups[group] += 1
+  }
+  return {
+    changes_by_state: stateCounts,
+    change_request_progress: { total: records.length, groups, complete: true },
+  }
+}
 let adminMemberships: WorkspaceMembershipSummary[] = [pocAdminMembership()]
 let adminSystems: Array<{
   system_id: string
@@ -2070,19 +2124,16 @@ class PocApiClient {
           }
     }
     if (path === '/operations/dashboard') {
+      const changeRequestProgress = changeRequestDashboardProgress(changeRecords)
       if (runtimeFlags().datahub) {
         const dashboard = await gatewayRequest<Record<string, unknown>>(
           '/poc-api/datahub/dashboard', { signal: options.signal },
         )
-        const changesByState = changeRecords.reduce<Record<string, number>>((counts, record) => {
-          counts[record.state] = (counts[record.state] ?? 0) + 1
-          return counts
-        }, {})
-        return { ...dashboard, changes_by_state: changesByState }
+        return { ...dashboard, ...changeRequestProgress }
       }
       return {
         observed_at: new Date().toISOString(),
-        changes_by_state: {},
+        ...changeRequestProgress,
         catalog_asset_count: 0,
         catalog_described_asset_count: 0,
         catalog_glossary_term_count: 0,

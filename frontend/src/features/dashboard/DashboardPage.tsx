@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -9,7 +9,6 @@ import {
   ClipboardList,
   Database,
   Gauge,
-  Layers,
   Search,
   ShieldCheck,
   Terminal,
@@ -18,6 +17,7 @@ import { ApiError, type ApiClient } from '../../api/client'
 import type { CatalogSchemaMetric, ChangeRequestStateGroup } from '../../api/types'
 import { pageUrl, type Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { Dialog } from '../../components/common/Dialog'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { ChangeHistoryApi } from '../change-history/changeHistoryApi'
 import type { ChangeHistorySummary, ChangeHistorySyncStatus } from '../change-history/types'
@@ -49,6 +49,7 @@ export function DashboardPage({
   securityEpoch,
   authorizationRevision,
   onNavigate,
+  onStartChat,
 }: {
   client: ApiClient
   workspaceId: string
@@ -56,11 +57,14 @@ export function DashboardPage({
   securityEpoch: number
   authorizationRevision: number
   onNavigate: (page: Page) => void
+  onStartChat?: (question: string) => void
 }) {
   const [summary, setSummary] = useState<DashboardSummary>()
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
   const [expandedPlatforms, setExpandedPlatforms] = useState<Record<string, boolean>>({})
+  const [assetDistributionOpen, setAssetDistributionOpen] = useState(false)
+  const [homeQuestion, setHomeQuestion] = useState('')
   const changeHistoryApi = useMemo(() => new ChangeHistoryApi(client), [client])
   const [currentWeekStart, setCurrentWeekStart] = useState(currentKstWeekStart)
   const changeSummaryQuery = useQuery({
@@ -131,6 +135,12 @@ export function DashboardPage({
     ? undefined
     : Math.round(quality.table_coverage_basis_points / 100)
   const managedIndicatorNames = quality?.managed_rule_sets.map((rule) => rule.name).join(' · ')
+  const submitHomeQuestion = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const question = homeQuestion.trim()
+    if (question.length < 2 || !onStartChat) return
+    onStartChat(question)
+  }
 
   return (
     <section className="dashboard-page">
@@ -160,6 +170,22 @@ export function DashboardPage({
           </div>
         )}
       />
+      <form className="dashboard-chat-search" role="search" onSubmit={submitHomeQuestion}>
+        <label className="sr-only" htmlFor="dashboard-chat-question">Chat에 질문하기</label>
+        <Search size={19} aria-hidden="true" />
+        <input
+          id="dashboard-chat-question"
+          type="search"
+          value={homeQuestion}
+          onChange={(event) => setHomeQuestion(event.target.value)}
+          placeholder="데이터에 대해 질문하세요"
+          autoComplete="off"
+          disabled={!onStartChat}
+        />
+        <button type="submit" disabled={!onStartChat || homeQuestion.trim().length < 2} aria-label="새 Chat에서 질문하기">
+          <ArrowRight size={18} aria-hidden="true" />
+        </button>
+      </form>
       <p className="dashboard-contract-note">현재 시점 Snapshot · 기간별 이력은 수집 계약이 준비되기 전까지 비활성화됩니다.</p>
       <ErrorNotice error={error ?? qualityLease.error ?? qualityQuery.error} />
 
@@ -170,7 +196,7 @@ export function DashboardPage({
           unit="Assets"
           icon={<Database size={20} />}
           description={descriptionCoverage == null ? '설명 완성도: 수집 데이터 없음' : `설명 완성도 ${descriptionCoverage}%`}
-          page="catalog"
+          onActivate={() => setAssetDistributionOpen(true)}
           onNavigate={onNavigate}
         />
         <DashboardStatCard
@@ -178,8 +204,8 @@ export function DashboardPage({
           value={summary?.catalog_glossary_term_count}
           unit="Terms"
           icon={<BookOpen size={20} />}
-          description="활성화된 서버 동기화 용어"
-          page="governance"
+          description="현재 용어사전의 조회 가능한 용어"
+          page="glossary"
           onNavigate={onNavigate}
         />
         <DashboardStatCard
@@ -206,45 +232,22 @@ export function DashboardPage({
         </DashboardSection>
       </div>
 
-      <DashboardSection title="Asset Distribution & Health Metrics by Database" icon={<Layers size={16} />}>
-        {loading && !summary ? <DashboardLoading label="DataHub projection을 조회하고 있습니다." /> : (
-          <>
-            {platformMetrics.length === 0 ? (
-              <p className="dashboard-empty">현재 Workspace에 표시할 비삭제 DataHub projection이 없습니다.</p>
-            ) : (
-              <div className="dashboard-platforms">
-                {platformMetrics.map(({ platform, metrics }) => {
-                  const expanded = expandedPlatforms[platform] ?? false
-                  const assetCount = metrics.reduce((total, metric) => total + metric.asset_count, 0)
-                  return (
-                    <article className={`dashboard-platform ${expanded ? 'expanded' : ''}`} key={platform}>
-                      <button
-                        className="dashboard-platform-header"
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={() => setExpandedPlatforms((current) => ({ ...current, [platform]: !expanded }))}
-                      >
-                        <span className="dashboard-platform-icon"><Database size={14} /></span>
-                        <span className="dashboard-platform-title"><small>Platform</small><strong>{platform}</strong></span>
-                        <span className="dashboard-platform-total"><b>{assetCount.toLocaleString()}</b><small>Assets</small></span>
-                        <ChevronDown size={16} aria-hidden="true" />
-                      </button>
-                      {expanded && (
-                        <div className="dashboard-schema-list">
-                          {metrics.map((metric) => <SchemaMetricCard key={metricKey(metric)} metric={metric} />)}
-                        </div>
-                      )}
-                    </article>
-                  )
-                })}
-              </div>
-            )}
-            {summary?.catalog_schema_metrics_truncated && (
-              <p className="notice">플랫폼/스키마 항목은 안전한 화면 한도(200개)까지만 표시됩니다. 전체 탐색은 검색 화면을 사용하세요.</p>
-            )}
-          </>
-        )}
-      </DashboardSection>
+      <Dialog
+        open={assetDistributionOpen}
+        title="Asset Distribution & Health Metrics by Database"
+        description="현재 권한 범위의 활성·비삭제 데이터셋을 플랫폼과 스키마별로 표시합니다."
+        size="workspace"
+        onRequestClose={() => setAssetDistributionOpen(false)}
+        footer={<button className="button button-secondary" type="button" onClick={() => setAssetDistributionOpen(false)}>닫기</button>}
+      >
+        <AssetDistribution
+          loading={loading && !summary}
+          platformMetrics={platformMetrics}
+          truncated={summary?.catalog_schema_metrics_truncated ?? false}
+          expandedPlatforms={expandedPlatforms}
+          onToggle={(platform) => setExpandedPlatforms((current) => ({ ...current, [platform]: !current[platform] }))}
+        />
+      </Dialog>
 
       <div className="dashboard-bottom-grid">
         <DashboardSection title="Governance Center" icon={<Activity size={16} />}>
@@ -401,6 +404,7 @@ function DashboardStatCard({
   icon,
   description,
   page,
+  onActivate,
   onNavigate,
   unavailable = false,
 }: {
@@ -409,21 +413,67 @@ function DashboardStatCard({
   unit: string
   icon: ReactNode
   description: string
-  page: Page
+  page?: Page
+  onActivate?: () => void
   onNavigate: (page: Page) => void
   unavailable?: boolean
 }) {
-  return (
-    <a
-      className="dashboard-stat-card"
-      href={pageUrl(page)}
-      onClick={(event) => { event.preventDefault(); onNavigate(page) }}
-    >
+  const content = (
+    <>
       <span className="dashboard-stat-icon">{icon}</span>
       <p>{title}</p>
       <div><strong>{unavailable ? '—' : value == null ? '…' : value.toLocaleString()}</strong><small>{unit}</small></div>
       <span className={unavailable ? 'dashboard-stat-unavailable' : 'dashboard-stat-detail'}>{description}</span>
-    </a>
+    </>
+  )
+  if (onActivate) return <button className="dashboard-stat-card" type="button" onClick={onActivate}>{content}</button>
+  if (!page) return <article className="dashboard-stat-card">{content}</article>
+  return <a className="dashboard-stat-card" href={pageUrl(page)} onClick={(event) => { event.preventDefault(); onNavigate(page) }}>{content}</a>
+}
+
+function AssetDistribution({
+  loading,
+  platformMetrics,
+  truncated,
+  expandedPlatforms,
+  onToggle,
+}: {
+  loading: boolean
+  platformMetrics: ReturnType<typeof groupMetricsByPlatform>
+  truncated: boolean
+  expandedPlatforms: Record<string, boolean>
+  onToggle: (platform: string) => void
+}) {
+  if (loading) return <DashboardLoading label="DataHub projection을 조회하고 있습니다." />
+  if (platformMetrics.length === 0) {
+    return <p className="dashboard-empty">현재 Workspace에 표시할 비삭제 DataHub projection이 없습니다.</p>
+  }
+  return (
+    <>
+      <div className="dashboard-platforms">
+        {platformMetrics.map(({ platform, metrics }) => {
+          const expanded = expandedPlatforms[platform] ?? false
+          const assetCount = metrics.reduce((total, metric) => total + metric.asset_count, 0)
+          return (
+            <article className={`dashboard-platform ${expanded ? 'expanded' : ''}`} key={platform}>
+              <button
+                className="dashboard-platform-header"
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => onToggle(platform)}
+              >
+                <span className="dashboard-platform-icon"><Database size={14} /></span>
+                <span className="dashboard-platform-title"><small>Platform</small><strong>{platform}</strong></span>
+                <span className="dashboard-platform-total"><b>{assetCount.toLocaleString()}</b><small>Assets</small></span>
+                <ChevronDown size={16} aria-hidden="true" />
+              </button>
+              {expanded && <div className="dashboard-schema-list">{metrics.map((metric) => <SchemaMetricCard key={metricKey(metric)} metric={metric} />)}</div>}
+            </article>
+          )
+        })}
+      </div>
+      {truncated && <p className="notice">플랫폼/스키마 항목은 안전한 화면 한도(200개)까지만 표시됩니다. 전체 탐색은 검색 화면을 사용하세요.</p>}
+    </>
   )
 }
 

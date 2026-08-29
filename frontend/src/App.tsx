@@ -68,6 +68,7 @@ export function App() {
   const [locationRevision, setLocationRevision] = useState(0)
   const [adminRouteRevision, setAdminRouteRevision] = useState(0)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
+  const [pendingChatQuestion, setPendingChatQuestion] = useState<string>()
   // The URL keeps the selected tenant across reloads without trusting it for
   // authorization; every request still binds it to server-side membership/RLS.
   const [workspace, setWorkspace] = useState(workspaceFromLocation)
@@ -314,9 +315,21 @@ export function App() {
     }
     const destination = pageUrl(next)
     window.history.pushState({}, '', destination)
+    if (next !== 'chat') setPendingChatQuestion(undefined)
     setCatalogQuery(new URL(destination, window.location.origin).searchParams.get('q') ?? '')
     setPage(next)
   }, [hasPocPageAccess, pocMode])
+
+  const startChat = useCallback((question: string) => {
+    const normalized = question.trim()
+    if (!normalized || (pocMode && !hasPocPageAccess('chat'))) return
+    setPendingChatQuestion(normalized)
+    navigate('chat')
+  }, [hasPocPageAccess, navigate, pocMode])
+
+  const consumePendingChatQuestion = useCallback(() => {
+    setPendingChatQuestion(undefined)
+  }, [])
 
   const navigateKnowledgeStudio = useCallback((assetId?: string, status?: string, intent?: string) => {
     window.history.pushState({}, '', knowledgeStudioUrl(
@@ -517,6 +530,7 @@ export function App() {
           securityEpoch={auth.securityEpoch}
           authorizationRevision={auth.authorizationRevision}
           onNavigate={navigate}
+          onStartChat={hasPocPageAccess('chat') ? startChat : undefined}
         />}
         {page === 'catalog' && <CatalogPage
           client={client}
@@ -587,7 +601,13 @@ export function App() {
         )}
         {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={oidcAuthenticationEnabled ? { onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true } : undefined} />}
         {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
-        {page === 'chat' && <ChatPage client={client} />}
+        {page === 'chat' && (
+          <ChatPage
+            client={client}
+            initialQuestion={pendingChatQuestion}
+            onInitialQuestionConsumed={consumePendingChatQuestion}
+          />
+        )}
         {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onLocalPasswordChange={localAuth?.changeLocalPassword} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
         {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
         {page === 'admin' && cachedAdminContext && (

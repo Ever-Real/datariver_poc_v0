@@ -21,11 +21,52 @@ import { QualityApi } from '../features/quality/qualityApi'
 import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
 import type { ChangeHistoryAccessDocument } from '../features/change-history/types'
 import {
+  changeRequestDashboardProgress,
   configurePocAuthorization,
   isResubmittedReviewForOverview,
   resetPocMemory,
   useStableApiClient,
 } from './pocApi'
+
+describe('POC change-request dashboard progress', () => {
+  it('maps every canonical state into the same four presentation groups', () => {
+    const progress = changeRequestDashboardProgress([
+      { state: 'REGISTERED' },
+      { state: 'IN_REVIEW' },
+      { state: 'TESTING' },
+      { state: 'FINAL_REVIEW' },
+      { state: 'APPLY_QUEUED' },
+      { state: 'APPLYING' },
+      { state: 'APPLIED' },
+      { state: 'APPLY_FAILED' },
+      { state: 'COMPLETED' },
+      { state: 'CHANGES_REQUESTED' },
+      { state: 'REJECTED' },
+      { state: 'CANCELLED' },
+    ])
+
+    expect(progress.change_request_progress).toEqual({
+      total: 12,
+      groups: { REGISTERED: 1, IN_PROGRESS: 7, COMPLETED: 2, CLOSED: 2 },
+      complete: true,
+    })
+  })
+
+  it('fails the presentation aggregate closed for an unknown persisted state', () => {
+    const progress = changeRequestDashboardProgress([
+      { state: 'UNKNOWN_LEGACY' as ChangeRequestRecord['state'] },
+    ])
+
+    expect(progress).toEqual({
+      changes_by_state: null,
+      change_request_progress: {
+        total: null,
+        groups: { REGISTERED: null, IN_PROGRESS: null, COMPLETED: null, CLOSED: null },
+        complete: false,
+      },
+    })
+  })
+})
 
 const meta = {
   observed_at: '2026-08-11T10:00:00.000Z',
