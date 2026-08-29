@@ -43,7 +43,7 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         limit: int,
     ) -> ChatVectorSearchResult:
         candidate_limit = min(
-            max(limit * 4, 8),
+            max(limit, 8),
             MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
         page = await self._candidate_page(
