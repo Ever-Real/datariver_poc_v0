@@ -27,6 +27,7 @@ import {
   resetPocMemory,
   useStableApiClient,
 } from './pocApi'
+import { POC_SUBJECT_ID, POC_WORKSPACE_ID } from './pocContracts'
 
 describe('POC change-request dashboard progress', () => {
   it('maps every canonical state into the same four presentation groups', () => {
@@ -613,6 +614,53 @@ function configureKnowledgeActor(
     system_scope: 'GLOBAL',
     system_ids: [],
   }, `${subjectId}|${boundaryRevision}`)
+}
+
+function installLegacyGovernanceHydration(
+  adminMemberships: Array<{ subject_id: string; display_name: string }>,
+) {
+  ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+    .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+  const observedAt = '2026-08-30T00:00:00.000Z'
+  const documentId = 'legacy-governance-document'
+  const versionId = 'legacy-governance-version'
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'https://poc.invalid')
+    if (url.pathname !== '/poc-api/state/core') throw new Error(`Unexpected request: ${url.pathname}`)
+    return Promise.resolve(new Response(JSON.stringify({
+      value: {
+        adminMemberships,
+        governanceDocuments: [{
+          document_id: documentId, workspace_id: POC_WORKSPACE_ID, kind: 'DOCUMENT', category: 'POLICY',
+          title: 'Legacy governance document', summary: '', classification: 1, state: 'ACTIVE',
+          owner_subject_id: POC_SUBJECT_ID, current_published_version_id: versionId,
+          current_version_number: 1, created_at: observedAt, updated_at: observedAt, version: 1,
+          allowed_actions: ['read'],
+        }],
+        governanceVersions: [{
+          version_id: versionId, workspace_id: POC_WORKSPACE_ID, document_id: documentId,
+          version_number: 1, version_tag: 'v1', state: 'PUBLISHED', title: 'Legacy governance document',
+          summary: '', applicability_scope: '', sanitized_html: '<p>Legacy</p>', plain_text: 'Legacy',
+          content_sha256: 'a'.repeat(64), size_bytes: 13, sanitizer_policy_version: 'POC_SANITIZER_V1',
+          sanitizer_policy_sha256: 'b'.repeat(64), source_format: 'HTML', source_template_version_id: null,
+          parent_document_id: null, author_id: POC_SUBJECT_ID, submitted_at: observedAt,
+          reviewed_by: POC_SUBJECT_ID, reviewed_at: observedAt, published_at: observedAt,
+          artifact_state: 'STORED', knowledge_state: 'READY', created_at: observedAt, version: 1,
+        }],
+        governanceReviews: [{
+          review_id: 'legacy-governance-review', workspace_id: POC_WORKSPACE_ID, document_id: documentId,
+          document_version_id: versionId, decision: 'APPROVE', reviewer_id: POC_SUBJECT_ID,
+          reason: '', policy_decision_id: 'legacy-policy', authentication_assurance: 'LOCAL_PASSWORD_SESSION',
+          created_at: observedAt,
+        }],
+        governanceAttachments: [],
+      },
+      version: 1,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ETag: '"1"' },
+    }))
+  }))
 }
 
 describe('POC live-provider compatibility adapter', () => {
@@ -1563,6 +1611,26 @@ describe('POC live-provider compatibility adapter', () => {
     expect(importedMarkdown.item.versions[0]?.source_format).toBe('MARKDOWN')
     expect(importedMarkdown.item.versions[0]?.sanitized_html).toContain('<h1>Markdown 정책</h1>')
     expect(importedMarkdown.item.versions[0]?.sanitized_html).toContain('<ul><li>승인</li><li>변경 이력</li></ul>')
+  })
+
+  it('keeps a referenced legacy POC document actor present after core hydration drops its membership', async () => {
+    installLegacyGovernanceHydration([])
+
+    const detail = await useStableApiClient().request<{ item: { subject_display_names: Record<string, string> } }>(
+      '/governance/documents/legacy-governance-document',
+    )
+
+    expect(detail.item.subject_display_names).toEqual({ [POC_SUBJECT_ID]: 'POC User' })
+  })
+
+  it('prefers a hydrated membership display name over the legacy POC document fallback', async () => {
+    installLegacyGovernanceHydration([{ subject_id: POC_SUBJECT_ID, display_name: 'Persisted POC Operator' }])
+
+    const detail = await useStableApiClient().request<{ item: { subject_display_names: Record<string, string> } }>(
+      '/governance/documents/legacy-governance-document',
+    )
+
+    expect(detail.item.subject_display_names).toEqual({ [POC_SUBJECT_ID]: 'Persisted POC Operator' })
   })
 
   it('gives stewards bounded Governance document management without Knowledge manage/review', async () => {

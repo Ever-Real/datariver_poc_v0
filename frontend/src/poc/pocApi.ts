@@ -813,9 +813,16 @@ function governanceDetail(documentId: string) {
     ...reviews.map((item) => item.reviewer_id),
     ...attachments.map((item) => item.uploaded_by),
   ])
-  const subject_display_names = Object.fromEntries(adminMemberships
+  const displayNames = new Map(adminMemberships
     .filter((member) => subjectIds.has(member.subject_id) && member.display_name.trim())
     .map((member) => [member.subject_id, member.display_name.trim()]))
+  // Older POC documents persist the canonical POC actor even after access-state
+  // hydration replaces its membership list. Preserve its bounded presentation
+  // identity only when that actor is actually referenced by this document.
+  if (subjectIds.has(POC_SUBJECT_ID) && !displayNames.has(POC_SUBJECT_ID)) {
+    displayNames.set(POC_SUBJECT_ID, pocAdminMembership().display_name)
+  }
+  const subject_display_names = Object.fromEntries(displayNames)
   return {
     document,
     versions,
