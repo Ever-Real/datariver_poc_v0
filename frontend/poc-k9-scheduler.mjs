@@ -438,6 +438,9 @@ export function createPocK9Scheduler({
   let stopped = false
   let activeRun
   let activeAttempt
+  let activeReconciliationGeneration = null
+  let pendingReconciliation
+  let pendingReconciliationRun
 
   const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
     lockName: config.lockName,
@@ -466,6 +469,7 @@ export function createPocK9Scheduler({
     }
 
     if (!activeRun) {
+      activeReconciliationGeneration = reconciliationGeneration
       activeAttempt = Object.freeze({
         status: 'RUNNING',
         scheduled_for: scheduledFor.toISOString(),
@@ -474,9 +478,65 @@ export function createPocK9Scheduler({
       activeRun = execute(scheduledFor, triggerType, reconciliationGeneration).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
+        activeReconciliationGeneration = null
       })
     }
     return activeRun
+  }
+
+  const reconciliationRequest = (reconciliationGeneration) => ({
+    scheduledFor: config.enabled
+      ? currentScheduleBoundary(clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode)
+      : clock(),
+    trigger: config.enabled ? 'scheduled' : 'manual',
+    reconciliationGeneration,
+  })
+
+  const drainPendingReconciliation = async (predecessor) => {
+    try {
+      try {
+        await predecessor
+      } catch {
+        // A newer observed semantic generation must be reconciled even when
+        // the run it superseded failed.
+      }
+      let result
+      while (pendingReconciliation) {
+        const requested = pendingReconciliation
+        const reconciliationGeneration = await resolveReconciliationGeneration()
+        if (pendingReconciliation !== requested) continue
+        pendingReconciliation = undefined
+        if (!reconciliationGeneration) {
+          result = { status: 'already_aligned' }
+          continue
+        }
+        try {
+          result = await trigger({
+            ...requested.request,
+            reconciliationGeneration,
+          })
+        } catch (error) {
+          if (!pendingReconciliation) throw error
+        }
+      }
+      return result
+    } finally {
+      pendingReconciliationRun = undefined
+    }
+  }
+
+  const triggerReconciliation = (reconciliationGeneration) => {
+    const request = reconciliationRequest(reconciliationGeneration)
+    if (activeRun && activeReconciliationGeneration === reconciliationGeneration) return activeRun
+    if (!activeRun && !pendingReconciliationRun) return trigger(request)
+
+    if (pendingReconciliation?.candidateGeneration !== reconciliationGeneration) {
+      pendingReconciliation = { candidateGeneration: reconciliationGeneration, request }
+    }
+    if (!pendingReconciliationRun) {
+      pendingReconciliationRun = drainPendingReconciliation(activeRun)
+    }
+    return pendingReconciliationRun
   }
 
   const scheduleNext = () => {
@@ -519,11 +579,7 @@ export function createPocK9Scheduler({
       if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
       const reconciliationGeneration = await resolveReconciliationGeneration(candidateGeneration)
       if (!reconciliationGeneration) return { status: 'already_aligned' }
-      return trigger({
-        ...(config.enabled ? {} : { scheduledFor: clock() }),
-        trigger: config.enabled ? 'scheduled' : 'manual',
-        reconciliationGeneration,
-      })
+      return triggerReconciliation(reconciliationGeneration)
     },
     triggerManual(scheduledFor) {
       return trigger({ scheduledFor, trigger: 'manual' })
@@ -532,7 +588,7 @@ export function createPocK9Scheduler({
       stopped = true
       if (timer !== undefined) clearTimer(timer)
       timer = undefined
-      await activeRun
+      await (pendingReconciliationRun || activeRun)
     },
   }
 }

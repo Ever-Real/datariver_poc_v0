@@ -354,6 +354,87 @@ test('K9 same-generation concurrent reconciliation coalesces and the next daily 
   assert.equal(database.readValue().last_successful_schedule, nextBoundary)
 })
 
+test('K9 collapses distinct pending semantic generations to the latest and stop awaits it', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const generationB = 'c'.repeat(64)
+  const generationC = 'd'.repeat(64)
+  const database = k9SchedulerDatabase()
+  const persistentStateStore = createPocStateStore({ databasePool: database.pool })
+  const commands = []
+  const stateStore = {
+    ...persistentStateStore,
+    runK9Scheduler: mock.fn(async (command, task) => {
+      commands.push(command)
+      return persistentStateStore.runK9Scheduler(command, task)
+    }),
+  }
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  let releaseActiveRun
+  let releaseFollowUp
+  let markFollowUpStarted
+  let activeSemanticGeneration = null
+  const activeRunGate = new Promise((resolve) => { releaseActiveRun = resolve })
+  const followUpGate = new Promise((resolve) => { releaseFollowUp = resolve })
+  const followUpStarted = new Promise((resolve) => { markFollowUpStarted = resolve })
+  const triggerK9Refresh = mock.fn(async () => {
+    if (triggerK9Refresh.mock.calls.length === 1) await activeRunGate
+    else {
+      markFollowUpStarted()
+      await followUpGate
+    }
+    return { status: 'SUCCESS' }
+  })
+  const resolveReconciliationGeneration = mock.fn(async (candidate) => (
+    candidate || activeSemanticGeneration
+  ))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    resolveReconciliationGeneration,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  activeSemanticGeneration = generationB
+  const generationBRequest = scheduler.reconcileSemanticGeneration(generationB)
+  activeSemanticGeneration = generationC
+  const firstGenerationCRequest = scheduler.reconcileSemanticGeneration(generationC)
+  const duplicateGenerationCRequest = scheduler.reconcileSemanticGeneration(generationC)
+  await Promise.resolve()
+
+  let stopSettled = false
+  const stopping = scheduler.stop().then(() => { stopSettled = true })
+  await Promise.resolve()
+  assert.equal(stopSettled, false)
+
+  releaseActiveRun()
+  await followUpStarted
+  assert.equal(stopSettled, false)
+
+  releaseFollowUp()
+  await Promise.all([
+    generationBRequest,
+    firstGenerationCRequest,
+    duplicateGenerationCRequest,
+    stopping,
+  ])
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 2)
+  assert.deepEqual(commands.map((command) => command.reconciliationGeneration || null), [null, generationC])
+  assert.deepEqual(commands.map((command) => command.scheduledFor), [scheduledFor, scheduledFor])
+  assert.equal(database.readValue().last_successful_reconciliation_generation, generationC)
+  assert.deepEqual(resolveReconciliationGeneration.mock.calls.at(-1).arguments, [])
+  assert.equal(stopSettled, true)
+})
+
 test('K9 reconciliation failure preserves the successful daily schedule and prior generation receipt', async () => {
   const scheduledFor = '2026-08-30T02:00:00.000Z'
   const oldGeneration = 'd'.repeat(64)
