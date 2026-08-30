@@ -243,6 +243,16 @@ describe('KnowledgeRegistry', () => {
     const drawer = await screen.findByRole('complementary', {
       name: 'Finance Terms 지식 에셋 상세',
     })
+    expect(drawer).not.toHaveAttribute('style')
+    expect(drawer.className).toMatch(/knowledge-registry-drawer-width-\d+/)
+    const resizer = within(drawer).getByRole('separator', { name: '상세 패널 너비 조절' })
+    Object.defineProperty(resizer, 'setPointerCapture', { configurable: true, value: vi.fn() })
+    fireEvent.pointerDown(resizer, { button: 0, clientX: 700, pointerId: 7 })
+    expect(document.body).toHaveClass('knowledge-registry-resizing')
+    fireEvent.pointerMove(window, { clientX: 620, pointerId: 7 })
+    fireEvent.pointerUp(window, { clientX: 620, pointerId: 7 })
+    expect(document.body).not.toHaveClass('knowledge-registry-resizing')
+    expect(drawer).not.toHaveAttribute('style')
     expect(await within(drawer).findAllByText('CURRENT')).toHaveLength(2)
     expect(within(drawer).getByText('T v3')).toBeInTheDocument()
     expect(within(drawer).getByText('Changeset v4')).toBeInTheDocument()

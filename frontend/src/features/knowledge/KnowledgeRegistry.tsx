@@ -27,6 +27,16 @@ import { KnowledgeManagedGraphExplorer } from './KnowledgeManagedGraphExplorer'
 
 const DEFAULT_DRAWER_MAX_WIDTH = 672
 const DRAWER_MIN_WIDTH = 440
+const DRAWER_WIDTH_TOKENS = [440, 464, 488, 512, 536, 560, 584, 608, 632, 656, 672] as const
+const DRAWER_RESIZING_CLASS = 'knowledge-registry-resizing'
+
+function nearestDrawerWidth(value: number, maximum = DEFAULT_DRAWER_MAX_WIDTH): number {
+  const available = DRAWER_WIDTH_TOKENS.filter((width) => width <= maximum)
+  const candidates = available.length ? available : [DRAWER_WIDTH_TOKENS[0]]
+  return candidates.reduce((nearest, width) => (
+    Math.abs(width - value) < Math.abs(nearest - value) ? width : nearest
+  ))
+}
 
 function localTime(value: string | undefined): string {
   if (!value) return '—'
@@ -99,7 +109,7 @@ export function KnowledgeRegistry({
   const [drawerWidth, setDrawerWidth] = useState(() => (
     typeof window === 'undefined'
       ? DEFAULT_DRAWER_MAX_WIDTH
-      : Math.min(DEFAULT_DRAWER_MAX_WIDTH, window.innerWidth * 0.48)
+      : nearestDrawerWidth(window.innerWidth * 0.48)
   ))
   const [drawerLimits, setDrawerLimits] = useState({
     minimum: DRAWER_MIN_WIDTH,
@@ -116,8 +126,8 @@ export function KnowledgeRegistry({
   }, [])
 
   const clampDrawerWidth = useCallback((value: number) => {
-    const { minimum, maximum } = drawerBounds()
-    return Math.min(maximum, Math.max(minimum, value))
+    const { maximum } = drawerBounds()
+    return nearestDrawerWidth(value, maximum)
   }, [drawerBounds])
 
   useEffect(() => {
@@ -128,16 +138,13 @@ export function KnowledgeRegistry({
     }
     const stop = () => {
       resizeRef.current = undefined
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
+      document.body.classList.remove(DRAWER_RESIZING_CLASS)
     }
     const resize = () => {
       const nextLimits = drawerBounds()
-      setDrawerLimits(nextLimits)
-      setDrawerWidth((current) => Math.min(
-        nextLimits.maximum,
-        Math.max(nextLimits.minimum, current),
-      ))
+      const maximum = nearestDrawerWidth(nextLimits.maximum, nextLimits.maximum)
+      setDrawerLimits({ minimum: Math.min(DRAWER_MIN_WIDTH, maximum), maximum })
+      setDrawerWidth((current) => nearestDrawerWidth(current, nextLimits.maximum))
     }
     resize()
     window.addEventListener('pointermove', move)
@@ -149,8 +156,7 @@ export function KnowledgeRegistry({
       window.removeEventListener('pointerup', stop)
       window.removeEventListener('pointercancel', stop)
       window.removeEventListener('resize', resize)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
+      document.body.classList.remove(DRAWER_RESIZING_CLASS)
     }
   }, [clampDrawerWidth, drawerBounds])
 
@@ -397,8 +403,7 @@ export function KnowledgeRegistry({
   const beginResize = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     resizeRef.current = { startX: event.clientX, startWidth: drawerWidth }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
+    document.body.classList.add(DRAWER_RESIZING_CLASS)
     event.currentTarget.setPointerCapture(event.pointerId)
     event.preventDefault()
   }
@@ -586,8 +591,7 @@ export function KnowledgeRegistry({
             onClick={() => setSelectedId(undefined)}
           />
           <aside
-            className="fixed right-3 top-[68px] bottom-3 z-50 overflow-y-auto rounded-enterprise border border-slate-400 bg-white p-5 shadow-2xl max-md:right-0 max-md:top-0 max-md:bottom-0 max-md:w-full!"
-            style={{ width: drawerWidth, maxWidth: 'calc(100vw - 12px)' }}
+            className={`knowledge-registry-drawer knowledge-registry-drawer-width-${drawerWidth} fixed right-3 top-[68px] bottom-3 z-50 overflow-y-auto rounded-enterprise border border-slate-400 bg-white p-5 shadow-2xl max-md:right-0 max-md:top-0 max-md:bottom-0 max-md:w-full!`}
             aria-label={`${selected.name} 지식 에셋 상세`}
           >
             <div

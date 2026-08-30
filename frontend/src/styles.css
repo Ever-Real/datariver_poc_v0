@@ -374,6 +374,19 @@ progress.progress-track::-moz-progress-bar { background: #7eb843; transition: in
 .governance-status-col-schema { width: 22%; }
 .governance-status-col-system { width: 18%; }
 .governance-status-col-metric { width: 7.5%; }
+.knowledge-registry-resizing { cursor: col-resize !important; user-select: none !important; }
+.knowledge-registry-drawer { max-width: calc(100vw - 12px); }
+.knowledge-registry-drawer-width-440 { width: 440px; }
+.knowledge-registry-drawer-width-464 { width: 464px; }
+.knowledge-registry-drawer-width-488 { width: 488px; }
+.knowledge-registry-drawer-width-512 { width: 512px; }
+.knowledge-registry-drawer-width-536 { width: 536px; }
+.knowledge-registry-drawer-width-560 { width: 560px; }
+.knowledge-registry-drawer-width-584 { width: 584px; }
+.knowledge-registry-drawer-width-608 { width: 608px; }
+.knowledge-registry-drawer-width-632 { width: 632px; }
+.knowledge-registry-drawer-width-656 { width: 656px; }
+.knowledge-registry-drawer-width-672 { width: 672px; }
 .governance-schema-toggle { width: 100%; border: 0; padding: 0; color: inherit; text-align: left; background: transparent; }.governance-schema-toggle strong, .governance-schema-toggle small { display: block; }.governance-schema-toggle small { margin-top: 2px; color: var(--text-500); font-size: 9px; font-weight: 700; }.governance-schema-toggle:hover, .governance-schema-toggle:focus-visible { color: var(--blue-700); text-decoration: underline; }
 .governance-registration-link { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .governance-registration-link span { max-width: 245px; color: var(--text-500); font-size: 9px; line-height: 1.4; text-align: right; }
