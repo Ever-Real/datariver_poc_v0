@@ -20,6 +20,9 @@
 .poc-glossary-name small { overflow: hidden; color: var(--text-500); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .poc-glossary-asset-count { min-width: 36px; border: 1px solid #9ebbc7; border-radius: 999px; padding: 3px 9px; color: var(--blue-700); background: #edf7fa; font-size: 10px; font-weight: 900; }
 .poc-glossary-asset-count:hover, .poc-glossary-asset-count:focus-visible { border-color: var(--blue-700); background: var(--blue-100); }
+.poc-glossary-count-skeleton { display: inline-block; width: 15px; height: 8px; border-radius: 999px; background: linear-gradient(90deg, #cbd9de 25%, #edf4f6 50%, #cbd9de 75%); background-size: 200% 100%; animation: poc-glossary-count-loading 1.2s ease-in-out infinite; }
+.poc-glossary-count-error { color: var(--danger-700); }
+@keyframes poc-glossary-count-loading { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .poc-glossary-detail { min-width: 0; align-self: start; overflow: hidden; border: 1px solid var(--line-300); border-radius: 6px; background: #fbfcfc; box-shadow: 0 7px 22px rgba(14, 39, 56, .08); }
 .poc-glossary-detail > header { border-bottom: 1px solid var(--line-300); padding: 15px; background: linear-gradient(120deg, #edf6f8, #fff); }
 .poc-glossary-detail > header h2 { margin: 3px 0 6px; color: var(--navy-900); font-size: 16px; }

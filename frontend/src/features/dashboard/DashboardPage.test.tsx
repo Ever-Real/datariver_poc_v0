@@ -492,4 +492,37 @@ describe('DashboardPage', () => {
     fireEvent.click(submit)
     expect(startChat).toHaveBeenCalledWith('current metadata를 찾아줘')
   })
+
+  it('retains asset distribution modal open state, drill-down subview, and back navigation', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary({
+        catalog_asset_count: 500,
+        catalog_schema_metrics: [{
+          platform: 'postgres', database_name: 'MANUFACTURING', schema_name: 'QUALITY',
+          asset_count: 500, described_asset_count: 100, tagged_asset_count: 50, term_asset_count: 10,
+        }],
+      }))
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const navigate = vi.fn()
+    renderDashboard(apiClient(request), navigate)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*500.*Assets/i }))
+    const dialog = screen.getByRole('dialog', { name: 'Asset Distribution & Health Metrics by Database' })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Platformpostgres500Assets/i }))
+    const schemaCard = within(dialog).getByRole('button', { name: /MANUFACTURING \/ QUALITY.*500 Assets/ })
+    fireEvent.click(schemaCard)
+
+    expect(within(dialog).getByRole('heading', { name: '스키마 상세 정보' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /Platformpostgres/ })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('heading', { name: '스키마 상세 정보' }).parentElement).not.toHaveAttribute('style')
+    fireEvent.click(within(dialog).getByRole('button', { name: '이전' }))
+
+    expect(within(dialog).queryByRole('heading', { name: '스키마 상세 정보' })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: /Platformpostgres500Assets/i })).toBeInTheDocument()
+    expect(navigate).not.toHaveBeenCalled()
+  })
 })

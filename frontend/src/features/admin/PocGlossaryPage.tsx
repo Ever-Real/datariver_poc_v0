@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type FormEvent } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueries } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import type { ApiClient } from '../../api/client'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -65,6 +65,28 @@ interface PocGlossaryAssignmentPage {
   total: number
   page: { next_cursor: string | null; limit: number }
 }
+
+interface PocGlossaryAssignmentCount {
+  urn: string
+  table_asset_count: number
+  column_asset_count: number
+}
+
+interface PocGlossaryAssignmentCounts {
+  items: PocGlossaryAssignmentCount[]
+}
+
+class MissingGlossaryAssignmentCountError extends Error {
+  constructor(urn: string) {
+    super(`용어 적용 수량 응답에 ${urn} 항목이 없습니다.`)
+    this.name = 'MissingGlossaryAssignmentCountError'
+  }
+}
+
+type AssignmentCountState =
+  | { kind: 'LOADING' }
+  | { kind: 'ERROR'; error: Error }
+  | { kind: 'READY'; value: number }
 
 interface PocGlossaryTreeRow {
   id: string
@@ -191,6 +213,48 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
     setTablesExpanded(true)
     setColumnsExpanded(true)
   }, [])
+
+  const batchCountScopes = useMemo(() => (terms.data?.pages ?? []).flatMap((page) => {
+    const urns = page.items
+      .filter((term) => term.table_asset_count === null || term.column_asset_count === null)
+      .map((term) => term.urn)
+    const scopes: string[][] = []
+    for (let index = 0; index < urns.length; index += 50) scopes.push(urns.slice(index, index + 50))
+    return scopes
+  }), [terms.data?.pages])
+  const batchCountsQueries = useQueries({
+    queries: batchCountScopes.map((urns) => ({
+      queryKey: ['poc', 'glossary', 'batch-counts', urns],
+      queryFn: ({ signal }: { signal: AbortSignal }) => client.request<PocGlossaryAssignmentCounts>(
+        '/poc/glossary/assignments/batch-counts',
+        { method: 'POST', body: JSON.stringify({ urns }), signal },
+      ),
+      enabled: urns.length > 0,
+      staleTime: 60_000,
+      retry: false,
+    })),
+  })
+
+  const getCount = useCallback((term: PocGlossaryTerm, type: 'table' | 'column'): AssignmentCountState => {
+    const original = type === 'table' ? term.table_asset_count : term.column_asset_count
+    if (original !== null) return { kind: 'READY', value: original }
+    const pageIndex = batchCountScopes.findIndex((urns) => urns.includes(term.urn))
+    const pageQuery = batchCountsQueries[pageIndex]
+    if (!pageQuery || pageQuery.isPending) return { kind: 'LOADING' }
+    if (pageQuery.isError) {
+      return {
+        kind: 'ERROR',
+        error: pageQuery.error instanceof Error ? pageQuery.error : new Error('용어 적용 수량 조회에 실패했습니다.'),
+      }
+    }
+    const item = pageQuery.data.items.find((count) => count.urn === term.urn)
+    if (!item) return { kind: 'ERROR', error: new MissingGlossaryAssignmentCountError(term.urn) }
+    return {
+      kind: 'READY',
+      value: type === 'table' ? item.table_asset_count : item.column_asset_count,
+    }
+  }, [batchCountScopes, batchCountsQueries])
+
   const columns = useMemo<ColumnDef<PocGlossaryTreeRow>[]>(() => [
     { accessorKey: 'name', header: '용어 계층', size: 300, cell: ({ row }) => <div className={`poc-glossary-tree-name poc-glossary-depth-${Math.min(row.depth, 8)}`}>
       {row.getCanExpand() ? <button
@@ -204,25 +268,33 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
       <span className={`badge ${row.original.kind === 'NODE' ? 'badge-soft' : ''}`}>{row.original.kind === 'NODE' ? '분류' : '용어'}</span>
     </div> },
     { accessorKey: 'description', header: '뜻/설명', size: 360, cell: ({ row }) => row.original.description || (row.original.kind === 'NODE' ? 'DataHub에 분류 설명이 없습니다.' : 'DataHub에 정의가 등록되지 않았습니다.') },
-    { id: 'table_count', accessorFn: (row) => row.term?.table_asset_count ?? -1, header: '적용 테이블', size: 105, cell: ({ row }) => row.original.term ? <button
-      type="button"
-      className="poc-glossary-asset-count"
-      aria-label={`${row.original.name} 적용 테이블 ${row.original.term.table_asset_count === null ? '권한 범위 조회' : `${row.original.term.table_asset_count}개 보기`}`}
-      onClick={(event) => {
-        event.stopPropagation()
-        selectTerm(row.original.term!)
-      }}
-    >{row.original.term.table_asset_count ?? '조회'}</button> : '—' },
-    { id: 'column_count', accessorFn: (row) => row.term?.column_asset_count ?? -1, header: '적용 컬럼', size: 105, cell: ({ row }) => row.original.term ? <button
-      type="button"
-      className="poc-glossary-asset-count"
-      aria-label={`${row.original.name} 적용 컬럼 ${row.original.term.column_asset_count === null ? '권한 범위 조회' : `${row.original.term.column_asset_count}개 보기`}`}
-      onClick={(event) => {
-        event.stopPropagation()
-        selectTerm(row.original.term!)
-      }}
-    >{row.original.term.column_asset_count ?? '조회'}</button> : '—' },
-  ], [selectTerm])
+    { id: 'table_count', accessorFn: (row) => row.term?.table_asset_count ?? -1, header: '적용 테이블', size: 105, cell: ({ row }) => {
+      if (!row.original.term) return '—'
+      const count = getCount(row.original.term, 'table')
+      return <button
+        type="button"
+        className="poc-glossary-asset-count"
+        aria-label={`${row.original.name} 적용 테이블 ${count.kind === 'READY' ? `${count.value}개 보기` : count.kind === 'LOADING' ? '조회 중' : '조회 오류'}`}
+        onClick={(event) => {
+          event.stopPropagation()
+          selectTerm(row.original.term!)
+        }}
+      ><AssignmentCountValue state={count} /></button>
+    } },
+    { id: 'column_count', accessorFn: (row) => row.term?.column_asset_count ?? -1, header: '적용 컬럼', size: 105, cell: ({ row }) => {
+      if (!row.original.term) return '—'
+      const count = getCount(row.original.term, 'column')
+      return <button
+        type="button"
+        className="poc-glossary-asset-count"
+        aria-label={`${row.original.name} 적용 컬럼 ${count.kind === 'READY' ? `${count.value}개 보기` : count.kind === 'LOADING' ? '조회 중' : '조회 오류'}`}
+        onClick={(event) => {
+          event.stopPropagation()
+          selectTerm(row.original.term!)
+        }}
+      ><AssignmentCountValue state={count} /></button>
+    } },
+  ], [getCount, selectTerm])
   const submit = (event: FormEvent) => {
     event.preventDefault()
     setSelectedTermUrn(undefined)
@@ -315,4 +387,14 @@ export function PocGlossaryPage({ client }: { client: ApiClient }) {
       </div>
     </section>
   </section>
+}
+
+function AssignmentCountValue({ state }: { state: AssignmentCountState }) {
+  if (state.kind === 'LOADING') {
+    return <span className="poc-glossary-count-skeleton" aria-hidden="true" />
+  }
+  if (state.kind === 'ERROR') {
+    return <span className="poc-glossary-count-error" role="alert" title={state.error.message}>오류</span>
+  }
+  return state.value.toLocaleString()
 }

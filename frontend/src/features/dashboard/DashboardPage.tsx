@@ -444,10 +444,27 @@ function AssetDistribution({
   expandedPlatforms: Record<string, boolean>
   onToggle: (platform: string) => void
 }) {
+  const [selectedMetric, setSelectedMetric] = useState<CatalogSchemaMetric | undefined>()
+
   if (loading) return <DashboardLoading label="DataHub projection을 조회하고 있습니다." />
   if (platformMetrics.length === 0) {
     return <p className="dashboard-empty">현재 Workspace에 표시할 비삭제 DataHub projection이 없습니다.</p>
   }
+
+  if (selectedMetric) {
+    return (
+      <div className="dashboard-schema-subview">
+        <header className="dashboard-schema-subview-header">
+          <button className="button button-secondary" onClick={() => setSelectedMetric(undefined)} type="button">
+            이전
+          </button>
+          <h3>스키마 상세 정보</h3>
+        </header>
+        <SchemaMetricCard metric={selectedMetric} />
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="dashboard-platforms">
@@ -467,7 +484,7 @@ function AssetDistribution({
                 <span className="dashboard-platform-total"><b>{assetCount.toLocaleString()}</b><small>Assets</small></span>
                 <ChevronDown size={16} aria-hidden="true" />
               </button>
-              {expanded && <div className="dashboard-schema-list">{metrics.map((metric) => <SchemaMetricCard key={metricKey(metric)} metric={metric} />)}</div>}
+              {expanded && <div className="dashboard-schema-list">{metrics.map((metric) => <SchemaMetricCard key={metricKey(metric)} metric={metric} onClick={() => setSelectedMetric(metric)} />)}</div>}
             </article>
           )
         })}
@@ -496,11 +513,25 @@ function DashboardSection({
   )
 }
 
-function SchemaMetricCard({ metric }: { metric: CatalogSchemaMetric }) {
+function SchemaMetricCard({ metric, onClick }: { metric: CatalogSchemaMetric; onClick?: () => void }) {
   const descriptionCoverage = coveragePresentation('설명 보유 자산', metric.described_asset_count, metric.asset_count)
   const tagCoverage = coveragePresentation('태그 1개 이상 보유 자산', metric.tagged_asset_count, metric.asset_count)
   const termCoverage = coveragePresentation('용어 1개 이상 연결 자산', metric.term_asset_count, metric.asset_count)
   const hierarchy = [metric.database_name, metric.schema_name].filter(Boolean).join(' / ') || '미분류 스키마'
+
+  if (onClick) {
+    return (
+      <button className="dashboard-schema-card" onClick={onClick} type="button">
+        <header><strong title={hierarchy}>{hierarchy}</strong><span>{metric.asset_count.toLocaleString()} Assets</span></header>
+        <div className="dashboard-schema-metrics">
+          <MetricTile label="Desc" {...descriptionCoverage} />
+          <MetricTile label="Tag" {...tagCoverage} />
+          <MetricTile label="Term" {...termCoverage} />
+        </div>
+      </button>
+    )
+  }
+
   return (
     <article className="dashboard-schema-card">
       <header><strong title={hierarchy}>{hierarchy}</strong><span>{metric.asset_count.toLocaleString()} Assets</span></header>

@@ -77,6 +77,8 @@
 .dashboard-platform-total b { color: var(--navy-900); font-size: 16px; }
 .dashboard-platform.expanded .dashboard-platform-header svg { transform: rotate(180deg); }
 .dashboard-schema-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: 9px; border-top: 1px solid var(--line-300); padding: 10px; background: #f3f5f5; }
+.dashboard-schema-subview-header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.dashboard-schema-subview-header h3 { margin: 0; }
 .dashboard-schema-card { overflow: hidden; border: 1px solid var(--line-300); background: white; }
 .dashboard-schema-card > header { display: flex; align-items: center; justify-content: space-between; gap: 9px; border-bottom: 1px solid var(--line-200); padding: 8px; }
 .dashboard-schema-card > header strong { overflow: hidden; color: var(--navy-900); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
