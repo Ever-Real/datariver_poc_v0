@@ -160,47 +160,11 @@ const columns: ColumnDef<ChangeRequestSummary>[] = [
   },
 ]
 
-function displayWidth(value: string): number {
-  return Array.from(value).reduce(
-    (width, character) => width + (character.codePointAt(0)! > 0xff ? 2 : 1),
-    0,
-  )
-}
-
-function proportionalOverviewWidths(rows: ChangeRequestSchemaOverview[]): number[] {
-  const samples = [
-    ['스키마명', ...rows.flatMap((row) => [
-      row.schema_name,
-      `${row.platform} · ${row.database_name}`,
-    ])],
-    ['시스템', ...rows.flatMap((row) => [
-      row.system_name ?? '시스템 미지정',
-      row.system_code ?? '',
-    ])],
-    ['이벤트 수', ...rows.map((row) => `${(row.event_count ?? 0).toLocaleString()}건`)],
-    ['미진행 이벤트 수', ...rows.map((row) => `${(row.unprogressed_event_count ?? 0).toLocaleString()}건`)],
-    ['CR 전체', ...rows.map((row) => `${row.total_count.toLocaleString()}건`)],
-    ['접수 완료', ...rows.map((row) => `${row.received_count.toLocaleString()}건`)],
-    ['재검토', ...rows.map((row) => `${row.recheck_count.toLocaleString()}건`)],
-    ['변경/TEST', ...rows.map((row) => `${row.testing_count.toLocaleString()}건`)],
-    ['완료검토', ...rows.map((row) => `${row.final_review_count.toLocaleString()}건`)],
-    ['완료', ...rows.map((row) => `${row.completed_count.toLocaleString()}건`)],
-  ]
-  const weights = samples.map((values) => Math.min(
-    32,
-    Math.max(...values.map(displayWidth)),
-  ))
-  const dimensionWeights = weights.slice(0, 2)
-  const metricWeights = weights.slice(2)
-  const sharedMetricWeight = metricWeights.reduce((sum, width) => sum + width, 0)
-    / metricWeights.length
-  const normalizedWeights = [
-    ...dimensionWeights,
-    ...metricWeights.map(() => sharedMetricWeight),
-  ]
-  const total = normalizedWeights.reduce((sum, width) => sum + width, 0)
-  return normalizedWeights.map((width) => (width / total) * 100)
-}
+const overviewColumnClasses = [
+  'governance-status-col-schema',
+  'governance-status-col-system',
+  ...Array.from({ length: 8 }, () => 'governance-status-col-metric'),
+]
 
 function currentKstWeekRange(now = new Date()): { from: string; to: string } {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -783,7 +747,6 @@ export function GovernancePage({
       ].some((value) => value.toLocaleLowerCase().includes(query))
     })
   }, [requests, stateFilter, textFilter])
-  const overviewColumnWidths = useMemo(() => proportionalOverviewWidths(overview), [overview])
   const statusBadges: Array<{ label: string; state: '' | ChangeRequestState }> = [
     { label: '전체', state: '' },
     { label: '접수', state: 'REGISTERED' },
@@ -891,7 +854,7 @@ export function GovernancePage({
 
         <div className="governance-status-overview" role="region" aria-label="현재 권한과 기간의 스키마별 변경 현황">
           <header><strong>스키마·시스템별 집계</strong><small>서버가 KST 기간, 현재 권한, 스키마와 시스템을 함께 적용한 정본 집계입니다. 이벤트는 발생 시각 기준 distinct normalized transaction, CR은 요청 생성 시각 기준입니다.{overviewTruncated ? ' 100개를 넘는 행은 기존 저사양 보호 한도에 따라 생략되었습니다.' : ''}</small></header>
-          <div className="governance-status-scroll"><table><colgroup>{overviewColumnWidths.map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup><thead><tr><th>스키마명</th><th>시스템</th><th>이벤트 수</th><th>미진행 이벤트 수</th><th>CR 전체</th><th>접수 완료</th><th>재검토</th><th>변경/TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
+          <div className="governance-status-scroll"><table><colgroup>{overviewColumnClasses.map((className, index) => <col key={index} className={className} />)}</colgroup><thead><tr><th>스키마명</th><th>시스템</th><th>이벤트 수</th><th>미진행 이벤트 수</th><th>CR 전체</th><th>접수 완료</th><th>재검토</th><th>변경/TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
             {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
               return <tr className="governance-schema-summary-row" key={schemaKey(row)}>
                   <td><strong className="governance-overview-primary" title={row.schema_name}>{row.schema_name}</strong><small className="governance-overview-secondary" title={`${row.platform} · ${row.database_name}`}>{row.platform} · {row.database_name}</small></td>

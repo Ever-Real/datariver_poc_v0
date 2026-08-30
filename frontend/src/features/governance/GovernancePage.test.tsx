@@ -357,7 +357,7 @@ describe('GovernancePage', () => {
     })).toBe(true))
   })
 
-  it('sizes overview identity columns from content, keeps metric columns equal, and exposes clipped values in titles', async () => {
+  it('uses CSP-safe fixed identity and metric column tokens and exposes clipped values in titles', async () => {
     const schemaOverview: ChangeRequestSchemaOverview = {
       platform: 'postgres',
       database_name: 'semiconductor_warehouse',
@@ -387,12 +387,14 @@ describe('GovernancePage', () => {
     const region = await screen.findByRole('region', {
       name: '현재 권한과 기간의 스키마별 변경 현황',
     })
-    const widths = Array.from(region.querySelectorAll('col')).map(
-      (column) => column.getAttribute('style'),
-    )
-    expect(widths).toHaveLength(10)
-    expect(new Set(widths.slice(0, 2)).size).toBeGreaterThan(1)
-    expect(new Set(widths.slice(2)).size).toBe(1)
+    const columns = Array.from(region.querySelectorAll('col'))
+    expect(columns).toHaveLength(10)
+    expect(columns.every((column) => !column.hasAttribute('style'))).toBe(true)
+    expect(columns[0]).toHaveClass('governance-status-col-schema')
+    expect(columns[1]).toHaveClass('governance-status-col-system')
+    expect(columns.slice(2).every((column) => (
+      column.classList.contains('governance-status-col-metric')
+    ))).toBe(true)
     expect(screen.getByText(schemaOverview.schema_name)).toHaveClass('governance-overview-primary')
     expect(screen.getByText(schemaOverview.schema_name)).toHaveAttribute(
       'title',
