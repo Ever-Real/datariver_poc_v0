@@ -10,6 +10,15 @@ const governanceDocumentsCss = readFileSync(
 )
 
 describe('SafeGovernanceHtml', () => {
+  it('keeps published document metadata at the existing readable Governance table scale', () => {
+    expect(governanceDocumentsCss).toContain(
+      '.governance-viewer-meta dt { font-size: 11px; line-height: 1.45; }',
+    )
+    expect(governanceDocumentsCss).toContain(
+      '.governance-viewer-meta dd { font-size: 13px; line-height: 1.45; }',
+    )
+  })
+
   it('renders the allowlisted document structure without an HTML injection sink', () => {
     const { container } = render(<SafeGovernanceHtml
       html={'<h2 id="clobber">안전한 정책</h2><p>본문 <strong>강조</strong></p><table><tbody><tr><th colspan="2">항목</th></tr></tbody></table><a href="https://example.test/policy" onclick="alert(1)">근거 링크</a>'}

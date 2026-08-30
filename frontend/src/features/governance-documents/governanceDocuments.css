@@ -135,6 +135,8 @@
 .governance-viewer-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .governance-viewer-title p { margin: 5px 0 0; color: var(--text-500); }
 .governance-viewer-meta { margin: 12px 0; }
+.governance-viewer-meta dt { font-size: 11px; line-height: 1.45; }
+.governance-viewer-meta dd { font-size: 13px; line-height: 1.45; }
 .governance-version-meta { margin: 0; border-bottom: 1px solid var(--line-300); }
 .policy-document-tree-empty { padding: 12px; color: var(--text-500); font-size: 10px; line-height: 1.5; }
 .governance-evidence-results { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
