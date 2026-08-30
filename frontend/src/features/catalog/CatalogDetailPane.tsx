@@ -15,6 +15,7 @@ import { AccordionItem } from '../../components/common/Accordion'
 import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
+import type { CytoscapeViewport } from '../../components/graph/CytoscapeReadGraph'
 import { CatalogMetadataRecommendationPanel } from './CatalogMetadataRecommendationPanel'
 import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { basisPointsText, dateTimeText, QualityStatus } from '../quality/QualityShared'
@@ -113,6 +114,8 @@ export interface CatalogDetailViewState {
   fieldOffset: number
   scrollTop: number
   focusKey?: string
+  selectedLineageNodeId?: string
+  lineageViewport?: CytoscapeViewport
 }
 
 export const defaultCatalogDetailViewState: CatalogDetailViewState = {
@@ -145,7 +148,7 @@ export function CatalogDetailPane({
   onClose: () => void
   onPrevious?: () => void
   onDetailLoaded?: (detail?: CatalogAssetDetail) => void
-  onSelectAsset?: (assetId: string) => void
+  onSelectAsset?: (assetId: string, sourceViewState?: CatalogDetailViewState) => void
   onResizeWidth?: (width: number) => void
   width?: number
   qualitySummary?: QualityAsset
@@ -328,7 +331,6 @@ export function CatalogDetailPane({
       document.addEventListener('click', handleClickOutside)
       clickListenerAttached = true
     })
-
     return () => {
       disposed = true
       document.removeEventListener('keydown', handleKeyDown)
@@ -361,6 +363,21 @@ export function CatalogDetailPane({
   const showTab = (tab: 'metadata' | 'lineage') => {
     setActiveTab(tab)
     updateViewState({ activeTab: tab, focusKey: `${tab}-tab` })
+  }
+
+  const selectLineageAsset = (assetId: string) => {
+    // Capture the parent lineage subview before replacing this detail pane.
+    // This is synchronous so Previous cannot race a pending React render.
+    const sourceViewState: CatalogDetailViewState = {
+      ...viewStateRef.current,
+      activeTab: 'lineage',
+      selectedLineageNodeId: assetId,
+      focusKey: 'lineage-tab',
+    }
+    viewStateRef.current = sourceViewState
+    setActiveTab('lineage')
+    onViewStateChange?.(sourceViewState)
+    onSelectAsset?.(assetId, sourceViewState)
   }
 
   const copyUrn = async () => {
@@ -561,7 +578,11 @@ export function CatalogDetailPane({
           <CatalogLineageGraph
             client={client}
             lineage={lineage}
-            onSelectAsset={onSelectAsset ?? (() => undefined)}
+            onSelectAsset={selectLineageAsset}
+            selectedNodeId={initialViewState.selectedLineageNodeId}
+            initialViewport={initialViewState.lineageViewport}
+            onSelectedNodeChange={(selectedLineageNodeId) => updateViewState({ selectedLineageNodeId })}
+            onViewportChange={(lineageViewport) => updateViewState({ lineageViewport })}
           />
           {lineage.edges.length === 0 && <div className="catalog-detail-state">표시 가능한 연결 관계가 없습니다.</div>}
         </div>}

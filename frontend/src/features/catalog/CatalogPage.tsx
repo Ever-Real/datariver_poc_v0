@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Filter, RotateCcw, Search } from 'lucide-react'
@@ -175,6 +175,7 @@ export function CatalogPage({
   const activeTreeAssetId = useRef<string | undefined>(undefined)
   const pendingTreeQuerySync = useRef<{ assetId: string; query: string } | undefined>(undefined)
   const initialQueryRef = useRef(initialQuery)
+  const detailViewStateRef = useRef(detailViewState)
   const hasSearchTargets = filters.searchFields.length > 0
   const isDefaultResultState = query.trim() === ''
     && filters.assetType === ''
@@ -191,7 +192,9 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
     setFocusedAssetId(undefined)
     setDetailHistory([])
-    setDetailViewState(freshCatalogDetailViewState())
+    const freshViewState = freshCatalogDetailViewState()
+    detailViewStateRef.current = freshViewState
+    setDetailViewState(freshViewState)
     browserDetailEntryCreated.current = false
     activeTreeAssetId.current = undefined
     pendingTreeQuerySync.current = undefined
@@ -208,7 +211,7 @@ export function CatalogPage({
     setCursors([undefined]); setPageIndex(0)
     activeTreeAssetId.current = undefined
     setTreeAssetId(undefined); setSelectedAssetId(undefined); setFocusedAssetId(undefined)
-    setDetailHistory([]); browserDetailEntryCreated.current = false
+    setDetailHistory([]); detailViewStateRef.current = freshCatalogDetailViewState(); setDetailViewState(detailViewStateRef.current); browserDetailEntryCreated.current = false
     clearCatalogAssetUrl()
   }, [initialQuery])
 
@@ -457,18 +460,31 @@ export function CatalogPage({
     setSelectedAssetId(assetId)
   }
 
-  const navigateAsset = (assetId: string) => {
+  const updateDetailViewState = useCallback((next: CatalogDetailViewState) => {
+    const snapshot = { ...next, expandedSections: [...next.expandedSections] }
+    detailViewStateRef.current = snapshot
+    setDetailViewState(snapshot)
+  }, [])
+
+  const navigateAsset = (assetId: string, sourceViewState?: CatalogDetailViewState) => {
     if (selectedAssetId === assetId) return
     if (!selectedAssetId) {
-      setDetailViewState(freshCatalogDetailViewState())
+      const freshViewState = freshCatalogDetailViewState()
+      detailViewStateRef.current = freshViewState
+      setDetailViewState(freshViewState)
       selectAsset(assetId)
       return
     }
     setDetailHistory((current) => boundedDetailStateHistory(current, {
       assetId: selectedAssetId,
-      viewState: { ...detailViewState, expandedSections: [...detailViewState.expandedSections] },
+      viewState: {
+        ...(sourceViewState ?? detailViewStateRef.current),
+        expandedSections: [...(sourceViewState ?? detailViewStateRef.current).expandedSections],
+      },
     }))
-    setDetailViewState(freshCatalogDetailViewState())
+    const freshViewState = freshCatalogDetailViewState()
+    detailViewStateRef.current = freshViewState
+    setDetailViewState(freshViewState)
     const current = new URL(window.location.href)
     if (selectedAssetId && !current.searchParams.has('catalogAsset')) {
       current.searchParams.set('catalogAsset', selectedAssetId)
@@ -494,7 +510,9 @@ export function CatalogPage({
       current.searchParams.set('catalogAsset', previous.assetId)
       window.history.replaceState(window.history.state, '', current.toString())
     }
-    setDetailViewState({ ...previous.viewState, expandedSections: [...previous.viewState.expandedSections] })
+    const restoredViewState = { ...previous.viewState, expandedSections: [...previous.viewState.expandedSections] }
+    detailViewStateRef.current = restoredViewState
+    setDetailViewState(restoredViewState)
     selectAsset(previous.assetId)
   }
 
@@ -508,7 +526,9 @@ export function CatalogPage({
         setSelectedAssetId(assetId)
       } else setSelectedAssetId(undefined)
       setDetailHistory([])
-      setDetailViewState(freshCatalogDetailViewState())
+      const freshViewState = freshCatalogDetailViewState()
+      detailViewStateRef.current = freshViewState
+      setDetailViewState(freshViewState)
       browserDetailEntryCreated.current = false
     }
     restoreAsset()
@@ -673,7 +693,7 @@ export function CatalogPage({
           onClose={closeSelectedAsset}
           onPrevious={detailHistory.length > 0 ? previousAsset : undefined}
           initialViewState={detailViewState}
-          onViewStateChange={setDetailViewState}
+          onViewStateChange={updateDetailViewState}
           onSelectAsset={navigateAsset}
           onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
           width={detailWidth}

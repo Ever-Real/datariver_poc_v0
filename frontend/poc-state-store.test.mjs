@@ -359,6 +359,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const knowledgeInitSql = readFileSync(new URL('../deploy/poc/postgres-init/002-poc-knowledge-ingestion.sql', import.meta.url), 'utf8')
   const securityInitSql = readFileSync(new URL('../deploy/poc/postgres-init/004-poc-local-security-events.sql', import.meta.url), 'utf8')
   const mcpInitSql = readFileSync(new URL('../deploy/poc/postgres-init/005-poc-mcp-read-receipts.sql', import.meta.url), 'utf8')
+  const credentialAuditInitSql = readFileSync(new URL('../deploy/poc/postgres-init/006-poc-local-credential-provision-audit.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -382,6 +383,8 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   assert.match(securityInitSql, /COMMIT;\s*$/)
   assert.match(mcpInitSql, /^BEGIN;/)
   assert.match(mcpInitSql, /COMMIT;\s*$/)
+  assert.match(credentialAuditInitSql, /^BEGIN;/)
+  assert.match(credentialAuditInitSql, /COMMIT;\s*$/)
   for (const contract of [
     'PRIMARY KEY (source_identity_hash, topic_contract, source_partition)',
     'UNIQUE (source_identity_hash, source_event_identity, deterministic_ordinal)',
@@ -426,11 +429,18 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   )}\n${mcpInitSql.slice(
     mcpInitSql.indexOf('CREATE OR REPLACE FUNCTION poc_reject_schema_receipt_mutation'),
     mcpInitSql.indexOf('INSERT INTO poc_state'),
+  )}\n${credentialAuditInitSql.slice(
+    credentialAuditInitSql.indexOf('DO $block$'),
+    credentialAuditInitSql.indexOf('INSERT INTO poc_state'),
   )}`
   assert.equal(normalizedDdl(runtimeSecurityDdl), normalizedDdl(initSecurityDdl))
   for (const contract of [
     "event_type = 'SELF_PASSWORD_CHANGED_V1'",
     "actor_kind = 'SELF' AND actor_subject_id = subject_id",
+    "event_type IN ('SELF_PASSWORD_CHANGED_V1', 'LOCAL_CREDENTIAL_PROVISIONED_V1')",
+    "event_type = 'LOCAL_CREDENTIAL_PROVISIONED_V1'",
+    "actor_kind = 'LOCAL_ADMIN'",
+    'char_length(actor_subject_id) BETWEEN 1 AND 255',
     'resulting_credential_version bigint NOT NULL',
     'revoked_session_count bigint NOT NULL',
     'DEFAULT clock_timestamp()',
@@ -443,7 +453,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'RETURN NEW',
   ]) {
     assert.ok(normalizedDdl(startupSql).includes(normalizedDdl(contract)), contract)
-    assert.ok(normalizedDdl(`${securityInitSql}\n${mcpInitSql}`).includes(normalizedDdl(contract)), contract)
+    assert.ok(normalizedDdl(`${securityInitSql}\n${mcpInitSql}\n${credentialAuditInitSql}`).includes(normalizedDdl(contract)), contract)
   }
   assert.match(mcpInitSql, /OLD\.scope LIKE 'mcp-read-receipt-v1:%'/)
   assert.match(mcpInitSql, /NEW\.scope LIKE 'mcp-read-receipt-v1:%'/)

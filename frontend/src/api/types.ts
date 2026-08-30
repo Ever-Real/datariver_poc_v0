@@ -129,6 +129,11 @@ export interface CatalogAsset {
   terms_truncated?: boolean
   created_at?: string | null
   classification: string
+  classification_resolution?: {
+    status: 'EXACT' | 'MISSING' | 'MULTIPLE' | 'INVALID'
+    values: string[]
+    value: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED' | null
+  }
   lifecycle: string
   observed_at: string
   stale_at?: string | null

@@ -118,21 +118,25 @@ staging state, and retains the prior LKG for convergence on a later stable cycle
 
 ## Build-once Product artifact
 
-At the clean Product checkpoint, after the exact linux/amd64 image has passed its Product gates,
-export that existing image without rebuilding it:
+At the clean Product checkpoint, build, inspect and export the exact linux/amd64 Product with the
+single canonical command:
 
 ```bash
-uv run --frozen python scripts/prep39083_release.py web-artifact-export \
+uv run --frozen python scripts/prep39083_product_artifact.py \
   --product-sha <exact-product-sha> \
   --output-dir dist/prep39083-web-<exact-product-sha>
 ```
 
-The command requires `HEAD == Product`, a clean worktree, the exact local Product tag, linux/amd64
-platform and matching OCI revision. It uses `docker image save --platform linux/amd64`, validates
-the bounded OCI/Docker archive, and emits the archive, SHA-256 sidecar and manifest fields for
-`release.json`. It never builds, pulls or loads. The archive is transferred separately through the
-approved artifact medium and staged at its manifest-pinned ignored PREP path. Missing or mismatched
-artifacts are terminal pre-start failures; neither doctor nor deploy falls back to source build.
+The command requires `HEAD == Product` on canonical `dev` and a clean worktree. It is pinned to the
+Product Dockerfile, builds once for `linux/amd64` without a mutable pull, and fails before export
+unless the image contains the Node server entrypoint and required Product runtime files, runs as the
+non-root Product user, and carries the exact OCI revision and manifest identity. It then invokes the
+bounded `web-artifact-export` operation, which uses `docker image save --platform linux/amd64`, validates the OCI/Docker
+archive, and emits the archive, SHA-256 sidecar and manifest fields for `release.json`. Calling the
+lower-level exporter directly is not a Product build procedure. The archive is transferred
+separately through the approved artifact medium and staged at its manifest-pinned ignored PREP path.
+Missing or mismatched artifacts are terminal pre-start failures; neither doctor nor deploy falls
+back to source build.
 
 ## Cumulative Product closure and artifact invalidation
 

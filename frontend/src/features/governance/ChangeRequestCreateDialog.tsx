@@ -11,8 +11,11 @@ import {
 } from './attachmentUploads'
 
 type ColumnDraft = {
+  proposal_kind: 'EXISTING' | 'NEW'
   field_path: string
   data_type: string
+  nullable?: boolean
+  ordinal?: number | null
   description: string
   requested_change: string
   tags: string[]
@@ -40,6 +43,39 @@ type ManualTarget = {
   columns: ColumnDraft[]
 }
 type TargetDraft = ExistingTarget | ManualTarget
+type CrClassification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+type ClassificationResolution = {
+  status: 'EXACT' | 'MISSING' | 'MULTIPLE' | 'INVALID'
+  value: CrClassification | null
+}
+
+const crClassifications = new Set<CrClassification>([
+  'PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED',
+])
+const columnNamePattern = /^[\p{L}_][\p{L}\p{N}_$]{0,254}$/u
+const columnDataTypePattern = /^[\p{L}][\p{L}\p{N}_ (),.[\]]*$/u
+
+function classificationResolution(asset: CatalogAsset): ClassificationResolution {
+  const provided = asset.classification_resolution
+  if (provided) return { status: provided.status, value: provided.value }
+  const value = asset.classification.trim().toUpperCase() as CrClassification
+  return crClassifications.has(value)
+    ? { status: 'EXACT', value }
+    : { status: value ? 'INVALID' : 'MISSING', value: null }
+}
+
+function normalizedColumnName(value: string): string {
+  return value.normalize('NFKC').trim().toLocaleLowerCase()
+}
+
+function validColumnName(value: string): boolean {
+  return columnNamePattern.test(value.trim())
+}
+
+function validColumnDataType(value: string): boolean {
+  const normalized = value.trim()
+  return Boolean(normalized) && normalized.length <= 200 && columnDataTypePattern.test(normalized)
+}
 
 function defaultDueDate(): string {
   const value = new Date()
@@ -111,8 +147,13 @@ function snapshotColumns(value: unknown, nested: boolean): ColumnDraft[] {
     const requested = nested ? record(column.requested) : column
     if (!requested) return []
     return [{
+      proposal_kind: column.proposal_kind === 'NEW' || !nested ? 'NEW' : 'EXISTING',
       field_path: stringValue(column.field_path),
       data_type: stringValue(requested.data_type),
+      ...(typeof requested.nullable === 'boolean' ? { nullable: requested.nullable } : {}),
+      ...(typeof requested.ordinal === 'number' && Number.isSafeInteger(requested.ordinal)
+        ? { ordinal: requested.ordinal }
+        : {}),
       description: stringValue(requested.description),
       requested_change: stringValue(requested.requested_change),
       tags: stringValues(requested.tags),
@@ -158,13 +199,14 @@ export function ChangeRequestCreateDialog({
   const [dueDate, setDueDate] = useState(defaultDueDate)
   const [priority, setPriority] = useState<'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL'>('NORMAL')
   const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT' | 'EMERGENCY'>('NORMAL')
-  const [security, setSecurity] = useState<'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'>('INTERNAL')
+  const [security, setSecurity] = useState<CrClassification | ''>('')
   const [files, setFiles] = useState<File[]>([])
   const [systemsLoading, setSystemsLoading] = useState(false)
   const [submissionAttempted, setSubmissionAttempted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [created, setCreated] = useState<ChangeRequestRecord>()
   const [error, setError] = useState<unknown>()
+  const [dirty, setDirty] = useState(false)
   const searchController = useRef<AbortController | undefined>(undefined)
   const detailController = useRef<AbortController | undefined>(undefined)
   const submitController = useRef<AbortController | undefined>(undefined)
@@ -200,12 +242,15 @@ export function ChangeRequestCreateDialog({
     setDueDate(currentRound.requested_due_date ?? '')
     setPriority(currentRound.priority ?? 'NORMAL')
     setUrgency(currentRound.urgency ?? 'NORMAL')
-    setSecurity(currentRound.classification as typeof security)
+    setSecurity(crClassifications.has(currentRound.classification as CrClassification)
+      ? currentRound.classification as CrClassification
+      : '')
     setFiles([])
     setSubmissionAttempted(false)
     setCreated(undefined)
     setSubmitting(false)
     setError(undefined)
+    setDirty(false)
     setSystemsLoading(true)
     registeredRequest.current = undefined
     registrationReported.current = false
@@ -315,23 +360,29 @@ export function ChangeRequestCreateDialog({
     setDueDate(defaultDueDate())
     setPriority('NORMAL')
     setUrgency('NORMAL')
-    setSecurity('INTERNAL')
+    setSecurity('')
     setFiles([])
     setSystemsLoading(false)
     setSubmissionAttempted(false)
     setCreated(undefined)
     setSubmitting(false)
     setError(undefined)
+    setDirty(false)
     registeredRequest.current = undefined
     registrationReported.current = false
   }
 
-  const requestClose = () => {
+  const closeAfterExplicitAction = () => {
     const registered = registeredRequest.current
     const mustReport = Boolean(registered) && !registrationReported.current
     reset()
     if (registered && mustReport) onCreated(registered)
     onClose()
+  }
+
+  const cancel = () => {
+    if (dirty && !window.confirm('저장하지 않은 변경사항이 있습니다. 신규 변경요청 작성을 취소할까요?')) return
+    closeAfterExplicitAction()
   }
 
   const addExisting = (summary: CatalogAsset) => {
@@ -352,6 +403,8 @@ export function ChangeRequestCreateDialog({
     )
       .then((asset) => {
         if (controller.signal.aborted) return
+        const resolution = classificationResolution(asset)
+        if (resolution.status === 'EXACT' && resolution.value) setSecurity(resolution.value)
         setTargets((current) => [...current, {
           kind: 'EXISTING',
           asset,
@@ -363,6 +416,7 @@ export function ChangeRequestCreateDialog({
         }])
         setQuery('')
         setResults([])
+        setDirty(true)
       })
       .catch((next) => { if (!controller.signal.aborted) setError(next) })
   }
@@ -374,17 +428,25 @@ export function ChangeRequestCreateDialog({
     setQuery('')
     setResults([])
     setTargets([])
+    setSecurity('')
+    setDirty(true)
   }
 
-  const addManual = () => setTargets((current) => [...current, {
-    kind: 'MANUAL', database_name: '', schema_name: '', table_name: '', owner: '', description: '', requested_change: '', tags: [], terms: [], columns: [],
-  }])
+  const addManual = () => {
+    setDirty(true)
+    if (!security) setSecurity('INTERNAL')
+    setTargets((current) => [...current, {
+      kind: 'MANUAL', database_name: '', schema_name: '', table_name: '', owner: '', description: '', requested_change: '', tags: [], terms: [], columns: [],
+    }])
+  }
   const updateTarget = (index: number, patch: Partial<TargetDraft>) => {
+    setDirty(true)
     setTargets((current) => current.map((target, targetIndex) => targetIndex === index
       ? { ...target, ...patch } as TargetDraft
       : target))
   }
   const updateColumn = (targetIndex: number, columnIndex: number, patch: Partial<ColumnDraft>) => {
+    setDirty(true)
     setTargets((current) => current.map((target, index) => index !== targetIndex ? target : {
       ...target,
       columns: target.columns.map((column, itemIndex) => itemIndex === columnIndex ? { ...column, ...patch } : column),
@@ -400,6 +462,7 @@ export function ChangeRequestCreateDialog({
     if (!field) return
     updateTarget(targetIndex, {
       columns: [...target.columns, {
+        proposal_kind: 'EXISTING',
         field_path: field.fieldPath,
         data_type: field.dataType ?? '',
         description: field.description ?? '',
@@ -409,10 +472,23 @@ export function ChangeRequestCreateDialog({
       }],
     })
   }
+  const addNewColumn = (targetIndex: number) => {
+    const target = targets[targetIndex]
+    if (!target) return
+    updateTarget(targetIndex, {
+      columns: [...target.columns, {
+        proposal_kind: 'NEW', field_path: '', data_type: '', nullable: true, ordinal: null,
+        description: '', requested_change: '', tags: [], terms: [],
+      }],
+    })
+  }
   const addManualColumn = (targetIndex: number) => {
     const target = targets[targetIndex]
     if (target) updateTarget(targetIndex, {
-      columns: [...target.columns, { field_path: '', data_type: '', description: '', requested_change: '', tags: [], terms: [] }],
+      columns: [...target.columns, {
+        proposal_kind: 'NEW', field_path: '', data_type: '', nullable: true, ordinal: null,
+        description: '', requested_change: '', tags: [], terms: [],
+      }],
     })
   }
   const removeColumn = (targetIndex: number, columnIndex: number) => {
@@ -429,8 +505,56 @@ export function ChangeRequestCreateDialog({
       return
     }
     setFiles(combined)
+    setDirty(true)
     event.target.value = ''
   }
+  const classificationRequirement = useMemo(() => {
+    const existingTargets = targets.filter((target): target is ExistingTarget => target.kind === 'EXISTING')
+    if (existingTargets.length === 0) {
+      return security
+        ? { value: security, error: '' }
+        : { value: '' as const, error: revisionMode
+          ? '기존 변경요청 분류'
+          : '신규 테이블 제안 분류' }
+    }
+    const resolutions = existingTargets.map((target) => classificationResolution(target.asset))
+    if (resolutions.some((value) => value.status === 'MISSING')) {
+      return { value: '' as const, error: 'DataHub 분류 태그가 없는 대상' }
+    }
+    if (resolutions.some((value) => value.status === 'MULTIPLE')) {
+      return { value: '' as const, error: 'DataHub 분류 태그가 여러 개인 대상' }
+    }
+    if (resolutions.some((value) => value.status === 'INVALID')) {
+      return { value: '' as const, error: '지원하지 않는 DataHub 분류가 있는 대상' }
+    }
+    const values = [...new Set(resolutions.map((value) => value.value).filter(Boolean))]
+    if (values.length !== 1) return { value: '' as const, error: '분류가 서로 다른 대상' }
+    return { value: values[0] as CrClassification, error: '' }
+  }, [revisionMode, security, targets])
+  const columnRequirements = targets.flatMap((target, targetIndex) => {
+    const currentNames = new Set(target.kind === 'EXISTING'
+      ? schemaDescriptionFields(target.asset.schema_fields).map((field) => normalizedColumnName(field.fieldPath))
+      : [])
+    const observed = new Set<string>()
+    return target.columns.flatMap((column, columnIndex) => {
+      const label = `${target.kind === 'EXISTING' ? target.asset.name : target.table_name || `신규 테이블 ${targetIndex + 1}`} 컬럼 ${columnIndex + 1}`
+      const identity = normalizedColumnName(column.field_path)
+      const errors: string[] = []
+      if (!column.field_path.trim()) errors.push(`${label} 이름`)
+      else if (!validColumnName(column.field_path)) errors.push(`${label} 유효한 이름`)
+      if (identity && observed.has(identity)) errors.push(`${label} 중복 이름`)
+      if (identity) observed.add(identity)
+      if (column.proposal_kind === 'NEW' && currentNames.has(identity)) errors.push(`${label} 기존 컬럼 충돌`)
+      if ((column.proposal_kind === 'NEW' && !validColumnDataType(column.data_type))
+        || (column.proposal_kind === 'EXISTING' && column.data_type.trim()
+          && !validColumnDataType(column.data_type))) errors.push(`${label} 데이터 타입`)
+      if (column.ordinal !== undefined && column.ordinal !== null
+        && (!Number.isSafeInteger(column.ordinal) || column.ordinal < 1 || column.ordinal > 100_000)) {
+        errors.push(`${label} 배치 순서`)
+      }
+      return errors
+    })
+  })
   const missingSubmitRequirements = [
     !title.trim() ? '변경요청 제목' : '',
     !systemId ? '관련 시스템' : '',
@@ -439,9 +563,8 @@ export function ChangeRequestCreateDialog({
     targets.some((target) => target.kind === 'MANUAL' && !target.table_name.trim())
       ? '신규 테이블명'
       : '',
-    targets.some((target) => target.columns.some((column) => !column.field_path.trim()))
-      ? '추가한 컬럼명'
-      : '',
+    classificationRequirement.error,
+    ...columnRequirements,
   ].filter(Boolean)
   const canSubmit = !systemsLoading && missingSubmitRequirements.length === 0
   const submissionHint = !submissionAttempted || canSubmit
@@ -478,7 +601,8 @@ export function ChangeRequestCreateDialog({
         body: JSON.stringify({
           title: title.trim(), system_id: systemId, request_date: requestDate || null,
           request_department: department.trim(), request_reason: requestSummary.trim(), request_content: requestContent.trim(),
-          requested_due_date: dueDate || null, priority, urgency, security_level: security,
+          requested_due_date: dueDate || null, priority, urgency,
+          security_level: classificationRequirement.value,
           targets: targets.map(targetPayload),
         }),
       })
@@ -538,11 +662,12 @@ export function ChangeRequestCreateDialog({
       : '기존 테이블은 서버가 현재 DataHub 원본을 재검증하고, 신규 테이블은 감사 가능한 제안으로 기록합니다.'}
     footer={<>
       {submissionHint && <span className="governance-create-submit-hint" role="status">{submissionHint}</span>}
-      <button className="button button-secondary" onClick={requestClose} type="button">취소</button>
+      <button className="button button-secondary" disabled={Boolean(created && submitting)} onClick={created ? closeAfterExplicitAction : cancel} type="button">{created ? '닫기' : '취소'}</button>
       {!created && <button className="button" disabled={submitting} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : revisionMode ? '수정 재상신' : 'CR 제출'}</button>}
     </>}
-    onRequestClose={requestClose}
+    onRequestClose={() => undefined}
     open={open}
+    showCloseButton={false}
     size="workspace"
     title={revisionMode && revision ? `${revision.number} 수정 및 재상신` : '신규 CR 신청'}
   >
@@ -551,19 +676,22 @@ export function ChangeRequestCreateDialog({
         <fieldset>
           <legend>CR 기본 정보</legend>
           <div className="governance-create-grid">
-            <label className="wide">변경요청 제목<input maxLength={500} onChange={(event) => setTitle(event.target.value)} placeholder="예: A 테이블 컬럼 추가 및 용어 표준화" required value={title} /></label>
+            <label className="wide">변경요청 제목<input maxLength={500} onChange={(event) => { setTitle(event.target.value); setDirty(true) }} placeholder="예: A 테이블 컬럼 추가 및 용어 표준화" required value={title} /></label>
             <label>요청자<input readOnly title={requesterEmail ?? requesterName} value={requesterEmail ? `${requesterName} · ${requesterEmail}` : requesterName} /></label>
             <label>관련 시스템{revisionMode
               ? <input readOnly title="수정 재상신에서는 기존 시스템을 변경할 수 없습니다." value={systemId} />
               : <select onChange={(event) => changeSystem(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select>}</label>
-            <label>요청일자<input onChange={(event) => setRequestDate(event.target.value)} type="date" value={requestDate} /></label>
-            <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="인증 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
-            <label>요청 납기<input onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} /></label>
-            <label>중요도<select onChange={(event) => setPriority(event.target.value as typeof priority)} value={priority}><option value="LOW">낮음</option><option value="NORMAL">보통</option><option value="HIGH">높음</option><option value="CRITICAL">최우선</option></select></label>
-            <label>긴급도<select onChange={(event) => setUrgency(event.target.value as typeof urgency)} value={urgency}><option value="NORMAL">일반</option><option value="URGENT">긴급</option><option value="EMERGENCY">비상</option></select></label>
-            <label>보안등급<select onChange={(event) => setSecurity(event.target.value as typeof security)} value={security}><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option></select></label>
-            <label className="wide">요청내용<textarea className="min-h-24 resize-y" maxLength={10_000} onChange={(event) => setRequestContent(event.target.value)} value={requestContent} /></label>
-            <label className="wide">요청사유<textarea className="governance-request-reason" maxLength={10_000} onChange={(event) => setRequestSummary(event.target.value)} placeholder="예: B 데이터 연동을 위한 스키마 확장" required rows={1} value={requestSummary} /></label>
+            <label>요청일자<input onChange={(event) => { setRequestDate(event.target.value); setDirty(true) }} type="date" value={requestDate} /></label>
+            <label>요청부서<input maxLength={500} onChange={(event) => { setDepartment(event.target.value); setDirty(true) }} placeholder="인증 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
+            <label>요청 납기<input onChange={(event) => { setDueDate(event.target.value); setDirty(true) }} type="date" value={dueDate} /></label>
+            <label>중요도<select onChange={(event) => { setPriority(event.target.value as typeof priority); setDirty(true) }} value={priority}><option value="LOW">낮음</option><option value="NORMAL">보통</option><option value="HIGH">높음</option><option value="CRITICAL">최우선</option></select></label>
+            <label>긴급도<select onChange={(event) => { setUrgency(event.target.value as typeof urgency); setDirty(true) }} value={urgency}><option value="NORMAL">일반</option><option value="URGENT">긴급</option><option value="EMERGENCY">비상</option></select></label>
+            <label>보안등급{targets.some((target) => target.kind === 'EXISTING')
+              ? <input aria-describedby="cr-classification-help" readOnly value={classificationRequirement.value || '테이블 선택 후 자동 확인'} />
+              : <select aria-describedby="cr-classification-help" onChange={(event) => { setSecurity(event.target.value as CrClassification); setDirty(true) }} value={security}><option value="">분류 선택</option><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option></select>}</label>
+            <p className="muted wide" id="cr-classification-help">{targets.some((target) => target.kind === 'EXISTING') ? 'DataHub의 현재 테이블 분류로 자동 설정되며 이 요청에서 변경할 수 없습니다.' : '신규 테이블 제안에만 분류를 직접 선택할 수 있습니다.'}</p>
+            <label className="wide">요청내용<textarea className="min-h-24 resize-y" maxLength={10_000} onChange={(event) => { setRequestContent(event.target.value); setDirty(true) }} value={requestContent} /></label>
+            <label className="wide">요청사유<textarea className="governance-request-reason" maxLength={10_000} onChange={(event) => { setRequestSummary(event.target.value); setDirty(true) }} placeholder="예: B 데이터 연동을 위한 스키마 확장" required rows={1} value={requestSummary} /></label>
           </div>
         </fieldset>
         <fieldset>
@@ -584,17 +712,17 @@ export function ChangeRequestCreateDialog({
                 return <Fragment key={target.kind === 'EXISTING' ? target.asset.id : `manual-${targetIndex}`}>
                   <tr className="governance-target-table-row">
                     <td className="governance-target-name-cell"><div className="governance-target-name-control">
-                      {target.kind === 'EXISTING' ? <span className="governance-target-add-column governance-target-column-picker"><Plus aria-hidden="true" size={14} /><select aria-label={`${target.asset.name} 컬럼 추가`} onChange={(event) => addExistingColumn(targetIndex, event.target.value)} title="컬럼 추가" value=""><option value="">컬럼 선택</option>{(selectedFieldOptions[targetIndex] ?? []).map((field) => <option key={field.fieldPath} value={field.fieldPath}>{field.fieldPath} · {field.dataType ?? ''}</option>)}</select></span> : <button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 추가`} className="governance-target-add-column" onClick={() => addManualColumn(targetIndex)} title="컬럼 추가" type="button"><Plus aria-hidden="true" size={14} /></button>}
+                      {target.kind === 'EXISTING' ? <><span className="governance-target-add-column governance-target-column-picker"><Plus aria-hidden="true" size={14} /><select aria-label={`${target.asset.name} 기존 컬럼 선택`} onChange={(event) => addExistingColumn(targetIndex, event.target.value)} title="기존 컬럼 선택" value=""><option value="">기존 컬럼 선택</option>{(selectedFieldOptions[targetIndex] ?? []).map((field) => <option key={field.fieldPath} value={field.fieldPath}>{field.fieldPath} · {field.dataType ?? ''}</option>)}</select></span><button aria-label={`${target.asset.name} 신규 컬럼 추가`} className="governance-target-add-column" onClick={() => addNewColumn(targetIndex)} title="신규 컬럼 추가" type="button"><Plus aria-hidden="true" size={14} />신규</button></> : <button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 추가`} className="governance-target-add-column" onClick={() => addManualColumn(targetIndex)} title="컬럼 추가" type="button"><Plus aria-hidden="true" size={14} /></button>}
                       {target.kind === 'EXISTING' ? <strong title={tableName}>{tableName}</strong> : <input aria-label={`신규 테이블 ${targetIndex + 1} 테이블명`} onChange={(event) => updateTarget(targetIndex, { table_name: event.target.value })} placeholder="Table Name" required title={target.table_name} value={target.table_name} />}
                     </div></td>
                     <td>{target.kind === 'EXISTING' ? <span title={schemaName}>{schemaName || '—'}</span> : <input aria-label={`신규 테이블 ${targetIndex + 1} 스키마`} onChange={(event) => updateTarget(targetIndex, { schema_name: event.target.value })} placeholder="Schema" title={target.schema_name} value={target.schema_name} />}</td>
                     <td><input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 설명`} onChange={(event) => updateTarget(targetIndex, { description: event.target.value })} placeholder="테이블 설명" title={target.description} value={target.description} /></td>
                     <td><input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 비고`} onChange={(event) => updateTarget(targetIndex, { requested_change: event.target.value })} placeholder="테이블 작업 내용 (예: 신규 생성)" title={target.requested_change} value={target.requested_change} /></td>
-                    <td className="governance-target-action-cell"><button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 삭제`} className="governance-target-remove" onClick={() => setTargets((current) => current.filter((_, index) => index !== targetIndex))} title="테이블 삭제" type="button"><Trash2 size={15} /></button></td>
+                    <td className="governance-target-action-cell"><button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 삭제`} className="governance-target-remove" onClick={() => { setTargets((current) => current.filter((_, index) => index !== targetIndex)); setDirty(true) }} title="테이블 삭제" type="button"><Trash2 size={15} /></button></td>
                   </tr>
                   {target.columns.map((column, columnIndex) => <tr className="governance-target-column-row" key={`column-${columnIndex}`}>
-                    <td className="governance-target-column-name-cell"><span aria-hidden="true" className="governance-target-column-branch" />{target.kind === 'EXISTING' ? <code title={column.field_path}>{column.field_path}</code> : <input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 ${columnIndex + 1} 이름`} onChange={(event) => updateColumn(targetIndex, columnIndex, { field_path: event.target.value })} placeholder="Column Name" title={column.field_path} value={column.field_path} />}</td>
-                    <td aria-label="컬럼 스키마 공란" />
+                    <td className="governance-target-column-name-cell"><span aria-hidden="true" className="governance-target-column-branch" />{column.proposal_kind === 'EXISTING' ? <code title={column.field_path}>{column.field_path}</code> : <input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 ${columnIndex + 1} 이름`} onChange={(event) => updateColumn(targetIndex, columnIndex, { field_path: event.target.value })} placeholder="Column Name" title={column.field_path} value={column.field_path} />}</td>
+                    <td><div className="grid gap-1"><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 데이터 타입`} maxLength={200} onChange={(event) => updateColumn(targetIndex, columnIndex, { data_type: event.target.value })} placeholder="Data type" value={column.data_type} /><label className="flex items-center gap-1 text-xs"><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} NULL 허용`} checked={column.nullable ?? true} onChange={(event) => updateColumn(targetIndex, columnIndex, { nullable: event.target.checked })} type="checkbox" />NULL 허용</label>{column.proposal_kind === 'NEW' && <input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 배치 순서`} min={1} max={100000} onChange={(event) => updateColumn(targetIndex, columnIndex, { ordinal: event.target.value ? Number(event.target.value) : null })} placeholder="배치 순서 (선택)" type="number" value={column.ordinal ?? ''} />}</div></td>
                     <td><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 설명`} onChange={(event) => updateColumn(targetIndex, columnIndex, { description: event.target.value })} placeholder="컬럼 설명" title={column.description} value={column.description} /></td>
                     <td><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 비고`} onChange={(event) => updateColumn(targetIndex, columnIndex, { requested_change: event.target.value })} placeholder="비고 (예: 컬럼 타입 변경)" title={column.requested_change} value={column.requested_change} /></td>
                     <td className="governance-target-action-cell"><button aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 삭제`} className="governance-target-remove" onClick={() => removeColumn(targetIndex, columnIndex)} title="컬럼 삭제" type="button"><X size={14} /></button></td>
@@ -606,7 +734,7 @@ export function ChangeRequestCreateDialog({
           {!targets.length && <p className="muted">기존 테이블을 검색해 선택하거나 신규 테이블을 추가하세요.</p>}
           <button className="governance-target-add-manual" onClick={addManual} type="button"><Plus size={14} /> ADD NEW TABLE MANUALLY</button>
         </fieldset>
-        <fieldset><legend>Attachments · 증빙 자료</legend><label className="governance-create-file">클릭하거나 파일을 드래그하세요. (파일당 최대 10 MiB)<input multiple onChange={addFiles} type="file" /></label>{files.length > 0 && <ul className="governance-create-files">{files.map((file, index) => <li key={`${file.name}-${file.lastModified}-${index}`}><span>{file.name} · {Math.ceil(file.size / 1024).toLocaleString()} KiB</span><button className="button button-secondary" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} type="button">제거</button></li>)}</ul>}</fieldset>
+        <fieldset><legend>Attachments · 증빙 자료</legend><label className="governance-create-file">클릭하거나 파일을 드래그하세요. (파일당 최대 10 MiB)<input multiple onChange={addFiles} type="file" /></label>{files.length > 0 && <ul className="governance-create-files">{files.map((file, index) => <li key={`${file.name}-${file.lastModified}-${index}`}><span>{file.name} · {Math.ceil(file.size / 1024).toLocaleString()} KiB</span><button className="button button-secondary" onClick={() => { setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index)); setDirty(true) }} type="button">제거</button></li>)}</ul>}</fieldset>
       </>}
       <ErrorNotice error={error} />
     </form>

@@ -188,7 +188,12 @@ export function DashboardPage({
           description={descriptionCoverage == null ? '설명 완성도: 수집 데이터 없음' : `설명 완성도 ${descriptionCoverage}%`}
           page="catalog"
           onNavigate={onNavigate}
-        />
+        >
+          <SchemaAssetCounts
+            metrics={summary?.catalog_schema_metrics ?? []}
+            truncated={summary?.catalog_schema_metrics_truncated ?? false}
+          />
+        </DashboardStatCard>
         <DashboardStatCard
           title="Business Glossary"
           value={summary?.catalog_glossary_term_count}
@@ -235,10 +240,10 @@ export function DashboardPage({
         <DashboardSection title="Data Quality Dashboard" icon={<BarChart3 size={16} />}>
           <QualityAnalytics loading={qualityLoading && !quality} quality={quality} managedIndicatorNames={managedIndicatorNames} />
         </DashboardSection>
-        <DashboardSection title="최근 7일 변경 대비 CR 처리율" icon={<ClipboardList size={16} />}>
+        <DashboardSection title="Schema별 최근 7일 변경요청" icon={<ClipboardList size={16} />}>
           <UnavailableAnalytics
-            code="CHANGE_TO_CR_7_DAY_SOURCE_UNAVAILABLE"
-            message="rolling 7일 event→CR exact relation 집계가 없어 처리율을 추정하지 않습니다."
+            code="SCHEMA_CR_7_DAY_SOURCE_UNAVAILABLE"
+            message="Schema별 최근 7일 전체·진행 중·완료 변경요청 집계가 아직 없습니다. 전역 수치를 Schema별 값으로 나누어 추정하지 않습니다."
           />
         </DashboardSection>
       </div>
@@ -299,6 +304,7 @@ function DashboardStatCard({
   page,
   onNavigate,
   unavailable = false,
+  children,
 }: {
   title: string
   value?: number
@@ -308,6 +314,7 @@ function DashboardStatCard({
   page?: Page
   onNavigate: (page: Page) => void
   unavailable?: boolean
+  children?: ReactNode
 }) {
   const content = (
     <>
@@ -315,6 +322,7 @@ function DashboardStatCard({
       <p>{title}</p>
       <div><strong>{unavailable ? '—' : value == null ? '…' : value.toLocaleString()}</strong><small>{unit}</small></div>
       <span className={unavailable ? 'dashboard-stat-unavailable' : 'dashboard-stat-detail'}>{description}</span>
+      {children}
     </>
   )
   if (!page) return <article className="dashboard-stat-card">{content}</article>
@@ -339,12 +347,35 @@ function SchemaCoverageAnalytics({
   }
 
   return (
-    <div className="dashboard-schema-coverage" aria-label="자산 수 상위 Schema metadata 등록률">
-      <p>자산 수 상위 {Math.min(metrics.length, 3).toLocaleString()}개 Schema</p>
-      <div>
-        {metrics.slice(0, 3).map((metric) => <SchemaCoverageRow key={metricKey(metric)} metric={metric} />)}
+    <div className="dashboard-schema-coverage" aria-label="Schema metadata 등록률">
+      <p>현재 제공된 {metrics.length.toLocaleString()}개 Schema · 좌우로 이동해 탐색</p>
+      <div className="dashboard-schema-coverage-scroll" tabIndex={0} aria-label="Schema별 metadata 등록률 목록">
+        {metrics.map((metric) => <SchemaCoverageRow key={metricKey(metric)} metric={metric} />)}
       </div>
-      {(metrics.length > 3 || truncated) && <small>{truncated ? '서버가 제공한 bounded schema 집계의' : '현재 집계의'} 상위 항목입니다.</small>}
+      {truncated && <small>서버가 제공한 bounded schema 집계 범위입니다.</small>}
+    </div>
+  )
+}
+
+function SchemaAssetCounts({
+  metrics,
+  truncated,
+}: {
+  metrics: CatalogSchemaMetric[]
+  truncated: boolean
+}) {
+  if (metrics.length === 0) return null
+  const ordered = [...metrics].sort((left, right) => right.asset_count - left.asset_count || metricKey(left).localeCompare(metricKey(right)))
+  return (
+    <div className="dashboard-schema-asset-counts" aria-label="Schema별 현재 Dataset 수">
+      <span>Schema별 Dataset</span>
+      <div aria-label="Schema별 현재 Dataset 수 목록" tabIndex={0}>
+        {ordered.map((metric) => {
+          const name = [metric.database_name, metric.schema_name].filter(Boolean).join(' / ') || '미분류 스키마'
+          return <span key={metricKey(metric)} title={`${name}: ${metric.asset_count.toLocaleString()} Dataset`}><strong>{name}</strong>{metric.asset_count.toLocaleString()}</span>
+        })}
+      </div>
+      {truncated && <small>제공 범위</small>}
     </div>
   )
 }

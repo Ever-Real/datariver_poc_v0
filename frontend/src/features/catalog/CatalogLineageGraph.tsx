@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogLineage } from '../../api/types'
-import { CytoscapeReadGraph } from '../../components/graph/CytoscapeReadGraph'
+import { CytoscapeReadGraph, type CytoscapeViewport } from '../../components/graph/CytoscapeReadGraph'
 import { catalogLineageToReadGraph, mergeReadGraphs } from '../../components/graph/CytoscapeGraphAdapter'
 
 export function CatalogLineageGraph({
   client,
   lineage,
   onSelectAsset,
+  selectedNodeId,
+  initialViewport,
+  onSelectedNodeChange,
+  onViewportChange,
 }: {
   client: ApiClient
   lineage: CatalogLineage
   onSelectAsset: (assetId: string) => void
+  selectedNodeId?: string
+  initialViewport?: CytoscapeViewport
+  onSelectedNodeChange?: (assetId: string) => void
+  onViewportChange?: (viewport: CytoscapeViewport) => void
 }) {
   const [expansions, setExpansions] = useState<Record<string, CatalogLineage>>({})
   const controllers = useRef(new Set<AbortController>())
@@ -51,10 +59,16 @@ export function CatalogLineageGraph({
       boundNotice={lineage.truncated ? '서버 조회 한도에 따라 일부 관계가 생략되었습니다.' : undefined}
       graph={graph}
       height={420}
-      onActivateNode={onSelectAsset}
+      initialViewport={initialViewport}
+      onActivateNode={(assetId) => {
+        onSelectedNodeChange?.(assetId)
+        onSelectAsset(assetId)
+      }}
       onCollapseNode={collapse}
       onExpandNode={expand}
-      selectedElementId={lineage.center_asset_id}
+      onSelectNode={onSelectedNodeChange}
+      onViewportChange={onViewportChange}
+      selectedElementId={selectedNodeId ?? lineage.center_asset_id}
       visualProfile="SEARCH_LINEAGE_CLASSIC"
     />
   )

@@ -82,9 +82,10 @@ export function ProfilePage({
       setPasswordError('새 비밀번호와 확인 값이 일치하지 않습니다.')
       return
     }
+    const newPasswordCharacters = Array.from(newPassword).length
     const newPasswordBytes = new TextEncoder().encode(newPassword).byteLength
-    if (newPasswordBytes < 12 || newPasswordBytes > 1024) {
-      setPasswordError('새 비밀번호는 UTF-8 기준 12~1024바이트여야 합니다.')
+    if (newPasswordCharacters < 8 || newPasswordBytes > 1024) {
+      setPasswordError('새 비밀번호는 8자 이상이고 UTF-8 기준 1024바이트 이하여야 합니다.')
       return
     }
     setPasswordBusy(true)
@@ -120,8 +121,8 @@ export function ProfilePage({
         {profile.password_change_supported && onLocalPasswordChange ? <form className="mt-4 grid gap-3 rounded-enterprise border border-slate-300 bg-slate-50 p-4" aria-labelledby="local-password-title" onSubmit={(event) => void submitLocalPassword(event)}>
           <div><span className="text-xs font-black tracking-[.14em] text-enterprise-blue uppercase">Local credential</span><h3 className="mb-1 mt-1 text-sm font-black text-navy-900" id="local-password-title">비밀번호 변경</h3><p className="m-0 text-xs leading-5 text-slate-600">변경하면 현재 세션을 포함해 모든 기기에서 로그아웃됩니다. 새 비밀번호로 다시 로그인해야 합니다.</p></div>
           <label className="grid gap-1 text-xs font-bold">현재 비밀번호<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
-          <label className="grid gap-1 text-xs font-bold">새 비밀번호<input type="password" autoComplete="new-password" required aria-describedby="new-password-help" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
-          <p className="m-0 text-xs text-slate-500" id="new-password-help">UTF-8 기준 12~1024바이트</p>
+          <label className="grid gap-1 text-xs font-bold">새 비밀번호<input type="password" autoComplete="new-password" required minLength={8} aria-describedby="new-password-help" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+          <p className="m-0 text-xs text-slate-500" id="new-password-help">8자 이상 · UTF-8 기준 최대 1024바이트</p>
           <label className="grid gap-1 text-xs font-bold">새 비밀번호 확인<input type="password" autoComplete="new-password" required value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} /></label>
           {passwordError && <p className="notice notice-error m-0" role="alert">{passwordError}</p>}
           <div className="flex justify-end"><button type="submit" className="button" disabled={passwordBusy || !currentPassword || !newPassword || !passwordConfirmation}>{passwordBusy ? '변경 중…' : '새 비밀번호 저장'}</button></div>

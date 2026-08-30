@@ -204,8 +204,9 @@ export function normalizePocUsername(value) {
 
 function boundedPassword(password) {
   if (typeof password !== 'string') throw new Error('password must be a string.')
+  const characterLength = [...password].length
   const byteLength = Buffer.byteLength(password, 'utf8')
-  if (byteLength < 12 || byteLength > 1024) throw new Error('password is outside its bounded contract.')
+  if (characterLength < 8 || byteLength > 1024) throw new Error('password is outside its bounded contract.')
   return password
 }
 
@@ -471,6 +472,7 @@ export function authenticatedPocProfile(user, {
   const profile = {
     subject: user.subject_id,
     display_name: user.display_name || user.subject_id,
+    ...(typeof user.email === 'string' && user.email.trim() ? { email: user.email.trim() } : {}),
     roles: [user.role],
     max_security_grade: user.max_security_grade ?? 'normal',
     authentication_assurance: 'PASSWORD',

@@ -431,6 +431,41 @@ const LOCAL_SECURITY_EVENT_SCHEMA = [
   `,
 ]
 
+const LOCAL_SECURITY_EVENT_AUDIT_SCHEMA = [
+  `
+    DO $block$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'poc_local_security_events'::regclass
+          AND conname = 'ck_poc_local_security_event_type_v4'
+      ) THEN
+        ALTER TABLE poc_local_security_events
+          DROP CONSTRAINT ck_poc_local_security_event_type,
+          ADD CONSTRAINT ck_poc_local_security_event_type_v4 CHECK (
+            event_type IN ('SELF_PASSWORD_CHANGED_V1', 'LOCAL_CREDENTIAL_PROVISIONED_V1')
+          );
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'poc_local_security_events'::regclass
+          AND conname = 'ck_poc_local_security_event_actor_v4'
+      ) THEN
+        ALTER TABLE poc_local_security_events
+          DROP CONSTRAINT ck_poc_local_security_event_actor,
+          ADD CONSTRAINT ck_poc_local_security_event_actor_v4 CHECK (
+            char_length(actor_subject_id) BETWEEN 1 AND 255
+            AND ((event_type = 'SELF_PASSWORD_CHANGED_V1'
+                AND actor_kind = 'SELF' AND actor_subject_id = subject_id)
+              OR (event_type = 'LOCAL_CREDENTIAL_PROVISIONED_V1'
+                AND actor_kind = 'LOCAL_ADMIN'))
+          );
+      END IF;
+    END
+    $block$
+  `,
+]
+
 const MCP_READ_RECEIPT_SCHEMA = [
   `
     CREATE OR REPLACE FUNCTION poc_reject_schema_receipt_mutation()
@@ -711,6 +746,7 @@ async function applyPocPostgresSchema(client) {
   await applyPocPostgresV1Schema(client)
   for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await client.query(statement)
   for (const statement of MCP_READ_RECEIPT_SCHEMA) await client.query(statement)
+  for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
 }
 
 async function initializePocPostgresSchema(pool, integrityRequired) {
@@ -728,6 +764,9 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
       },
       applyV3Schema: async (migrationClient) => {
         for (const statement of MCP_READ_RECEIPT_SCHEMA) await migrationClient.query(statement)
+      },
+      applyV4Schema: async (migrationClient) => {
+        for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await migrationClient.query(statement)
       },
     })
   } finally {
@@ -1095,10 +1134,12 @@ export function createPocStateStore({ databasePool } = {}) {
     credential,
     accessValue,
     coreValue,
+    actorSubjectId,
   }) {
     requireNonnegativeInteger(expectedAccessVersion, 'expectedAccessVersion')
     requireNonnegativeInteger(expectedCoreVersion, 'expectedCoreVersion')
     const normalized = normalizeLocalCredential(credential)
+    if (actorSubjectId !== undefined) requireBoundedString(actorSubjectId, 'actorSubjectId', 255)
     const writesAccess = accessValue !== undefined || coreValue !== undefined
     if (writesAccess && (accessValue === undefined || coreValue === undefined)) {
       throw new Error('accessValue and coreValue must be supplied together.')
@@ -1134,6 +1175,18 @@ export function createPocStateStore({ databasePool } = {}) {
           normalized.mustChangePassword,
         ])
         if (inserted.rows.length !== 1) throw credentialConflict()
+        if (actorSubjectId !== undefined) {
+          const event = await client.query(`
+            INSERT INTO poc_local_security_events (
+              event_id, event_type, subject_id, actor_subject_id, actor_kind,
+              resulting_credential_version, revoked_session_count
+            ) VALUES ($1, 'LOCAL_CREDENTIAL_PROVISIONED_V1', $2, $3, 'LOCAL_ADMIN', $4, 0)
+            RETURNING event_id, occurred_at
+          `, [randomUUID(), normalized.subjectId, actorSubjectId, Number(inserted.rows[0].version)])
+          if (event.rows.length !== 1) {
+            throw new Error('The local credential provisioning security receipt was not inserted.')
+          }
+        }
         let accessVersion = current.access.version
         let coreVersion = current.core.version
         if (writesAccess) {
@@ -1176,6 +1229,18 @@ export function createPocStateStore({ databasePool } = {}) {
     }
     memoryCredentialsBySubject.set(normalized.subjectId, record)
     memoryCredentialSubjectByUsername.set(normalized.usernameNormalized, normalized.subjectId)
+    if (actorSubjectId !== undefined) {
+      memoryLocalSecurityEvents.push(Object.freeze({
+        eventId: randomUUID(),
+        eventType: 'LOCAL_CREDENTIAL_PROVISIONED_V1',
+        subjectId: normalized.subjectId,
+        actorSubjectId,
+        actorKind: 'LOCAL_ADMIN',
+        occurredAt: new Date().toISOString(),
+        resultingCredentialVersion: 1,
+        revokedSessionCount: 0,
+      }))
+    }
     let accessVersion = current.access.version
     let coreVersion = current.core.version
     if (writesAccess) {

@@ -4,8 +4,11 @@ import type { ReadGraphModel } from './CytoscapeGraphAdapter'
 import type { Core, NodeSingular } from 'cytoscape'
 import {
   CYTOSCAPE_NODE_GEOMETRY,
+  CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY,
+  CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH,
   CYTOSCAPE_SELECTED_NODE_HIGHLIGHT,
   CytoscapeReadGraph,
+  boundedClassicLineageFitZoom,
   graphStyles,
   isRenderedLabelHit,
   restoreViewport,
@@ -117,6 +120,44 @@ describe('CytoscapeReadGraph', () => {
     expect(graphStyles(document.createElement('div')).filter((entry) => entry.selector === 'node')).toHaveLength(1)
   })
 
+  it.each([1, 5, 50, 200])('keeps classic lineage node geometry fixed at %i nodes', (nodeCount) => {
+    const fixture: ReadGraphModel = {
+      kind: 'LINEAGE',
+      rootId: 'node-0',
+      nodes: Array.from({ length: nodeCount }, (_, index) => ({
+        id: `node-${index}`, label: `Table ${index}`, entityType: 'TABLE',
+        role: index === 0 ? 'ROOT' : 'DOWNSTREAM', properties: {}, provenance: [],
+      })),
+      edges: [],
+    }
+    const styles = graphStyles(document.createElement('div'), 'SEARCH_LINEAGE_CLASSIC')
+    const node = styles.filter((entry) => entry.selector === 'node').at(-1) as unknown as {
+      style: Record<string, unknown>
+    }
+
+    expect(fixture.nodes).toHaveLength(nodeCount)
+    expect(node.style).toMatchObject({
+      width: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width,
+      height: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.height,
+      padding: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.padding,
+      'font-size': CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.fontSize,
+    })
+  })
+
+  it.each([
+    [1, 2.4, CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.maximum],
+    [5, 1.4, CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.maximum],
+    [50, 0.8, CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width * 0.8],
+    [200, 0.12, CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.minimum],
+  ])('bounds post-fit rendered lineage card width at %i nodes without count scaling', (nodeCount, fitZoom, expectedWidth) => {
+    const boundedZoom = boundedClassicLineageFitZoom(fitZoom)
+
+    expect(nodeCount).toBeGreaterThan(0)
+    expect(CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width * boundedZoom).toBe(expectedWidth)
+    expect(CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width * boundedZoom).toBeGreaterThanOrEqual(CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.minimum)
+    expect(CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width * boundedZoom).toBeLessThanOrEqual(CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.maximum)
+  })
+
   it('distinguishes a rendered label hit from the node body without changing click cadence', () => {
     const node = {
       renderedBoundingBox: () => ({ x1: 20, x2: 80, y1: 30, y2: 50 }),
@@ -216,6 +257,17 @@ describe('CytoscapeReadGraph', () => {
     view.rerender(<CytoscapeReadGraph ariaLabel="Transition" graph={graph} />)
     await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(2))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('coalesces viewport snapshots to one animation frame', async () => {
+    const onViewportChange = vi.fn()
+    render(<CytoscapeReadGraph ariaLabel="Viewport" graph={graph} onViewportChange={onViewportChange} />)
+    await waitFor(() => expect(cytoscape).toHaveBeenCalledTimes(1))
+    const viewportListener = cy.on.mock.calls.find(([event]) => event === 'zoom pan')?.[1] as (() => void) | undefined
+    expect(viewportListener).toBeTypeOf('function')
+
+    act(() => { viewportListener?.(); viewportListener?.(); viewportListener?.() })
+    await waitFor(() => expect(onViewportChange).toHaveBeenCalledTimes(1))
   })
 
   it('destroys each Cytoscape instance and its listeners across repeated open/close', async () => {

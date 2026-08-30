@@ -7,17 +7,24 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "cytoscape:csp": "node scripts/patch-cytoscape-csp.mjs",
+    "cytoscape:csp:verify": "node scripts/patch-cytoscape-csp.mjs --verify",
+    "predev": "npm run cytoscape:csp",
+    "dev": "vite --force --host 0.0.0.0",
     "poc": "npm run build:poc && node poc-server.mjs",
     "poc:bootstrap-user": "node poc-bootstrap-local-user.mjs",
     "poc:disable-credential": "node poc-disable-local-credential.mjs",
-    "dev:poc": "vite --config vite.poc.config.ts --mode poc",
+    "predev:poc": "npm run cytoscape:csp",
+    "dev:poc": "vite --force --config vite.poc.config.ts --mode poc",
+    "prebuild": "npm run cytoscape:csp",
     "build": "tsc -b && vite build",
+    "prebuild:poc": "npm run cytoscape:csp",
     "build:poc": "tsc -b && vite build --config vite.poc.config.ts --mode poc",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
     "test:poc": "vitest run --config vitest.config.ts src/poc/PocApp.test.tsx",
+    "test:cytoscape-csp": "node --test scripts/patch-cytoscape-csp.test.mjs",
     "test:poc-server": "POC_ENV_FILE=poc-server.test.env.missing node --test poc-airflow-control.test.mjs poc-airflow-control.postgres.test.mjs poc-authorization.test.mjs poc-table-data-access.test.mjs poc-cr-lifecycle.test.mjs poc-datahub-current-table.test.mjs poc-datahub-inventory-scale.test.mjs poc-feature-security-policy.test.mjs poc-site-branding.test.mjs poc-table-system-mappings.test.mjs poc-disable-local-credential.test.mjs poc-local-security-events.postgres.test.mjs poc-llm-timeout.test.mjs poc-postgres-schema-integrity.test.mjs poc-postgres-schema-integrity.postgres.test.mjs poc-provider-preflight.test.mjs poc-provider-transport.test.mjs poc-server.auth.test.mjs poc-server.test.mjs poc-server.providers.test.mjs poc-state-store.test.mjs chat-router-benchmark.test.mjs"
   },
   "dependencies": {

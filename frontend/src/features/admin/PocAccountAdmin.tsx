@@ -11,14 +11,25 @@ import { Dialog } from '../../components/common/Dialog'
 import type { AdminSectionProps } from './MembershipAdmin'
 
 const roles = ['viewer', 'developer', 'data_steward', 'manager', 'admin'] as const
+const minimumPasswordCharacters = 8
 const grades: Array<{ value: TableSecurityGrade; label: string }> = [
   { value: 'normal', label: '일반' },
   { value: 'credential', label: '대외비' },
   { value: 'restricted', label: '극비' },
 ]
 
+const emptyCreateUser = () => ({
+  username: '', password: '', display_name: '', email: '', role: 'viewer' as PocAdminUser['role'],
+  max_security_grade: 'normal' as TableSecurityGrade, must_change_password: true,
+})
+
 function gradeLabel(value: TableSecurityGrade) {
   return grades.find((grade) => grade.value === value)?.label ?? value
+}
+
+function passwordInPolicy(value: string) {
+  return Array.from(value).length >= minimumPasswordCharacters
+    && new TextEncoder().encode(value).byteLength <= 1024
 }
 
 function userDraft(user: PocAdminUser) {
@@ -44,10 +55,7 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
   const [createOpen, setCreateOpen] = useState(false)
   const [draft, setDraft] = useState<ReturnType<typeof userDraft>>()
   const [credential, setCredential] = useState({ username: '', password: '', login_enabled: true, must_change_password: true })
-  const [create, setCreate] = useState({
-    username: '', password: '', display_name: '', email: '', role: 'viewer' as PocAdminUser['role'],
-    max_security_grade: 'normal' as TableSecurityGrade, must_change_password: true,
-  })
+  const [create, setCreate] = useState(emptyCreateUser)
   const [grants, setGrants] = useState<PocUserTableGrantPage>()
   const [grantFilters, setGrantFilters] = useState({ query: '', schema: '', systemId: '', securityGrade: '' as TableSecurityGrade | '' })
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
@@ -141,7 +149,9 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
   const saveCredential = () => {
     if (!selectedUser) return
     const existingVersion = selectedUser.credential?.version ?? 0
-    if (!credential.username.trim() || (!selectedUser.credential && credential.password.length < 12)) return
+    if (!credential.username.trim()
+      || (!selectedUser.credential && !passwordInPolicy(credential.password))
+      || (credential.password && !passwordInPolicy(credential.password))) return
     requestConfirmation({
       title: `${selectedUser.display_name} 로그인 credential 변경`,
       summary: [credential.login_enabled ? '로그인 허용' : '로그인 중지', credential.password ? '비밀번호 재설정 및 기존 세션 종료' : '비밀번호 유지'],
@@ -168,20 +178,28 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
   }
 
   const createUser = () => {
-    if (!page || create.password.length < 12) return
+    if (!page || !passwordInPolicy(create.password)) return
     requestConfirmation({
       title: `${create.display_name || create.username} 로컬 human 계정 생성`,
       summary: [create.role, gradeLabel(create.max_security_grade), '서버가 stable subject_id 생성'],
       execute: async () => {
         await api.createPocAdminUser({ ...create, responsible_systems: [] }, page.version)
-        setCreate({
-          username: '', password: '', display_name: '', email: '', role: 'viewer',
-          max_security_grade: 'normal', must_change_password: true,
-        })
+        setCreate(emptyCreateUser())
         setCreateOpen(false)
         await loadUsers()
       },
     })
+  }
+
+  const createDirty = Boolean(
+    create.username || create.password || create.display_name || create.email
+    || create.role !== 'viewer' || create.max_security_grade !== 'normal'
+    || create.must_change_password !== true,
+  )
+  const closeCreate = () => {
+    if (createDirty && !window.confirm('저장하지 않은 사용자 정보가 있습니다. 작성을 취소할까요?')) return
+    setCreate(emptyCreateUser())
+    setCreateOpen(false)
   }
 
   const toggleResponsibleSystem = (systemId: string, checked: boolean) => {
@@ -235,10 +253,11 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
       ]} />
     </section>
 
-    <Dialog open={createOpen} title="Local human 사용자 생성" description="기존 synthetic fixture는 변경하지 않으며 credential role/System을 저장하지 않습니다." onRequestClose={() => setCreateOpen(false)} footer={<><button type="button" className="button button-secondary" onClick={() => setCreateOpen(false)}>취소</button><button type="button" className="button" disabled={!create.username.trim() || !create.display_name.trim() || !create.email.trim() || create.password.length < 12} onClick={createUser}>생성 확인</button></>}>
+    <Dialog open={createOpen} dirty={createDirty} title="Local human 사용자 생성" description="로그인 계정과 기본 권한을 함께 만듭니다." onRequestClose={closeCreate} onRequestDiscardChanges={closeCreate} footer={<><button type="button" className="button button-secondary" onClick={closeCreate}>취소</button><button type="button" className="button" disabled={!create.username.trim() || !create.display_name.trim() || !create.email.trim() || !passwordInPolicy(create.password)} onClick={createUser}>생성 확인</button></>}>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="grid gap-1 text-xs font-bold">Username<input value={create.username} onChange={(event) => setCreate({ ...create, username: event.target.value })} autoComplete="off" /></label>
-        <label className="grid gap-1 text-xs font-bold">초기 비밀번호<input type="password" minLength={12} value={create.password} onChange={(event) => setCreate({ ...create, password: event.target.value })} autoComplete="new-password" /></label>
+        <label className="grid gap-1 text-xs font-bold">초기 비밀번호<input type="password" minLength={minimumPasswordCharacters} aria-describedby="local-human-password-help" value={create.password} onChange={(event) => setCreate({ ...create, password: event.target.value })} autoComplete="new-password" /></label>
+        <p className="m-0 text-xs text-slate-500 md:col-span-2" id="local-human-password-help">8자 이상 · UTF-8 기준 최대 1024바이트</p>
         <label className="grid gap-1 text-xs font-bold">표시 이름<input value={create.display_name} onChange={(event) => setCreate({ ...create, display_name: event.target.value })} /></label>
         <label className="grid gap-1 text-xs font-bold">Email<input type="email" value={create.email} onChange={(event) => setCreate({ ...create, email: event.target.value })} /></label>
         <label className="grid gap-1 text-xs font-bold">Role<select value={create.role} onChange={(event) => setCreate({ ...create, role: event.target.value as PocAdminUser['role'] })}>{roles.map((role) => <option key={role}>{role}</option>)}</select></label>
@@ -263,7 +282,7 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
 
         <section className="panel grid gap-3">
           <div className="section-heading"><div><h3>Credential / sessions</h3><p className="muted">Role/System/grade는 credential에 저장하지 않습니다.</p></div><div className="action-row"><button type="button" className="button button-secondary" onClick={revokeSessions}>세션 전체 해지</button><button type="button" className="button" onClick={saveCredential}>Credential 변경 확인</button></div></div>
-          <div className="grid gap-3 md:grid-cols-4"><label className="grid gap-1 text-xs font-bold">Username<input value={credential.username} onChange={(event) => setCredential({ ...credential, username: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">새 비밀번호 (선택)<input type="password" minLength={12} value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} autoComplete="new-password" /></label><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={credential.login_enabled} onChange={(event) => setCredential({ ...credential, login_enabled: event.target.checked })} />로그인 허용</label><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={credential.must_change_password} onChange={(event) => setCredential({ ...credential, must_change_password: event.target.checked })} />비밀번호 변경 요구</label></div>
+          <div className="grid gap-3 md:grid-cols-4"><label className="grid gap-1 text-xs font-bold">Username<input value={credential.username} onChange={(event) => setCredential({ ...credential, username: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">새 비밀번호 (선택)<input type="password" minLength={minimumPasswordCharacters} value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} autoComplete="new-password" /></label><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={credential.login_enabled} onChange={(event) => setCredential({ ...credential, login_enabled: event.target.checked })} />로그인 허용</label><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={credential.must_change_password} onChange={(event) => setCredential({ ...credential, must_change_password: event.target.checked })} />비밀번호 변경 요구</label></div>
           <p className="muted">활성 session {selectedUser.credential?.active_session_count ?? 0}개 · credential version {selectedUser.credential?.version ?? 0}</p>
         </section>
 

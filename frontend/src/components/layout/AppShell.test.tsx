@@ -268,7 +268,7 @@ describe('application shell contracts', () => {
     }
 
     expect(allowedAdminSections(context)).toEqual([
-      'memberships', 'systemSettings', 'retention', 'auditLogs', 'dictionary'
+      'memberships', 'systemSettings', 'retention', 'auditLogs'
     ])
   })
 

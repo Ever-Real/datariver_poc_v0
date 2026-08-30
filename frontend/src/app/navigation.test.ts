@@ -14,6 +14,8 @@ describe('navigation contract', () => {
     expect(pageFromLocation('https://catalog.example/?page=knowledge-studio')).toBe('knowledge-studio')
     expect(pageFromLocation('https://catalog.example/?page=change-management')).toBe('change-management')
     expect(pageFromLocation('https://catalog.example/?page=monitoring')).toBe('monitoring')
+    expect(pageFromLocation('https://catalog.example/?page=admin&adminSection=dictionary')).toBe('glossary')
+    expect(pageFromLocation('https://catalog.example/?page=admin&adminSection=poc-glossary')).toBe('glossary')
     expect(pageFromLocation('https://catalog.example/?page=not-a-page')).toBe('dashboard')
   })
 

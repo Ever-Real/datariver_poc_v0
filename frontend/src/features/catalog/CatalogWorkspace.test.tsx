@@ -1391,6 +1391,7 @@ describe('catalog workspace', () => {
     expect(await within(detail).findByRole('heading', { name: firstAsset.name })).toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
     expect(within(detail).getByRole('tab', { name: 'Lineage' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(detail).getByLabelText(`${secondAsset.name}, DATASET 선택 · 근거 1`)).toHaveAttribute('aria-pressed', 'true')
     expect(within(detail).getByRole('button', { name: /Table details/, hidden: true })).toHaveAttribute('aria-expanded', 'false')
     await waitFor(() => expect(detail.querySelector<HTMLElement>('.catalog-detail-scroll')?.scrollTop).toBe(120))
     expect(document.activeElement).toBe(within(detail).getByRole('tab', { name: 'Lineage' }))

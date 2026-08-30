@@ -65,19 +65,19 @@ describe('AdminPage', () => {
     expect(screen.queryByText(subjectId)).not.toBeInTheDocument()
   })
 
-  it('renders exactly the five primary administration tabs and keeps USERS focused on the user table', async () => {
+  it('removes the duplicate administration glossary tab and keeps USERS focused on the user table', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
       items: [], page: { next_cursor: null, limit: 25 },
     }))))
     renderPage()
 
     const tabs = screen.getByRole('tablist', { name: 'Administration and data governance' })
-    expect(within(tabs).getAllByRole('tab')).toHaveLength(5)
+    expect(within(tabs).getAllByRole('tab')).toHaveLength(4)
     expect(within(tabs).getByRole('tab', { name: 'Accounts & access' })).toBeInTheDocument()
     expect(within(tabs).getByRole('tab', { name: 'System settings' })).toBeInTheDocument()
     expect(within(tabs).getByRole('tab', { name: 'Retention & erasure governance' })).toBeInTheDocument()
     expect(within(tabs).getByRole('tab', { name: 'Audit/Log review' })).toBeInTheDocument()
-    expect(within(tabs).getByRole('tab', { name: 'Terminology dictionary' })).toBeInTheDocument()
+    expect(within(tabs).queryByRole('tab', { name: 'Terminology dictionary' })).not.toBeInTheDocument()
     expect(await screen.findByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
     expect(screen.queryByText('세부 Access 문서 (고급)')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Role 정의 및 사용자 할당' })).not.toBeInTheDocument()
@@ -122,6 +122,11 @@ describe('AdminPage', () => {
 
   it('keeps a failed mutation open with its typed error, then closes after a successful retry', async () => {
     window.history.replaceState({}, '', '/?page=admin&adminSection=systemSettings')
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (requestUrl.endsWith('/quality/capability')) return Promise.resolve(json(qualityCapability()))
+      return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 25 } }))
+    }))
     mutationProbe.execute
       .mockRejectedValueOnce(new ApiError({
         type: 'https://datariver.invalid/problems/admin-mutation',
@@ -145,7 +150,40 @@ describe('AdminPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Test admin mutation' })).not.toBeInTheDocument())
     expect(mutationProbe.execute).toHaveBeenCalledTimes(2)
   })
+
+  it('keeps Quality/GX read capability visible when execution control is deferred', async () => {
+    window.history.replaceState({}, '', '/?page=admin&adminSection=systemSettings')
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (requestUrl.endsWith('/quality/capability')) return Promise.resolve(json(qualityCapability()))
+      return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 25 } }))
+    }))
+
+    renderPage()
+
+    const status = await screen.findByText('사용 가능')
+    expect(status).toHaveAttribute('role', 'status')
+    expect(screen.getByText('Quality/GX 읽기 capability를 사용할 수 있습니다.')).toBeInTheDocument()
+    expect(screen.getByText('실행 제어: 확인 보류')).toBeInTheDocument()
+    expect(screen.getByText((_, element) => (
+      element?.textContent === '실행 제어: 확인 보류 · 현재 연결은 품질 정보를 읽을 수 있지만 실행 기능은 제공하지 않습니다.'
+    ))).toBeInTheDocument()
+    expect(screen.queryByText('QUALITY_CONTROL_PLANE_NOT_CONFIGURED')).not.toBeInTheDocument()
+  })
 })
+
+function qualityCapability() {
+  return {
+    contract_version: 'QUALITY_CAPABILITY_V2',
+    observed_at: '2026-08-30T00:00:00.000Z',
+    valid_until: '2026-08-30T00:00:30.000Z',
+    cache_scope: 'a'.repeat(64),
+    axes: [
+      { id: 'read_access', state: 'AVAILABLE' },
+      { id: 'manual_execution', state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+    ],
+  }
+}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })

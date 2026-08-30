@@ -66,8 +66,8 @@ async function serverFixture(canonicalOrigin = null) {
   let currentProviderInventory = providerInventory
   let currentProviderError
   const users = [
-    { subject_id: 'subject-one', role: 'admin', active: true, display_name: 'First Person' },
-    { subject_id: 'subject-two', role: 'viewer', active: true, display_name: 'Second Person' },
+    { subject_id: 'subject-one', role: 'admin', active: true, display_name: 'First Person', email: 'first@example.com' },
+    { subject_id: 'subject-two', role: 'viewer', active: true, display_name: 'Second Person', email: 'second@example.com' },
   ]
   const firstHash = await hashPocPassword('first correct password', {
     salt: Buffer.from('0123456789abcdef'),
@@ -443,6 +443,7 @@ test('binds concurrent browser sessions to current server-side access profiles',
     assert.deepEqual(firstLoginProfile, {
       subject: 'subject-one',
       display_name: 'First Person',
+      email: 'first@example.com',
       roles: ['admin'],
       max_security_grade: 'normal',
       authentication_assurance: 'PASSWORD',
@@ -834,6 +835,12 @@ test('creates an immutable server-authored System identity with admin, Origin, a
 test('administers local users, security grade, Responsible Systems, explicit Table grants, credentials, and sessions', async () => {
   const fixture = await serverFixture()
   try {
+    const provisionCalls = []
+    const provisionLocalCredential = fixture.stateStore.provisionLocalCredential
+    fixture.stateStore.provisionLocalCredential = async (input) => {
+      provisionCalls.push(input)
+      return provisionLocalCredential(input)
+    }
     const [admin, viewer] = await Promise.all([
       fixture.login('first@example.com', 'first correct password'),
       fixture.login('second@example.com', 'second correct password'),
@@ -861,11 +868,36 @@ test('administers local users, security grade, Responsible Systems, explicit Tab
     const list = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })
     assert.equal(list.status, 200)
     const version = Number(list.headers.get('etag')?.replaceAll('"', ''))
+    const createHeaders = {
+      'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': `"${version}"`,
+    }
+    const baseCreateBody = {
+      display_name: 'Developer Person', role: 'developer', max_security_grade: 'credential',
+      responsible_systems: [{ system_id: 'system-a', priority: 2 }], must_change_password: true,
+    }
+    const shortPassword = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST', headers: createHeaders,
+      body: JSON.stringify({
+        ...baseCreateBody, username: 'short-password@example.com', email: 'short-password@example.com',
+        password: '1234567',
+      }),
+    })
+    assert.equal(shortPassword.status, 400)
+    assert.equal((await shortPassword.json()).code, 'USER_PASSWORD_INVALID')
+    const duplicateEmail = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST', headers: createHeaders,
+      body: JSON.stringify({
+        ...baseCreateBody, username: 'unique-user@example.com', email: ' FIRST@example.com ',
+        password: 'abcD123!',
+      }),
+    })
+    assert.equal(duplicateEmail.status, 409)
+    assert.equal((await duplicateEmail.json()).code, 'USER_EMAIL_EXISTS')
     const created = await fetch(`${fixture.origin}/api/v1/admin/users`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': `"${version}"` },
+      headers: createHeaders,
       body: JSON.stringify({
-        username: 'developer@example.com', password: 'developer first password',
+        username: 'developer@example.com', password: 'abcD123!',
         display_name: 'Developer Person', email: 'developer@example.com', role: 'developer',
         max_security_grade: 'credential', responsible_systems: [{ system_id: 'system-a', priority: 2 }],
         must_change_password: true,
@@ -874,8 +906,11 @@ test('administers local users, security grade, Responsible Systems, explicit Tab
     assert.equal(created.status, 201, JSON.stringify(await created.clone().json()))
     const createdBody = await created.json()
     assert.match(createdBody.subject_id, /^[0-9a-f-]{36}$/)
+    assert.equal(provisionCalls.length, 1)
+    assert.equal(provisionCalls[0].actorSubjectId, 'subject-one')
+    assert.equal(provisionCalls[0].credential.subjectId, createdBody.subject_id)
 
-    const developerLogin = await fixture.login('developer@example.com', 'developer first password')
+    const developerLogin = await fixture.login('developer@example.com', 'abcD123!')
     assert.equal(developerLogin.response.status, 200)
     const developerProfile = await developerLogin.response.json()
     assert.equal(developerProfile.subject, createdBody.subject_id)
@@ -941,7 +976,7 @@ test('administers local users, security grade, Responsible Systems, explicit Tab
     assert.equal(credentialUpdate.status, 200)
     assert.equal((await credentialUpdate.json()).revoked_session_count, 1)
     assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: developerLogin.cookie } })).status, 401)
-    assert.equal((await fixture.login('developer@example.com', 'developer first password')).response.status, 401)
+    assert.equal((await fixture.login('developer@example.com', 'abcD123!')).response.status, 401)
 
     const afterDisable = await (await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })).json()
     const disabled = afterDisable.items.find((item) => item.subject_id === createdBody.subject_id)

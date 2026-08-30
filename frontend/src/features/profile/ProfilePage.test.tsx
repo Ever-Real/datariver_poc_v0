@@ -114,4 +114,47 @@ describe('ProfilePage', () => {
     expect(await screen.findAllByText('확인 실패')).toHaveLength(2)
     expect(screen.queryByText('0')).not.toBeInTheDocument()
   })
+
+  it('rejects 7 characters and accepts 8, 9, and a long password without truncation', async () => {
+    const onLocalPasswordChange = vi.fn().mockResolvedValue(undefined)
+    const client = { request: vi.fn((path: string) => Promise.resolve(path.includes('/me/summary') ? {
+      subject_id: 'subject-1', display_name: '로컬 사용자', email: 'local@example.test',
+      last_login_at: null, last_login_ip: null, owned_table_count: 0, change_request_count: 0,
+      subject_active: true, membership_active: true, department_id: null, job_function: null,
+      clearance: 'NORMAL', membership_version: 1, joined_at: null, access_expires_at: null,
+      renewal_eligible_at: null, access_expired: false, renewal_request_eligible: false,
+      pending_renewal_request_id: null,
+    } : { items: [] })) }
+    render(<ProfilePage
+      profile={{
+        subject: 'subject-1', display_name: '로컬 사용자', email: 'local@example.test', roles: ['viewer'],
+        authentication_assurance: 'PASSWORD', password_change_supported: true,
+      }}
+      client={client as never}
+      capabilities={[]}
+      externalSystemLinks={[]}
+      onPasswordChange={vi.fn()}
+      onPasswordReauth={vi.fn()}
+      onLocalPasswordChange={onLocalPasswordChange}
+    />)
+    expect(screen.getByLabelText('Email')).toHaveValue('local@example.test')
+
+    const submit = (password: string) => {
+      fireEvent.change(screen.getByLabelText('현재 비밀번호'), { target: { value: 'current-password' } })
+      fireEvent.change(screen.getByLabelText('새 비밀번호'), { target: { value: password } })
+      fireEvent.change(screen.getByLabelText('새 비밀번호 확인'), { target: { value: password } })
+      fireEvent.click(screen.getByRole('button', { name: '새 비밀번호 저장' }))
+    }
+    submit('1234567')
+    expect(screen.getByRole('alert')).toHaveTextContent('8자 이상')
+    expect(onLocalPasswordChange).not.toHaveBeenCalled()
+
+    for (const password of ['12345678', '123456789', 'L'.repeat(512)]) {
+      submit(password)
+      await waitFor(() => expect(onLocalPasswordChange).toHaveBeenCalledWith({
+        currentPassword: 'current-password', newPassword: password, confirmation: password,
+      }))
+    }
+    expect(onLocalPasswordChange).toHaveBeenCalledTimes(3)
+  })
 })

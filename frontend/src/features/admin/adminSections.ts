@@ -1,7 +1,7 @@
 import type { AdminOperation, AdminReadContext } from '../../api/types'
 
 const primarySections = [
-  'memberships', 'siteManagement', 'featurePermissions', 'systemSettings', 'retention', 'auditLogs', 'dictionary'
+  'memberships', 'siteManagement', 'featurePermissions', 'systemSettings', 'retention', 'auditLogs'
 ] as const satisfies readonly AdminSection[]
 
 export type AdminSection =

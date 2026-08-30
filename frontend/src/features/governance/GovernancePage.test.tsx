@@ -545,7 +545,7 @@ describe('GovernancePage', () => {
     const addManualButton = screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ })
     expect(targetTable.compareDocumentPosition(addManualButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    fireEvent.change(screen.getByLabelText('wafer_events 컬럼 추가'), { target: { value: 'wafer_id' } })
+    fireEvent.change(screen.getByLabelText('wafer_events 기존 컬럼 선택'), { target: { value: 'wafer_id' } })
     expect(await screen.findByDisplayValue('Wafer identifier')).toBeInTheDocument()
     expect(targetTable.querySelectorAll('.governance-target-column-branch')).toHaveLength(1)
     expect(within(targetTable).getAllByRole('row')).toHaveLength(3)

@@ -134,6 +134,31 @@ describe('enterprise UI primitives', () => {
     expect(opener).toHaveFocus()
   })
 
+  it('keeps a true dialog open for Escape, backdrop and descendant portal clicks', () => {
+    const onClose = vi.fn()
+    render(<Dialog open title="정책 확인" onRequestClose={onClose}><button type="button">내부 작업</button></Dialog>)
+    const dialog = screen.getByRole('dialog', { name: '정책 확인' })
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent.click(dialog)
+    // A child click is deliberately not treated as a backdrop dismissal.
+    fireEvent.click(screen.getByRole('button', { name: '내부 작업' }))
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: '정책 확인' })).toBeInTheDocument()
+  })
+
+  it('routes an explicit close of a dirty dialog through its discard confirmation owner', () => {
+    const onClose = vi.fn()
+    const onDiscard = vi.fn()
+    render(<Dialog open dirty title="작성 중" onRequestClose={onClose} onRequestDiscardChanges={onDiscard}><input aria-label="제목" /></Dialog>)
+
+    fireEvent.click(screen.getByRole('button', { name: '작성 중 닫기' }))
+
+    expect(onDiscard).toHaveBeenCalledWith('CLOSE_BUTTON')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('provides cursor controls and bounded page-size options', () => {
     const onNext = vi.fn()
     const onPageSizeChange = vi.fn()

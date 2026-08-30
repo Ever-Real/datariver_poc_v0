@@ -49,6 +49,11 @@ export interface CytoscapeGraphMetrics {
   last_settle_ms?: number
 }
 
+export interface CytoscapeViewport {
+  zoom: number
+  pan: Position
+}
+
 interface CytoscapeReadGraphProps {
   graph: ReadGraphModel
   ariaLabel: string
@@ -66,6 +71,8 @@ interface CytoscapeReadGraphProps {
   onResolveSearch?: (query: string) => Promise<string | undefined>
   onReset?: () => void
   onMetrics?: (metrics: CytoscapeGraphMetrics) => void
+  initialViewport?: CytoscapeViewport
+  onViewportChange?: (viewport: CytoscapeViewport) => void
   boundNotice?: string
   visualProfile?: CytoscapeVisualProfile
 }
@@ -84,6 +91,28 @@ export const CYTOSCAPE_SELECTED_NODE_HIGHLIGHT = Object.freeze({
   underlayOpacity: 0.12,
   underlayPadding: 5,
 })
+
+/** Screen-space lineage geometry must not depend on the number of graph nodes. */
+export const CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY = Object.freeze({
+  width: 156,
+  height: 52,
+  padding: '7px',
+  fontSize: 10,
+  textMaxWidth: '136px',
+})
+
+// Fit operates in model units. Bound the resulting zoom so the fixed lineage
+// card remains readable without deriving its size from the graph node count.
+export const CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH = Object.freeze({
+  minimum: 96,
+  maximum: 164,
+})
+
+export function boundedClassicLineageFitZoom(fitZoom: number): number {
+  const minimumZoom = CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.minimum / CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width
+  const maximumZoom = CYTOSCAPE_SEARCH_LINEAGE_RENDERED_WIDTH.maximum / CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width
+  return Math.max(minimumZoom, Math.min(maximumZoom, fitZoom))
+}
 
 const INTERACTION_PHYSICS_NODE_CAP = 90
 
@@ -210,17 +239,17 @@ export function graphStyles(
           'border-color': '#8fa1ad',
           'border-width': 2,
           color: navy,
-          'font-size': 10,
+          'font-size': CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.fontSize,
           'font-weight': 700,
-          height: 52,
-          padding: '7px',
+          height: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.height,
+          padding: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.padding,
           shape: 'round-rectangle',
           'text-halign': 'center',
           'text-margin-y': 0,
-          'text-max-width': '136px',
+          'text-max-width': CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.textMaxWidth,
           'text-opacity': 1,
           'text-valign': 'center',
-          width: 156,
+          width: CYTOSCAPE_SEARCH_LINEAGE_NODE_GEOMETRY.width,
         },
       },
       { selector: 'node[role = "ROOT"]', style: { 'background-color': '#d9edf7', 'border-color': '#12648b' } },
@@ -348,6 +377,8 @@ export function CytoscapeReadGraph({
   onResolveSearch,
   onReset,
   onMetrics,
+  initialViewport,
+  onViewportChange,
   boundNotice,
   visualProfile = 'ORGANIC',
 }: CytoscapeReadGraphProps) {
@@ -359,8 +390,11 @@ export function CytoscapeReadGraph({
   const graphRef = useRef(graph)
   const pendingViewportRef = useRef<RetainedViewport | undefined>(undefined)
   const viewportFallbackFrameRef = useRef<number | undefined>(undefined)
+  const viewportSnapshotFrameRef = useRef<number | undefined>(undefined)
+  const latestViewportRef = useRef<CytoscapeViewport | undefined>(undefined)
   const initialFitRef = useRef(false)
-  const callbacksRef = useRef({ onSelectNode, onSelectEdge, onActivateNode, onExpandNode, onMetrics })
+  const initialViewportRef = useRef(initialViewport)
+  const callbacksRef = useRef({ onSelectNode, onSelectEdge, onActivateNode, onExpandNode, onMetrics, onViewportChange })
   const [coreRevision, setCoreRevision] = useState(0)
   const [internalSelectedId, setInternalSelectedId] = useState(selectedElementId)
   const [directionContext, setDirectionContext] = useState<CytoscapeExpansionDirection>()
@@ -376,8 +410,12 @@ export function CytoscapeReadGraph({
   }, [graph])
 
   useEffect(() => {
-    callbacksRef.current = { onSelectNode, onSelectEdge, onActivateNode, onExpandNode, onMetrics }
-  }, [onActivateNode, onExpandNode, onMetrics, onSelectEdge, onSelectNode])
+    callbacksRef.current = { onSelectNode, onSelectEdge, onActivateNode, onExpandNode, onMetrics, onViewportChange }
+  }, [onActivateNode, onExpandNode, onMetrics, onSelectEdge, onSelectNode, onViewportChange])
+
+  useEffect(() => {
+    initialViewportRef.current = initialViewport
+  }, [initialViewport])
 
   const adapted = useMemo(() => {
     try {
@@ -393,11 +431,29 @@ export function CytoscapeReadGraph({
     layoutRef.current = undefined
   }, [])
 
+  const flushViewportSnapshot = useCallback(() => {
+    if (viewportSnapshotFrameRef.current !== undefined) {
+      cancelAnimationFrame(viewportSnapshotFrameRef.current)
+      viewportSnapshotFrameRef.current = undefined
+    }
+    if (latestViewportRef.current) callbacksRef.current.onViewportChange?.(latestViewportRef.current)
+  }, [])
+
+  const scheduleViewportSnapshot = useCallback((cy: Core) => {
+    latestViewportRef.current = { zoom: cy.zoom(), pan: { ...cy.pan() } }
+    if (viewportSnapshotFrameRef.current !== undefined) return
+    viewportSnapshotFrameRef.current = requestAnimationFrame(() => {
+      viewportSnapshotFrameRef.current = undefined
+      if (latestViewportRef.current) callbacksRef.current.onViewportChange?.(latestViewportRef.current)
+    })
+  }, [])
+
   const runPhysics = useCallback((cy: Core, options: {
     initial?: boolean
     anchorId?: string
     lockExistingIds?: Set<string>
     retained?: RetainedViewport
+    initialViewport?: CytoscapeViewport
     maximumMs?: number
     lockAnchor?: boolean
   } = {}) => {
@@ -440,8 +496,13 @@ export function CytoscapeReadGraph({
       locked?.unlock()
       if (anchorLocked) anchor?.unlock()
       restoreViewport(cy, options.retained)
-      if (options.initial && !initialFitRef.current) {
+      if (options.initialViewport) {
+        cy.zoom(options.initialViewport.zoom)
+        cy.pan(options.initialViewport.pan)
+        initialFitRef.current = true
+      } else if (options.initial && !initialFitRef.current) {
         cy.fit(undefined, 28)
+        if (visualProfile === 'SEARCH_LINEAGE_CLASSIC') cy.zoom(boundedClassicLineageFitZoom(cy.zoom()))
         initialFitRef.current = true
       }
       setMetrics((current) => {
@@ -451,7 +512,7 @@ export function CytoscapeReadGraph({
       if (layoutRef.current === layout) layoutRef.current = undefined
     })
     layout.run()
-  }, [stopLayout])
+  }, [stopLayout, visualProfile])
 
   const selectNode = useCallback((nodeId: string) => {
     const cy = cyRef.current
@@ -537,6 +598,7 @@ export function CytoscapeReadGraph({
           const started = performance.now()
           const node = event.target
           if (isRenderedLabelHit(node, event.renderedPosition) && callbacksRef.current.onActivateNode) {
+            flushViewportSnapshot()
             callbacksRef.current.onActivateNode(node.id())
             return
           }
@@ -593,6 +655,7 @@ export function CytoscapeReadGraph({
         instance.on('mouseout', 'node', clearHover)
         instance.on('grab', 'node', preserveDuringDrag)
         instance.on('free', 'node', settleAfterDrag)
+        instance.on('zoom pan', () => scheduleViewportSnapshot(instance!))
         const nextMetrics = {
           nodes: current.nodes.length,
           edges: current.edges.length,
@@ -601,7 +664,11 @@ export function CytoscapeReadGraph({
           first_usable_render_ms: 0,
         }
         setMetrics(nextMetrics)
-        runPhysics(instance, { initial: true, maximumMs: 1_500 })
+        runPhysics(instance, {
+          initial: true,
+          maximumMs: 1_500,
+          initialViewport: initialViewportRef.current,
+        })
         nextMetrics.layout_ms = performance.now() - renderStarted
         nextMetrics.first_usable_render_ms = performance.now() - renderStarted
         setMetrics(nextMetrics)
@@ -619,12 +686,14 @@ export function CytoscapeReadGraph({
       disposed = true
       resizeObserver?.disconnect()
       if (viewportFallbackFrameRef.current !== undefined) cancelAnimationFrame(viewportFallbackFrameRef.current)
+      if (viewportSnapshotFrameRef.current !== undefined) cancelAnimationFrame(viewportSnapshotFrameRef.current)
+      viewportSnapshotFrameRef.current = undefined
       stopLayout()
       instance?.removeAllListeners()
       instance?.destroy()
       if (cyRef.current === instance) cyRef.current = undefined
     }
-  }, [performExpand, renderable, runPhysics, selectNode, stopLayout, visualProfile])
+  }, [flushViewportSnapshot, performExpand, renderable, runPhysics, scheduleViewportSnapshot, selectNode, stopLayout, visualProfile])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -743,6 +812,13 @@ export function CytoscapeReadGraph({
     onReset?.()
   }
 
+  const fitGraph = () => {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.fit(undefined, 28)
+    if (visualProfile === 'SEARCH_LINEAGE_CLASSIC') cy.zoom(boundedClassicLineageFitZoom(cy.zoom()))
+  }
+
   const keyboardControl = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === '+' || event.key === '=') cyRef.current?.zoom(cyRef.current.zoom() * 1.18)
     else if (event.key === '-') cyRef.current?.zoom(cyRef.current.zoom() / 1.18)
@@ -786,7 +862,7 @@ export function CytoscapeReadGraph({
           <button aria-label="그래프 확대" onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.18)} type="button"><Plus size={13} /></button>
           <button aria-label="그래프 축소" onClick={() => cyRef.current?.zoom(cyRef.current.zoom() / 1.18)} type="button"><Minus size={13} /></button>
           <button aria-label="선택 노드 중앙 배치" disabled={!selectedNode} onClick={() => selectedNode && cyRef.current?.center(cyRef.current.getElementById(selectedNode.id))} type="button"><Crosshair size={13} /></button>
-          <button aria-label="그래프 전체 맞춤" onClick={() => cyRef.current?.fit(undefined, 28)} type="button"><Maximize2 size={13} /></button>
+          <button aria-label="그래프 전체 맞춤" onClick={fitGraph} type="button"><Maximize2 size={13} /></button>
           <button aria-label="그래프 view 초기화" onClick={reset} type="button"><RotateCcw size={13} /></button>
         </div>
       </div>
@@ -831,7 +907,7 @@ export function CytoscapeReadGraph({
         <summary>권한 범위의 그래프 개체 · 현재 {graph.nodes.length}개{boundNotice ? ' · 조회 제한 적용' : ''}</summary>
         <p>서버가 현재 권한을 확인한 뒤 이 화면에 제한된 범위로 제공한 개체입니다. 유형·근거를 확인하거나 상세 및 2-level 확장 기능을 사용할 수 있습니다.</p>
         <ul>{graph.nodes.map((node) => <li key={node.id}>
-          {onActivateNode && <button aria-label={`${node.label} 상세 열기`} onClick={() => onActivateNode(node.id)} type="button"><strong>{node.label}</strong><span>{node.entityType}</span></button>}
+          {onActivateNode && <button aria-label={`${node.label} 상세 열기`} onClick={() => { flushViewportSnapshot(); onActivateNode(node.id) }} type="button"><strong>{node.label}</strong><span>{node.entityType}</span></button>}
           <button aria-label={`${node.label}, ${node.entityType} 선택 · 근거 ${node.provenance.length}`} aria-pressed={node.id === internalSelectedId} onClick={() => selectNode(node.id)} type="button">선택</button>
           {onExpandNode && <>
             <button disabled={busyAction} onClick={() => void performExpand(node.id, 'UPSTREAM', 'CONTROL')} type="button">Upstream 2-level 확장</button>
@@ -859,7 +935,7 @@ export function CytoscapeReadGraph({
             <li key={index}>{graphDetailValue(record)}</li>
           ))}</ol>
         </details>}
-        {selectedNode && onActivateNode && <button type="button" onClick={() => onActivateNode(selectedNode.id)}>선택 entity 상세 열기</button>}
+        {selectedNode && onActivateNode && <button type="button" onClick={() => { flushViewportSnapshot(); onActivateNode(selectedNode.id) }}>선택 entity 상세 열기</button>}
       </article>
     </section>
   )

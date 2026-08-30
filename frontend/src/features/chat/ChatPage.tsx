@@ -157,6 +157,52 @@ interface CopyFeedback {
   label: string
 }
 
+const liveActivityLabels: Partial<Record<ChatWorkflowProgressStep['stage'], string>> = {
+  AUTHORIZATION: '질문 분석 중',
+  BUDGET_RESERVATION: '질문 분석 중',
+  ROUTING: '질문 분석 중',
+  RETRIEVAL: '검색 중',
+  RERANKING: '관련 결과 정리 중',
+  COMPOSITION: '답변 작성 중',
+  CITATION_VALIDATION: '관련 결과 정리 중',
+  PERSISTENCE: '대화 저장 중',
+}
+
+function liveActivityLabel(
+  workflow: ChatWorkflowProgressStep[],
+  hasAnswerDelta: boolean,
+): string {
+  if (hasAnswerDelta) return '답변 표시 중'
+  const active = [...workflow].reverse().find((step) => step.status === 'IN_PROGRESS')
+  return active ? liveActivityLabels[active.stage] ?? '응답 준비 중' : '응답 준비 중'
+}
+
+async function copyVisibleMessageText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  if (typeof document.execCommand !== 'function') {
+    throw new Error('Clipboard API unavailable')
+  }
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+  const fallback = document.createElement('textarea')
+  fallback.className = 'chat-copy-fallback'
+  fallback.setAttribute('aria-hidden', 'true')
+  fallback.readOnly = true
+  // This contains only the message text the user can already see. It is
+  // transient and gives older secure contexts a browser-native copy path.
+  fallback.value = text
+  document.body.append(fallback)
+  fallback.focus()
+  fallback.select()
+  const copied = document.execCommand('copy')
+  fallback.remove()
+  activeElement?.focus()
+  if (!copied) throw new Error('Clipboard fallback was denied')
+}
+
 function historyMessage(message: ChatMessage): ChatViewMessage {
   return {
     id: message.id,
@@ -352,6 +398,7 @@ export function ChatPage({
   const evidencePreviewTruncated = visibleEvidence.length > displayedEvidence.length
   const visibleDiscovery = visibleAssistant?.discovery
   const visiblePerformance = visibleAssistant?.performance
+  const liveActivity = liveActivityLabel(liveWorkflow, Boolean(streamingAssistantMessageId))
   const canExploreCatalog = typeof visibleDiscovery?.catalog_search_query === 'string'
   const displayedDiscovery = discoveryExpanded
     ? visibleDiscovery?.items ?? []
@@ -460,8 +507,7 @@ export function ChatPage({
   const copyMessage = async (message: ChatViewMessage) => {
     const label = message.role === 'user' ? '질문' : '답변'
     try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
-      await navigator.clipboard.writeText(message.text)
+      await copyVisibleMessageText(message.text)
       setCopyFeedback({ messageId: message.id, status: 'SUCCESS', label })
     } catch {
       setCopyFeedback({ messageId: message.id, status: 'FAILED', label })
@@ -761,7 +807,7 @@ export function ChatPage({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="chat-status-dot" data-loading={loading}>{loading ? '응답 생성 중' : '준비됨'}</span>
+              <span className="chat-status-dot" data-loading={loading}>{loading ? liveActivity : '준비됨'}</span>
             </div>
           </header>
           <div
@@ -850,7 +896,7 @@ export function ChatPage({
               </article>
             ))}
             {loading && (
-              <div aria-label="답변 생성 중" className="chat-thinking">
+              <div aria-label="답변 생성 중" aria-live="polite" className="chat-thinking">
                 <span /><span /><span />
               </div>
             )}

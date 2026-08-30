@@ -201,6 +201,106 @@ test('actual changeOwnLocalPassword commits one event and rolls real credential/
   }
 }))
 
+test('actual provisionLocalCredential atomically appends a secret-free actor/subject audit receipt', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('provision_audit', async ({ connectionString }) => {
+  const realPool = new Pool({ connectionString, max: 3 })
+  try {
+    await applyFreshSchema(realPool)
+    await withSchemaIntegrityRequired(async () => {
+      const observed = createObservedPool(realPool)
+      const store = createPocStateStore({ databasePool: observed.pool })
+      await store.read('synthetic-schema-start-probe')
+      observed.resetTrace()
+
+      const subjectId = `created-subject-${randomUUID()}`
+      const actorSubjectId = `admin-actor-${randomUUID()}`
+      const usernameNormalized = `created-${randomUUID()}@example.invalid`
+      const result = await store.provisionLocalCredential({
+        expectedAccessVersion: 0,
+        expectedCoreVersion: 0,
+        actorSubjectId,
+        accessValue: { schema_version: 1, active_subject_id: actorSubjectId, users: [] },
+        coreValue: {},
+        credential: {
+          subjectId,
+          usernameNormalized,
+          passwordHash: oldPasswordHash,
+          loginEnabled: true,
+          mustChangePassword: true,
+        },
+      })
+      assert.deepEqual(result, { credentialVersion: 1, accessVersion: 1, coreVersion: 1 })
+      const committed = await credentialTransactionSnapshot(realPool, subjectId)
+      assert.equal(committed.credential.length, 1)
+      assert.equal(committed.events.length, 1)
+      assert.deepEqual({
+        event_type: committed.events[0].event_type,
+        subject_id: committed.events[0].subject_id,
+        actor_subject_id: committed.events[0].actor_subject_id,
+        actor_kind: committed.events[0].actor_kind,
+        resulting_credential_version: committed.events[0].resulting_credential_version,
+        revoked_session_count: committed.events[0].revoked_session_count,
+      }, {
+        event_type: 'LOCAL_CREDENTIAL_PROVISIONED_V1',
+        subject_id: subjectId,
+        actor_subject_id: actorSubjectId,
+        actor_kind: 'LOCAL_ADMIN',
+        resulting_credential_version: '1',
+        revoked_session_count: '0',
+      })
+      const serializedReceipt = JSON.stringify(committed.events[0])
+      assert.equal(serializedReceipt.includes(usernameNormalized), false)
+      assert.equal(serializedReceipt.includes(oldPasswordHash), false)
+      assert.doesNotMatch(serializedReceipt, /password|email/i)
+      const eventInsert = observed.trace.find(({ sql }) => (
+        sql.startsWith('INSERT INTO poc_local_security_events')
+      ))
+      assert.ok(eventInsert)
+      assert.equal(eventInsert.parameters.includes(usernameNormalized), false)
+      assert.equal(eventInsert.parameters.includes(oldPasswordHash), false)
+      assert.equal(observed.trace.at(-1)?.sql, 'COMMIT')
+
+      const duplicateSubjectId = `duplicate-subject-${randomUUID()}`
+      await realPool.query(`
+        INSERT INTO poc_local_security_events (
+          event_id, event_type, subject_id, actor_subject_id, actor_kind,
+          resulting_credential_version, revoked_session_count
+        ) VALUES ($1, 'LOCAL_CREDENTIAL_PROVISIONED_V1', $2, $3, 'LOCAL_ADMIN', 1, 0)
+      `, [randomUUID(), duplicateSubjectId, actorSubjectId])
+      const beforeAccess = await realPool.query(
+        "SELECT value, version::text FROM poc_state WHERE scope IN ('change-history-access-v1', 'core') ORDER BY scope",
+      )
+      observed.resetTrace()
+      await assert.rejects(store.provisionLocalCredential({
+        expectedAccessVersion: 1,
+        expectedCoreVersion: 1,
+        actorSubjectId,
+        accessValue: { changed: true },
+        coreValue: { changed: true },
+        credential: {
+          subjectId: duplicateSubjectId,
+          usernameNormalized: `duplicate-${randomUUID()}@example.invalid`,
+          passwordHash: newPasswordHash,
+          loginEnabled: true,
+          mustChangePassword: false,
+        },
+      }), { code: '23505' })
+      assert.equal((await realPool.query(
+        'SELECT count(*)::integer AS count FROM poc_local_credentials WHERE subject_id = $1',
+        [duplicateSubjectId],
+      )).rows[0].count, 0)
+      assert.deepEqual((await realPool.query(
+        "SELECT value, version::text FROM poc_state WHERE scope IN ('change-history-access-v1', 'core') ORDER BY scope",
+      )).rows, beforeAccess.rows)
+      assert.equal(observed.trace.at(-1)?.sql, 'ROLLBACK')
+      await store.close()
+    })
+  } finally {
+    await realPool.end()
+  }
+}))
+
 test('actual PostgreSQL triggers preserve ordinary state writes and reject receipt/event mutation', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('immutable_triggers', async ({ connectionString }) => {

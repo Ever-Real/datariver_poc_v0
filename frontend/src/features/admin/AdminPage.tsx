@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { newIdempotencyKey, type ApiClient } from '../../api/client'
-import type { AdminReadContext } from '../../api/types'
+import { CircleAlert, CircleCheck, CircleDashed, CircleX, PauseCircle } from 'lucide-react'
+import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
+import type { AdminReadContext, QualityCapability, QualityCapabilityAxis } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
@@ -9,7 +10,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { AdminApi } from './adminApi'
 import { AccountAccessAdmin } from './AccountAccessAdmin'
 import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMutationConfirmDialog'
-import { AuditLogsAdmin, DictionaryAdmin } from './AdminReadOnlySurfaces'
+import { AuditLogsAdmin } from './AdminReadOnlySurfaces'
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 import { PocFeaturePermissionAdmin } from './PocFeaturePermissionAdmin'
@@ -221,9 +222,9 @@ export function AdminPage({
       {activeSection === 'siteManagement' && <SiteManagementAdmin {...shared} />}
       {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
+      {activeSection === 'systemSettings' && <QualityCapabilityConnection client={client} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
       {activeSection === 'auditLogs' && <AuditLogsAdmin />}
-      {activeSection === 'dictionary' && <DictionaryAdmin client={client} />}
     </div>}
     <GovernedUnavailable
       compact
@@ -232,4 +233,87 @@ export function AdminPage({
     />
     <AdminMutationConfirmDialog mutation={mutation} busy={busy} error={mutationError} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
   </section>
+}
+
+type QualityConnectionDisplayState = 'AVAILABLE' | 'DISABLED' | 'CHECKING' | 'FAILED' | 'NOT_CONFIGURED' | 'DEFERRED'
+
+function QualityCapabilityConnection({ client }: { client: ApiClient }) {
+  const [capability, setCapability] = useState<QualityCapability>()
+  const [state, setState] = useState<QualityConnectionDisplayState>('CHECKING')
+  const [detail, setDetail] = useState('Quality/GX capability를 확인하고 있습니다.')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setState('CHECKING')
+    setDetail('Quality/GX capability를 확인하고 있습니다.')
+    void client.request<QualityCapability>('/quality/capability', { signal: controller.signal }).then(
+      (next) => {
+        if (controller.signal.aborted) return
+        setCapability(next)
+        const read = qualityAxis(next, 'read_access')
+        if (read?.state === 'AVAILABLE') {
+          setState('AVAILABLE')
+          setDetail('Quality/GX 읽기 capability를 사용할 수 있습니다.')
+          return
+        }
+        if (read?.reason_code === 'DATAHUB_NOT_CONFIGURED') {
+          setState('NOT_CONFIGURED')
+          setDetail('DataHub 기반 Quality/GX 읽기 source가 구성되지 않았습니다.')
+          return
+        }
+        setState('DISABLED')
+        setDetail(read?.reason_code ? `현재 capability: ${read.reason_code}` : '현재 사용자에게 Quality/GX 읽기 capability가 없습니다.')
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return
+        if (error instanceof ApiError && [401, 403].includes(error.problem.status)) {
+          setState('DISABLED')
+          setDetail('현재 사용자에게 Quality/GX capability를 조회할 권한이 없습니다.')
+          return
+        }
+        setState('FAILED')
+        setDetail('Quality/GX capability를 확인하지 못했습니다. 연결 설정을 변경하지 않고 다시 시도할 수 있습니다.')
+      },
+    )
+    return () => controller.abort()
+  }, [client])
+
+  const execution = qualityAxis(capability, 'manual_execution')
+  const executionDeferred = state === 'AVAILABLE' && execution?.state !== 'AVAILABLE'
+  return (
+    <section className="panel admin-quality-capability" aria-label="Great Expectations 연결 상태">
+      <header className="section-heading">
+        <div>
+          <h3>Great Expectations</h3>
+          <p className="muted">Quality/GX 읽기 capability와 실행 제어 상태를 구분해 표시합니다.</p>
+        </div>
+        <QualityConnectionBadge state={state} />
+      </header>
+      <p className="m-0 text-sm text-slate-700">{detail}</p>
+      {executionDeferred && (
+        <p className="callout m-0" role="status">
+          <PauseCircle size={16} aria-hidden="true" />
+          <strong>실행 제어: 확인 보류</strong> · 현재 연결은 품질 정보를 읽을 수 있지만 실행 기능은 제공하지 않습니다.
+        </p>
+      )}
+    </section>
+  )
+}
+
+function qualityAxis(capability: QualityCapability | undefined, id: QualityCapabilityAxis['id']) {
+  return capability?.axes.find((axis) => axis.id === id)
+}
+
+function QualityConnectionBadge({ state }: { state: QualityConnectionDisplayState }) {
+  const presentation: Record<QualityConnectionDisplayState, { label: string; icon: typeof CircleCheck; className: string }> = {
+    AVAILABLE: { label: '사용 가능', icon: CircleCheck, className: 'badge-connected' },
+    DISABLED: { label: '사용 안 함', icon: PauseCircle, className: 'badge-soft' },
+    CHECKING: { label: '확인 중', icon: CircleDashed, className: 'badge-connecting' },
+    FAILED: { label: '연결 실패', icon: CircleX, className: 'badge-error' },
+    NOT_CONFIGURED: { label: '설정 필요', icon: CircleAlert, className: 'badge-warning' },
+    DEFERRED: { label: '확인 보류', icon: PauseCircle, className: 'badge-soft' },
+  }
+  const value = presentation[state]
+  const Icon = value.icon
+  return <span className={`badge connection-status-badge ${value.className}`} role="status"><Icon size={14} aria-hidden="true" />{value.label}</span>
 }

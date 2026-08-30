@@ -235,8 +235,10 @@ describe('DashboardPage', () => {
     expect(screen.getByRole('heading', { name: '전체 Dataset 1주 trend' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Schema별 metadata 등록 현황' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '최근 7일 변경 대비 CR 처리율' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Schema별 최근 7일 변경요청' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Governance Center' })).not.toBeInTheDocument()
+    expect(within(totalDatasets).getByText('Schema별 Dataset')).toBeInTheDocument()
+    expect(within(totalDatasets).getByLabelText('Schema별 현재 Dataset 수 목록')).toHaveTextContent('warehouse / core10')
 
     const schemaSection = screen.getByRole('heading', { name: 'Schema별 metadata 등록 현황' }).closest('section')!
     expect(within(schemaSection).getByText('warehouse / core')).toBeInTheDocument()
@@ -334,9 +336,9 @@ describe('DashboardPage', () => {
     renderDashboard(apiClient(request))
 
     expect(await screen.findByText('HISTORICAL_DATASET_COUNT_SOURCE_UNAVAILABLE')).toBeInTheDocument()
-    expect(screen.getByText('CHANGE_TO_CR_7_DAY_SOURCE_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText('SCHEMA_CR_7_DAY_SOURCE_UNAVAILABLE')).toBeInTheDocument()
     expect(screen.getByText(/현재 수치를 과거 값으로 복제하지 않습니다/)).toBeInTheDocument()
-    expect(screen.getByText(/처리율을 추정하지 않습니다/)).toBeInTheDocument()
+    expect(screen.getByText(/Schema별 값으로 나누어 추정하지 않습니다/)).toBeInTheDocument()
   })
 
   it('starts a new Chat request from the compact home search without sending blank text', async () => {
@@ -371,6 +373,33 @@ describe('DashboardPage', () => {
     })
     renderDashboard(apiClient(request))
 
-    expect(await screen.findByText(/서버가 제공한 bounded schema 집계의 상위 항목/)).toBeInTheDocument()
+    expect(await screen.findByText(/서버가 제공한 bounded schema 집계 범위/)).toBeInTheDocument()
+  })
+
+  it('keeps every server-provided schema in compact, keyboard-scrollable lists rather than truncating to three', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/operations/dashboard') return Promise.resolve(summary({
+        catalog_schema_metrics: [
+          { platform: 'postgres', database_name: 'warehouse', schema_name: 'alpha', asset_count: 4, described_asset_count: 2, tagged_asset_count: 1, term_asset_count: 1 },
+          { platform: 'postgres', database_name: 'warehouse', schema_name: 'beta', asset_count: 3, described_asset_count: 1, tagged_asset_count: 2, term_asset_count: 1 },
+          { platform: 'postgres', database_name: 'warehouse', schema_name: 'gamma', asset_count: 2, described_asset_count: 2, tagged_asset_count: 0, term_asset_count: 2 },
+          { platform: 'postgres', database_name: 'warehouse', schema_name: 'delta', asset_count: 1, described_asset_count: 0, tagged_asset_count: 0, term_asset_count: 0 },
+        ],
+      }))
+      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
+      if (path === '/quality/capability') return Promise.resolve(capability())
+      if (path === '/quality/dashboard') return Promise.resolve(quality())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDashboard(apiClient(request))
+
+    const schemaList = await screen.findByLabelText('Schema별 metadata 등록률 목록')
+    expect(schemaList).toHaveAttribute('tabindex', '0')
+    expect(schemaList).toHaveTextContent('warehouse / alpha')
+    expect(schemaList).toHaveTextContent('warehouse / delta')
+    const counts = screen.getByLabelText('Schema별 현재 Dataset 수 목록')
+    expect(counts).toHaveAttribute('tabindex', '0')
+    expect(counts).toHaveTextContent('warehouse / alpha4')
+    expect(counts).toHaveTextContent('warehouse / delta1')
   })
 })

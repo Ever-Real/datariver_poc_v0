@@ -2388,10 +2388,18 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     actorSubjectId: 'admin-subject', changedAt,
   })
   let currentTableClassification = 'INTERNAL'
+  let currentTableFields = ['existing_column']
   const currentDatahubTables = async (urns) => {
     if (urns.includes(unavailableUrn)) throw new Error('provider unavailable')
     return urns.includes(tableUrn)
-      ? [{ id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal', classification: currentTableClassification }]
+      ? [{
+          id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal',
+          classification: currentTableClassification === 'MULTIPLE_SENTINEL' ? null : currentTableClassification,
+          classification_status: currentTableClassification === undefined ? 'MISSING'
+            : currentTableClassification === 'MULTIPLE_SENTINEL' ? 'MULTIPLE'
+              : currentTableClassification === 'UNSUPPORTED' ? 'INVALID' : 'EXACT',
+          schema_field_paths: currentTableFields,
+        }]
       : []
   }
   const testServer = createPocServer({
@@ -2419,7 +2427,10 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     priority: 'HIGH',
     urgency: 'URGENT',
     security_level: 'INTERNAL',
-    change_document: { requested: { description: 'updated' } },
+    change_document: { requested: { description: 'updated', columns: [{
+      proposal_kind: 'NEW', field_path: 'new_column',
+      requested: { data_type: 'varchar(128)', nullable: false, ordinal: 2, description: 'new' },
+    }] } },
   }
   try {
     const invalid = await request({ ...validBody, table_urn: `${tableUrn}-missing` })
@@ -2446,13 +2457,47 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     currentTableClassification = undefined
     const unclassified = await request(validBody)
     assert.equal(unclassified.status, 409)
-    assert.equal((await unclassified.json()).code, 'CR_CLASSIFICATION_MISMATCH')
+    assert.equal((await unclassified.json()).code, 'CR_CLASSIFICATION_MISSING')
+
+    currentTableClassification = 'MULTIPLE_SENTINEL'
+    const multipleClassifications = await request(validBody)
+    assert.equal(multipleClassifications.status, 409)
+    assert.equal((await multipleClassifications.json()).code, 'CR_CLASSIFICATION_MULTIPLE')
 
     currentTableClassification = 'UNSUPPORTED'
     const invalidClassification = await request(validBody)
     assert.equal(invalidClassification.status, 409)
-    assert.equal((await invalidClassification.json()).code, 'CR_CLASSIFICATION_MISMATCH')
+    assert.equal((await invalidClassification.json()).code, 'CR_CLASSIFICATION_INVALID')
     currentTableClassification = 'INTERNAL'
+
+    const existingColumnCollision = await request({
+      ...validBody,
+      change_document: { requested: { columns: [{
+        proposal_kind: 'NEW', field_path: 'existing_column', requested: { data_type: 'text' },
+      }] } },
+    })
+    assert.equal(existingColumnCollision.status, 409)
+    assert.equal((await existingColumnCollision.json()).code, 'CR_COLUMN_EXISTS')
+
+    currentTableFields = []
+    const unverifiedExistingColumn = await request({
+      ...validBody,
+      change_document: { requested: { columns: [{
+        proposal_kind: 'EXISTING', field_path: 'unverified_column', requested: {},
+      }] } },
+    })
+    assert.equal(unverifiedExistingColumn.status, 409)
+    assert.equal((await unverifiedExistingColumn.json()).code, 'CR_COLUMN_NOT_FOUND')
+    currentTableFields = ['existing_column']
+
+    const invalidColumnType = await request({
+      ...validBody,
+      change_document: { requested: { columns: [{
+        proposal_kind: 'NEW', field_path: 'safe_name', requested: { data_type: 'text;drop' },
+      }] } },
+    })
+    assert.equal(invalidColumnType.status, 400)
+    assert.equal((await invalidColumnType.json()).code, 'CR_COLUMN_TYPE_INVALID')
 
     const created = await request(validBody)
     assert.equal(created.status, 201)

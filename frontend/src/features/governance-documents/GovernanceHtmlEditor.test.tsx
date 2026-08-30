@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { describe, expect, it, vi } from 'vitest'
 import type { Editor } from '@tiptap/react'
 import { GovernanceHtmlEditor } from './GovernanceHtmlEditor'
+import { sanitizeGovernanceHtml } from './governanceDocumentMarkup'
+import { SafeGovernanceHtml } from './SafeGovernanceHtml'
 
 describe('GovernanceHtmlEditor', () => {
   it('loads safe rich HTML and emits Tiptap HTML changes', async () => {
@@ -108,6 +110,32 @@ describe('GovernanceHtmlEditor', () => {
     const beforeUndo = tiptap?.getHTML()
     click('실행 취소'); expect(tiptap?.getHTML()).not.toBe(beforeUndo)
     click('다시 실행'); expect(tiptap?.getHTML()).toBe(beforeUndo)
+  })
+
+  it('keeps italic markup through serialization, the browser safety boundary, and the safe reader', async () => {
+    let tiptap: Editor | undefined
+    render(<GovernanceHtmlEditor
+      initialHtml="<p>보존할 기울임</p>"
+      disabled={false}
+      onHtmlChange={vi.fn()}
+      onEditorReady={(editor) => { tiptap = editor }}
+    />)
+    await screen.findByRole('textbox', { name: '문서 본문' })
+    await waitFor(() => expect(tiptap).toBeDefined())
+    tiptap?.commands.setTextSelection({ from: 1, to: 8 })
+    fireEvent.click(screen.getByRole('button', { name: '기울임' }))
+
+    const serialized = tiptap?.getHTML() ?? ''
+    expect(serialized).toBe('<p><em>보존할 기울임</em></p>')
+    const submitted = sanitizeGovernanceHtml(serialized)
+    expect(submitted).toBe(serialized)
+
+    const { container } = render(<SafeGovernanceHtml
+      html={submitted}
+      contentHash={'a'.repeat(64)}
+      sanitizerPolicyVersion="GOVERNANCE_HTML_SANITIZER_V4_TABLE_PRESENTATION_TOKENS"
+    />)
+    expect(container.querySelector('em')).toHaveTextContent('보존할 기울임')
   })
 
   it('offers table edits from both the toolbar and the CSP-safe context menu', async () => {

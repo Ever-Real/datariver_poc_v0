@@ -9,7 +9,13 @@
 .cy-read-graph-relation-tools { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line-200); padding: 5px 6px; background: #f8fafb; }
 .cy-read-graph-relation-tools button[aria-pressed="true"] { border-color: var(--blue-700); background: var(--blue-100); }
 .cy-read-graph-canvas { position: relative; min-height: 280px; overflow: hidden; contain: layout paint; background: #f8fafb; }
-.cy-read-graph-canvas-host { position: absolute; inset: 0; }
+.cy-read-graph-canvas-host { position: absolute; inset: 0; overflow: hidden; outline: none; touch-action: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container { position: relative; z-index: 0; width: 100%; height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container > canvas[data-id^="layer"] { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container > canvas[data-id^="layer0"] { z-index: 4; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container > canvas[data-id^="layer1"] { z-index: 3; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container > canvas[data-id^="layer2"] { z-index: 2; }
+.cy-read-graph-canvas-host > .cytoscape-csp-canvas-container > canvas[data-id^="layer3"] { z-index: 1; }
 .cy-read-graph-canvas:focus-visible { outline: 3px solid var(--blue-700); outline-offset: -3px; }
 .cy-read-graph-state { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; align-content: center; gap: 6px; padding: 20px; color: var(--text-500); text-align: center; background: #f8fafb; font-size: 11px; }
 .cy-read-graph-state strong { color: var(--navy-900); font-size: 12px; }

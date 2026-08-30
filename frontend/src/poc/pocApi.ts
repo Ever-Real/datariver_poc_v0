@@ -1059,9 +1059,12 @@ function changeAfterDocument(target: Record<string, unknown>): Record<string, un
       tags: target.tags,
       terms: target.terms,
       columns: columns.map((column) => ({
+        proposal_kind: column.proposal_kind === 'NEW' ? 'NEW' : 'EXISTING',
         field_path: column.field_path,
         requested: {
           data_type: column.data_type,
+          nullable: column.nullable,
+          ordinal: column.ordinal,
           description: column.description,
           requested_change: column.requested_change,
           tags: column.tags,

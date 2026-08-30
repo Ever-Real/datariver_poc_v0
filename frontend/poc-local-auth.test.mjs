@@ -140,8 +140,8 @@ test('rejects mismatched and out-of-policy replacement passwords with bounded ty
   }), invalid)
   await assert.rejects(authenticator.changePassword(authentication, {
     currentPassword: 'correct horse battery staple',
-    newPassword: 'too short',
-    confirmation: 'too short',
+    newPassword: '1234567',
+    confirmation: '1234567',
   }), invalid)
   await assert.rejects(authenticator.changePassword(authentication, {
     currentPassword: 'correct horse battery staple',
@@ -181,6 +181,15 @@ test('normalizes usernames and hashes passwords with encoded Argon2id', async ()
   assert.match(passwordHash, /^\$argon2id\$v=19\$m=19456,t=2,p=1\$/)
   assert.equal(await verifyPocPassword('a sufficiently long local password', passwordHash), true)
   assert.equal(await verifyPocPassword('wrong password', passwordHash), false)
+})
+
+test('applies an 8-character minimum without truncating bounded longer passwords', async () => {
+  await assert.rejects(hashPocPassword('1234567'), /bounded contract/)
+  for (const password of ['12345678', '123456789', 'L'.repeat(512), '가'.repeat(8)]) {
+    const hash = await hashPocPassword(password)
+    assert.equal(await verifyPocPassword(password, hash), true)
+    assert.equal(await verifyPocPassword(password.slice(0, -1), hash), false)
+  }
 })
 
 test('stores and resolves only the SHA-256 session-token hash', async () => {

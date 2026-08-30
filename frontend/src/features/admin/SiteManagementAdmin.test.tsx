@@ -4,9 +4,9 @@ import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import { SiteManagementAdmin } from './SiteManagementAdmin'
 
-function fixture() {
+function fixture(customBadges: Array<Record<string, unknown>> = []) {
   const getSiteBranding = vi.fn().mockResolvedValue({
-    site_name: 'Generic Portal', logo: null, favicon: null, custom_badges: [], etag: '"2"',
+    site_name: 'Generic Portal', logo: null, favicon: null, custom_badges: customBadges, etag: '"2"',
   })
   const updateSiteBranding = vi.fn<AdminApi['updateSiteBranding']>().mockResolvedValue({
     site_name: 'Updated Portal', logo: null, favicon: null, custom_badges: [],
@@ -66,5 +66,35 @@ describe('SiteManagementAdmin', () => {
     expect(payload?.custom_badges?.[0]).toMatchObject({ name: 'Generic 1', url: 'https://example.test/1', order: 0 })
     expect(payload?.custom_badges?.[4]).toMatchObject({ name: 'Generic 5', url: 'https://example.test/5', order: 4 })
     expect(updateSiteBranding.mock.calls[0]?.slice(1)).toEqual(['"2"', 'generic-save-site-branding'])
+  })
+
+  it('preserves server badge identities while editing, ordering and deleting a persisted shortcut', async () => {
+    const { updateSiteBranding, pending } = fixture([
+      { badge_id: 'generic-alpha', name: 'Generic Alpha', url: 'https://alpha.example.test', logo: null, enabled: true, order: 0 },
+      { badge_id: 'generic-beta', name: 'Generic Beta', url: 'https://beta.example.test', logo: null, enabled: true, order: 1 },
+    ])
+    await screen.findByRole('region', { name: '현재 미리보기' })
+    const regions = screen.getAllByRole('region', { name: /바로가기 \d/ })
+    fireEvent.change(regions[1]!.querySelectorAll('input')[0]!, { target: { value: 'Updated Beta' } })
+    fireEvent.click(regions[1]!.querySelector('button')!)
+    fireEvent.click(screen.getAllByRole('button', { name: '삭제' })[1]!)
+    fireEvent.click(screen.getByRole('button', { name: '저장' }))
+    await pending()?.execute()
+
+    expect(updateSiteBranding).toHaveBeenCalledWith(expect.objectContaining({
+      custom_badges: [{
+        badge_id: 'generic-beta', name: 'Updated Beta', url: 'https://beta.example.test', logo: null, enabled: true, order: 0,
+      }],
+    }), '"2"', 'generic-save-site-branding')
+  })
+
+  it('does not enable save for an unsafe shortcut scheme before the server deny boundary', async () => {
+    fixture()
+    await screen.findByRole('region', { name: '현재 미리보기' })
+    fireEvent.click(screen.getByRole('button', { name: '바로가기 추가' }))
+    const region = screen.getByRole('region', { name: '바로가기 1' })
+    fireEvent.change(region.querySelectorAll('input')[0]!, { target: { value: 'Generic Link' } })
+    fireEvent.change(region.querySelectorAll('input')[1]!, { target: { value: 'javascript:alert(1)' } })
+    expect(screen.getByRole('button', { name: '저장' })).toBeDisabled()
   })
 })

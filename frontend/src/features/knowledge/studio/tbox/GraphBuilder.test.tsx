@@ -988,8 +988,10 @@ describe('GraphBuilder', () => {
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     const title = screen.getByLabelText('1번 블록 이름')
+    await waitFor(() => expect(title).toBeEnabled())
     fireEvent.change(title, { target: { value: '핵심 스키마' } })
-    const editingCheck = screen.getByLabelText('직접 정의 블록 이름 입력 중')
+    await waitFor(() => expect(title).toHaveValue('핵심 스키마'))
+    const editingCheck = await screen.findByLabelText('직접 정의 블록 이름 입력 중')
     expect(editingCheck.tagName).toBe('SPAN')
     expect(editingCheck).toHaveClass('text-slate-300')
     expect(screen.getByRole('button', { name: '직접 정의 블록 이름 취소' })).toBeEnabled()

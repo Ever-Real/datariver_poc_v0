@@ -92,7 +92,11 @@ export function pocNavigationForCapabilities(
 }
 
 export function pageFromLocation(href = window.location.href): Page {
-  const candidate = new URL(href).searchParams.get('page')
+  const location = new URL(href)
+  const candidate = location.searchParams.get('page')
+  if (candidate === 'admin' && ['dictionary', 'poc-glossary'].includes(location.searchParams.get('adminSection') ?? '')) {
+    return 'glossary'
+  }
   return candidate && pageIds.has(candidate as Page) ? candidate as Page : 'dashboard'
 }
 
@@ -130,6 +134,11 @@ export function pageUrl(page: Page, options: {
     url.searchParams.delete('draft')
     url.searchParams.delete('step')
     url.searchParams.delete('asset_id')
+  }
+  if (page !== 'admin') {
+    url.searchParams.delete('adminSection')
+    url.searchParams.delete('adminView')
+    url.searchParams.delete('adminDetail')
   }
   if (page === 'change-management' && options.changeRequestStateGroup !== undefined) {
     if (options.changeRequestStateGroup) {

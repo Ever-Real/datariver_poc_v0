@@ -343,7 +343,7 @@ export function App() {
     if (adminSection === 'poc-registration') return navigate('registration')
     if (adminSection === 'poc-quality') return navigate('quality')
     if (adminSection === 'poc-knowledge') return navigate('knowledge')
-    if (adminSection === 'poc-glossary') return navigate('glossary')
+    if (adminSection === 'poc-glossary' || adminSection === 'dictionary') return navigate('glossary')
 
     let section = adminSection
     let view: string | undefined

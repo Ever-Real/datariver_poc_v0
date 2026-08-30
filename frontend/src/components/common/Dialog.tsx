@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-type DialogCloseReason = 'BACKDROP' | 'CANCEL' | 'CLOSE_BUTTON'
+/** A dialog can only be dismissed by an explicit, in-surface user action. */
+export type DialogCloseReason = 'CANCEL' | 'CLOSE_BUTTON'
 
 interface DialogProps {
   open: boolean
@@ -12,6 +13,13 @@ interface DialogProps {
   showCloseButton?: boolean
   children: ReactNode
   footer?: ReactNode
+  /**
+   * Lets form dialogs retain ownership of their unsaved-change confirmation.
+   * The shared dialog never dismisses a dirty form implicitly; consumers can
+   * use this signal to open their existing discard confirmation instead.
+   */
+  dirty?: boolean
+  onRequestDiscardChanges?: (reason: DialogCloseReason) => void
   onRequestClose: (reason: DialogCloseReason) => void
 }
 
@@ -29,6 +37,8 @@ export function Dialog({
   showCloseButton = true,
   children,
   footer,
+  dirty = false,
+  onRequestDiscardChanges,
   onRequestClose,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -42,6 +52,21 @@ export function Dialog({
   useEffect(() => {
     onRequestCloseRef.current = onRequestClose
   }, [onRequestClose])
+
+  const onRequestDiscardChangesRef = useRef(onRequestDiscardChanges)
+  const dirtyRef = useRef(dirty)
+  useEffect(() => {
+    onRequestDiscardChangesRef.current = onRequestDiscardChanges
+    dirtyRef.current = dirty
+  }, [dirty, onRequestDiscardChanges])
+
+  const requestExplicitClose = (reason: DialogCloseReason) => {
+    if (dirtyRef.current) {
+      onRequestDiscardChangesRef.current?.(reason)
+      return
+    }
+    onRequestCloseRef.current(reason)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -57,7 +82,6 @@ export function Dialog({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onRequestCloseRef.current('CANCEL')
         return
       }
       if (event.key !== 'Tab') return
@@ -94,8 +118,12 @@ export function Dialog({
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
       tabIndex={-1}
-      onCancel={(event) => { event.preventDefault(); onRequestCloseRef.current('CANCEL') }}
-      onClick={(event) => { if (event.target === event.currentTarget) onRequestCloseRef.current('BACKDROP') }}
+      // Native <dialog> emits `cancel` for Escape.  It is intentionally
+      // prevented: only the visible close/cancel controls may dismiss a true
+      // application dialog. Backdrop/portal clicks are ignored for the same
+      // reason, including clicks originating in a descendant portal.
+      onCancel={(event) => { event.preventDefault() }}
+      onClick={(event) => { if (event.target === event.currentTarget) event.preventDefault() }}
     >
       <section className="app-dialog-surface">
         <header className="app-dialog-header">
@@ -103,7 +131,7 @@ export function Dialog({
             <h2 id={titleId}>{title}</h2>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
-          {showCloseButton && <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => onRequestCloseRef.current('CLOSE_BUTTON')}>×</button>}
+          {showCloseButton && <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => requestExplicitClose('CLOSE_BUTTON')}>×</button>}
         </header>
         <div className="app-dialog-body">{children}</div>
         {footer && <footer className="app-dialog-footer">{footer}</footer>}

@@ -562,6 +562,7 @@ describe('ChatPage', () => {
     expect(within(workflow).getByText('진행 중')).toBeInTheDocument()
     expect(within(workflow).getByText('근거 검색')).toBeInTheDocument()
     expect(within(workflow).getByText('인가된 근거를 검색하고 있습니다.')).toBeInTheDocument()
+    expect(screen.getByText('검색 중')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '확인된 테이블' })).not.toBeInTheDocument()
 
     resolveResult?.(response)
@@ -694,6 +695,7 @@ describe('ChatPage', () => {
     const midpoint = Math.ceil(response.answer.length / 2)
     act(() => emit?.({ event: 'answer_delta', data: { delta: response.answer.slice(0, midpoint) } }))
     expect(screen.getByText(/확인된 테/)).toBeInTheDocument()
+    expect(screen.getByText('답변 표시 중')).toBeInTheDocument()
     act(() => emit?.({ event: 'answer_delta', data: { delta: response.answer.slice(midpoint) } }))
     const answerHeading = await screen.findByRole('heading', { name: '확인된 테이블' })
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' }))
@@ -813,6 +815,49 @@ describe('ChatPage', () => {
     clipboard.writeText.mockRejectedValueOnce(new Error('denied'))
     fireEvent.click(screen.getByRole('button', { name: '답변 복사' }))
     expect(await screen.findByRole('status')).toHaveTextContent('답변 복사 실패')
+  })
+
+  it('uses the browser-native copy fallback only for visible message text when Clipboard API is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    const fallback = vi.fn((command: string) => {
+      expect(command).toBe('copy')
+      expect(document.activeElement).toHaveValue('주문 테이블은?')
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: fallback })
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블은?' } })
+    fireEvent.keyDown(screen.getByLabelText('카탈로그 질문'), { key: 'Enter', code: 'Enter' })
+    await screen.findByRole('heading', { name: '확인된 테이블' })
+    fireEvent.click(screen.getByRole('button', { name: '질문 복사' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('질문 복사 완료')
+    expect(fallback).toHaveBeenCalledWith('copy')
+    expect(document.querySelector('.chat-copy-fallback')).toBeNull()
+    delete (document as unknown as Record<string, unknown>).execCommand
+    delete (navigator as unknown as Record<string, unknown>).clipboard
+  })
+
+  it('shows a copy failure when both Clipboard API and the browser-native fallback are unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    const fallback = vi.fn(() => false)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: fallback })
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '답변 복사 오류' } })
+    fireEvent.keyDown(screen.getByLabelText('카탈로그 질문'), { key: 'Enter', code: 'Enter' })
+    await screen.findByRole('heading', { name: '확인된 테이블' })
+    fireEvent.click(screen.getByRole('button', { name: '답변 복사' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('답변 복사 실패')
+    expect(fallback).toHaveBeenCalledWith('copy')
+    delete (document as unknown as Record<string, unknown>).execCommand
+    delete (navigator as unknown as Record<string, unknown>).clipboard
   })
 
   it('filters the owner history to favorites and archives a session through the versioned endpoint', async () => {

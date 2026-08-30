@@ -66,6 +66,7 @@ let omitKnowledgeColumnUrn
 let forceKnowledgeNonTable
 let forceABoxNeo4jFailure
 let currentTableClassificationTags = ['CLASSIFICATION:INTERNAL']
+let keywordFixtureAssets
 let providerServer
 let providerOrigin
 let pocServer
@@ -96,6 +97,38 @@ function canonicalTestJson(value) {
 
 function canonicalTestHash(value) {
   return createHash('sha256').update(canonicalTestJson(value)).digest('hex')
+}
+
+function keywordScaleEntity(index) {
+  const ordinal = String(index).padStart(3, '0')
+  const name = index === 4 ? 'exact_table_fixture' : `scale_asset_${ordinal}`
+  const description = [
+    'massivekeyword',
+    index < 25 ? 'twentyfivekeyword' : '',
+    index < 3 ? 'triadkeyword' : '',
+    index === 0 ? 'descriptiononlykeyword' : '',
+    index === 3 ? '한글전용키워드' : '',
+  ].filter(Boolean).join(' ')
+  return {
+    urn: `urn:li:dataset:(urn:li:dataPlatform:postgres,SCALE.TEST.${name},PROD)`,
+    type: 'DATASET',
+    name,
+    subTypes: { typeNames: ['Table'] },
+    platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+    properties: { name, description },
+    editableProperties: { description: null },
+    browsePathV2: { path: [{ name: 'SCALE' }, { name: 'TEST' }, { name }] },
+    domain: null,
+    ownership: { owners: [] },
+    globalTags: { tags: [
+      { tag: { urn: 'urn:li:tag:classification-internal', name: 'CLASSIFICATION:INTERNAL' } },
+      ...(index === 1 ? [{ tag: { urn: 'urn:li:tag:only-keyword', name: 'tagonlykeyword' } }] : []),
+    ] },
+    glossaryTerms: { terms: index === 2
+      ? [{ term: { urn: 'urn:li:glossaryTerm:onlyKeyword', name: 'termonlykeyword' } }]
+      : [] },
+    schemaMetadata: { fields: [{ fieldPath: index === 0 ? 'columnonlykeyword' : `column_${ordinal}` }] },
+  }
 }
 
 function providerHandler(request, response) {
@@ -191,7 +224,7 @@ function providerHandler(request, response) {
                 mode: 'VECTOR', confidence: 0.92, intent: 'SEMANTIC_DISCOVERY',
                 entity_resolution_required: false, graph_traversal_required: false,
                 semantic_retrieval_required: true, fallback_mode: 'GENERAL',
-                primary_concepts: ['metadata'], secondary_concepts: [], relation_intent: null,
+                primary_concepts: [/\bwafer\b/i.test(question) ? 'wafer' : 'metadata'], secondary_concepts: [], relation_intent: null,
                 entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'SEMANTIC',
               }
         return sendJson(response, { choices: [{ message: { content: forcedClassifierResponse ?? JSON.stringify(decision) } }] })
@@ -223,6 +256,14 @@ function providerHandler(request, response) {
         )) } })
       }
       if (payload.query.includes('DataRiverPocCatalog')) {
+        if (keywordFixtureAssets) {
+          return sendJson(response, { data: { scrollAcrossEntities: {
+            count: keywordFixtureAssets.length,
+            total: keywordFixtureAssets.length,
+            nextScrollId: null,
+            searchResults: keywordFixtureAssets.map((entity) => ({ entity })),
+          } } })
+        }
         if (hideExactFromTextSearch && payload.variables.input.query !== '*') {
           return sendJson(response, { data: { scrollAcrossEntities: {
             count: 0, total: 0, nextScrollId: null, searchResults: [],
@@ -282,13 +323,13 @@ function providerHandler(request, response) {
               type: 'DATASET',
               name: 'inspection_results',
               platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
-              properties: { name: 'inspection_results', description: 'Live DataHub inspection evidence' },
+              properties: { name: 'inspection_results', description: 'Live DataHub inspection evidence · 검사키워드 · 설명전용키워드' },
               editableProperties: { description: null },
               browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'inspection_results' }] },
               domain: null,
               ownership: { owners: [] },
-              globalTags: { tags: [] },
-              glossaryTerms: { terms: [] },
+              globalTags: { tags: [{ tag: { urn: 'urn:li:tag:only', name: '태그전용키워드' } }] },
+              glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:only', name: '용어전용키워드' } }] },
               schemaMetadata: { fields: [{ fieldPath: 'inspection_id' }] },
             } },
           ],
@@ -866,8 +907,8 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   })), [{
     asset_count: 2,
     described_asset_count: 2,
-    tagged_asset_count: 1,
-    term_asset_count: 1,
+    tagged_asset_count: 2,
+    term_asset_count: 2,
   }])
   const coverage = await (await fetch(`${pocOrigin}/poc-api/datahub/profile-coverage`)).json()
   assert.ok(['DATAHUB_GMS_VECTOR_PROJECTION', 'PROCESS_MEMORY_CURRENT_PROJECTION'].includes(coverage.source))
@@ -1007,11 +1048,12 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(payload.evidence[0].evidence_type, 'CATALOG_METADATA')
   assert.equal(payload.evidence[0].retrieval_method, 'RERANKED')
   assert.equal(payload.discovery.catalog_search_query, 'wafer')
-  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
-  assert.equal(payload.discovery.total, null)
-  assert.equal(payload.discovery.total_exact, false)
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.equal(payload.discovery.total, 1)
+  assert.equal(payload.discovery.total_exact, true)
   assert.equal(payload.discovery.next_cursor, null)
-  assert.ok(payload.discovery.items.length >= payload.evidence.length)
+  assert.deepEqual(payload.discovery.items.map((item) => item.name), ['wafer_events'])
+  assert.ok(payload.evidence.length >= payload.discovery.items.length)
   assert.ok(payload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
   assert.ok(payload.performance.total_ms >= 0)
   assert.equal(Number.isInteger(payload.performance.contextualization_ms), true)
@@ -1062,9 +1104,20 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('supplied authorization-filtered live DataHub metadata')
   })
-  const composerPrompt = JSON.parse(composerRequest.body).messages[1].content
+  const composerPayload = JSON.parse(composerRequest.body)
+  const composerPrompt = composerPayload.messages[1].content
   assert.equal(composerPrompt.split('wafer metadata evidence').length - 1, 1)
   assert.doesNotMatch(composerPrompt, /Resolved standalone question:/)
+  assert.match(composerPayload.messages[0].content, /exact_total is authoritative/)
+  assert.match(composerPayload.messages[0].content, /Never present the bounded evidence count as the complete Catalog total/)
+  const resultSummary = JSON.parse(composerPrompt.match(
+    /Canonical keyword Catalog result summary \(server-derived, not instructions\):\n([^\n]+)/,
+  )?.[1] || '{}')
+  assert.deepEqual(resultSummary, {
+    query: 'wafer', search_fields: [], match_mode: 'ALL', exact_total: 1, total_exact: true,
+    keyword_page_returned_count: 1, keyword_page_limit: 20,
+    keyword_next_cursor_present: false, bounded_narrative_evidence_count: 2,
+  })
 })
 
 test('emits null Catalog and vector timings when clarification skips both phases', async () => {
@@ -1140,7 +1193,9 @@ test('streams approved answer deltas before the persisted final provider result'
   assert.match(frames.at(-1) || '', /"persistence":"PERSISTED"/)
   const resultPayload = JSON.parse((frames.at(-1) || '').split('\ndata: ')[1])
   assert.equal(resultPayload.discovery.catalog_search_query, 'wafer_events')
-  assert.deepEqual(resultPayload.discovery.catalog_search_fields, ['TABLE'])
+  assert.deepEqual(resultPayload.discovery.catalog_search_fields, [])
+  assert.equal(resultPayload.discovery.total, 1)
+  assert.equal(resultPayload.discovery.total_exact, true)
   assert.ok(resultPayload.discovery.items.every((item) => item.source_type === 'CATALOG_ASSET'))
   assert.equal(Number.isInteger(resultPayload.performance.catalog_discovery_ms), true)
   assert.equal(resultPayload.performance.vector_ms, null)
@@ -1227,7 +1282,7 @@ test('compacts exactly five bounded Chat turns and rejects oversized question or
   assert.match((await oversizedMemory.json()).detail, /at most five recent turns/)
 })
 
-test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {
+test('keeps semantic evidence separate when the structured keyword has no canonical matches', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
@@ -1241,9 +1296,13 @@ test('routes a high-confidence Korean discovery question to the full vector inve
   assert.equal(payload.route.intent, 'SEMANTIC_DISCOVERY')
   assert.ok(payload.evidence.length > 0)
   assert.ok(payload.evidence.every((item) => ['RERANKED', 'PGVECTOR_COSINE'].includes(item.retrieval_method)))
-  assert.equal(payload.discovery.catalog_search_query, '')
+  assert.equal(payload.discovery.catalog_search_query, 'metadata')
   assert.deepEqual(payload.discovery.catalog_search_fields, [])
-  assert.ok(payload.discovery.returned_count >= payload.evidence.length)
+  assert.equal(payload.discovery.returned_count, 0)
+  assert.equal(payload.discovery.total, 0)
+  assert.equal(payload.discovery.total_exact, true)
+  assert.equal(payload.discovery.next_cursor, null)
+  assert.ok(payload.evidence.length > payload.discovery.items.length)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore + 1)
@@ -1259,18 +1318,18 @@ test('hands an identifier-scoped vector result to the exact authorized Catalog c
   const payload = await response.json()
   assert.equal(payload.route.selected_mode, 'VECTOR')
   assert.equal(payload.discovery.catalog_search_query, 'inspection_results')
-  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
   assert.deepEqual(payload.discovery.items.map((item) => item.resource_id), [
     'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)',
   ])
-  assert.equal(payload.discovery.total, null)
-  assert.equal(payload.discovery.total_exact, false)
+  assert.equal(payload.discovery.total, 1)
+  assert.equal(payload.discovery.total_exact, true)
   assert.equal(payload.discovery.next_cursor, null)
   assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
   assert.equal(payload.performance.vector_ms, null)
 })
 
-test('hands a natural-language keyword question to a bounded Catalog name scope', async () => {
+test('hands a natural-language keyword question to the canonical all-field Catalog scope', async () => {
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1280,7 +1339,9 @@ test('hands a natural-language keyword question to a bounded Catalog name scope'
   const payload = await response.json()
   assert.equal(payload.route.selected_mode, 'VECTOR')
   assert.equal(payload.discovery.catalog_search_query, 'inspection')
-  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.equal(payload.discovery.total, 1)
+  assert.equal(payload.discovery.total_exact, true)
   assert.equal(payload.discovery.items.some((item) => (
     item.resource_id === 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)'
   )), true)
@@ -1298,7 +1359,166 @@ test('does not hand an unrelated identifier-shaped token to Catalog search', asy
   assert.equal(response.status, 200, await response.clone().text())
   const payload = await response.json()
   assert.equal(payload.discovery.catalog_search_query, 'inspection')
-  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
+  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.equal(payload.discovery.total, 1)
+})
+
+test('keeps explicit Unicode keyword discovery in parity with all canonical Catalog fields', async () => {
+  for (const [question, query, expectedId] of [
+    ['검사키워드 자산을 찾아줘', '검사키워드', 'inspection_results'],
+    ['설명전용키워드 관련 자산', '설명전용키워드', 'inspection_results'],
+    ['태그전용키워드 관련 자산', '태그전용키워드', 'inspection_results'],
+    ['용어전용키워드 관련 자산', '용어전용키워드', 'inspection_results'],
+    ['존재하지않는검색어 관련 자산', '존재하지않는검색어', null],
+  ]) {
+    const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, mode: 'VECTOR' }),
+    })
+    assert.equal(response.status, 200, await response.clone().text())
+    const chat = await response.json()
+    const catalogResponse = await fetch(
+      `${pocOrigin}/poc-api/datahub/catalog?q=${encodeURIComponent(query)}&limit=${chat.discovery.limit}`,
+    )
+    assert.equal(catalogResponse.status, 200, await catalogResponse.clone().text())
+    const catalog = await catalogResponse.json()
+    assert.equal(chat.discovery.catalog_search_query, query)
+    assert.deepEqual(chat.discovery.catalog_search_fields, [])
+    assert.equal(chat.discovery.total, catalog.total)
+    assert.equal(chat.discovery.total_exact, true)
+    assert.deepEqual(
+      chat.discovery.items.map((item) => item.resource_id),
+      catalog.items.map((item) => item.id),
+    )
+    assert.equal(chat.discovery.items.some((item) => item.name === expectedId), expectedId !== null)
+  }
+})
+
+test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable through Catalog', async () => {
+  keywordFixtureAssets = Array.from({ length: 205 }, (_value, index) => keywordScaleEntity(index))
+  const { createPocStateStore } = await import('./poc-state-store.mjs?chat-keyword-result-scale-test')
+  const scaleStateStore = createPocStateStore()
+  await scaleStateStore.write('change-history-access-v1', {
+    schema_version: 1,
+    active_subject_id: 'provider-test-subject',
+    users: [{ subject_id: 'provider-test-subject', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  })
+  const scaleServerModule = await import('./poc-server.mjs?chat-keyword-result-scale-test')
+  const server = scaleServerModule.createPocServer({
+    stateStore: scaleStateStore,
+    authenticator: {
+      async authenticate() { return { subjectId: 'provider-test-subject', tokenHash: 'f'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  const origin = `http://127.0.0.1:${address.port}`
+
+  const routeFor = (keyword) => JSON.stringify({
+    mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+    entity_resolution_required: false, graph_traversal_required: false,
+    semantic_retrieval_required: false, fallback_mode: null,
+    primary_concepts: [keyword], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
+  })
+  const catalogPage = async (keyword, cursor = null, limit = 20) => {
+    const parameters = new globalThis.URLSearchParams({ q: keyword, limit: String(limit) })
+    if (cursor) parameters.set('cursor', cursor)
+    const response = await fetch(`${origin}/poc-api/datahub/catalog?${parameters}`)
+    assert.equal(response.status, 200, await response.clone().text())
+    return response.json()
+  }
+  const remainingCatalogIds = async (keyword, firstIds, firstCursor, limit) => {
+    const ids = [...firstIds]
+    let cursor = firstCursor
+    while (cursor) {
+      const page = await catalogPage(keyword, cursor, limit)
+      ids.push(...page.items.map((item) => item.id))
+      cursor = page.page.next_cursor
+    }
+    return ids
+  }
+
+  try {
+    for (const [keyword, total] of [
+      ['missingkeyword', 0],
+      ['triadkeyword', 3],
+      ['twentyfivekeyword', 25],
+      ['massivekeyword', 205],
+    ]) {
+      forcedClassifierResponse = routeFor(keyword)
+      const response = await fetch(`${origin}/poc-api/llm/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: `List assets for ${keyword}`, mode: 'AUTO' }),
+      })
+      assert.equal(response.status, 200, await response.clone().text())
+      const chat = await response.json()
+      assert.equal(chat.discovery.catalog_search_query, keyword)
+      assert.equal(chat.discovery.total, total)
+      assert.equal(chat.discovery.total_exact, true)
+      assert.equal(chat.discovery.returned_count, Math.min(total, 20))
+      assert.equal(chat.discovery.truncated, total > 20)
+      assert.equal(Boolean(chat.discovery.next_cursor), total > 20)
+
+      const canonicalFirst = await catalogPage(keyword, null, chat.discovery.limit)
+      assert.deepEqual(
+        chat.discovery.items.map((item) => item.resource_id),
+        canonicalFirst.items.map((item) => item.id),
+      )
+      const chatIds = await remainingCatalogIds(
+        keyword,
+        chat.discovery.items.map((item) => item.resource_id),
+        chat.discovery.next_cursor,
+        chat.discovery.limit,
+      )
+      const canonicalIds = await remainingCatalogIds(
+        keyword,
+        canonicalFirst.items.map((item) => item.id),
+        canonicalFirst.page.next_cursor,
+        chat.discovery.limit,
+      )
+      assert.equal(chatIds.length, total)
+      assert.deepEqual(new Set(chatIds), new Set(canonicalIds))
+    }
+
+    for (const [keyword, field] of [
+      ['descriptiononlykeyword', 'DESCRIPTION'],
+      ['tagonlykeyword', 'TAG'],
+      ['termonlykeyword', 'TERM'],
+      ['columnonlykeyword', 'COLUMN'],
+    ]) {
+      forcedClassifierResponse = routeFor(keyword)
+      const response = await fetch(`${origin}/poc-api/llm/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: keyword, mode: 'AUTO' }),
+      })
+      const chat = await response.json()
+      assert.equal(chat.discovery.total, 1)
+      const canonical = await catalogPage(keyword)
+      assert.deepEqual(chat.discovery.items.map((item) => item.resource_id), canonical.items.map((item) => item.id))
+      assert.equal(canonical.items[0].matches.some((match) => match.field === field), true)
+    }
+
+    forcedClassifierResponse = routeFor('exact_table_fixture')
+    const exactResponse = await fetch(`${origin}/poc-api/llm/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'exact_table_fixture', mode: 'AUTO' }),
+    })
+    const exact = await exactResponse.json()
+    assert.equal(exact.discovery.total, 1)
+    assert.equal(exact.discovery.items[0].name, 'exact_table_fixture')
+  } finally {
+    forcedClassifierResponse = undefined
+    keywordFixtureAssets = undefined
+    server.closeAllConnections()
+    await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
+    await scaleStateStore.close()
+  }
 })
 
 test('retrieves Knowledge Graph Asset metadata from the authorized managed registry instead of DataHub tables', async () => {
@@ -2468,13 +2688,27 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     const graph = await getJson('/poc-api/neo4j/graph')
     assert.deepEqual(graph, { nodes: [], edges: [] })
 
+    forcedClassifierResponse = JSON.stringify({
+      mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+      entity_resolution_required: true, graph_traversal_required: false,
+      semantic_retrieval_required: false, fallback_mode: null,
+      primary_concepts: ['inspection_results'], secondary_concepts: [], relation_intent: null,
+      entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
+    })
     const unauthorizedAuto = await fetch(`${origin}/poc-api/llm/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: 'inspection_results 테이블의 목적과 컬럼을 설명해줘', mode: 'AUTO' }),
     })
+    forcedClassifierResponse = undefined
     assert.equal(unauthorizedAuto.status, 200, await unauthorizedAuto.clone().text())
     const unauthorizedAutoPayload = await unauthorizedAuto.json()
+    assert.equal(unauthorizedAutoPayload.discovery.catalog_search_query, 'inspection_results')
+    assert.equal(unauthorizedAutoPayload.discovery.total, 0)
+    assert.equal(unauthorizedAutoPayload.discovery.total_exact, true)
+    const unauthorizedCatalog = await getJson('/poc-api/datahub/catalog?q=inspection_results&limit=20')
+    assert.equal(unauthorizedCatalog.total, unauthorizedAutoPayload.discovery.total)
+    assert.deepEqual(unauthorizedCatalog.items, [])
     assert.ok(unauthorizedAutoPayload.evidence.every((item) => item.id !== inspectionUrn && item.name !== 'inspection_results'))
     assert.ok(unauthorizedAutoPayload.discovery.items.every((item) => item.resource_id !== inspectionUrn && item.name !== 'inspection_results'))
     assert.doesNotMatch(JSON.stringify(unauthorizedAutoPayload), /MANUFACTURING\.QUALITY\.inspection_results/)
@@ -2485,6 +2719,23 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     )).allow = false
     await stateStore.write('feature-security-policy-v1', deniedPolicy)
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    forcedClassifierResponse = JSON.stringify({
+      mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+      entity_resolution_required: false, graph_traversal_required: false,
+      semantic_retrieval_required: false, fallback_mode: null,
+      primary_concepts: ['wafer_events'], secondary_concepts: [], relation_intent: null,
+      entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
+    })
+    const catalogDeniedChat = await fetch(`${origin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'List assets for the selected keyword', mode: 'AUTO' }),
+    })
+    forcedClassifierResponse = undefined
+    assert.equal(catalogDeniedChat.status, 200, await catalogDeniedChat.clone().text())
+    const catalogDeniedChatPayload = await catalogDeniedChat.json()
+    assert.equal(catalogDeniedChatPayload.discovery.total, 0)
+    assert.deepEqual(catalogDeniedChatPayload.discovery.items, [])
     await stateStore.write('feature-security-policy-v1', allowedPolicy)
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
 

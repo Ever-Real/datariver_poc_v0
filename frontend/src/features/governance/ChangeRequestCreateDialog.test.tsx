@@ -13,16 +13,17 @@ function renderDialog(
   onCreated = vi.fn(),
   revision?: ChangeRequestRecord,
 ) {
+  const onClose = vi.fn()
   render(<ChangeRequestCreateDialog
     open
     client={client}
     requesterName="Test Requester"
     requesterEmail="requester@example.test"
     revision={revision}
-    onClose={vi.fn()}
+    onClose={onClose}
     onCreated={onCreated}
   />)
-  return { onCreated }
+  return { onCreated, onClose }
 }
 
 function editableRevision(): ChangeRequestRecord {
@@ -223,7 +224,7 @@ describe('ChangeRequestCreateDialog', () => {
       target: { value: 'wafer' },
     })
     fireEvent.click(await screen.findByRole('button', { name: /wafer_events/ }))
-    const searchedColumnPicker = await screen.findByLabelText('wafer_events 컬럼 추가')
+    const searchedColumnPicker = await screen.findByLabelText('wafer_events 기존 컬럼 선택')
     expect(searchedColumnPicker.parentElement).toHaveClass('governance-target-add-column')
 
     fireEvent.click(screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ }))
@@ -294,7 +295,7 @@ describe('ChangeRequestCreateDialog', () => {
       target: { value: 'wafer' },
     })
     fireEvent.click(await screen.findByRole('button', { name: /wafer_events/ }))
-    const columnPicker = await screen.findByLabelText('wafer_events 컬럼 추가')
+    const columnPicker = await screen.findByLabelText('wafer_events 기존 컬럼 선택')
     fireEvent.change(columnPicker, { target: { value: 'wafer_id' } })
     expect(screen.getByText('wafer_id')).toBeInTheDocument()
 
@@ -338,6 +339,119 @@ describe('ChangeRequestCreateDialog', () => {
 
     expect(columnName).toHaveFocus()
     expect(columnName).toHaveValue('ss')
+  })
+
+  it('ignores backdrop and Escape and applies the dirty guard only to explicit cancel', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/systems') return Promise.resolve({
+        items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
+      })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { onClose } = renderDialog(apiClient(request))
+    const dialog = await screen.findByRole('dialog', { name: '신규 CR 신청' })
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent.click(dialog)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: '신규 CR 신청 닫기' })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('변경요청 제목'), { target: { value: '작성 중' } })
+    fireEvent.click(screen.getByRole('button', { name: '취소' }))
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(onClose).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: '취소' }))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('locks the exact DataHub classification and submits a validated new-column proposal', async () => {
+    const asset = {
+      id: 'catalog-asset-1',
+      external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,erp.orders,PROD)',
+      asset_type: 'DATASET', name: 'orders', platform: 'postgres', database_name: 'erp',
+      schema_name: 'public', classification: 'CONFIDENTIAL', lifecycle: 'ACTIVE',
+      observed_at: '2026-08-30T01:02:03Z', matches: [], tags: ['Classification:CONFIDENTIAL'], terms: [],
+      classification_resolution: { status: 'EXACT', values: ['CONFIDENTIAL'], value: 'CONFIDENTIAL' },
+    }
+    const created = { id: 'change-1', number: 'CR-1' } as ChangeRequestRecord
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/change-requests/systems') return Promise.resolve({
+        items: [{ id: 'system-1', code: 'ERP', name: 'ERP' }],
+      })
+      if (path.includes('/change-requests/targets?')) return Promise.resolve({ items: [asset] })
+      if (path.startsWith('/change-requests/targets/')) return Promise.resolve({
+        ...asset, description: '', ownership: [], glossary_terms: [], quality: {},
+        projection_source_version: 'projection-1', source_version: 'source-1',
+        schema_fields: [{ fieldPath: 'order_id', nativeDataType: 'uuid' }],
+      })
+      if (path === '/change-requests/intake' && options?.method === 'POST') return Promise.resolve(created)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDialog(apiClient(request))
+    await screen.findByRole('option', { name: 'ERP · ERP' })
+    fireEvent.change(screen.getByLabelText('변경요청 제목'), { target: { value: '신규 컬럼 제안' } })
+    fireEvent.change(screen.getByLabelText('요청사유'), { target: { value: '스키마 확장' } })
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), { target: { value: 'orders' } })
+    fireEvent.click(await screen.findByRole('button', { name: /orders/ }))
+
+    await waitFor(() => expect(screen.getByLabelText('보안등급')).toHaveValue('CONFIDENTIAL'))
+    const classification = screen.getByLabelText('보안등급')
+    expect(classification).toHaveAttribute('readonly')
+    fireEvent.click(screen.getByRole('button', { name: 'orders 신규 컬럼 추가' }))
+    const name = screen.getByLabelText('orders 컬럼 1 이름')
+    fireEvent.change(name, { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('order_id 데이터 타입'), { target: { value: 'uuid' } })
+    fireEvent.click(screen.getByRole('button', { name: 'CR 제출' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('기존 컬럼 충돌')
+    expect(request.mock.calls.some(([path]) => path === '/change-requests/intake')).toBe(false)
+
+    fireEvent.change(name, { target: { value: 'external_reference' } })
+    fireEvent.change(screen.getByLabelText('external_reference 데이터 타입'), { target: { value: 'varchar(128)' } })
+    fireEvent.click(screen.getByLabelText('external_reference NULL 허용'))
+    fireEvent.change(screen.getByLabelText('external_reference 배치 순서'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'CR 제출' }))
+
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path === '/change-requests/intake')).toBe(true))
+    const options = request.mock.calls.find(([path]) => path === '/change-requests/intake')?.[1]
+    if (typeof options?.body !== 'string') throw new Error('Expected CR JSON body')
+    const body = JSON.parse(options.body) as {
+      security_level: string
+      targets: Array<{ columns: Array<Record<string, unknown>> }>
+    }
+    expect(body.security_level).toBe('CONFIDENTIAL')
+    expect(body.targets[0]?.columns[0]).toEqual(expect.objectContaining({
+      proposal_kind: 'NEW', field_path: 'external_reference', data_type: 'varchar(128)',
+      nullable: false, ordinal: 2,
+    }))
+  })
+
+  it('blocks a missing DataHub classification before submission', async () => {
+    const asset = {
+      id: 'catalog-asset-1', external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,erp.orders,PROD)',
+      asset_type: 'DATASET', name: 'orders', platform: 'postgres', database_name: 'erp', schema_name: 'public',
+      classification: '', lifecycle: 'ACTIVE', observed_at: '2026-08-30T01:02:03Z', matches: [], tags: [], terms: [],
+      classification_resolution: { status: 'MISSING', values: [], value: null },
+    }
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/systems') return Promise.resolve({ items: [{ id: 'system-1', code: 'ERP', name: 'ERP' }] })
+      if (path.includes('/change-requests/targets?')) return Promise.resolve({ items: [asset] })
+      if (path.startsWith('/change-requests/targets/')) return Promise.resolve({
+        ...asset, ownership: [], glossary_terms: [], quality: {}, projection_source_version: 'p1', source_version: 's1', schema_fields: [],
+      })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDialog(apiClient(request))
+    await screen.findByRole('option', { name: 'ERP · ERP' })
+    fireEvent.change(screen.getByLabelText('변경요청 제목'), { target: { value: '분류 검증' } })
+    fireEvent.change(screen.getByLabelText('요청사유'), { target: { value: '분류 검증' } })
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), { target: { value: 'orders' } })
+    fireEvent.click(await screen.findByRole('button', { name: /orders/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'CR 제출' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('DataHub 분류 태그가 없는 대상')
+    expect(request.mock.calls.some(([path]) => path === '/change-requests/intake')).toBe(false)
   })
 
   it('reports missing fields, then submits existing and manual targets together', async () => {
@@ -440,7 +554,7 @@ describe('ChangeRequestCreateDialog', () => {
       target: { value: 'orders' },
     })
     fireEvent.click(await screen.findByRole('button', { name: /orders/ }))
-    fireEvent.change(await screen.findByLabelText('orders 컬럼 추가'), {
+    fireEvent.change(await screen.findByLabelText('orders 기존 컬럼 선택'), {
       target: { value: 'order_id' },
     })
     fireEvent.click(screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ }))
