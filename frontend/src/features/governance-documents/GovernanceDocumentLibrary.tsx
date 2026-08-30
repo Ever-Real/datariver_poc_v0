@@ -737,6 +737,7 @@ function GovernanceDocumentWorkspace({
       }}
     />
     <EditorDialog
+      key={`${editorMode ?? 'closed'}:${selectedVersionId ?? (blueprintId || 'blank')}:${editorContentRevision}`}
       mode={editorMode}
       kind={editorKind}
       title={title}
@@ -1099,36 +1100,37 @@ function EditorDialog({
   const [importFeedback, setImportFeedback] = useState<string>()
   const [importError, setImportError] = useState<unknown>()
   const [importing, setImporting] = useState(false)
-  const initialSnapshot = useRef<{ title: string; summary: string; applicabilityScope: string; html: string; htmlBytes: number; category: string; classification: number; templateVersionId: string; blueprintId: string; parentDocumentId: string; importFile?: File; attachmentFile?: File } | null>(null)
+  const [initialSnapshot] = useState(() => mode ? {
+    title,
+    summary,
+    applicabilityScope,
+    html: initialHtml,
+    category,
+    classification,
+    templateVersionId,
+    blueprintId,
+    parentDocumentId,
+    importFile,
+    attachmentFile,
+  } : null)
 
   useEffect(() => {
     setHtmlBytes(utf8Bytes(initialHtml))
     setCurrentHtml(initialHtml)
   }, [initialHtml, mode])
   
-  useEffect(() => {
-    setImportFeedback(undefined)
-    setImportError(undefined)
-    setImporting(false)
-    if (mode) {
-      initialSnapshot.current = { title, summary, applicabilityScope, html: initialHtml, htmlBytes: utf8Bytes(initialHtml), category, classification, templateVersionId, blueprintId, parentDocumentId, importFile, attachmentFile }
-    } else {
-      initialSnapshot.current = null
-    }
-  }, [mode])
-
-  const isDirty = initialSnapshot.current !== null && (
-    title !== initialSnapshot.current.title ||
-    summary !== initialSnapshot.current.summary ||
-    applicabilityScope !== initialSnapshot.current.applicabilityScope ||
-    currentHtml !== initialSnapshot.current.html ||
-    category !== initialSnapshot.current.category ||
-    classification !== initialSnapshot.current.classification ||
-    templateVersionId !== initialSnapshot.current.templateVersionId ||
-    blueprintId !== initialSnapshot.current.blueprintId ||
-    parentDocumentId !== initialSnapshot.current.parentDocumentId ||
-    importFile !== initialSnapshot.current.importFile ||
-    attachmentFile !== initialSnapshot.current.attachmentFile
+  const isDirty = initialSnapshot !== null && (
+    title !== initialSnapshot.title ||
+    summary !== initialSnapshot.summary ||
+    applicabilityScope !== initialSnapshot.applicabilityScope ||
+    currentHtml !== initialSnapshot.html ||
+    category !== initialSnapshot.category ||
+    classification !== initialSnapshot.classification ||
+    templateVersionId !== initialSnapshot.templateVersionId ||
+    blueprintId !== initialSnapshot.blueprintId ||
+    parentDocumentId !== initialSnapshot.parentDocumentId ||
+    importFile !== initialSnapshot.importFile ||
+    attachmentFile !== initialSnapshot.attachmentFile
   )
 
   const requestCancel = () => {

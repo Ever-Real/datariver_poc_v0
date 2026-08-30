@@ -14,6 +14,13 @@ function exportError(code, message, statusCode = 400) {
   return Object.assign(new Error(message), { code, statusCode })
 }
 
+function hasControlCharacter(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)
+  })
+}
+
 function safeCell(value) {
   const text = value === null || value === undefined ? '' : String(value)
   for (const character of text) {
@@ -191,7 +198,7 @@ export function createPocCatalogExportStore({ now = () => new Date() } = {}) {
     create({ ownerId, idempotencyKey, requestHash, format, rows }) {
       purge()
       if (!ownerId || typeof idempotencyKey !== 'string' || idempotencyKey.length < 16
-        || idempotencyKey.length > 200 || /[\u0000-\u001f\u007f]/.test(idempotencyKey)) {
+        || idempotencyKey.length > 200 || hasControlCharacter(idempotencyKey)) {
         throw exportError('CATALOG_EXPORT_IDEMPOTENCY_KEY_INVALID', 'A bounded Idempotency-Key is required.', 428)
       }
       if (!Array.isArray(rows) || rows.length > POC_CATALOG_EXPORT_MAXIMUM_ROWS) {
