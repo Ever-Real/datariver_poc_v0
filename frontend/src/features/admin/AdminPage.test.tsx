@@ -1,14 +1,30 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiClient } from '../../api/client'
+import { ApiClient, ApiError } from '../../api/client'
 import type { AdminReadContext } from '../../api/types'
+import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import { AdminPage } from './AdminPage'
+
+const mutationProbe = vi.hoisted(() => ({ execute: vi.fn<() => Promise<void>>() }))
+
+vi.mock('./SystemConfigurationAdmin', () => ({
+  SystemConfigurationAdmin: ({
+    requestConfirmation,
+  }: {
+    requestConfirmation: (mutation: PendingAdminMutation) => void
+  }) => <button type="button" onClick={() => requestConfirmation({
+    title: 'Test admin mutation',
+    summary: ['Review this mutation'],
+    execute: mutationProbe.execute,
+  })}>Request test mutation</button>,
+}))
 
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   window.history.replaceState({}, '', '/')
   window.localStorage?.clear?.()
+  mutationProbe.execute.mockReset()
 })
 
 function adminContext(overrides: Partial<AdminReadContext> = {}): AdminReadContext {
@@ -102,6 +118,32 @@ describe('AdminPage', () => {
     expect(screen.queryByText('WebAuthn 보안키 인증이 필요합니다.')).not.toBeInTheDocument()
 
     expect(() => view.unmount()).not.toThrow()
+  })
+
+  it('keeps a failed mutation open with its typed error, then closes after a successful retry', async () => {
+    window.history.replaceState({}, '', '/?page=admin&adminSection=systemSettings')
+    mutationProbe.execute
+      .mockRejectedValueOnce(new ApiError({
+        type: 'https://datariver.invalid/problems/admin-mutation',
+        title: 'Mutation rejected',
+        status: 422,
+        detail: 'The requested mutation is invalid.',
+        code: 'ADMIN_MUTATION_INVALID',
+        request_id: 'request-admin-mutation',
+      }))
+      .mockResolvedValueOnce(undefined)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Request test mutation' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Test admin mutation' })).getByRole('button', { name: 'Review and execute' }))
+
+    expect(await screen.findByText('The requested mutation is invalid.')).toBeVisible()
+    expect(screen.getByRole('dialog', { name: 'Test admin mutation' })).toBeInTheDocument()
+    expect(mutationProbe.execute).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Test admin mutation' })).getByRole('button', { name: 'Review and execute' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Test admin mutation' })).not.toBeInTheDocument())
+    expect(mutationProbe.execute).toHaveBeenCalledTimes(2)
   })
 })
 

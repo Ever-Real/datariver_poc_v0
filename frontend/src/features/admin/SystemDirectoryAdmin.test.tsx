@@ -234,7 +234,7 @@ describe('SystemDirectoryAdmin', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '시스템 추가' }))
     expect(screen.queryByLabelText('시스템 코드')).not.toBeInTheDocument()
-    expect(screen.getByText(/System 코드는 이름을 기준으로 서버가 생성합니다/)).toBeVisible()
+    expect(screen.queryByText(/System 코드는 이름을 기준으로 서버가 생성합니다/)).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('시스템 이름'), { target: { value: 'Customer Data' } })
     fireEvent.change(screen.getByLabelText('설명'), { target: { value: 'Customer source' } })
     fireEvent.click(screen.getByRole('button', { name: '저장' }))

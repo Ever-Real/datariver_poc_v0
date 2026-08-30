@@ -343,9 +343,7 @@ describe('DetectedChangeCrPanel', () => {
       changeRequests={[]}
       dateRange={{ from: '2026-08-01', to: '2026-08-24' }}
     />)
-    expect(await screen.findByText(
-      '감지 이벤트는 존재하지만 현재 Table↔System exact mapping이 없어 권한 행을 표시할 수 없습니다.',
-    )).toBeInTheDocument()
+    expect(await screen.findByText('연결된 시스템 정보 없음')).toBeInTheDocument()
   })
 
   it('keeps every authorized exact-match event reachable across cursor pages', async () => {
@@ -384,7 +382,7 @@ describe('DetectedChangeCrPanel', () => {
     expect(await screen.findByText('orders-0')).toBeInTheDocument()
   })
 
-  it('shows remediation CTA when callback is present and NO_EXACT_MAPPING is returned, and invokes it exactly once', async () => {
+  it('shows the user-facing missing-system message without an admin CTA', async () => {
     setCurrentWeek()
     const onManageTableSystemMappings = vi.fn()
     const request = vi.fn((path: string) => {
@@ -399,27 +397,9 @@ describe('DetectedChangeCrPanel', () => {
       onManageTableSystemMappings={onManageTableSystemMappings}
     />)
 
-    const cta = await screen.findByRole('button', { name: 'Table↔System 연결 관리' })
-    expect(cta).toBeInTheDocument()
-    fireEvent.click(cta)
-    expect(onManageTableSystemMappings).toHaveBeenCalledTimes(1)
-  })
-
-  it('hides remediation CTA when callback is absent even if NO_EXACT_MAPPING is returned', async () => {
-    setCurrentWeek()
-    const request = vi.fn((path: string) => {
-      if (path.startsWith('/change-history/events?')) {
-        return Promise.resolve(eventPage([], 'EVENTS_EXIST_BUT_NOT_AUTHORIZED', 'NO_EXACT_MAPPING'))
-      }
-      return listResponse(path)
-    })
-    render(<DetectedChangeCrPanel
-      client={clientFor(request)}
-      changeRequests={[]}
-    />)
-
-    await screen.findByText('감지 이벤트는 존재하지만 현재 Table↔System exact mapping이 없어 권한 행을 표시할 수 없습니다.')
+    await screen.findByText('연결된 시스템 정보 없음')
     expect(screen.queryByRole('button', { name: 'Table↔System 연결 관리' })).not.toBeInTheDocument()
+    expect(onManageTableSystemMappings).not.toHaveBeenCalled()
   })
 })
 

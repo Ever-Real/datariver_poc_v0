@@ -160,7 +160,9 @@ export function AdminPage({
     return created
   }
   const clearKey = (intent: string) => keys.current.values.delete(intent)
+  const [mutationError, setMutationError] = useState<unknown>()
   const requestConfirmation = (pending: PendingAdminMutation) => {
+    setMutationError(undefined)
     setMutation({ ...pending, contextEpoch })
   }
   const confirmMutation = async () => {
@@ -170,9 +172,14 @@ export function AdminPage({
       setError(new Error('관리자 인증 또는 권한 컨텍스트가 변경되었습니다. 작업을 다시 검토하세요.'))
       return
     }
-    setBusy(true); setError(undefined)
-    try { await mutation.execute() } catch (next) { setError(next) } finally {
-      setBusy(false); setMutation(undefined)
+    setBusy(true); setError(undefined); setMutationError(undefined)
+    try {
+      await mutation.execute()
+      setMutation(undefined)
+    } catch (next) {
+      setMutationError(next)
+    } finally {
+      setBusy(false)
     }
   }
   const shared = {
@@ -223,6 +230,6 @@ export function AdminPage({
       title="Audit/Log·용어 승인 관리 API 미구현"
       description="실시간 DataHub 연결 용어 조회는 POC USER의 용어사전에서 제공합니다. Audit 내보내기와 용어 생성·승인 정본 관리는 별도 계약이 추가되기 전까지 비활성화합니다."
     />
-    <AdminMutationConfirmDialog mutation={mutation} busy={busy} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
+    <AdminMutationConfirmDialog mutation={mutation} busy={busy} error={mutationError} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
   </section>
 }

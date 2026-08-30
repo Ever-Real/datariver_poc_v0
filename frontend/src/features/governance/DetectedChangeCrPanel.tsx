@@ -89,7 +89,6 @@ export function DetectedChangeCrPanel({
   selection,
   dateRange,
   onClose,
-  onManageTableSystemMappings,
 }: {
   client: ApiClient
   changeRequests: ChangeRequestSummary[]
@@ -365,14 +364,6 @@ export function DetectedChangeCrPanel({
           </table>
         </div>
       ) : null}
-      {page?.empty_state_reason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED'
-        && page.empty_state_detail === 'NO_EXACT_MAPPING'
-        && onManageTableSystemMappings ? (
-          <div className="detected-change-remediation">
-            <p>관리자에서 현재 DataHub Table과 System을 exact identity로 연결한 뒤 돌아오면 이 화면이 다시 확인됩니다.</p>
-            <button className="button button-secondary" type="button" onClick={onManageTableSystemMappings}>Table↔System 연결 관리</button>
-          </div>
-        ) : null}
       {(selection || dateRange) && page ? <nav className="detected-change-pagination" aria-label="이벤트 페이지 이동">
         <button className="button button-secondary" type="button" disabled={loading || !eventCursorStack.length} onClick={() => void changeEventPage(eventCursorStack.at(-1) || undefined, 'previous')}>이전</button>
         <button className="button button-secondary" type="button" disabled={loading || !page.next_cursor} onClick={() => void changeEventPage(page.next_cursor ?? undefined, 'next')}>다음</button>
@@ -420,7 +411,7 @@ function changeHistoryEmptyMessage(page: ChangeHistoryEventPage, selection: bool
   }
   if (page.empty_state_reason === 'EVENTS_EXIST_BUT_NOT_AUTHORIZED') {
     return page.empty_state_detail === 'NO_EXACT_MAPPING'
-      ? '감지 이벤트는 존재하지만 현재 Table↔System exact mapping이 없어 권한 행을 표시할 수 없습니다.'
+      ? '연결된 시스템 정보 없음'
       : '감지 이벤트는 존재하지만 현재 계정의 권한 범위에는 표시할 수 있는 행이 없습니다.'
   }
   return selection

@@ -1,4 +1,6 @@
 import { Dialog } from '../../components/common/Dialog'
+import { ApiError } from '../../api/client'
+import { ErrorNotice } from '../../components/ErrorNotice'
 import type { AdminMessages } from './messages'
 
 export interface PendingAdminMutation {
@@ -11,17 +13,21 @@ export interface PendingAdminMutation {
 export function AdminMutationConfirmDialog({
   mutation,
   busy,
+  error,
   messages,
   onCancel,
   onConfirm,
 }: {
   mutation?: PendingAdminMutation
   busy: boolean
+  error?: unknown
   messages: AdminMessages
   onCancel: () => void
   onConfirm: () => void
 }) {
   if (!mutation) return null
+  const isConflict = error instanceof ApiError && error.problem?.status === 409
+
   return (
     <Dialog
       open
@@ -38,7 +44,8 @@ export function AdminMutationConfirmDialog({
       </>}
     >
       <ul>{mutation.summary.map((line) => <li key={line}>{line}</li>)}</ul>
-      <p className="callout">{messages.versionConflict}</p>
+      <ErrorNotice error={error} />
+      {isConflict && <p className="callout">{messages.versionConflict}</p>}
     </Dialog>
   )
 }

@@ -587,7 +587,6 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     </section>}
     <Dialog open={createOpen} title="시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
       <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
-        <p className="callout">System 코드는 이름을 기준으로 서버가 생성합니다. 생성된 코드와 ID는 변경되지 않습니다.</p>
         <label className="block text-sm font-bold">시스템 이름
           <input className="mt-1 block w-full" maxLength={255} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} required type="text" value={createForm.name} />
         </label>
