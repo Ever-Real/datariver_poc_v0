@@ -849,10 +849,12 @@
   gap: 2px;
 }
 
-.chat-question-field textarea {
+.chat-question-input {
   width: 100%;
   min-height: 42px;
   max-height: 118px;
+  field-sizing: content;
+  overflow-y: auto;
   resize: none;
   border: 0;
   padding: 9px 8px 3px;

@@ -366,18 +366,6 @@ export function ChatPage({
   }, [client, refreshSessions])
 
   useEffect(() => {
-    const textarea = composerRef.current
-    if (!textarea) return
-    textarea.style.height = 'auto'
-    const computed = getComputedStyle(textarea)
-    const lineHeight = Number.parseFloat(computed.lineHeight) || 18
-    const verticalPadding = Number.parseFloat(computed.paddingTop) + Number.parseFloat(computed.paddingBottom)
-    const maximumHeight = lineHeight * 6 + verticalPadding
-    textarea.style.height = `${Math.min(textarea.scrollHeight, maximumHeight)}px`
-    textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? 'auto' : 'hidden'
-  }, [question])
-
-  useEffect(() => {
     const normalized = initialQuestion?.trim()
     if (initialQuestionHandledRef.current || !normalized) return
     initialQuestionHandledRef.current = true
@@ -999,6 +987,7 @@ export function ChatPage({
               <textarea
                 aria-describedby="chat-keyboard-hint chat-question-count"
                 aria-keyshortcuts="Enter"
+                className="chat-question-input"
                 disabled={loading}
                 id="chat-question"
                 maxLength={maximumQuestionCharacters}

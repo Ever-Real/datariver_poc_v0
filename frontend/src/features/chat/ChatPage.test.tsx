@@ -700,16 +700,15 @@ describe('ChatPage', () => {
     expect(screen.getByRole('button', { name: '질문 전송' })).toBeEnabled()
   })
 
-  it('auto-grows the composer to a six-line cap and then uses vertical scrolling', async () => {
+  it('uses CSP-safe content sizing with a six-line cap and vertical overflow', async () => {
     const { client } = chatClient()
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
     const question = screen.getByLabelText<HTMLTextAreaElement>('카탈로그 질문')
-    Object.defineProperty(question, 'scrollHeight', { configurable: true, value: 360 })
     fireEvent.change(question, { target: { value: Array.from({ length: 8 }, (_, index) => `줄 ${index}`).join('\n') } })
     expect(question).toHaveAttribute('rows', '1')
-    expect(question.style.overflowY).toBe('auto')
-    expect(Number.parseFloat(question.style.height)).toBeLessThan(150)
+    expect(question).not.toHaveAttribute('style')
+    expect(question).toHaveClass('chat-question-input')
   })
 
   it('caps questions at 12,000 characters and shows the live count at the composer edge', async () => {
