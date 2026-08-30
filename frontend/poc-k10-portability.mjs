@@ -465,12 +465,35 @@ function createSimulationNeo4j() {
   }
   return {
     async run(query, parameters = {}) {
+      if (query.startsWith('CREATE CONSTRAINT ') || query.startsWith('CREATE INDEX ')) return []
       if (query.includes('DETACH DELETE')) {
         namespaces.delete(parameters.namespace || parameters.ns)
         return []
       }
       if (query.includes('CREATE (n:K9Node:K9Release')) {
         ensureNamespace(parameters.ns).release = { hash: parameters.hash, policy: parameters.policy }
+        return []
+      }
+      if (query.includes('UNWIND $nodes AS node')) {
+        for (const node of parameters.nodes) {
+          ensureNamespace(parameters.ns).nodes.set(node.id, {
+            id: node.id,
+            type: node.type,
+            classification: node.classification,
+            properties: node.properties,
+          })
+        }
+        return []
+      }
+      if (query.includes('UNWIND $edges AS edge')) {
+        for (const edge of parameters.edges) {
+          ensureNamespace(parameters.ns).edges.push({
+            source: edge.source,
+            target: edge.target,
+            type: edge.type,
+            properties: edge.properties,
+          })
+        }
         return []
       }
       if (query.includes('CREATE (n:K9Node')) {
@@ -577,7 +600,12 @@ export async function simulateTargetRuntime({ bundleRoot, referencesPath, expect
     const glossaryRun = await k9.triggerGlossaryPublish(context, glossaryCollector)
     const lineageReplay = await k9.triggerLineagePublish(context, lineageCollector)
     const glossaryReplay = await k9.triggerGlossaryPublish(context, glossaryCollector)
-    if (lineageRun.status !== 'RUN' || glossaryRun.status !== 'RUN' || lineageReplay.status !== 'NO_OP' || glossaryReplay.status !== 'NO_OP') throw new Error('K9 target materialization or replay failed')
+    if (lineageRun.status !== 'RUN' || glossaryRun.status !== 'RUN'
+      || lineageReplay.status !== 'NO_OP' || glossaryReplay.status !== 'NO_OP') {
+      throw new Error(`K9 target materialization or replay failed (${[
+        lineageRun, glossaryRun, lineageReplay, glossaryReplay,
+      ].map((result) => [result.status, result.reason_code || result.reason].filter(Boolean).join(':')).join('/')})`)
+    }
 
     let wrongWorkspaceDenied = false
     try {
@@ -591,7 +619,13 @@ export async function simulateTargetRuntime({ bundleRoot, referencesPath, expect
       authority_pin: authorityPin(environment),
       nodes: [{ id: LINEAGE_TABLE_A, classification: 'CONFIDENTIAL' }], edges: [],
     }))
-    if (classificationResult.status !== 'FAILURE' || !/above INTERNAL/.test(classificationResult.reason)) throw new Error('Classification violation did not fail closed')
+    if (classificationResult.status !== 'FAILURE'
+      || !/Classification exceeds ceiling/.test(classificationResult.reason)) {
+      throw new Error(`Classification violation did not fail closed (${[
+        classificationResult.status,
+        classificationResult.reason_code || classificationResult.reason,
+      ].filter(Boolean).join(':')})`)
+    }
 
     const recoveryRunId = '00000000-0000-4000-8000-000000000001'
     const recoveryNamespace = 'k9_stage_00000000000040008000000000000001'
