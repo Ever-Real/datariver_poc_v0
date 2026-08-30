@@ -2188,6 +2188,37 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   assert.equal(grantedViewerReadBody.total, 1, 'exact Table authority is sufficient without a legacy schema scope')
   assert.equal(grantedViewerReadBody.items[0].system.system_id, 'system-1')
   assert.deepEqual(grantedViewerReadBody.items[0].allowed_link_actions, [])
+  const grantedViewerUnmapped = structuredClone(grantedViewer)
+  grantedViewerUnmapped.mapping.bindings = []
+  const grantedViewerUnmappedRead = await run(
+    grantedViewerUnmapped,
+    (origin) => fetch(`${origin}/api/v1/change-history/events`),
+  )
+  const grantedViewerUnmappedBody = await grantedViewerUnmappedRead.result.json()
+  assert.equal(grantedViewerUnmappedBody.total, 1, 'authorized events remain visible without a System mapping')
+  assert.equal(grantedViewerUnmappedBody.empty_state_reason, null)
+  assert.equal(grantedViewerUnmappedBody.empty_state_detail, null)
+  assert.deepEqual(grantedViewerUnmappedBody.items[0].system, {
+    resolution: 'UNMAPPED',
+    system_id: null,
+    provider_context: {
+      platform: 'postgres', database_name: 'db', schema_name: 'public', asset_name: null,
+    },
+  })
+  assert.deepEqual(grantedViewerUnmappedBody.items[0].allowed_link_actions, [])
+  assert.equal(grantedViewerUnmappedBody.items[0].current_primary, null)
+  assert.deepEqual(grantedViewerUnmappedBody.items[0].current_candidates, [])
+  const grantedViewerUnmappedDetail = await run(
+    grantedViewerUnmapped,
+    (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}`),
+  )
+  assert.equal(grantedViewerUnmappedDetail.result.status, 200)
+  const grantedViewerUnmappedLinks = await run(
+    grantedViewerUnmapped,
+    (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`),
+  )
+  assert.equal(grantedViewerUnmappedLinks.result.status, 200)
+  assert.deepEqual((await grantedViewerUnmappedLinks.result.json()).items, [])
   const grantedDrawerRead = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-history/events?date_from=2026-08-11&date_to=2026-08-11&platform=postgres&database_name=db&schema_name=public&system_id=system-1&system_resolution=RESOLVED`))
   assert.equal((await grantedDrawerRead.result.json()).total, 1)
   const grantedViewerSummary = await run(grantedViewer, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))

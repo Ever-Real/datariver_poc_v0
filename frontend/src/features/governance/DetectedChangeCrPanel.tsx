@@ -312,7 +312,7 @@ export function DetectedChangeCrPanel({
         <div>
           <span className="governance-kicker">Detected Change → CR</span>
           <h2 id={headingId}>{selection ? `${selection.schemaName} 이벤트` : dateRange ? 'Schema / Metadata 감지 변경 이력' : '감지 변경과 CR 연결'}</h2>
-          <p>{selection ? `${selection.systemName ?? '시스템 미지정'} · ${selection.dateFrom}–${selection.dateTo} · 서버 권한 범위` : dateRange ? `${dateRange.from}–${dateRange.to} · Monitoring과 동일한 canonical change ledger · 서버 권한 범위` : 'KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.'}</p>
+          <p>{selection ? `${selection.systemName ?? '연결된 시스템 정보 없음'} · ${selection.dateFrom}–${selection.dateTo} · 서버 권한 범위` : dateRange ? `${dateRange.from}–${dateRange.to} · Monitoring과 동일한 canonical change ledger · 서버 권한 범위` : 'KST 주간 원장에서 서버 권한 필터가 적용된 이벤트를 조회하고 현재 CR round에 연결합니다.'}</p>
         </div>
         <div className="detected-change-header-actions"><button className="button button-secondary" type="button" disabled={loading} onClick={() => void load()}>새로고침</button>{selection && <button type="button" aria-label="이벤트 상세 닫기" onClick={onClose}><X size={16} /></button>}</div>
       </header>
@@ -374,7 +374,7 @@ export function DetectedChangeCrPanel({
         <section className="detected-change-linker" aria-label="선택 이벤트 CR 연결">
           <header><strong>{detail.event.data.locator?.asset_name ?? detail.event.data.entity_key}</strong><small>{detail.event.data.change_type} · {detail.event.data.operation} · {formatKst(detail.event.data.detected_at)}</small></header>
           <dl className="detected-change-event-detail">
-            <div><dt>System / Database / Schema</dt><dd>{[detail.event.data.system.system_id ?? '시스템 미지정', detail.event.data.locator?.database_name, detail.event.data.locator?.schema_name].filter(Boolean).join(' · ')}</dd></div>
+            <div><dt>System / Database / Schema</dt><dd>{[detail.event.data.system.system_id ?? '연결된 시스템 정보 없음', detail.event.data.locator?.database_name, detail.event.data.locator?.schema_name].filter(Boolean).join(' · ')}</dd></div>
             <div><dt>Source / Provenance</dt><dd>DataHub · {detail.event.data.source_aspect} · {detail.event.data.precision ?? 'precision 미지정'}</dd></div>
             <div><dt>Before</dt><dd><pre>{formatDiff(detail.event.data.before)}</pre></dd></div>
             <div><dt>After</dt><dd><pre>{formatDiff(detail.event.data.after)}</pre></dd></div>

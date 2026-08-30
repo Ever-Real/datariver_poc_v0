@@ -705,9 +705,11 @@ function changeHistoryAuthorizedCurrent(current, core, targetsById, eventSystemI
 }
 
 function changeHistoryRow(event, projection, document, target, targetsById) {
+  const systemResolution = target.system_resolution
+    ?? (target.system_id ? 'RESOLVED' : 'UNMAPPED')
   const system = {
-    resolution: 'RESOLVED',
-    system_id: target.system_id,
+    resolution: systemResolution,
+    system_id: systemResolution === 'RESOLVED' ? target.system_id : null,
     provider_context: target.locator,
   }
   const assignee = changeHistoryAssignee(system, document)
@@ -716,7 +718,7 @@ function changeHistoryRow(event, projection, document, target, targetsById) {
     changeHistoryLinkState(links),
     projection.core.value,
     targetsById,
-    target.system_id,
+    system.system_id,
   )
   return {
     event,
@@ -1067,6 +1069,32 @@ function changeHistoryCurrentTableAuthority(catalog, mappingDocument, document, 
     .map((system) => system.system_id))
   const systems = new Map(document.systems.map((system) => [system.system_id, system]))
   const targetsById = new Map()
+  const eventTargetsById = new Map()
+  const addTarget = (assetId, locator, historical = false) => {
+    const mappedSystemIds = activeSystemIdsForTable(mappingDocument, assetId, activeSystemIds)
+    const systemId = mappedSystemIds.length === 1 ? mappedSystemIds[0] : null
+    const systemResolution = mappedSystemIds.length === 1 ? 'RESOLVED'
+      : mappedSystemIds.length > 1 ? 'AMBIGUOUS'
+        : 'UNMAPPED'
+    const eventTarget = {
+      asset_id: assetId,
+      key: changeManagementSchemaKey(
+        locator.platform,
+        locator.database_name,
+        locator.schema_name,
+        systemId,
+        systemResolution,
+      ),
+      locator,
+      system_id: systemId,
+      system_resolution: systemResolution,
+      ...(historical ? { historical: true } : {}),
+    }
+    eventTargetsById.set(assetId, eventTarget)
+    if (systemResolution === 'RESOLVED' && systems.get(systemId)?.active) {
+      targetsById.set(assetId, eventTarget)
+    }
+  }
   for (const asset of catalog.items) {
     const assetId = asset?.id
     if (asset?.dataset_kind !== 'TABLE' || !canReadAsset(principal, asset, 'change')) continue
@@ -1079,52 +1107,25 @@ function changeHistoryCurrentTableAuthority(catalog, mappingDocument, document, 
       asset_name: typeof asset.name === 'string' && asset.name.trim() ? asset.name.trim() : null,
     }
     if (!locator.platform || !locator.database_name || !locator.schema_name) continue
-    const mappedSystemIds = activeSystemIdsForTable(mappingDocument, assetId, activeSystemIds)
-    if (mappedSystemIds.length !== 1) continue
-    const systemId = mappedSystemIds[0]
-    const system = systems.get(systemId)
-    if (!system?.active) continue
-    const key = changeManagementSchemaKey(
-      locator.platform,
-      locator.database_name,
-      locator.schema_name,
-      systemId,
-    )
-    targetsById.set(assetId, { asset_id: assetId, key, locator, system_id: systemId })
+    addTarget(assetId, locator)
   }
   for (const snapshot of mappingDocument.asset_snapshots) {
-    if (targetsById.has(snapshot.table_identity)) continue
+    if (eventTargetsById.has(snapshot.table_identity)) continue
     const historicalAsset = {
       id: snapshot.table_identity,
       dataset_kind: snapshot.dataset_kind,
       security_grade: snapshot.security_grade,
     }
     if (!canReadAsset(principal, historicalAsset, 'change')) continue
-    const mappedSystemIds = activeSystemIdsForTable(mappingDocument, snapshot.table_identity, activeSystemIds)
-    if (mappedSystemIds.length !== 1) continue
-    const systemId = mappedSystemIds[0]
-    if (!systems.get(systemId)?.active) continue
     const locator = {
       platform: snapshot.platform,
       database_name: snapshot.database_name,
       schema_name: snapshot.schema_name,
       asset_name: snapshot.asset_name,
     }
-    const key = changeManagementSchemaKey(
-      locator.platform,
-      locator.database_name,
-      locator.schema_name,
-      systemId,
-    )
-    targetsById.set(snapshot.table_identity, {
-      asset_id: snapshot.table_identity,
-      key,
-      locator,
-      system_id: systemId,
-      historical: true,
-    })
+    addTarget(snapshot.table_identity, locator, true)
   }
-  return { targetsById }
+  return { targetsById, eventTargetsById }
 }
 
 function changeManagementBaseOverview(targetsById, document) {
@@ -1533,7 +1534,7 @@ async function changeHistoryApi(request, response, url, context) {
     context.principal,
   )
   const rows = projection.events.map((event) => {
-    const target = currentTableAuthority.targetsById.get(event.asset_urn)
+    const target = currentTableAuthority.eventTargetsById.get(event.asset_urn)
     return target
       ? changeHistoryRow(event, projection, document, target, currentTableAuthority.targetsById)
       : null
