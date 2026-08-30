@@ -7,29 +7,30 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  86f1d0a1e99f188bf3bde261038429b93f05ec75
-Evidence d33d6350aa06c6468de65f298cd23013e0258b76
+Product  9fb8aba7b0b23a63a803cf6d5fcbca1852c3bf01
+Evidence 65f07fc602dd4304341b3b7d9d08c4b873be0d4e
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`86f1d0a1e99f188bf3bde261038429b93f05ec75`. Its SHA-256, child manifest,
+`9fb8aba7b0b23a63a803cf6d5fcbca1852c3bf01`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
-This Handoff retains every accepted `USER-FACING-RUNTIME-CLOSURE-2` and interruption-recovery
-contract and adds one cumulative user-facing backlog closure. Home uses compact canonical summaries
-without fabricated historical values; Chat exposes an evidence-bound Catalog scope without changing
-router, recall, or authorization; System creation is server-owned and CR intake remains exact-mapped
-and fail-closed for classification and calendar validity. Quality/GX does not fabricate an executor.
-Governance keeps the existing TipTap/ProseMirror and sanitizer contracts, Catalog export downloads
-directly through its complete authorized server job, and Site Management stores at most five safe
-ordered custom links behind the existing CAS/idempotency boundary. No migration, provider scope,
-runtime target-data dependency, user metadata mutation, reset, or secret contract changed. Product
-`1adfe1ced2c9311bcbb880bfac400a1edf8d9178` remains the last TEST-accepted runtime until this exact
-artifact completes accepted-state deploy and same-command rerun.
+This Handoff retains every accepted `USER-FACING-RUNTIME-CLOSURE-2` contract and adds the bounded
+`USER-FACING-CORRECTNESS-CLOSURE-3` Product. CR intake now distinguishes exact current and proposed
+columns, binds the current classification and keeps DataHub mutation out of submission. Local-human
+creation records a secret-free atomic audit receipt, advancing only the Product-owned PostgreSQL
+surface from V3 to V4. Chat full keyword discovery uses the same authorized Catalog scope as Search
+while semantic evidence remains bounded and separate. True dialogs use explicit dismissal, Previous
+restores bounded Search/Lineage snapshots, and Cytoscape strict-CSP rendering no longer injects
+dynamic style elements or inline renderer presentation. Governance retains the existing
+TipTap/ProseMirror document contract. No runtime target-business-data dependency, authorization
+widening, user metadata mutation, reset or resecret was introduced. Product
+`86f1d0a1e99f188bf3bde261038429b93f05ec75` remains the last TEST-accepted runtime until this exact
+artifact completes accepted-state V4 migration, deploy, 6/6 and same-command rerun.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
