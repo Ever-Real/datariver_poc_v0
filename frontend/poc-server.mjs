@@ -2159,6 +2159,108 @@ query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
   }
 }`
 
+const datahubK9GlossaryQuery = `
+query DataRiverK9Glossary($input: ScrollAcrossEntitiesInput!) {
+  scrollAcrossEntities(input: $input) {
+    nextScrollId count total
+    searchResults {
+      entity {
+        urn type
+        ... on GlossaryTerm {
+          hierarchicalName
+          properties { name description }
+          glossaryTermInfo { name description termSource sourceRef sourceUrl customProperties { key value } }
+          domain { domain { urn properties { name description } } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+              values {
+                ... on StringValue { stringValue }
+                ... on NumberValue { numberValue }
+              }
+              associatedUrn
+            }
+          }
+          parentNodes {
+            nodes {
+              urn type
+              ... on GlossaryNode { properties { name description } }
+            }
+          }
+          tableAssignments: relationships(input: {
+            types: ["TermedWith"]
+            direction: INCOMING
+            start: 0
+            count: 0
+            includeSoftDelete: false
+          }) { total }
+          columnAssignments: relationships(input: {
+            types: ["SchemaFieldWithGlossaryTerm"]
+            direction: INCOMING
+            start: 0
+            count: 0
+            includeSoftDelete: false
+          }) { total }
+          outgoingRelationships: relationships(input: {
+            types: []
+            direction: OUTGOING
+            start: 0
+            count: 100
+            includeSoftDelete: false
+          }) {
+            total
+            relationships {
+              type direction
+              entity {
+                urn type
+                ... on GlossaryTerm { properties { name } }
+                ... on GlossaryNode { properties { name } }
+              }
+            }
+          }
+        }
+        ... on GlossaryNode {
+          properties { name description customProperties { key value } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+              values {
+                ... on StringValue { stringValue }
+                ... on NumberValue { numberValue }
+              }
+              associatedUrn
+            }
+          }
+          parentNodes {
+            nodes {
+              urn type
+              ... on GlossaryNode { properties { name description } }
+            }
+          }
+          outgoingRelationships: relationships(input: {
+            types: []
+            direction: OUTGOING
+            start: 0
+            count: 100
+            includeSoftDelete: false
+          }) {
+            total
+            relationships {
+              type direction
+              entity {
+                urn type
+                ... on GlossaryTerm { properties { name } }
+                ... on GlossaryNode { properties { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+
 const datahubGlossaryQuery = `
 query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
   scrollAcrossEntities(input: $input) {
@@ -13014,7 +13116,7 @@ export async function startPocServer({ stateStore } = {}) {
   async function collectGlossaryInventorySeam(authorityPin, inventory) {
     const collectMetadata = createK9MetadataCollector({
       refreshGraphql: datahubRefreshGraphql,
-      glossaryQuery: datahubGlossaryQuery,
+      glossaryQuery: datahubK9GlossaryQuery,
       glossaryTermQuery: datahubGlossaryTermByUrnQuery,
       relationshipsQuery: datahubEntityRelationshipsQuery,
       buildScrollVariables: buildK9GlossaryScrollVariables,
