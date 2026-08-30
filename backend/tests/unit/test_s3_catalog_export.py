@@ -291,7 +291,7 @@ async def test_head_and_presign_download_preserve_integrity_metadata_and_safe_fi
     url = await store.presign_download(
         bucket="catalog-exports",
         object_key="workspace/export.csv",
-        download_name='report"\r\nforged.csv',
+        download_name='보고서/분기 "\r\nforged.csv',
         expires_seconds=60,
     )
 
@@ -308,7 +308,10 @@ async def test_head_and_presign_download_preserve_integrity_metadata_and_safe_fi
                 "Params": {
                     "Bucket": "catalog-exports",
                     "Key": "workspace/export.csv",
-                    "ResponseContentDisposition": ('attachment; filename="reportforged.csv"'),
+                    "ResponseContentDisposition": (
+                        "attachment; filename*=UTF-8''"
+                        "%EB%B3%B4%EA%B3%A0%EC%84%9C%2F%EB%B6%84%EA%B8%B0%20forged.csv"
+                    ),
                 },
                 "ExpiresIn": 60,
                 "HttpMethod": "GET",

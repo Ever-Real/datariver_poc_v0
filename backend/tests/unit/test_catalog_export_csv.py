@@ -40,14 +40,16 @@ def _row(**changes: object) -> CatalogExportCsvRow:
 
 
 def _parse(chunks: list[bytes]) -> list[list[str]]:
-    return list(csv.reader(StringIO(b"".join(chunks).decode("utf-8"), newline="")))
+    return list(csv.reader(StringIO(b"".join(chunks).decode("utf-8-sig"), newline="")))
 
 
 def test_catalog_export_csv_has_fixed_schema_utf8_and_rfc4180_escaping() -> None:
     chunks = list(iter_catalog_export_csv([_row()]))
 
     assert CSV_SAFETY_VERSION == "csv-safe-v1"
-    assert chunks[0] == (",".join(CATALOG_EXPORT_CSV_HEADERS) + "\r\n").encode()
+    assert chunks[0] == b"\xef\xbb\xbf" + (
+        ",".join(CATALOG_EXPORT_CSV_HEADERS) + "\r\n"
+    ).encode()
     assert all(chunk.endswith(b"\r\n") for chunk in chunks)
     assert len(chunks) == 2
     assert _parse(chunks) == [
@@ -131,7 +133,7 @@ def test_catalog_export_csv_serializes_nullable_values_as_empty_cells() -> None:
 def test_catalog_export_csv_rejects_nul_instead_of_sanitizing_it() -> None:
     chunks = iter_catalog_export_csv([_row(description="hidden\x00suffix")])
 
-    assert next(chunks).startswith(b"asset_id,")
+    assert next(chunks).startswith(b"\xef\xbb\xbfasset_id,")
     with pytest.raises(ValidationError, match="NUL"):
         next(chunks)
 
@@ -152,4 +154,4 @@ def test_catalog_export_csv_output_and_row_chunking_are_deterministic() -> None:
     assert first == second
     assert len(first) == 1 + len(rows)
     assert first[1] != first[2]
-    assert b"\xef\xbb\xbf" not in first[0]
+    assert first[0].startswith(b"\xef\xbb\xbf")

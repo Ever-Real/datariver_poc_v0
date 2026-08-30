@@ -52,7 +52,7 @@ class CatalogExportCsvRow:
 def iter_catalog_export_csv(rows: Iterable[CatalogExportCsvRow]) -> Iterator[bytes]:
     """Yield deterministic RFC 4180 UTF-8 header and row chunks."""
 
-    yield catalog_export_csv_header()
+    yield b"\xef\xbb\xbf" + catalog_export_csv_header()
     for row in rows:
         yield encode_catalog_export_csv_row(row)
 

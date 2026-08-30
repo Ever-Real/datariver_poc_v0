@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import urllib.parse
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -544,6 +545,7 @@ class S3ObjectStore:
         if not 60 <= expires_seconds <= 900:
             raise ValueError("Presigned download URL lifetime must be between 60 and 900 seconds.")
         safe_name = download_name.replace('"', "").replace("\r", "").replace("\n", "")[:500]
+        encoded_name = urllib.parse.quote(safe_name, safe="")
         try:
             return await asyncio.to_thread(
                 partial(
@@ -552,7 +554,9 @@ class S3ObjectStore:
                     Params={
                         "Bucket": bucket,
                         "Key": object_key,
-                        "ResponseContentDisposition": f'attachment; filename="{safe_name}"',
+                        "ResponseContentDisposition": (
+                            f"attachment; filename*=UTF-8''{encoded_name}"
+                        ),
                     },
                     ExpiresIn=expires_seconds,
                     HttpMethod="GET",

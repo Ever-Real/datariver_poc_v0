@@ -19,21 +19,33 @@ const completed = {
 
 describe('CatalogExportControl', () => {
   it('places separate compact CSV and Excel actions in the search toolbar', async () => {
-    const request = vi.fn().mockResolvedValue({
-      export_id: completed.export_id, job_id: completed.job_id, state: 'QUEUED',
+    const request = vi.fn((path: string, _options?: { body: string }) => {
+      void _options
+      if (path.endsWith('/download')) {
+        return Promise.resolve({ url: 'https://objects.example.test/export.xlsx?signature=short', expires_seconds: 60 })
+      }
+      return Promise.resolve({
+        export_id: completed.export_id, job_id: completed.job_id, state: 'COMPLETED',
+      })
     })
+    const navigate = vi.fn()
     render(<CatalogExportControl
       client={{ request } as unknown as ApiClient}
       compact
       workerEnabled
       query="wafer"
+      navigate={navigate}
     />)
 
     expect(screen.getByRole('button', { name: 'CSV 저장' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Excel 저장' }))
     await waitFor(() => expect(request).toHaveBeenCalled())
-    const [, options] = request.mock.calls[0] as [string, { body: string }]
-    expect(JSON.parse(options.body)).toMatchObject({ format: 'XLSX' })
+    const [, options] = request.mock.calls[0] ?? []
+    expect(JSON.parse(options?.body ?? '{}')).toMatchObject({ format: 'XLSX' })
+
+    expect(await screen.findByRole('button', { name: 'XLSX 다운로드' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'XLSX 다운로드' }))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://objects.example.test/export.xlsx?signature=short'))
   })
 
   it('fails closed with an explicit operator explanation when the worker is disabled', () => {
