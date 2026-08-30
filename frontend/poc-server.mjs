@@ -168,6 +168,7 @@ const maximumChatMemoryTurns = 5
 const maximumChatMemoryTurnQuestionCharacters = 900
 const maximumChatMemoryTurnAnswerCharacters = 1_300
 const catalogSearchFieldNames = new Set(['SCHEMA', 'TABLE', 'COLUMN', 'TAG', 'TERM', 'DESCRIPTION'])
+const supportedDatahubClassifications = new Set(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
 const cursorEntries = new Map()
 let inventorySnapshot
 let inventoryRefreshPromise
@@ -500,9 +501,10 @@ function rejectProtectedAccessClaims(request, url, { allowSystemFilter = false }
   }
 }
 
-function rejectProtectedAccessBodyClaims(body) {
+function rejectProtectedAccessBodyClaims(body, { allowPriority = false } = {}) {
   const alwaysProtected = new Set(['actor', 'actor_ref', 'policy_hash', 'basis_hash', 'occurred_at'])
   const topLevelProtected = new Set(['subject_id', 'role', 'system_id', 'responsibility', 'priority'])
+  if (allowPriority) topLevelProtected.delete('priority')
   if (Object.keys(body).some((key) => topLevelProtected.has(key.toLowerCase()))) {
     throw accessError(400, 'PROTECTED_CLAIM', 'Browser-supplied identity and authorization claims are forbidden.')
   }
@@ -3884,10 +3886,21 @@ async function currentDatahubTables(tableUrns, { signal } = {}) {
     }
     data.entities.forEach((entity, index) => {
       if (!isCurrentDatahubTable(entity, batch[index], { entityExists: entity !== null })) return
+      const references = tagReferences(entity)
+      const classificationTags = references.filter((reference) => (
+        reference.name.trim().toUpperCase().startsWith('CLASSIFICATION:')
+      ))
+      if (classificationTags.length !== 1) return
+      const classification = classificationTags[0].name
+        .slice(classificationTags[0].name.indexOf(':') + 1)
+        .trim()
+        .toUpperCase()
+      if (!supportedDatahubClassifications.has(classification)) return
       confirmed.push({
         id: entity.urn,
         dataset_kind: 'TABLE',
-        security_grade: tableSecurityGrade({ tag_references: tagReferences(entity) }),
+        security_grade: tableSecurityGrade({ tag_references: references }),
+        classification,
       })
     })
   }
@@ -6235,19 +6248,53 @@ function chatRetrievalQueries(question) {
     .slice(0, 4)
 }
 
-function chatCatalogNameAnchor(question) {
+function chatCatalogNameAnchor(question, evidence) {
   const identifierCandidates = [...question.matchAll(/[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+/g)]
     .map((match) => match[0])
     .filter((value) => value.length <= 100)
   const mixedLanguageCandidates = [...question.matchAll(/[A-Za-z][A-Za-z0-9]{2,99}(?=[가-힣])/gu)]
     .map((match) => match[0])
-  return [...identifierCandidates, ...mixedLanguageCandidates]
-    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0] || ''
+  const naturalLanguageCandidates = question.match(/[A-Za-z][A-Za-z0-9_-]{2,99}/g) || []
+  const normalizedIdentifierCandidates = new Set(identifierCandidates.map((value) => (
+    value.normalize('NFKC').toLocaleLowerCase()
+  )))
+  const candidates = [...new Set([
+    ...identifierCandidates,
+    ...mixedLanguageCandidates,
+    ...naturalLanguageCandidates,
+  ].map((value) => value.normalize('NFKC').toLocaleLowerCase()))]
+  const identities = evidence.flatMap((item) => (
+    isCanonicalDatahubDatasetUrn(item?.external_urn || item?.id)
+      ? [
+          ...catalogIdentityValues(item),
+          normalizedCatalogIdentifier(item.external_urn || item.id),
+        ]
+      : []
+  ))
+  return candidates.flatMap((candidate, ordinal) => {
+    const matchCount = identities.filter((identity) => (
+      identity === candidate
+      || identity.split(/[^a-z0-9_-]+/u).some((segment) => (
+        segment === candidate || segment.split(/[_-]+/u).includes(candidate)
+      ))
+    )).length
+    return matchCount ? [{
+      candidate,
+      matchCount,
+      identifierPriority: normalizedIdentifierCandidates.has(candidate) ? 1 : 0,
+      ordinal,
+    }] : []
+  }).sort((left, right) => (
+    right.identifierPriority - left.identifierPriority
+    || right.matchCount - left.matchCount
+    || right.candidate.length - left.candidate.length
+    || left.ordinal - right.ordinal
+  ))[0]?.candidate || ''
 }
 
 function chatCatalogSearchScope(question, evidence) {
   if (!evidence.some((item) => isCanonicalDatahubDatasetUrn(item?.external_urn || item?.id))) return null
-  const anchor = chatCatalogNameAnchor(question)
+  const anchor = chatCatalogNameAnchor(question, evidence)
   return {
     query: anchor,
     search_fields: anchor ? ['TABLE'] : [],
@@ -11532,6 +11579,72 @@ async function tableSystemMappingApi(request, response, url, context) {
   return json(response, 200, { version, changed: applied.changed }, { ETag: `"${version}"` })
 }
 
+function adminSystemIdempotencyKey(request) {
+  const value = request.headers['idempotency-key']
+  if (typeof value !== 'string' || value.length < 16 || value.length > 200 || hasAccessControlCharacter(value)) {
+    throw accessError(428, 'IDEMPOTENCY_KEY_REQUIRED', 'A bounded Idempotency-Key is required for System creation.')
+  }
+  return value
+}
+
+function generatedSystemCode(name, identityHash) {
+  const normalized = name.normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase()
+  const base = /^[A-Z]/.test(normalized) ? normalized.slice(0, 72) : 'SYSTEM'
+  return `${base}_${identityHash.slice(0, 12).toUpperCase()}`
+}
+
+async function adminSystemsApi(request, response, context) {
+  if (request.method !== 'POST') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'System creation supports POST only.')
+  }
+  const snapshot = await context.stateStore.readChangeHistoryAccess()
+  const document = changeHistoryDocumentFromSnapshot(snapshot)
+  requireActiveAccessAdmin(document, context.principal.subjectId)
+  const idempotencyKey = adminSystemIdempotencyKey(request)
+  const body = await bodyJson(request)
+  exactBodyKeys(body, ['name', 'description'], ['name'])
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const description = body.description === undefined
+    ? ''
+    : typeof body.description === 'string' ? body.description.trim() : null
+  if (!name || name.length > 255 || description === null || description.length > 2_000
+    || hasAccessControlCharacter(name) || hasAccessControlCharacter(description)) {
+    throw accessError(400, 'SYSTEM_INPUT_INVALID', 'System name and description are invalid or too long.')
+  }
+  const identityHash = canonicalHash({
+    actor_subject_id: context.principal.subjectId,
+    idempotency_key: idempotencyKey,
+  })
+  const systemId = `system-${identityHash.slice(0, 32)}`
+  const code = generatedSystemCode(name, identityHash)
+  const replay = document.systems.find((system) => system.system_id === systemId)
+  if (replay) {
+    if (replay.code !== code || replay.name !== name || replay.description !== description) {
+      throw accessError(409, 'SYSTEM_IDEMPOTENCY_CONFLICT', 'The Idempotency-Key is already bound to another System request.')
+    }
+    return json(response, 200, replay, { ETag: `"${snapshot.access.version}"` })
+  }
+  if (document.systems.some((system) => system.code.toLocaleLowerCase() === code.toLocaleLowerCase())) {
+    throw accessError(409, 'SYSTEM_CODE_CONFLICT', 'The generated System code conflicts with an existing System.')
+  }
+  const system = { system_id: systemId, code, name, description, active: true, version: 1 }
+  document.systems.push(system)
+  let result
+  try {
+    result = await writeAdminAccessDocument(context, snapshot, document)
+  } catch (error) {
+    if (error?.code === 'STATE_VERSION_STALE') {
+      throw accessError(409, 'ACCESS_VERSION_STALE', 'The access authority changed while the System was created. Refresh and retry.')
+    }
+    throw error
+  }
+  return json(response, 201, system, { ETag: `"${result.accessVersion}"` })
+}
+
 async function featureSecurityPolicyApi(request, response, context) {
   const snapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
   const document = normalizePersistedFeatureSecurityPolicy(snapshot.value)
@@ -11635,6 +11748,27 @@ function crChangeDocument(value) {
     throw accessError(400, 'CR_INPUT_INVALID', 'change_document is too large.')
   }
   return structuredClone(value)
+}
+
+function crOptionalText(value, field, maximum) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string' || value.length > maximum || hasAccessControlCharacter(value)) {
+    throw accessError(400, 'CR_INPUT_INVALID', `${field} must contain at most ${maximum} characters.`)
+  }
+  return value.trim()
+}
+
+function crOptionalDate(value, field) {
+  if (value === undefined || value === null || value === '') return null
+  const match = typeof value === 'string' ? value.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null
+  const parsed = match ? new Date(`${value}T00:00:00.000Z`) : null
+  if (!match || !parsed || Number.isNaN(parsed.getTime())
+    || parsed.getUTCFullYear() !== Number(match[1])
+    || parsed.getUTCMonth() + 1 !== Number(match[2])
+    || parsed.getUTCDate() !== Number(match[3])) {
+    throw accessError(400, 'CR_INPUT_INVALID', `${field} must be an ISO calendar date.`)
+  }
+  return value
 }
 
 async function bulkCandidateChangeRequestApi(request, response, url, context) {
@@ -11868,12 +12002,28 @@ async function crCreateApi(request, response, url, context) {
   rejectProtectedAccessClaims(request, url)
   if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'CR create supports POST only.')
   const body = await bodyJson(request)
-  rejectProtectedAccessBodyClaims(body)
-  exactCrBodyKeys(body, ['table_urn', 'responsible_system_id', 'title', 'description', 'change_document'])
+  rejectProtectedAccessBodyClaims(body, { allowPriority: true })
+  exactCrBodyKeys(body, [
+    'table_urn', 'responsible_system_id', 'title', 'request_date', 'request_department',
+    'request_reason', 'request_content', 'requested_due_date', 'priority', 'urgency',
+    'security_level', 'change_document',
+  ])
   const tableUrn = crBoundedText(body.table_urn, 'table_urn', 4_096)
   const requestedSystemId = crBoundedText(body.responsible_system_id, 'responsible_system_id', 200)
   const title = crBoundedText(body.title, 'title', 500)
-  const description = crBoundedText(body.description, 'description', 10_000)
+  const requestDate = crOptionalDate(body.request_date, 'request_date')
+  const requestDepartment = crOptionalText(body.request_department, 'request_department', 500)
+  const requestReason = crBoundedText(body.request_reason, 'request_reason', 2_000)
+  const requestContent = crOptionalText(body.request_content, 'request_content', 10_000)
+  const requestedDueDate = crOptionalDate(body.requested_due_date, 'requested_due_date')
+  const priority = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'].includes(body.priority) ? body.priority : null
+  const urgency = ['NORMAL', 'URGENT', 'EMERGENCY'].includes(body.urgency) ? body.urgency : null
+  const requestedClassification = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'].includes(body.security_level)
+    ? body.security_level
+    : null
+  if (!priority || !urgency || !requestedClassification) {
+    throw accessError(400, 'CR_INPUT_INVALID', 'priority, urgency, and security_level must use supported values.')
+  }
   const changeDocument = crChangeDocument(body.change_document)
 
   // Table access: grant + grade + feature policy cell.
@@ -11893,6 +12043,12 @@ async function crCreateApi(request, response, url, context) {
     return problem(response, 400, 'CR_TABLE_INVALID', 'Target must be an active TABLE with a defined security grade.')
   }
   const tableGrade = asset.security_grade
+  const tableClassification = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'].includes(asset.classification)
+    ? asset.classification
+    : null
+  if (!tableClassification || requestedClassification !== tableClassification) {
+    return problem(response, 409, 'CR_CLASSIFICATION_MISMATCH', 'The requested classification must match the current DataHub Table classification.')
+  }
   assertCrTableAccess({ principal: context.principal, tableUrn, tableGrade, grantedTableUrns: grantedSet, featurePolicyDocument, featureSecurityAllowed, securityGradeRank })
 
   // Exact Table-System resolution.
@@ -11912,7 +12068,7 @@ async function crCreateApi(request, response, url, context) {
     number: `CR-${crId.slice(0, 8).toUpperCase()}`,
     request_type: 'CHANGE_INTAKE',
     title,
-    description,
+    description: requestContent,
     state: 'REGISTERED',
     requester_id: context.principal.subjectId,
     requester_department_id: null,
@@ -11920,10 +12076,10 @@ async function crCreateApi(request, response, url, context) {
     current_round_number: 1,
     revision_allowed: false,
     created_at: occurredAt,
-    requested_due_date: null,
-    priority: null,
-    urgency: null,
-    classification: tableGrade,
+    requested_due_date: requestedDueDate,
+    priority,
+    urgency,
+    classification: tableClassification,
     version: 1,
     items: [{
       id: randomUUID(),
@@ -11937,7 +12093,7 @@ async function crCreateApi(request, response, url, context) {
       target_system_id: resolvedSystemId,
       target_domain_id: null,
       target_owner_department_id: null,
-      target_classification: tableGrade,
+      target_classification: tableClassification,
       target_lifecycle: 'ACTIVE',
       target_source_version: 'poc-manual',
       target_observed_at: occurredAt,
@@ -11953,17 +12109,23 @@ async function crCreateApi(request, response, url, context) {
       submitted_by: context.principal.subjectId,
       submitted_at: occurredAt,
       closed_at: null,
-      evidence_hash: canonicalHash({ table_urn: tableUrn, responsible_system_id: resolvedSystemId, title, description, change_document: changeDocument }),
+      evidence_hash: canonicalHash({
+        table_urn: tableUrn, responsible_system_id: resolvedSystemId, title,
+        request_date: requestDate, request_department: requestDepartment,
+        request_reason: requestReason, request_content: requestContent,
+        requested_due_date: requestedDueDate, priority, urgency,
+        classification: tableClassification, change_document: changeDocument,
+      }),
       revision_kind: 'INITIAL',
       title,
-      request_date: null,
-      request_department: '',
-      request_reason: description.slice(0, 2_000),
-      request_content: description,
-      requested_due_date: null,
-      priority: null,
-      urgency: null,
-      classification: tableGrade,
+      request_date: requestDate,
+      request_department: requestDepartment,
+      request_reason: requestReason,
+      request_content: requestContent,
+      requested_due_date: requestedDueDate,
+      priority,
+      urgency,
+      classification: tableClassification,
       selected_system_id: resolvedSystemId,
     }],
   }
@@ -12105,6 +12267,9 @@ async function api(request, response, url, context) {
   }
   if (url.pathname === '/api/v1/admin/table-system-mappings') {
     return tableSystemMappingApi(request, response, url, context)
+  }
+  if (url.pathname === '/api/v1/admin/systems') {
+    return adminSystemsApi(request, response, context)
   }
   if (url.pathname === '/api/v1/admin/feature-security-policy') {
     return featureSecurityPolicyApi(request, response, context)

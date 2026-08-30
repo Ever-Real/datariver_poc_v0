@@ -182,6 +182,27 @@ function installGatewayMock() {
         headers: { 'Content-Type': 'application/json', ETag: `"${access.version}"` },
       }))
     }
+    if (url.pathname === '/api/v1/admin/systems' && (options?.method ?? 'GET') === 'POST') {
+      if (typeof options?.body !== 'string') throw new Error('Expected a System create JSON body')
+      const body = JSON.parse(options.body) as Record<string, unknown>
+      if ('code' in body) throw new Error('System code must not be supplied by the browser')
+      if (typeof body.name !== 'string' || typeof body.description !== 'string') {
+        throw new Error('Expected validated System name and description')
+      }
+      const system = {
+        system_id: 'system-generated-test-identity',
+        code: 'MANUFACTURING_EXECUTION_TEST',
+        name: body.name,
+        description: body.description,
+        active: true,
+        version: 1,
+      }
+      access = { ...access, systems: [...access.systems, system], version: access.version + 1 }
+      return Promise.resolve(new Response(JSON.stringify(system), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json', ETag: `"${access.version}"` },
+      }))
+    }
     if (url.pathname.startsWith('/api/v1/change-history/') || url.pathname.includes('/change-history')) {
       const headers = new Headers(options?.headers)
       return Promise.resolve(new Response(JSON.stringify({
@@ -963,8 +984,9 @@ describe('POC live-provider compatibility adapter', () => {
     const client = useStableApiClient()
     const system = await client.request<{ system_id: string }>('/admin/systems', {
       method: 'POST',
+      idempotencyKey: 'system-create-exact-schema-scope',
       body: JSON.stringify({
-        code: 'FAB', name: 'Fabrication', description: 'Canonical business System',
+        name: 'Fabrication', description: 'Canonical business System',
       }),
     })
     expect(system.system_id).not.toBe('postgres')
@@ -1034,7 +1056,8 @@ describe('POC live-provider compatibility adapter', () => {
   it('fills the ten-column CR overview with initial/resubmitted stages and excludes terminal rejection', async () => {
     const client = useStableApiClient()
     const system = await client.request<{ system_id: string }>('/admin/systems', {
-      method: 'POST', body: JSON.stringify({ code: 'OVERVIEW', name: 'Overview System', description: '' }),
+      method: 'POST', idempotencyKey: 'system-create-change-overview',
+      body: JSON.stringify({ name: 'Overview System', description: '' }),
     })
     await client.request(`/admin/systems/${system.system_id}/schema-scopes`, {
       method: 'PATCH',
@@ -1288,7 +1311,18 @@ describe('POC live-provider compatibility adapter', () => {
   it('returns a contract-valid live DataHub quality workspace without fabricated runs', async () => {
     const client = useStableApiClient()
     const api = new QualityApi(client)
+    const capability = await api.capability()
+    const definitions = await api.ruleDefinitions()
     const workspace = await api.assetWorkspace(liveAssets[0]!.id, 'a'.repeat(64))
+    expect(capability.axes.find((axis) => axis.id === 'manual_execution')).toMatchObject({
+      state: 'UNAVAILABLE',
+      reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
+    })
+    expect(definitions.items.find((item) => item.kind === 'REGEX')).toMatchObject({
+      available: false,
+      reason_code: 'QUALITY_REGEX_EXECUTION_UNAVAILABLE',
+      parameter_contract: {},
+    })
     expect(workspace.asset.asset_id).toBe(liveAssets[0]!.id)
     expect(workspace.authoring).toMatchObject({
       state: 'UNAVAILABLE',
@@ -1303,6 +1337,13 @@ describe('POC live-provider compatibility adapter', () => {
     ])
     expect(workspace.rule_sets).toEqual([])
     expect(workspace.runs).toEqual([])
+    await expect(api.requestManualRun('rule-set-not-persisted', 'manual-run-deny-test')).rejects.toThrow(
+      'canonical Run/outbox',
+    )
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
+      return url.includes('datariver_quality_dispatch')
+    })).toBe(false)
   })
 
   it('preserves server-selected graph routing and lineage evidence in Chat', async () => {
@@ -1472,9 +1513,10 @@ describe('POC live-provider compatibility adapter', () => {
     expect(roleUpdate).toMatchObject({ active: true, role: 'developer' })
 
     const system = await client.request<{ system_id: string; code: string }>('/admin/systems', {
-      method: 'POST', body: JSON.stringify({ code: 'MES', name: 'Manufacturing Execution', description: 'POC system' }),
+      method: 'POST', idempotencyKey: 'system-create-manufacturing-execution',
+      body: JSON.stringify({ name: 'Manufacturing Execution', description: 'POC system' }),
     })
-    expect(system.code).toBe('MES')
+    expect(system.code).toBe('MANUFACTURING_EXECUTION_TEST')
     const systems = await client.request<{ items: Array<{ system_id: string }> }>('/admin/systems?limit=25')
     expect(systems.items.map((item) => item.system_id)).toContain(system.system_id)
     const assignment = await client.request<{ system_version: number }>(`/admin/systems/${system.system_id}/assignees`, {

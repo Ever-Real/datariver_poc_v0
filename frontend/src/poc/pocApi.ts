@@ -2773,7 +2773,14 @@ class PocApiClient {
         table_urn: targets[0].asset_id,
         responsible_system_id: requestBody.system_id,
         title: requestBody.title,
-        description: requestBody.request_content,
+        request_date: requestBody.request_date,
+        request_department: requestBody.request_department,
+        request_reason: requestBody.request_reason,
+        request_content: requestBody.request_content,
+        requested_due_date: requestBody.requested_due_date,
+        priority: requestBody.priority,
+        urgency: requestBody.urgency,
+        security_level: requestBody.security_level,
         change_document: changeAfterDocument(targets[0]),
       }
       const response = await gatewayRequestWithMeta<{ version: number; change_request: ChangeRequestRecord }>('/poc-api/change-requests', {
@@ -3052,9 +3059,7 @@ class PocApiClient {
         rule_authoring: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
         review: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
         activation: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
-        manual_execution: runtimeFlags().airflow
-          ? { state: 'AVAILABLE', reason_code: null }
-          : { state: 'UNAVAILABLE', reason_code: 'AIRFLOW_NOT_CONFIGURED' },
+        manual_execution: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
         scheduling: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
         operations: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
       }
@@ -3101,7 +3106,7 @@ class PocApiClient {
       items: [
         { kind: 'NOT_NULL', available: true, reason_code: null, parameter_contract: {} },
         { kind: 'RANGE', available: true, reason_code: null, parameter_contract: { minimum: 'number?', maximum: 'number?' } },
-        { kind: 'REGEX', available: true, reason_code: null, parameter_contract: { pattern: 'string' } },
+        { kind: 'REGEX', available: false, reason_code: 'QUALITY_REGEX_EXECUTION_UNAVAILABLE', parameter_contract: {} },
       ],
     }
     if (path === '/quality/assets/summary-batch') {
@@ -3171,15 +3176,7 @@ class PocApiClient {
     if (path === '/quality/common-rule-templates') return { items: [], cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
     if (path === '/quality/rule-sets') return qualityList([], url)
     if (path === '/quality/runs' && method === 'POST') {
-      const runId = nextId('quality-run')
-      if (runtimeFlags().airflow) {
-        await gatewayRequest('/poc-api/airflow/dags/datariver_quality_dispatch/runs', {
-          method: 'POST',
-          signal: options.signal,
-          body: JSON.stringify({ conf: { poc_run_id: runId, ...jsonBody(options) } }),
-        })
-      }
-      return { run_id: runId, state: 'QUEUED', created_at: new Date().toISOString(), replayed: false }
+      throw new Error('품질 제어 plane과 canonical Run/outbox가 설정되지 않아 수동 실행을 요청할 수 없습니다.')
     }
     if (path === '/quality/runs') return qualityList([], url)
     if (/^\/quality\/runs\/[^/]+\/results$/.test(path)) return qualityList([], url)
@@ -4527,20 +4524,18 @@ class PocApiClient {
     }
     if (path === '/admin/systems' && method === 'POST') {
       const body = jsonBody(options)
-      const code = responseString(body.code, '').trim()
       const name = responseString(body.name, '').trim()
-      if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(code) || !name) throw new Error('유효한 시스템 코드와 이름이 필요합니다.')
-      const system = {
-        system_id: `poc-system-${crypto.randomUUID()}`, code, name,
-        description: responseString(body.description, '').trim(),
-        active: true, version: 1,
+      const description = responseString(body.description, '').trim()
+      if (!name || name.length > 255 || description.length > 2_000) {
+        throw new Error('유효한 시스템 이름과 설명이 필요합니다.')
       }
-      await this.mutateAccessAuthority((document) => {
-        if (document.systems.some((item) => item.code.toLocaleLowerCase() === code.toLocaleLowerCase())) {
-          throw new Error('이미 등록된 시스템 코드입니다.')
-        }
-        document.systems.push(system)
+      if (!options.idempotencyKey) throw new Error('시스템 생성 idempotency key가 필요합니다.')
+      const system = await gatewayRequest<ReturnType<typeof pocSystemEntry>>('/api/v1/admin/systems', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': options.idempotencyKey },
+        body: JSON.stringify({ name, description }),
       })
+      await this.readAccessAuthority()
       return pocSystemEntry(system)
     }
     const systemDetailPath = path.match(/^\/admin\/systems\/([^/]+)$/)

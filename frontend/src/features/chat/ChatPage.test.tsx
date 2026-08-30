@@ -468,6 +468,49 @@ describe('ChatPage', () => {
     expect(destination.searchParams.has('search_fields')).toBe(false)
   })
 
+  it('exposes the server-owned Catalog handoff even when the bounded preview has no openable Catalog item', async () => {
+    const discoveryResponse: ChatResponse = {
+      ...response,
+      discovery: {
+        items: [{
+          ...response.evidence[0]!,
+          chunk_id: 'governance-preview',
+          resource_id: 'governance-preview',
+          source_type: 'GOVERNANCE_DOCUMENT',
+          rank: 1,
+        }],
+        returned_count: 1,
+        limit: 8,
+        truncated: true,
+        retrieved_count: 1,
+        reranked_count: 1,
+        answer_context_count: 1,
+        catalog_search_query: 'generic inspection records',
+        catalog_search_fields: ['TABLE', 'DESCRIPTION'],
+        total: null,
+        total_exact: false,
+        next_cursor: null,
+      },
+    }
+    const { client: baseClient } = chatClient()
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream: vi.fn(() => Promise.resolve(discoveryResponse)),
+    } as unknown as ApiClient} />)
+
+    await screen.findByText('주문 데이터')
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), {
+      target: { value: '검사 기록을 찾아줘' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    fireEvent.click(await screen.findByRole('button', { name: '같은 카탈로그 후보 범위 전체 보기' }))
+
+    const destination = new URL(window.location.href)
+    expect(destination.searchParams.get('page')).toBe('catalog')
+    expect(destination.searchParams.get('q')).toBe('generic inspection records')
+    expect(destination.searchParams.get('search_fields')).toBe('TABLE,DESCRIPTION')
+  })
+
   it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {
     let resolveResult: ((value: ChatResponse) => void) | undefined
     const { client: baseClient } = chatClient()

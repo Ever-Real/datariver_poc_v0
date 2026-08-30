@@ -66,6 +66,7 @@ import type {
   PocFeatureSecurityPolicy,
   PocFeatureSecurityPolicyUpdate,
   SiteBranding,
+  SiteBrandingBadgeUpdate,
 } from '../../api/types'
 
 type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
@@ -186,6 +187,7 @@ export class AdminApi {
       site_name: string | null
       logo: { asset_id: string } | { mime_type: string; data_base64: string } | null
       favicon: { asset_id: string } | { mime_type: string; data_base64: string } | null
+      custom_badges: SiteBrandingBadgeUpdate[] | null
       restore_default: boolean
     },
     etag: string,

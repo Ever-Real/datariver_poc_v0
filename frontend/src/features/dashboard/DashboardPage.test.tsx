@@ -210,7 +210,7 @@ function renderDashboard(client: ApiClient, onNavigate = vi.fn(), onStartChat?: 
 describe('DashboardPage', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('renders source-derived catalog and quality dashboard facts', async () => {
+  it('renders four compact summaries and four approved-source analytics without the legacy modal or Governance Center', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary())
       if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
@@ -222,150 +222,33 @@ describe('DashboardPage', () => {
     renderDashboard(apiClient(request), navigate)
 
     expect(await screen.findByText('설명 완성도 70%')).toBeInTheDocument()
-    expect(screen.getAllByText('10')).toHaveLength(1)
     expect(screen.getByText('현재 용어사전의 조회 가능한 용어')).toBeInTheDocument()
     expect(await screen.findByText('룰셋 적용 7 / 10 테이블')).toBeInTheDocument()
-    expect(screen.getAllByText('70')).toHaveLength(1)
-    expect(screen.queryByText('94.2')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '1W' })).toBeDisabled()
-
-    const totalDatasets = screen.getByRole('button', { name: /Total Datasets.*10.*Assets/i })
-    totalDatasets.focus()
+    const totalDatasets = screen.getByRole('link', { name: /Total Datasets.*10.*Assets/i })
     fireEvent.click(totalDatasets)
-    expect(await screen.findByRole('dialog', { name: 'Asset Distribution & Health Metrics by Database' })).toBeInTheDocument()
-    expect(screen.getAllByText('10')).toHaveLength(2)
-    fireEvent.click(screen.getByRole('button', { name: /Platformpostgres10Assets/i }))
-    expect(await screen.findByText('warehouse / core')).toBeInTheDocument()
-    expect(screen.getAllByText('70%')).toHaveLength(2)
-    expect(screen.getByText('0%')).toBeInTheDocument()
-    expect(screen.getByText('40%')).toBeInTheDocument()
-    expect(screen.getByRole('group', { name: '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개' })).toHaveAttribute(
-      'title',
-      '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개',
-    )
-    expect(screen.getByRole('group', { name: '용어 1개 이상 연결 자산(분자) 4개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개' })).toHaveAttribute(
-      'title',
-      '용어 1개 이상 연결 자산(분자) 4개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 10개',
-    )
-    fireEvent.click(screen.getByRole('button', { name: '닫기' }))
-    expect(totalDatasets).toHaveFocus()
+    expect(navigate).toHaveBeenCalledWith('catalog')
+    expect(screen.queryByRole('dialog', { name: /Asset Distribution/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('link', { name: /Business Glossary.*6.*Terms/i }))
     expect(navigate).toHaveBeenCalledWith('glossary')
+    const summaryGrid = totalDatasets.parentElement
+    expect(summaryGrid?.querySelectorAll('.dashboard-stat-card')).toHaveLength(4)
+    expect(screen.getByRole('heading', { name: '전체 Dataset 1주 trend' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Schema별 metadata 등록 현황' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Metadata Audit Summary' })).not.toBeInTheDocument()
-    expect(request).not.toHaveBeenCalledWith('/capabilities')
-    expect(screen.getByRole('link', { name: /접수 대기REGISTERED1/ })).toHaveAttribute(
-      'href',
-      '/?page=change-management&crStateGroup=REGISTERED',
-    )
-    expect(screen.getByRole('link', { name: /검토·진행검토, 테스트, 적용 진행·보완7/ })).toHaveAttribute(
-      'href',
-      '/?page=change-management&crStateGroup=IN_PROGRESS',
-    )
-    expect(screen.getByRole('link', { name: /적용·완료APPLIED, COMPLETED2/ })).toHaveAttribute(
-      'href',
-      '/?page=change-management&crStateGroup=COMPLETED',
-    )
-    expect(screen.getByRole('link', { name: /반려·종료REJECTED, CANCELLED2/ })).toHaveAttribute(
-      'href',
-      '/?page=change-management&crStateGroup=CLOSED',
-    )
+    expect(screen.getByRole('heading', { name: '최근 7일 변경 대비 CR 처리율' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Governance Center' })).not.toBeInTheDocument()
+
+    const schemaSection = screen.getByRole('heading', { name: 'Schema별 metadata 등록 현황' }).closest('section')!
+    expect(within(schemaSection).getByText('warehouse / core')).toBeInTheDocument()
+    expect(within(schemaSection).getByRole('group', { name: /설명 보유 자산.*7개.*10개/ })).toHaveTextContent('70%')
+    expect(within(schemaSection).getByRole('group', { name: /태그 1개 이상 보유 자산.*0개.*10개/ })).toHaveTextContent('0%')
+    expect(within(schemaSection).getByRole('group', { name: /용어 1개 이상 연결 자산.*4개.*10개/ })).toHaveTextContent('40%')
+    const qualitySection = screen.getByRole('heading', { name: 'Data Quality Dashboard' }).closest('section')!
+    expect(within(qualitySection).getByText('70%')).toBeInTheDocument()
+    expect(within(qualitySection).getByText('3')).toBeInTheDocument()
   })
 
-  it('shows UNKNOWN only when the current active asset denominator is zero', async () => {
-    const request = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/operations/dashboard') return Promise.resolve(summary({
-        catalog_asset_count: 0,
-        catalog_described_asset_count: 0,
-        catalog_schema_metrics: [{
-          platform: 'postgres',
-          database_name: 'warehouse',
-          schema_name: 'empty',
-          asset_count: 0,
-          described_asset_count: 0,
-          tagged_asset_count: 0,
-          term_asset_count: 0,
-        }],
-      }))
-      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
-      if (path === '/quality/capability') return Promise.resolve(capability())
-      if (path === '/quality/dashboard') return Promise.resolve(quality())
-      throw new Error(`Unexpected request: ${path}`)
-    })
-    renderDashboard(apiClient(request))
-
-    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*0.*Assets/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Platformpostgres0Assets/i }))
-
-    expect(screen.getAllByText('UNKNOWN')).toHaveLength(3)
-    const explanation = '태그 1개 이상 보유 자산(분자) 0개 / 현재 Workspace 내 이 항목의 활성·비삭제 자산(분모) 0개 · 분모가 0이므로 계산할 수 없습니다.'
-    expect(screen.getByRole('group', { name: explanation })).toHaveAttribute('title', explanation)
-  })
-
-  it('states the bounded hierarchy result instead of silently omitting it', async () => {
-    const request = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/operations/dashboard') return Promise.resolve(summary({ catalog_schema_metrics_truncated: true }))
-      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
-      if (path === '/quality/capability') return Promise.resolve(capability())
-      if (path === '/quality/dashboard') return Promise.resolve(quality())
-      throw new Error(`Unexpected request: ${path}`)
-    })
-    renderDashboard(apiClient(request))
-
-    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*10.*Assets/i }))
-    expect(await screen.findByText(/안전한 화면 한도\(200개\)/)).toBeInTheDocument()
-  })
-
-  it('distinguishes a known zero CR snapshot from an unavailable progress contract', async () => {
-    const request = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/operations/dashboard') return Promise.resolve(summary({
-        changes_by_state: {},
-        change_request_progress: {
-          total: 0,
-          groups: { REGISTERED: 0, IN_PROGRESS: 0, COMPLETED: 0, CLOSED: 0 },
-          complete: true,
-        },
-      }))
-      if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
-      if (path === '/quality/capability') return Promise.resolve(capability())
-      if (path === '/quality/dashboard') return Promise.resolve(quality())
-      throw new Error(`Unexpected request: ${path}`)
-    })
-    const { rerender } = renderDashboard(apiClient(request))
-
-    expect(await screen.findAllByText('0')).toHaveLength(5)
-
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <DashboardPage
-          client={apiClient((path) => path === '/operations/dashboard'
-            ? Promise.resolve(summary({
-              changes_by_state: null,
-              change_request_progress: {
-                total: null,
-                groups: { REGISTERED: null, IN_PROGRESS: null, COMPLETED: null, CLOSED: null },
-                complete: false,
-              },
-            }))
-            : path.startsWith('/change-history/summary?')
-              ? Promise.resolve(changeSummaryForPath(path))
-            : path === '/quality/capability'
-              ? Promise.resolve(capability())
-              : Promise.resolve(quality()))}
-          workspaceId="workspace-two"
-          subjectId="subject-two"
-          securityEpoch={8}
-          authorizationRevision={12}
-          onNavigate={vi.fn()}
-        />
-      </QueryClientProvider>,
-    )
-    expect((await screen.findAllByText('UNKNOWN')).length).toBeGreaterThanOrEqual(5)
-    expect(screen.getByText(/안전한 집계 한도를 초과해 전체성을 확인할 수 없습니다/)).toBeInTheDocument()
-  })
-
-  it('renders the canonical current KST week summary with its exact authorized Table scope and warnings', async () => {
+  it('requests the canonical KST week summary and keeps CR and change-event meanings separate', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-08-30T15:30:00.000Z'))
     const request = vi.fn((path: string): Promise<unknown> => {
@@ -382,26 +265,22 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(request.mock.calls.map(([path]) => path)).toContain(
       '/change-history/summary?week_start=2026-08-31',
     ))
-    const heading = screen.getByRole('heading', { name: '이번 주 데이터 변경' })
-    const section = heading.closest('section')
-    expect(section).not.toBeNull()
-    expect(within(section!).getByText(/현재 사용자가 열람할 수 있으며 시스템에 정확히 연결된 테이블만 집계합니다/)).toBeInTheDocument()
-    expect(within(section!).getByText(/동일한 원본 변경에서 파생된 중복 항목은 한 건으로 계산합니다/)).toBeInTheDocument()
-    expect(within(section!).getByText('[2026-08-31 00:00, 2026-09-07 00:00) KST (Asia/Seoul)')).toBeInTheDocument()
-    expect(within(section!).getByText('전체 변경').parentElement).toHaveTextContent('9')
-    expect(within(section!).getByText('스키마 변경').parentElement).toHaveTextContent('4')
-    expect(within(section!).getByText('메타데이터 변경').parentElement).toHaveTextContent('5')
-    expect(within(section!).getAllByText('연속 캡처 기록됨')).toHaveLength(2)
-    expect(within(section!).getByText(/발생 시각 미확정 2건은 이번 주 합계에서 제외/)).toBeInTheDocument()
-    expect(within(section!).getByText(/이 주의 시작부터 연속된 완전한 이력은 보장되지 않습니다/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '1W' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '1M' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '3M' })).toBeDisabled()
+    const crCard = screen.getByRole('link', { name: /Change Request Progress.*12.*Requests/ })
+    expect(within(crCard).getByText('전체 변경').parentElement).toHaveTextContent('9')
+    expect(within(crCard).getByText('스키마').parentElement).toHaveTextContent('4')
+    expect(within(crCard).getByText('메타데이터').parentElement).toHaveTextContent('5')
+    expect(crCard).toHaveTextContent('진행 7 · 완료 2')
   })
 
-  it('distinguishes a measured zero current-week summary from section-local unavailability', async () => {
+  it('distinguishes measured zero from unavailable CR and change facts', async () => {
     const zeroRequest = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/operations/dashboard') return Promise.resolve(summary())
+      if (path === '/operations/dashboard') return Promise.resolve(summary({
+        change_request_progress: {
+          total: 0,
+          groups: { REGISTERED: 0, IN_PROGRESS: 0, COMPLETED: 0, CLOSED: 0 },
+          complete: true,
+        },
+      }))
       if (path.startsWith('/change-history/summary?')) {
         return Promise.resolve(changeSummaryForPath(path, {
           total_count: 0,
@@ -416,10 +295,9 @@ describe('DashboardPage', () => {
     })
     const { unmount } = renderDashboard(apiClient(zeroRequest))
 
-    const zeroHeading = await screen.findByRole('heading', { name: '이번 주 데이터 변경' })
-    const zeroSection = zeroHeading.closest('section')
-    await waitFor(() => expect(within(zeroSection!).getAllByText('0')).toHaveLength(3))
-    expect(within(zeroSection!).queryByText('—')).not.toBeInTheDocument()
+    const zeroCard = await screen.findByRole('link', { name: /Change Request Progress.*0.*Requests/ })
+    await waitFor(() => expect(within(zeroCard).queryByText('—')).not.toBeInTheDocument())
+    expect(zeroCard).not.toHaveTextContent('UNKNOWN')
     unmount()
 
     const denied = new ApiError({
@@ -439,15 +317,13 @@ describe('DashboardPage', () => {
     })
     renderDashboard(apiClient(deniedRequest))
 
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('현재 사용자에게 이번 주 데이터 변경을 열람할 권한이 없습니다.')
-    expect(within(alert).getAllByText('—')).toHaveLength(3)
-    expect(screen.getByText('설명 완성도 70%')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Data Quality Dashboard' })).toBeInTheDocument()
+    const deniedCard = await screen.findByRole('link', { name: /Change Request Progress.*12.*Requests/ })
+    expect(within(deniedCard).getAllByText('—')).toHaveLength(3)
+    expect(deniedCard).toHaveTextContent('현재 사용자에게 이번 주 데이터 변경을 열람할 권한이 없습니다.')
     expect(deniedRequest.mock.calls.filter(([path]) => String(path).startsWith('/change-history/')).length).toBe(1)
   })
 
-  it('delegates Governance Center navigation to the SPA shell without a document navigation', async () => {
+  it('shows explicit unavailable contracts instead of fabricating historical trends', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary())
       if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
@@ -455,22 +331,12 @@ describe('DashboardPage', () => {
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
     })
-    const navigate = vi.fn()
-    renderDashboard(apiClient(request), navigate)
+    renderDashboard(apiClient(request))
 
-    const shortcuts = await screen.findByRole('navigation', { name: 'Governance shortcuts' })
-    expect(Array.from(shortcuts.querySelectorAll('strong')).map((item) => item.textContent)).toEqual([
-      'Catalog Search',
-      'CR',
-      'Governance',
-      'Quality Management',
-      'AI Copilot',
-    ])
-    expect(screen.queryByRole('link', { name: /Knowledge Graph/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /Dataset Registration/i })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('link', { name: /CR변경요청/i }))
-    expect(navigate).toHaveBeenCalledWith('change-management')
+    expect(await screen.findByText('HISTORICAL_DATASET_COUNT_SOURCE_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText('CHANGE_TO_CR_7_DAY_SOURCE_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByText(/현재 수치를 과거 값으로 복제하지 않습니다/)).toBeInTheDocument()
+    expect(screen.getByText(/처리율을 추정하지 않습니다/)).toBeInTheDocument()
   })
 
   it('starts a new Chat request from the compact home search without sending blank text', async () => {
@@ -493,36 +359,18 @@ describe('DashboardPage', () => {
     expect(startChat).toHaveBeenCalledWith('current metadata를 찾아줘')
   })
 
-  it('retains asset distribution modal open state, drill-down subview, and back navigation', async () => {
+  it('states when the canonical schema aggregate itself is bounded', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/operations/dashboard') return Promise.resolve(summary({
-        catalog_asset_count: 500,
-        catalog_schema_metrics: [{
-          platform: 'postgres', database_name: 'MANUFACTURING', schema_name: 'QUALITY',
-          asset_count: 500, described_asset_count: 100, tagged_asset_count: 50, term_asset_count: 10,
-        }],
+        catalog_schema_metrics_truncated: true,
       }))
       if (path.startsWith('/change-history/summary?')) return Promise.resolve(changeSummaryForPath(path))
       if (path === '/quality/capability') return Promise.resolve(capability())
       if (path === '/quality/dashboard') return Promise.resolve(quality())
       throw new Error(`Unexpected request: ${path}`)
     })
-    const navigate = vi.fn()
-    renderDashboard(apiClient(request), navigate)
+    renderDashboard(apiClient(request))
 
-    fireEvent.click(await screen.findByRole('button', { name: /Total Datasets.*500.*Assets/i }))
-    const dialog = screen.getByRole('dialog', { name: 'Asset Distribution & Health Metrics by Database' })
-    fireEvent.click(within(dialog).getByRole('button', { name: /Platformpostgres500Assets/i }))
-    const schemaCard = within(dialog).getByRole('button', { name: /MANUFACTURING \/ QUALITY.*500 Assets/ })
-    fireEvent.click(schemaCard)
-
-    expect(within(dialog).getByRole('heading', { name: '스키마 상세 정보' })).toBeInTheDocument()
-    expect(within(dialog).queryByRole('button', { name: /Platformpostgres/ })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('heading', { name: '스키마 상세 정보' }).parentElement).not.toHaveAttribute('style')
-    fireEvent.click(within(dialog).getByRole('button', { name: '이전' }))
-
-    expect(within(dialog).queryByRole('heading', { name: '스키마 상세 정보' })).not.toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: /Platformpostgres500Assets/i })).toBeInTheDocument()
-    expect(navigate).not.toHaveBeenCalled()
+    expect(await screen.findByText(/서버가 제공한 bounded schema 집계의 상위 항목/)).toBeInTheDocument()
   })
 })

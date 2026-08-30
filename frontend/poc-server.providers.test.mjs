@@ -65,6 +65,7 @@ let hideExactFromTextSearch
 let omitKnowledgeColumnUrn
 let forceKnowledgeNonTable
 let forceABoxNeo4jFailure
+let currentTableClassificationTags = ['CLASSIFICATION:INTERNAL']
 let providerServer
 let providerOrigin
 let pocServer
@@ -212,7 +213,12 @@ function providerHandler(request, response) {
                 subTypes: { typeNames: ['Table'] },
                 properties: { customProperties: [] },
                 schemaMetadata: { name: 'wafer_events' },
-                globalTags: { tags: [{ tag: { urn: 'urn:li:tag:credential', name: 'credential' } }] },
+                globalTags: { tags: [
+                  { tag: { urn: 'urn:li:tag:credential', name: 'credential' } },
+                  ...currentTableClassificationTags.map((name, index) => ({
+                    tag: { urn: `urn:li:tag:classification-fixture-${index}`, name },
+                  })),
+                ] },
               }
         )) } })
       }
@@ -929,6 +935,18 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   assert.equal(columnAssignments.total, 1)
   assert.equal(columnAssignments.items[0].target_type, 'COLUMN')
   assert.equal(columnAssignments.items[0].field_path, 'wafer_id')
+  for (const invalidClassificationTags of [
+    [],
+    ['CLASSIFICATION:PUBLIC', 'CLASSIFICATION:INTERNAL'],
+    ['CLASSIFICATION:UNSUPPORTED'],
+  ]) {
+    currentTableClassificationTags = invalidClassificationTags
+    const excludedAssignments = await (await fetch(
+      `${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${termUrn}&target_type=TABLE&limit=25`,
+    )).json()
+    assert.equal(excludedAssignments.total, 0)
+  }
+  currentTableClassificationTags = ['CLASSIFICATION:INTERNAL']
   const removedAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${encodeURIComponent('urn:li:glossaryTerm:removed-assignment-fixture')}&target_type=TABLE&limit=25`)).json()
   assert.equal(removedAssignments.total, 0)
   const technicalGlossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=manufacturing_wafer`)).json()
@@ -988,8 +1006,8 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(payload.route.selected_mode, 'VECTOR')
   assert.equal(payload.evidence[0].evidence_type, 'CATALOG_METADATA')
   assert.equal(payload.evidence[0].retrieval_method, 'RERANKED')
-  assert.equal(payload.discovery.catalog_search_query, '')
-  assert.deepEqual(payload.discovery.catalog_search_fields, [])
+  assert.equal(payload.discovery.catalog_search_query, 'wafer')
+  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
   assert.equal(payload.discovery.total, null)
   assert.equal(payload.discovery.total_exact, false)
   assert.equal(payload.discovery.next_cursor, null)
@@ -1250,6 +1268,37 @@ test('hands an identifier-scoped vector result to the exact authorized Catalog c
   assert.equal(payload.discovery.next_cursor, null)
   assert.equal(Number.isInteger(payload.performance.catalog_discovery_ms), true)
   assert.equal(payload.performance.vector_ms, null)
+})
+
+test('hands a natural-language keyword question to a bounded Catalog name scope', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'inspection 관련 테이블이 뭐가 있는지 알려줘', mode: 'VECTOR' }),
+  })
+  assert.equal(response.status, 200, await response.clone().text())
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.discovery.catalog_search_query, 'inspection')
+  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
+  assert.equal(payload.discovery.items.some((item) => (
+    item.resource_id === 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)'
+  )), true)
+})
+
+test('does not hand an unrelated identifier-shaped token to Catalog search', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: 'unrelated_identifier_that_is_longer 말고 inspection 관련 테이블을 알려줘',
+      mode: 'VECTOR',
+    }),
+  })
+  assert.equal(response.status, 200, await response.clone().text())
+  const payload = await response.json()
+  assert.equal(payload.discovery.catalog_search_query, 'inspection')
+  assert.deepEqual(payload.discovery.catalog_search_fields, ['TABLE'])
 })
 
 test('retrieves Knowledge Graph Asset metadata from the authorized managed registry instead of DataHub tables', async () => {

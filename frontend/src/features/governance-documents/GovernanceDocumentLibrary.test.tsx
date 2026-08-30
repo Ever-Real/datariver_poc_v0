@@ -107,6 +107,11 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     fireEvent.click(selectTemplate)
     expect(screen.getByRole('combobox', { name: '대상' })).toHaveValue('TEMPLATE')
     fireEvent.click(create)
+    const documentInformation = screen.getByText('문서 정보').closest('details')
+    const startingTemplate = screen.getByText('시작 양식').closest('details')
+    expect(documentInformation).toHaveAttribute('open')
+    expect(startingTemplate).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('시작 양식').closest('summary')!)
     expect(
       await screen.findByRole('combobox', { name: '게시 템플릿 선택' }),
     ).toBeInTheDocument()

@@ -352,10 +352,7 @@ export function ChatPage({
   const evidencePreviewTruncated = visibleEvidence.length > displayedEvidence.length
   const visibleDiscovery = visibleAssistant?.discovery
   const visiblePerformance = visibleAssistant?.performance
-  const canExploreCatalog = Boolean(
-    typeof visibleDiscovery?.catalog_search_query === 'string'
-    && visibleDiscovery?.items.some((item) => canOpenCatalogEvidence(item)),
-  )
+  const canExploreCatalog = typeof visibleDiscovery?.catalog_search_query === 'string'
   const displayedDiscovery = discoveryExpanded
     ? visibleDiscovery?.items ?? []
     : visibleDiscovery?.items.slice(0, evidencePreviewLimit) ?? []

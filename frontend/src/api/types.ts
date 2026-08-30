@@ -2934,8 +2934,27 @@ export interface SiteBrandingAsset {
   data_url: string
 }
 
+export interface SiteBrandingBadge {
+  badge_id: string
+  name: string
+  url: string
+  logo: SiteBrandingAsset | null
+  enabled: boolean
+  order: number
+}
+
+export interface SiteBrandingBadgeUpdate {
+  badge_id?: string
+  name: string
+  url: string
+  logo: { asset_id: string } | { mime_type: string; data_base64: string } | null
+  enabled: boolean
+  order: number
+}
+
 export interface SiteBranding {
   site_name: string
   logo: SiteBrandingAsset | null
   favicon: SiteBrandingAsset | null
+  custom_badges?: SiteBrandingBadge[]
 }

@@ -488,7 +488,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       name: createForm.name.trim(),
       description: createForm.description.trim(),
     }
-    if (!payload.name || payload.name.length > 255 || payload.description.length > 4000) return
+    if (!payload.name || payload.name.length > 255 || payload.description.length > 2000) return
     const intent = `system-create:${JSON.stringify(payload)}`
     requestConfirmation({
       title: '신규 시스템 생성',
@@ -591,7 +591,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           <input className="mt-1 block w-full" maxLength={255} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} required type="text" value={createForm.name} />
         </label>
         <label className="block text-sm font-bold">설명
-          <textarea className="mt-1 block w-full h-24" maxLength={4000} onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })} value={createForm.description} />
+          <textarea className="mt-1 block w-full h-24" maxLength={2000} onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })} value={createForm.description} />
         </label>
         <div className="flex justify-end gap-2 pt-2">
           <button className="button button-secondary" onClick={() => setCreateOpen(false)} type="button">취소</button>

@@ -102,6 +102,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('change.access.write', 'PUT', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.table-system-mappings.read', 'GET', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.table-system-mappings.write', 'PATCH', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.systems.create', 'POST', /^\/api\/v1\/admin\/systems$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.users.read', 'GET', /^\/api\/v1\/admin\/users$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.users.create', 'POST', /^\/api\/v1\/admin\/users$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.users.update', 'PATCH', /^\/api\/v1\/admin\/users\/[^/]+$/, 'CAPABILITY_PROTECTED', 'admin.manage'),

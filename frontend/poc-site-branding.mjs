@@ -1,10 +1,11 @@
-/* global Buffer, structuredClone */
+/* global Buffer, URL, structuredClone */
 import { createHash, randomUUID } from 'node:crypto'
 
 export const POC_SITE_BRANDING_SCOPE = 'site-branding-v1'
 export const POC_SITE_BRANDING_DEFAULT_NAME = 'DataRiver'
 export const POC_SITE_BRANDING_MAX_LOGO_BYTES = 512 * 1024
 export const POC_SITE_BRANDING_MAX_FAVICON_BYTES = 128 * 1024
+export const POC_SITE_BRANDING_MAX_CUSTOM_BADGES = 5
 
 const assetKinds = Object.freeze({
   logo: new Set(['image/png', 'image/jpeg']),
@@ -35,6 +36,27 @@ function validSiteName(value) {
       const code = character.codePointAt(0)
       return code <= 0x1f || code === 0x7f
     })
+}
+
+function validBadgeName(value) {
+  return typeof value === 'string' && value === value.trim() && value.length >= 1 && value.length <= 40
+    && ![...value].some((character) => {
+      const code = character.codePointAt(0)
+      return code <= 0x1f || code === 0x7f
+    })
+}
+
+function validBadgeUrl(value) {
+  if (typeof value !== 'string' || value !== value.trim() || value.length < 1 || value.length > 2048) return false
+  try {
+    const parsed = new URL(value)
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && Boolean(parsed.hostname)
+      && parsed.username === ''
+      && parsed.password === ''
+  } catch {
+    return false
+  }
 }
 
 function crc32(buffer) {
@@ -244,22 +266,62 @@ function normalizePublicAsset(value, kind) {
 }
 
 function normalizePublicProjection(value) {
-  if (!exactKeys(value, ['site_name', 'logo', 'favicon']) || !validSiteName(value.site_name)) {
+  const legacy = exactKeys(value, ['site_name', 'logo', 'favicon'])
+  const current = exactKeys(value, ['site_name', 'logo', 'favicon', 'custom_badges'])
+  if ((!legacy && !current) || !validSiteName(value.site_name)) {
     throw brandingStateError()
   }
-  return {
+  const projection = {
     site_name: value.site_name,
     logo: normalizePublicAsset(value.logo, 'logo'),
     favicon: normalizePublicAsset(value.favicon, 'favicon'),
   }
+  const customBadges = current ? normalizePublicBadges(value.custom_badges) : []
+  return customBadges.length ? { ...projection, custom_badges: customBadges } : projection
+}
+
+function normalizeBadgeOrder(badges) {
+  if (!Array.isArray(badges) || badges.length > POC_SITE_BRANDING_MAX_CUSTOM_BADGES) throw brandingStateError()
+  const orders = new Set()
+  for (const badge of badges) {
+    if (!badge || typeof badge !== 'object' || Array.isArray(badge)
+      || !Number.isSafeInteger(badge.order) || badge.order < 0 || badge.order >= badges.length || orders.has(badge.order)) {
+      throw brandingStateError()
+    }
+    orders.add(badge.order)
+  }
+  return [...badges].sort((left, right) => left.order - right.order)
+}
+
+function normalizeStoredBadges(value) {
+  return normalizeBadgeOrder(value).map((badge) => {
+    if (!exactKeys(badge, ['badge_id', 'name', 'url', 'logo', 'enabled', 'order'])
+      || typeof badge.badge_id !== 'string' || !assetIdPattern.test(badge.badge_id)
+      || !validBadgeName(badge.name) || !validBadgeUrl(badge.url) || typeof badge.enabled !== 'boolean') {
+      throw brandingStateError()
+    }
+    return { ...badge, logo: normalizeStoredAsset(badge.logo, 'logo') }
+  })
+}
+
+function normalizePublicBadges(value) {
+  return normalizeBadgeOrder(value).map((badge) => {
+    if (!exactKeys(badge, ['badge_id', 'name', 'url', 'logo', 'enabled', 'order'])
+      || typeof badge.badge_id !== 'string' || !assetIdPattern.test(badge.badge_id)
+      || !validBadgeName(badge.name) || !validBadgeUrl(badge.url) || typeof badge.enabled !== 'boolean') {
+      throw brandingStateError()
+    }
+    return { ...badge, logo: normalizePublicAsset(badge.logo, 'logo') }
+  })
 }
 
 export function defaultSiteBrandingDocument() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     site_name: POC_SITE_BRANDING_DEFAULT_NAME,
     logo: null,
     favicon: null,
+    custom_badges: [],
     updated_at: null,
     updated_by: null,
     idempotency_receipts: [],
@@ -268,9 +330,13 @@ export function defaultSiteBrandingDocument() {
 
 export function normalizeSiteBrandingDocument(value) {
   if (value === null || value === undefined) return defaultSiteBrandingDocument()
-  if (!exactKeys(value, [
+  const legacy = exactKeys(value, [
     'schema_version', 'site_name', 'logo', 'favicon', 'updated_at', 'updated_by', 'idempotency_receipts',
-  ]) || value.schema_version !== 1 || !validSiteName(value.site_name)
+  ]) && value.schema_version === 1
+  const current = exactKeys(value, [
+    'schema_version', 'site_name', 'logo', 'favicon', 'custom_badges', 'updated_at', 'updated_by', 'idempotency_receipts',
+  ]) && value.schema_version === 2
+  if ((!legacy && !current) || !validSiteName(value.site_name)
     || (value.updated_at !== null && typeof value.updated_at !== 'string')
     || (value.updated_by !== null && typeof value.updated_by !== 'string')
     || !Array.isArray(value.idempotency_receipts) || value.idempotency_receipts.length > maximumReceipts) {
@@ -290,10 +356,11 @@ export function normalizeSiteBrandingDocument(value) {
     }
   })
   return {
-    schema_version: 1,
+    schema_version: 2,
     site_name: value.site_name,
     logo: normalizeStoredAsset(value.logo, 'logo'),
     favicon: normalizeStoredAsset(value.favicon, 'favicon'),
+    custom_badges: current ? normalizeStoredBadges(value.custom_badges) : [],
     updated_at: value.updated_at,
     updated_by: value.updated_by,
     idempotency_receipts: receipts,
@@ -310,11 +377,16 @@ function publicAsset(asset) {
 }
 
 export function publicSiteBranding(document) {
-  return {
+  const projection = {
     site_name: document.site_name,
     logo: publicAsset(document.logo),
     favicon: publicAsset(document.favicon),
   }
+  const customBadges = document.custom_badges.map((badge) => ({
+    ...badge,
+    logo: publicAsset(badge.logo),
+  }))
+  return customBadges.length ? { ...projection, custom_badges: customBadges } : projection
 }
 
 function resolveAsset(value, kind, current) {
@@ -326,6 +398,49 @@ function resolveAsset(value, kind, current) {
     return current
   }
   return validateAssetInput(value, kind)
+}
+
+function resolveCustomBadges(value, current) {
+  if (!Array.isArray(value)) {
+    throw brandingError('SITE_BRANDING_BADGES_INVALID', 'Custom badges must be an ordered array.')
+  }
+  if (value.length > POC_SITE_BRANDING_MAX_CUSTOM_BADGES) {
+    throw brandingError('SITE_BRANDING_BADGE_LIMIT_EXCEEDED', 'No more than five custom badges are allowed.')
+  }
+  const currentById = new Map(current.map((badge) => [badge.badge_id, badge]))
+  const seenIds = new Set()
+  const seenOrders = new Set()
+  const resolved = value.map((badge) => {
+    const isExisting = exactKeys(badge, ['badge_id', 'name', 'url', 'logo', 'enabled', 'order'])
+    const isNew = exactKeys(badge, ['name', 'url', 'logo', 'enabled', 'order'])
+    if ((!isExisting && !isNew) || !validBadgeName(badge.name) || !validBadgeUrl(badge.url)
+      || typeof badge.enabled !== 'boolean' || !Number.isSafeInteger(badge.order)
+      || badge.order < 0 || badge.order >= value.length || seenOrders.has(badge.order)) {
+      throw brandingError('SITE_BRANDING_BADGE_INVALID', 'Each custom badge must contain a valid name, URL, state and unique order.')
+    }
+    seenOrders.add(badge.order)
+    let badgeId
+    let currentBadge = null
+    if (isExisting) {
+      currentBadge = currentById.get(badge.badge_id)
+      if (!currentBadge || seenIds.has(badge.badge_id)) {
+        throw brandingError('SITE_BRANDING_BADGE_REFERENCE_INVALID', 'Custom badge identity is not current or is duplicated.')
+      }
+      badgeId = badge.badge_id
+      seenIds.add(badgeId)
+    } else {
+      badgeId = randomUUID()
+    }
+    return {
+      badge_id: badgeId,
+      name: badge.name,
+      url: badge.url,
+      logo: resolveAsset(badge.logo, 'logo', currentBadge?.logo ?? null),
+      enabled: badge.enabled,
+      order: badge.order,
+    }
+  })
+  return resolved.sort((left, right) => left.order - right.order)
 }
 
 export function siteBrandingRequestHash(body) {
@@ -345,7 +460,9 @@ export function siteBrandingIdempotencyHash(key) {
 }
 
 export function applySiteBrandingUpdate(current, body, { actor, idempotencyKey, version, occurredAt }) {
-  if (!exactKeys(body, ['site_name', 'logo', 'favicon', 'restore_default'])
+  const legacy = exactKeys(body, ['site_name', 'logo', 'favicon', 'restore_default'])
+  const currentInput = exactKeys(body, ['site_name', 'logo', 'favicon', 'custom_badges', 'restore_default'])
+  if ((!legacy && !currentInput)
     || typeof body.restore_default !== 'boolean') {
     throw brandingError('SITE_BRANDING_INPUT_INVALID', 'Site branding requires the exact fixed fields.')
   }
@@ -360,7 +477,8 @@ export function applySiteBrandingUpdate(current, body, { actor, idempotencyKey, 
   }
   let next
   if (body.restore_default) {
-    if (body.site_name !== null || body.logo !== null || body.favicon !== null) {
+    if (body.site_name !== null || body.logo !== null || body.favicon !== null
+      || (currentInput && body.custom_badges !== null)) {
       throw brandingError('SITE_BRANDING_INPUT_INVALID', 'Default restore requires null site_name, logo and favicon fields.')
     }
     next = defaultSiteBrandingDocument()
@@ -377,6 +495,7 @@ export function applySiteBrandingUpdate(current, body, { actor, idempotencyKey, 
       site_name: body.site_name.trim(),
       logo: resolveAsset(body.logo, 'logo', current.logo),
       favicon: resolveAsset(body.favicon, 'favicon', current.favicon),
+      custom_badges: currentInput ? resolveCustomBadges(body.custom_badges, current.custom_badges) : current.custom_badges,
     }
   }
   next.updated_at = occurredAt

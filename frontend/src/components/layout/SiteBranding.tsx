@@ -5,6 +5,7 @@ export const defaultSiteBranding: SiteBranding = {
   site_name: 'DataRiver',
   logo: null,
   favicon: null,
+  custom_badges: [],
 }
 
 interface SiteBrandingContextValue {
@@ -30,14 +31,45 @@ function isBrandingAsset(value: unknown, kind: 'logo' | 'favicon'): boolean {
     && asset.data_url.startsWith(`data:${String(asset.mime_type)};base64,`)
 }
 
+function isSafeBadgeUrl(value: unknown) {
+  if (typeof value !== 'string' || value.length > 2048) return false
+  try {
+    const parsed = new URL(value)
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && Boolean(parsed.hostname) && parsed.username === '' && parsed.password === ''
+  } catch {
+    return false
+  }
+}
+
+function safeCustomBadges(value: unknown) {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 5) return undefined
+  const orders = new Set<number>()
+  const badges = value.map((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return undefined
+    const badge = candidate as Record<string, unknown>
+    if (typeof badge.badge_id !== 'string' || typeof badge.name !== 'string' || !badge.name.trim()
+      || badge.name.length > 40 || !isSafeBadgeUrl(badge.url) || typeof badge.enabled !== 'boolean'
+      || !Number.isSafeInteger(badge.order) || Number(badge.order) < 0 || Number(badge.order) >= value.length
+      || orders.has(Number(badge.order)) || !isBrandingAsset(badge.logo, 'logo')) return undefined
+    orders.add(Number(badge.order))
+    return badge
+  })
+  if (badges.some((badge) => !badge)) return undefined
+  return badges.sort((left, right) => Number(left?.order) - Number(right?.order))
+}
+
 function safeBranding(value: unknown): SiteBranding | undefined {
   if (!value || typeof value !== 'object') return undefined
   const branding = value as Record<string, unknown>
+  const customBadges = safeCustomBadges(branding.custom_badges)
   if (typeof branding.site_name !== 'string' || !branding.site_name.trim()
-    || branding.site_name.length > 80 || !isBrandingAsset(branding.logo, 'logo') || !isBrandingAsset(branding.favicon, 'favicon')) {
+    || branding.site_name.length > 80 || !isBrandingAsset(branding.logo, 'logo')
+    || !isBrandingAsset(branding.favicon, 'favicon') || !customBadges) {
     return undefined
   }
-  return branding as unknown as SiteBranding
+  return { ...branding, custom_badges: customBadges } as unknown as SiteBranding
 }
 
 export function SiteBrandingProvider({ children }: { children: ReactNode }) {

@@ -1349,3 +1349,179 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   position: fixed;
   opacity: 0;
 }
+
+/* Home summary and analytics use the same authorized read models as their detail pages. */
+.dashboard-stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.dashboard-stat-card {
+  min-height: 144px;
+  padding: 12px;
+}
+.dashboard-stat-icon {
+  width: 32px;
+  height: 32px;
+}
+.dashboard-stat-card > div.dashboard-stat-primary strong {
+  font-size: 25px;
+}
+.dashboard-change-summary-card {
+  grid-template-rows: auto auto auto auto;
+}
+.dashboard-change-facts {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0;
+}
+.dashboard-change-facts > div {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  border-top: 1px solid var(--line-200);
+  padding-top: 5px;
+}
+.dashboard-change-facts dt {
+  overflow: hidden;
+  color: var(--text-500);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-change-facts dd {
+  margin: 0;
+  color: var(--navy-900);
+  font-size: 13px;
+  font-weight: 900;
+}
+.dashboard-analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 10px;
+}
+.dashboard-analytics-grid > .dashboard-section {
+  min-height: 230px;
+}
+.dashboard-analytics-grid .dashboard-section > header {
+  min-height: 42px;
+  padding: 0 11px;
+}
+.dashboard-analytics-grid .dashboard-section-body {
+  height: calc(100% - 42px);
+  padding: 11px;
+}
+.dashboard-analytics-unavailable {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-content: start;
+  gap: 8px;
+  color: var(--text-500);
+}
+.dashboard-analytics-unavailable > svg {
+  color: var(--blue-700);
+}
+.dashboard-analytics-unavailable p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.dashboard-analytics-unavailable code {
+  overflow-wrap: anywhere;
+  color: var(--text-600);
+  font-size: 10px;
+}
+.dashboard-schema-coverage {
+  display: grid;
+  gap: 6px;
+}
+.dashboard-schema-coverage > p,
+.dashboard-schema-coverage > small {
+  margin: 0;
+  color: var(--text-500);
+  font-size: 10px;
+}
+.dashboard-schema-coverage > div {
+  display: grid;
+  gap: 4px;
+}
+.dashboard-schema-coverage-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(88px, 1.4fr) repeat(3, minmax(38px, .6fr));
+  align-items: center;
+  gap: 3px;
+  border-top: 1px solid var(--line-200);
+  padding-top: 5px;
+}
+.dashboard-schema-coverage-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.dashboard-schema-coverage-row > span strong,
+.dashboard-schema-coverage-row > span small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-schema-coverage-row > span strong {
+  font-size: 10px;
+}
+.dashboard-schema-coverage-row > span small {
+  color: var(--text-500);
+  font-size: 10px;
+}
+.dashboard-schema-coverage-row .metric-tile {
+  min-width: 0;
+  padding: 3px;
+}
+.dashboard-schema-coverage-row .metric-tile small {
+  font-size: 10px;
+}
+.dashboard-schema-coverage-row .metric-tile strong {
+  font-size: 11px;
+}
+.dashboard-analytics-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.dashboard-analytics-facts > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line-200);
+  padding: 8px 5px;
+  text-align: center;
+  background: white;
+}
+.dashboard-analytics-facts small {
+  color: var(--text-500);
+  font-size: 10px;
+}
+.dashboard-analytics-facts strong {
+  color: var(--navy-900);
+  font-size: 16px;
+}
+.dashboard-analytics-facts > p {
+  grid-column: 1 / -1;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--text-500);
+  font-size: 10px;
+  line-height: 1.45;
+}
+@media (max-width: 1100px) {
+  .dashboard-stat-grid,
+  .dashboard-analytics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .dashboard-stat-grid,
+  .dashboard-analytics-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-stat-card { min-height: 132px; }
+}

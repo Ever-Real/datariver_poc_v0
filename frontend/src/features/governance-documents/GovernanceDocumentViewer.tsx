@@ -110,6 +110,11 @@ export function GovernanceDocumentViewer({
   const publishedVersion = currentDetail
     ? published(currentDetail.document.current_published_version_id, currentDetail.versions)
     : undefined
+  const publishedAttachments = currentDetail && publishedVersion
+    ? currentDetail.attachments.filter((attachment) => (
+      attachment.document_version_id === publishedVersion.version_id
+    ))
+    : []
 
   const exportDocument = async () => {
     if (!currentDetail || !publishedVersion) return
@@ -186,18 +191,27 @@ export function GovernanceDocumentViewer({
               <Download size={13} /> {exporting ? '내보내는 중' : '내용·메타데이터 내보내기'}
             </button>
           </header>
-          <dl className="governance-document-meta governance-viewer-meta">
+          <dl className="governance-document-meta governance-viewer-meta" aria-label="게시 문서 정보">
             <div><dt>문서 생성일</dt><dd>{dateTime(currentDetail.document.created_at)}</dd></div>
-            <div><dt>수정일</dt><dd>{dateTime(currentDetail.document.updated_at)}</dd></div>
-            <div><dt>초기 등록자</dt><dd>{subjectName(currentDetail.subject_display_names, currentDetail.document.owner_subject_id)}</dd></div>
-            <div><dt>현재 버전</dt><dd>{publishedVersion.version_tag}</dd></div>
-            <div><dt>버전 작성자</dt><dd>{subjectName(currentDetail.subject_display_names, publishedVersion.author_id)}</dd></div>
-            <div><dt>승인자</dt><dd>{publishedVersion.reviewed_by ? subjectName(currentDetail.subject_display_names, publishedVersion.reviewed_by) : '—'}</dd></div>
-            <div><dt>결재 상태</dt><dd><span className="badge">ACTIVE</span></dd></div>
             <div><dt>게시일</dt><dd>{publishedVersion.published_at ? dateTime(publishedVersion.published_at) : '—'}</dd></div>
-            <div><dt>상위 문서</dt><dd>{currentDetail.parent_document?.title ?? '—'}</dd></div>
-            <div><dt>하위 문서</dt><dd>{currentDetail.child_documents.map((item) => item.title).join(', ') || '—'}</dd></div>
+            <div><dt>현재 버전</dt><dd>{publishedVersion.version_tag}</dd></div>
+            <div><dt>작성자</dt><dd>{subjectName(currentDetail.subject_display_names, publishedVersion.author_id)}</dd></div>
+            <div className="governance-viewer-attachments"><dt>첨부파일</dt><dd>{publishedAttachments.length === 0
+              ? '없음'
+              : <ul>{publishedAttachments.map((attachment) => <li key={attachment.attachment_id}>{attachment.original_name}</li>)}</ul>}
+            </dd></div>
           </dl>
+          <details className="governance-viewer-audit">
+            <summary>결재·문서 관계 상세</summary>
+            <dl className="governance-document-meta">
+              <div><dt>수정일</dt><dd>{dateTime(currentDetail.document.updated_at)}</dd></div>
+              <div><dt>초기 등록자</dt><dd>{subjectName(currentDetail.subject_display_names, currentDetail.document.owner_subject_id)}</dd></div>
+              <div><dt>승인자</dt><dd>{publishedVersion.reviewed_by ? subjectName(currentDetail.subject_display_names, publishedVersion.reviewed_by) : '—'}</dd></div>
+              <div><dt>결재 상태</dt><dd><span className="badge">ACTIVE</span></dd></div>
+              <div><dt>상위 문서</dt><dd>{currentDetail.parent_document?.title ?? '—'}</dd></div>
+              <div><dt>하위 문서</dt><dd>{currentDetail.child_documents.map((item) => item.title).join(', ') || '—'}</dd></div>
+            </dl>
+          </details>
           <SafeGovernanceHtml
             html={publishedVersion.sanitized_html}
             contentHash={publishedVersion.content_sha256}

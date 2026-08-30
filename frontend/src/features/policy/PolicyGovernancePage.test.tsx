@@ -68,7 +68,20 @@ describe('PolicyGovernancePage', () => {
               document: documentSummary,
               versions: [publishedVersion],
               reviews: [],
-              attachments: [],
+              attachments: [{
+                attachment_id: 'attachment-one',
+                workspace_id: 'workspace-one',
+                document_id: 'document-one',
+                document_version_id: 'version-one',
+                serial_number: 1,
+                storage_filename: null,
+                original_name: '분류 기준.pdf',
+                content_type: 'application/pdf',
+                size_bytes: 128,
+                content_sha256: 'f'.repeat(64),
+                uploaded_by: 'author-one',
+                created_at: now,
+              }],
               parent_document: null,
               child_documents: [],
               subject_display_names: {
@@ -91,6 +104,12 @@ describe('PolicyGovernancePage', () => {
     expect(await screen.findByRole('heading', { name: '데이터 분류·접근 정책' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '승인 본문' })).toBeInTheDocument()
     expect(screen.getByText('v1')).toBeInTheDocument()
+    const metadata = screen.getByLabelText('게시 문서 정보')
+    expect(Array.from(metadata.querySelectorAll('dt'), (term) => term.textContent)).toEqual([
+      '문서 생성일', '게시일', '현재 버전', '작성자', '첨부파일',
+    ])
+    expect(metadata).toHaveTextContent('문서 담당자')
+    expect(metadata.querySelector('.governance-viewer-attachments')).toHaveTextContent('분류 기준.pdf')
     expect(screen.getByText('ACTIVE')).toBeInTheDocument()
     expect(screen.getAllByText('문서 담당자')).not.toHaveLength(0)
     expect(screen.getByText('문서 승인자')).toBeInTheDocument()

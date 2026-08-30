@@ -53,13 +53,13 @@ describe('AdminApi', () => {
 
     await expect(api.getSiteBranding()).resolves.toEqual({ ...branding, etag: '"3"' })
     await api.updateSiteBranding({
-      site_name: null, logo: null, favicon: null, restore_default: true,
+      site_name: null, logo: null, favicon: null, custom_badges: null, restore_default: true,
     }, '"3"', 'generic-restore-key')
 
     expect(requestWithMeta).toHaveBeenCalledWith('/site-branding', { cache: 'no-store', signal: undefined })
     expect(request).toHaveBeenCalledWith('/site-branding', expect.objectContaining({
       method: 'PUT', ifMatch: '"3"', idempotencyKey: 'generic-restore-key',
-      body: JSON.stringify({ site_name: null, logo: null, favicon: null, restore_default: true }),
+      body: JSON.stringify({ site_name: null, logo: null, favicon: null, custom_badges: null, restore_default: true }),
     }))
   })
 

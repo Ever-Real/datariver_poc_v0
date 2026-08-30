@@ -2387,10 +2387,11 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     subjectId: 'viewer-subject', tableUrns: [tableUrn], action: 'GRANT',
     actorSubjectId: 'admin-subject', changedAt,
   })
+  let currentTableClassification = 'INTERNAL'
   const currentDatahubTables = async (urns) => {
     if (urns.includes(unavailableUrn)) throw new Error('provider unavailable')
     return urns.includes(tableUrn)
-      ? [{ id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal' }]
+      ? [{ id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal', classification: currentTableClassification }]
       : []
   }
   const testServer = createPocServer({
@@ -2410,7 +2411,14 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     table_urn: tableUrn,
     responsible_system_id: 'system-a',
     title: 'Bounded table change',
-    description: 'The viewer is allowed to register this accessible Table change.',
+    request_date: '2028-02-29',
+    request_department: 'Data Operations',
+    request_reason: 'The current schema needs a governed description update.',
+    request_content: 'The viewer is allowed to register this accessible Table change.',
+    requested_due_date: null,
+    priority: 'HIGH',
+    urgency: 'URGENT',
+    security_level: 'INTERNAL',
     change_document: { requested: { description: 'updated' } },
   }
   try {
@@ -2427,6 +2435,25 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     assert.equal(spoofed.status, 400)
     assert.equal((await spoofed.json()).code, 'PROTECTED_CLAIM')
 
+    const impossibleRequestDate = await request({ ...validBody, request_date: '2026-02-29' })
+    assert.equal(impossibleRequestDate.status, 400)
+    assert.equal((await impossibleRequestDate.json()).code, 'CR_INPUT_INVALID')
+
+    const impossibleDueDate = await request({ ...validBody, requested_due_date: '2026-04-31' })
+    assert.equal(impossibleDueDate.status, 400)
+    assert.equal((await impossibleDueDate.json()).code, 'CR_INPUT_INVALID')
+
+    currentTableClassification = undefined
+    const unclassified = await request(validBody)
+    assert.equal(unclassified.status, 409)
+    assert.equal((await unclassified.json()).code, 'CR_CLASSIFICATION_MISMATCH')
+
+    currentTableClassification = 'UNSUPPORTED'
+    const invalidClassification = await request(validBody)
+    assert.equal(invalidClassification.status, 409)
+    assert.equal((await invalidClassification.json()).code, 'CR_CLASSIFICATION_MISMATCH')
+    currentTableClassification = 'INTERNAL'
+
     const created = await request(validBody)
     assert.equal(created.status, 201)
     assert.equal(created.headers.get('etag'), '"2"')
@@ -2434,6 +2461,14 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     const record = createdBody.change_request
     assert.equal(record.requester_id, 'viewer-subject')
     assert.equal(record.rounds[0].selected_system_id, 'system-a')
+    assert.equal(record.rounds[0].request_date, '2028-02-29')
+    assert.equal(record.rounds[0].request_department, 'Data Operations')
+    assert.equal(record.rounds[0].request_reason, 'The current schema needs a governed description update.')
+    assert.equal(record.rounds[0].request_content, 'The viewer is allowed to register this accessible Table change.')
+    assert.equal(record.rounds[0].requested_due_date, null)
+    assert.equal(record.rounds[0].priority, 'HIGH')
+    assert.equal(record.rounds[0].urgency, 'URGENT')
+    assert.equal(record.rounds[0].classification, 'INTERNAL')
     assert.equal(record.items.length, 1)
     assert.equal(record.items[0].target_asset_id, tableUrn)
     assert.equal(record.items[0].routing_system_id, 'system-a')
@@ -2442,6 +2477,10 @@ test('creates a CR for a viewer through exact current Table, grant, grade, polic
     assert.deepEqual(record.approval_lanes, [])
     assert.equal(record.items[0].target_binding_hash.length, 64)
     assert.equal(record.rounds[0].evidence_hash.length, 64)
+
+    const classificationMismatch = await request({ ...validBody, security_level: 'PUBLIC' }, 2)
+    assert.equal(classificationMismatch.status, 409)
+    assert.equal((await classificationMismatch.json()).code, 'CR_CLASSIFICATION_MISMATCH')
 
     const stale = await request(validBody)
     assert.equal(stale.status, 409)

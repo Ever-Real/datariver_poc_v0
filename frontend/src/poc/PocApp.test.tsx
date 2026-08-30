@@ -58,6 +58,10 @@ function providerRequestPaths() {
     .filter((path) => !path.startsWith('/auth/'))
 }
 
+function expectProviderRequestPaths(paths: string[]) {
+  expect([...providerRequestPaths()].sort()).toEqual([...paths].sort())
+}
+
 function navigation() {
   return screen.findByRole('navigation', { name: '주 메뉴' })
 }
@@ -81,14 +85,17 @@ describe('POC compatibility application', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders the original dashboard layout with only the compact navigation POC badge', async () => {
+  it('renders the current compact Home layout with only the navigation POC badge', async () => {
     renderPoc()
 
     expect(screen.queryByTestId('poc-banner')).not.toBeInTheDocument()
     expect(await screen.findByLabelText('POC mode')).toHaveTextContent('[poc]')
-    expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
-    expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
-    expect(providerRequestPaths()).toEqual(['/api/v1/change-history/summary'])
+    expect(await screen.findByRole('heading', { name: '홈' })).toBeVisible()
+    expect(screen.queryByRole('navigation', { name: 'Governance shortcuts' })).not.toBeInTheDocument()
+    await waitFor(() => expectProviderRequestPaths([
+      '/api/v1/change-history/summary',
+      '/poc-api/datahub/catalog/export-capability',
+    ]))
   })
 
   it('uses the viewer projection for menus and rejects a forged direct Admin URL', async () => {
@@ -168,7 +175,10 @@ describe('POC compatibility application', () => {
 
     const results = screen.getByRole('region', { name: '카탈로그 검색 결과' })
     expect(await within(results).findByText('검색 조건에 맞는 허용 자산이 없습니다.')).toBeVisible()
-    expect(providerRequestPaths()).toEqual(['/api/v1/change-history/summary'])
+    expectProviderRequestPaths([
+      '/api/v1/change-history/summary',
+      '/poc-api/datahub/catalog/export-capability',
+    ])
   })
 
   it('preserves primary pages and moves admin-oriented pages under the authenticated POC user', async () => {
@@ -213,8 +223,9 @@ describe('POC compatibility application', () => {
     expect(await screen.findByText(/검증 불가: LLM Chat 연결을 설정해야 합니다/)).toBeVisible()
     expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
-    expect(providerRequestPaths()).toEqual([
+    expectProviderRequestPaths([
       '/api/v1/change-history/summary',
+      '/poc-api/datahub/catalog/export-capability',
       '/poc-api/chat/sessions',
     ])
   })
@@ -235,7 +246,10 @@ describe('POC compatibility application', () => {
     expect(screen.getByRole('tab', { name: /기능별 권한|Feature access/ })).toBeVisible()
     expect(screen.queryByRole('table', { name: 'POC 기능별 권한 현황' })).not.toBeInTheDocument()
     expect(screen.queryByText('OPEN')).not.toBeInTheDocument()
-    expect(providerRequestPaths()).toEqual(['/api/v1/admin/users'])
+    expectProviderRequestPaths([
+      '/poc-api/datahub/catalog/export-capability',
+      '/api/v1/admin/users',
+    ])
   })
 
   it('opens the existing redacted security-policy view from the administrator menu', async () => {
@@ -254,6 +268,6 @@ describe('POC compatibility application', () => {
     expect(screen.getByRole('row', { name: /PUBLIC ABAC INTERNAL_APPROVED_ONLY/ })).toBeVisible()
     expect(screen.getByRole('row', { name: /RESTRICTED.*DENY DENY/ })).toBeVisible()
     expect(screen.getByText(/정적 최소 접근 기준/)).toBeVisible()
-    expect(providerRequestPaths()).toEqual([])
+    expectProviderRequestPaths(['/poc-api/datahub/catalog/export-capability'])
   })
 })

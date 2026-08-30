@@ -21,6 +21,10 @@ describe('SiteBrandingProvider', () => {
       site_name: 'Generic Portal',
       logo: { asset_id: 'generic-logo', mime_type: 'image/png', byte_size: 68, data_url: pngDataUrl },
       favicon: { asset_id: 'generic-icon', mime_type: 'image/png', byte_size: 68, data_url: pngDataUrl },
+      custom_badges: [{
+        badge_id: 'generic-badge', name: 'Generic Docs', url: 'https://docs.example.test/path',
+        logo: null, enabled: true, order: 0,
+      }],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
 
     render(<SiteBrandingProvider><TopNavigation
@@ -43,5 +47,34 @@ describe('SiteBrandingProvider', () => {
     expect(logo).not.toHaveAttribute('style')
     expect(favicon.href).toBe(pngDataUrl)
     expect(favicon).not.toHaveAttribute('style')
+    expect(screen.getByRole('link', { name: 'Generic Docs 새 창에서 열기' })).toHaveAttribute(
+      'href', 'https://docs.example.test/path',
+    )
+    expect(screen.getByRole('link', { name: 'Generic Docs 새 창에서 열기' })).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('keeps a legacy response compatible and rejects an unsafe custom badge projection', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      site_name: 'Unsafe Portal', logo: null, favicon: null,
+      custom_badges: [{
+        badge_id: 'unsafe-badge', name: 'Unsafe Link', url: 'javascript:alert(1)',
+        logo: null, enabled: true, order: 0,
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    render(<SiteBrandingProvider><TopNavigation
+      page="dashboard"
+      workspace="generic"
+      deploymentTier="SINGLE_NODE_PILOT"
+      displayName="Generic User"
+      adminMenuItems={[]}
+      externalSystemLinks={[]}
+      onNavigate={vi.fn()}
+      onNavigateAdmin={vi.fn()}
+      onSearch={vi.fn()}
+      onWorkspaceChange={vi.fn()}
+    /></SiteBrandingProvider>)
+    await waitFor(() => expect(fetch).toHaveBeenCalled())
+    expect(screen.queryByRole('link', { name: /Unsafe Link/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'DataRiver 홈' })).toBeInTheDocument()
   })
 })

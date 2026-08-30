@@ -1212,8 +1212,8 @@ function EditorDialog({
         {importFile && <div className="governance-import-pending"><strong>{importFile.name}</strong><p>Word 문서는 저장할 때 서버에서 변환되므로 편집 preview가 제공되지 않습니다.</p></div>}
       </main>
       <aside className="governance-editor-sidebar" aria-label="문서 속성과 가져오기 설정">
-        <section className="governance-editor-card">
-          <header><span>01</span><div><strong>문서 정보</strong><small>식별과 게시 범위를 설정합니다.</small></div></header>
+        <details className="governance-editor-card" open>
+          <summary><span>01</span><span><strong>문서 정보</strong><small>식별과 게시 범위를 설정합니다.</small></span></summary>
           <div className="governance-editor-fields">
             <label>버전 제목<input required maxLength={500} value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} /></label>
             {mode === 'CREATE' && <>
@@ -1226,9 +1226,9 @@ function EditorDialog({
               <small>필요한 경우 `dataset:참조` 또는 `term:용어`를 선언하세요.</small>
             </label>
           </div>
-        </section>
-        {mode === 'CREATE' && <section className="governance-editor-card">
-          <header><span>02</span><div><strong>시작 양식</strong><small>승인된 구조를 선택하거나 빈 문서로 시작합니다.</small></div></header>
+        </details>
+        {mode === 'CREATE' && <details className="governance-editor-card">
+          <summary><span>02</span><span><strong>시작 양식</strong><small>승인된 구조를 선택하거나 빈 문서로 시작합니다.</small></span></summary>
           <div className="governance-editor-fields">
             {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 템플릿</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
             {kind === 'DOCUMENT' && <>
@@ -1236,9 +1236,9 @@ function EditorDialog({
               <label>게시 템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">사용하지 않음</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>
             </>}
           </div>
-        </section>}
-        <section className="governance-editor-card governance-editor-import-card">
-          <header><span>03</span><div><strong>파일 가져오기</strong><small>HTML·Markdown은 즉시 편집 가능한 안전한 본문으로 변환합니다.</small></div></header>
+        </details>}
+        <details className="governance-editor-card governance-editor-import-card">
+          <summary><span>03</span><span><strong>파일 가져오기</strong><small>HTML·Markdown은 즉시 편집 가능한 안전한 본문으로 변환합니다.</small></span></summary>
           <label className="governance-file-drop">HTML·Markdown·Word 선택
             <input
               type="file"
@@ -1252,14 +1252,14 @@ function EditorDialog({
           {importFeedback && <p className="notice notice-success" role="status">{importFeedback}</p>}
           {importFile && !supportedImport(importFile) && <p role="alert">HTML, Markdown 또는 DOCX 파일만 가져올 수 있습니다.</p>}
           {importFile && importFile.size > maximumImportBytes && <p role="alert">선택한 파일이 서버의 가져오기 허용 크기를 초과합니다.</p>}
-        </section>
-        {kind === 'DOCUMENT' && <section className="governance-editor-card governance-editor-attachment" aria-labelledby="governance-editor-attachment-title">
-          <header><span>04</span><div><strong id="governance-editor-attachment-title">별첨 등록</strong><small>본문과 분리된 불변 Object로 저장합니다.</small></div></header>
+        </details>
+        {kind === 'DOCUMENT' && <details className="governance-editor-card governance-editor-attachment">
+          <summary><span>04</span><span><strong>별첨 등록</strong><small>본문과 분리된 불변 Object로 저장합니다.</small></span></summary>
           <label>별첨 파일<input type="file" disabled={busy || !attachmentAvailable} onChange={(event) => onAttachmentFile(event.target.files?.[0])} /></label>
           {!attachmentAvailable && <small>현재 Object Storage capability가 준비되지 않아 별첨을 선택할 수 없습니다.</small>}
           {attachmentFile && <small>{attachmentFile.name} · {formatBytes(attachmentFile.size)}</small>}
           {attachmentFile && !attachmentValid && <p role="alert">선택한 별첨이 서버 허용 크기를 초과합니다.</p>}
-        </section>}
+        </details>}
       </aside>
     </div>
   </Dialog>

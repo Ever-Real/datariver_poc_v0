@@ -757,6 +757,80 @@ test('fences exact Table-System mappings with admin capability, current identiti
   }
 })
 
+test('creates an immutable server-authored System identity with admin, Origin, and idempotency fences', async () => {
+  const fixture = await serverFixture()
+  try {
+    const [admin, viewer] = await Promise.all([
+      fixture.login('first@example.com', 'first correct password'),
+      fixture.login('second@example.com', 'second correct password'),
+    ])
+    assert.ok(admin.cookie)
+    assert.ok(viewer.cookie)
+    const body = JSON.stringify({ name: 'Order Fulfillment', description: 'Current business System' })
+    const key = 'system-create-order-fulfillment-1'
+
+    const denied = await fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: viewer.cookie, Origin: fixture.canonicalOrigin, 'Idempotency-Key': key },
+      body,
+    })
+    assert.equal(denied.status, 403)
+    assert.equal((await denied.json()).code, 'CAPABILITY_REQUIRED')
+
+    const missingOrigin = await fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'Idempotency-Key': key },
+      body,
+    })
+    assert.equal(missingOrigin.status, 403)
+    assert.equal((await missingOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+
+    const missingKey = await fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.canonicalOrigin },
+      body,
+    })
+    assert.equal(missingKey.status, 428)
+    assert.equal((await missingKey.json()).code, 'IDEMPOTENCY_KEY_REQUIRED')
+
+    const clientCode = await fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.canonicalOrigin, 'Idempotency-Key': key },
+      body: JSON.stringify({ code: 'CLIENT_CODE', name: 'Order Fulfillment', description: '' }),
+    })
+    assert.equal(clientCode.status, 400)
+    assert.equal((await clientCode.json()).code, 'ADMIN_INPUT_INVALID')
+
+    const create = () => fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.canonicalOrigin, 'Idempotency-Key': key },
+      body,
+    })
+    const createdResponse = await create()
+    const created = await createdResponse.json()
+    assert.equal(createdResponse.status, 201, JSON.stringify(created))
+    assert.match(created.system_id, /^system-[0-9a-f]{32}$/)
+    assert.match(created.code, /^ORDER_FULFILLMENT_[0-9A-F]{12}$/)
+    assert.equal(created.name, 'Order Fulfillment')
+
+    const replayResponse = await create()
+    assert.equal(replayResponse.status, 200)
+    assert.deepEqual(await replayResponse.json(), created)
+    const persisted = await fixture.stateStore.readChangeHistoryAccess()
+    assert.equal(persisted.core.value.adminSystems.filter((system) => system.system_id === created.system_id).length, 1)
+
+    const conflict = await fetch(`${fixture.origin}/api/v1/admin/systems`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.canonicalOrigin, 'Idempotency-Key': key },
+      body: JSON.stringify({ name: 'Different System', description: '' }),
+    })
+    assert.equal(conflict.status, 409)
+    assert.equal((await conflict.json()).code, 'SYSTEM_IDEMPOTENCY_CONFLICT')
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('administers local users, security grade, Responsible Systems, explicit Table grants, credentials, and sessions', async () => {
   const fixture = await serverFixture()
   try {

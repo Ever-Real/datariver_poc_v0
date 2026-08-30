@@ -42,7 +42,9 @@ describe('ProfilePage', () => {
     expect(screen.queryByLabelText('Workspace 운영 모드')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('WebAuthn')).not.toBeInTheDocument()
     expect(screen.queryByText(/RLS·권한·캐시/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '변경사항 저장' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '변경사항 저장' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('닉네임')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Department')).not.toBeInTheDocument()
     expect(screen.getByText('Change Request History')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '서버 승인 DataHub 링크 열기' })).toHaveAttribute('href', 'http://localhost:8080')
     fireEvent.click(screen.getByRole('button', { name: '비밀번호 변경' }))
@@ -93,5 +95,23 @@ describe('ProfilePage', () => {
       confirmation: 'new password value',
     }))
     expect(onPasswordChange).not.toHaveBeenCalled()
+  })
+
+  it('does not present missing membership counts as zero when the authority read fails', async () => {
+    const client = { request: vi.fn().mockRejectedValue(new Error('membership authority unavailable')) }
+    render(<ProfilePage
+      profile={{
+        subject: 'subject-1', display_name: '사용자', roles: ['viewer'],
+        authentication_assurance: 'PASSWORD', password_change_supported: false,
+      }}
+      client={client as never}
+      capabilities={[]}
+      externalSystemLinks={[]}
+      onPasswordChange={vi.fn()}
+      onPasswordReauth={vi.fn()}
+    />)
+
+    expect(await screen.findAllByText('확인 실패')).toHaveLength(2)
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
   })
 })

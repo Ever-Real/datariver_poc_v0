@@ -63,20 +63,22 @@ export function CatalogExportControl({
   const api = useMemo(() => new CatalogExportApi(client), [client])
   const [record, setRecord] = useState<ExportRecord>()
   const [exportFormat, setExportFormat] = useState<'CSV' | 'XLSX'>('CSV')
-  const [artifactFormat, setArtifactFormat] = useState<'CSV' | 'XLSX'>('CSV')
   const [creating, setCreating] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<unknown>()
   const boundaryGeneration = useRef(0)
+  const pendingAutomaticDownload = useRef<string | undefined>(undefined)
+  const automaticDownloadInFlight = useRef(false)
   const restricted = classification === 'RESTRICTED'
   const pending = record ? pendingStates.has(record.state) : false
 
   useEffect(() => {
     boundaryGeneration.current += 1
     setRecord(undefined)
-    setArtifactFormat('CSV')
     setCreating(false)
     setDownloading(false)
+    pendingAutomaticDownload.current = undefined
+    automaticDownloadInFlight.current = false
     setError(undefined)
   }, [assetType, classification, client, databaseName, disabled, domain, lifecycle, platform, query, schemaName, searchFields, workerEnabled])
 
@@ -90,6 +92,30 @@ export function CatalogExportControl({
     }, pollMilliseconds)
     return () => { active = false; window.clearTimeout(timer) }
   }, [api, disabled, pollMilliseconds, record, workerEnabled])
+
+  useEffect(() => {
+    if (disabled || !workerEnabled || !record || record.state !== 'COMPLETED'
+      || pendingAutomaticDownload.current !== record.export_id || automaticDownloadInFlight.current) return
+    let active = true
+    automaticDownloadInFlight.current = true
+    setDownloading(true)
+    setError(undefined)
+    const generation = boundaryGeneration.current
+    void api.download(record.export_id)
+      .then((response) => {
+        if (!active || generation !== boundaryGeneration.current) return
+        pendingAutomaticDownload.current = undefined
+        navigate(safeCatalogExportDownloadUrl(response.url))
+      })
+      .catch((next: unknown) => {
+        if (active && generation === boundaryGeneration.current) setError(next)
+      })
+      .finally(() => {
+        automaticDownloadInFlight.current = false
+        if (active && generation === boundaryGeneration.current) setDownloading(false)
+      })
+    return () => { active = false }
+  }, [api, disabled, navigate, record, workerEnabled])
 
   const create = async (requestedFormat = exportFormat) => {
     if (disabled || !workerEnabled || restricted || creating || pending) return
@@ -113,30 +139,13 @@ export function CatalogExportControl({
     try {
       const created = await api.create(payload, newIdempotencyKey('catalog-export'))
       if (generation === boundaryGeneration.current) {
-        setArtifactFormat(requestedFormat)
+        pendingAutomaticDownload.current = created.export_id
         setRecord(created)
       }
     } catch (next) {
       if (generation === boundaryGeneration.current) setError(next)
     } finally {
       if (generation === boundaryGeneration.current) setCreating(false)
-    }
-  }
-
-  const download = async () => {
-    if (disabled || !workerEnabled || !record || record.state !== 'COMPLETED' || downloading) return
-    setDownloading(true)
-    setError(undefined)
-    const generation = boundaryGeneration.current
-    try {
-      const response = await api.download(record.export_id)
-      if (generation === boundaryGeneration.current) {
-        navigate(safeCatalogExportDownloadUrl(response.url))
-      }
-    } catch (next) {
-      if (generation === boundaryGeneration.current) setError(next)
-    } finally {
-      if (generation === boundaryGeneration.current) setDownloading(false)
     }
   }
 
@@ -154,9 +163,8 @@ export function CatalogExportControl({
   if (compact) return <section className="catalog-export-control catalog-export-control-compact" aria-label="카탈로그 내보내기">
     <p className="sr-only" id="catalog-export-description">{disabledReason}</p>
     <div className="catalog-export-actions">
-      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={disabled || !workerEnabled || restricted || creating || pending} onClick={() => void create('CSV')}><Download size={13} aria-hidden="true" />{creating && exportFormat === 'CSV' ? '요청 중…' : 'CSV 저장'}</button>
-      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={disabled || !workerEnabled || restricted || creating || pending} onClick={() => void create('XLSX')}><Download size={13} aria-hidden="true" />{creating && exportFormat === 'XLSX' ? '요청 중…' : 'Excel 저장'}</button>
-      {!disabled && workerEnabled && record?.state === 'COMPLETED' && <button type="button" className="button" disabled={downloading} onClick={() => void download()}><Download size={13} aria-hidden="true" />{downloading ? 'URL 확인 중…' : `${artifactFormat} 다운로드`}</button>}
+      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={disabled || !workerEnabled || restricted || creating || pending || downloading} onClick={() => void create('CSV')}><Download size={13} aria-hidden="true" />{downloading && exportFormat === 'CSV' ? 'CSV 다운로드 중…' : creating && exportFormat === 'CSV' ? '요청 중…' : 'CSV 저장'}</button>
+      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={disabled || !workerEnabled || restricted || creating || pending || downloading} onClick={() => void create('XLSX')}><Download size={13} aria-hidden="true" />{downloading && exportFormat === 'XLSX' ? 'Excel 다운로드 중…' : creating && exportFormat === 'XLSX' ? '요청 중…' : 'Excel 저장'}</button>
     </div>
     {!disabled && workerEnabled && record && <div className="catalog-export-status" role="status" aria-live="polite"><span className={`badge badge-soft export-state-${record.state.toLowerCase()}`}>{stateLabels[record.state] ?? record.state}</span></div>}
     {failureMessage && <p className="catalog-export-failure" role="alert">{failureMessage}</p>}
@@ -183,21 +191,12 @@ export function CatalogExportControl({
         type="button"
         className="button button-secondary"
         aria-describedby="catalog-export-description"
-        disabled={disabled || !workerEnabled || restricted || creating || pending}
+        disabled={disabled || !workerEnabled || restricted || creating || pending || downloading}
         onClick={() => void create()}
       >
         <Download size={13} aria-hidden="true" />
-        {creating ? '요청 중…' : record?.state === 'COMPLETED' ? `새 ${exportFormat} 생성` : `${exportFormat} 생성`}
+        {downloading ? '다운로드 중…' : creating ? '요청 중…' : record?.state === 'COMPLETED' ? `새 ${exportFormat} 생성` : `${exportFormat} 생성`}
       </button>
-      {!disabled && workerEnabled && record?.state === 'COMPLETED' && <button
-        type="button"
-        className="button"
-        disabled={downloading}
-        onClick={() => void download()}
-      >
-        <Download size={13} aria-hidden="true" />
-        {downloading ? 'URL 확인 중…' : `${artifactFormat} 다운로드`}
-      </button>}
     </div>
     <ErrorNotice error={error} />
   </section>

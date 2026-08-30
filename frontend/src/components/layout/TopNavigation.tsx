@@ -103,6 +103,19 @@ export function TopNavigation({
         client={client}
         onSearch={onSearch}
       />
+      <nav className="site-custom-badge-links" aria-label="사이트 바로가기">
+        {(branding.custom_badges ?? []).filter((badge) => badge.enabled).map((badge) => <a
+          key={badge.badge_id}
+          href={badge.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={badge.name}
+          aria-label={`${badge.name} 새 창에서 열기`}
+        >
+          {badge.logo && <img src={badge.logo.data_url} alt="" />}
+          <span>{badge.name}</span>
+        </a>)}
+      </nav>
       <ExternalSystemLinks links={externalSystemLinks} />
       <div className="top-navigation-profile-slot">
         <ProfileMenu

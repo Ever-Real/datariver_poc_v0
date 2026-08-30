@@ -18,7 +18,7 @@ const completed = {
 }
 
 describe('CatalogExportControl', () => {
-  it('places separate compact CSV and Excel actions in the search toolbar', async () => {
+  it('starts the selected compact export and downloads it without a second action', async () => {
     const request = vi.fn((path: string, _options?: { body: string }) => {
       void _options
       if (path.endsWith('/download')) {
@@ -43,9 +43,8 @@ describe('CatalogExportControl', () => {
     const [, options] = request.mock.calls[0] ?? []
     expect(JSON.parse(options?.body ?? '{}')).toMatchObject({ format: 'XLSX' })
 
-    expect(await screen.findByRole('button', { name: 'XLSX 다운로드' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'XLSX 다운로드' }))
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://objects.example.test/export.xlsx?signature=short'))
+    expect(screen.queryByRole('button', { name: 'XLSX 다운로드' })).not.toBeInTheDocument()
   })
 
   it('fails closed with an explicit operator explanation when the worker is disabled', () => {
@@ -113,7 +112,6 @@ describe('CatalogExportControl', () => {
     expect(screen.getByText('42 rows')).toBeInTheDocument()
     expect(screen.getByText('2.0 KiB')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'CSV 다운로드' }))
     await waitFor(() => expect(navigate).toHaveBeenCalledWith(
       'https://objects.example.test/export.csv?signature=short',
     ))
@@ -228,23 +226,28 @@ describe('CatalogExportControl', () => {
   })
 
   it('clears an export receipt when the bound search request changes', async () => {
-    const request = vi.fn().mockResolvedValue(completed)
+    const navigate = vi.fn()
+    const request = vi.fn((path: string) => path.endsWith('/download')
+      ? Promise.resolve({ url: 'https://objects.example.test/current.csv', expires_seconds: 60 })
+      : Promise.resolve(completed))
     const client = { request } as unknown as ApiClient
     const view = render(<CatalogExportControl
       client={client}
       workerEnabled
       query="wafer"
       platform="snowflake"
+      navigate={navigate}
     />)
 
     fireEvent.click(screen.getByRole('button', { name: 'CSV 생성' }))
-    expect(await screen.findByRole('button', { name: 'CSV 다운로드' })).toBeInTheDocument()
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://objects.example.test/current.csv'))
 
     view.rerender(<CatalogExportControl
       client={client}
       workerEnabled
       query="yield"
       platform="snowflake"
+      navigate={navigate}
     />)
 
     expect(screen.queryByRole('button', { name: 'CSV 다운로드' })).not.toBeInTheDocument()
@@ -271,7 +274,7 @@ describe('CatalogExportControl', () => {
     />)
 
     fireEvent.click(screen.getByRole('button', { name: 'CSV 생성' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'CSV 다운로드' }))
+    await waitFor(() => expect(request.mock.calls.some(([path]) => String(path).endsWith('/download'))).toBe(true))
     view.rerender(<CatalogExportControl
       client={client}
       workerEnabled={false}

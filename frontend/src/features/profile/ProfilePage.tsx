@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Database, KeyRound, Save, ShieldCheck, UserRound } from 'lucide-react'
+import { Database, KeyRound, ShieldCheck, UserRound } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { AuthenticatedProfile, Capability, ExternalSystemLink, MembershipRenewalRequest, WorkspaceMembershipSummary } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -54,6 +54,10 @@ export function ProfilePage({
   }, [client])
   useEffect(() => { void loadRenewal() }, [loadRenewal])
   const pendingRenewal = renewals.find((item) => item.state === 'PENDING')
+  const membershipCount = (value: number | undefined) => {
+    if (typeof value === 'number') return value.toLocaleString()
+    return renewalError ? '확인 실패' : '조회 중'
+  }
   const renewalOpen = Boolean(
     membership?.renewal_request_eligible
     && !pendingRenewal,
@@ -106,15 +110,12 @@ export function ProfilePage({
         <header className="mb-5 flex items-center gap-3 border-b border-slate-200 pb-4"><span className="grid h-11 w-11 place-items-center rounded-full bg-navy-900 text-white"><UserRound size={21} /></span><div><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Basic information</span><h2 className="my-1 text-lg font-black text-navy-900">{profile.display_name}</h2><p className="m-0 text-xs text-slate-500">{profile.subject}</p></div></header>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="grid gap-1 text-xs font-bold">이름<input readOnly value={profile.display_name} /></label>
-          <label className="grid gap-1 text-xs font-bold">닉네임<input readOnly value="인증 프로필 미제공" /></label>
           <label className="grid gap-1 text-xs font-bold">Email<input readOnly value={profile.email ?? '인증 프로필 미제공'} /></label>
-          <label className="grid gap-1 text-xs font-bold">Department<input readOnly value="인증 프로필 미제공" /></label>
           <label className="grid gap-1 text-xs font-bold md:col-span-2">역할<input readOnly value={profile.roles.join(', ') || '역할 없음'} /></label>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
           {profile.password_change_supported && !onLocalPasswordChange && <button type="button" className="button" onClick={onPasswordChange}><KeyRound size={14} /> 비밀번호 변경</button>}
           <button type="button" className="button button-secondary" onClick={onPasswordReauth}><KeyRound size={14} /> 비밀번호 재인증</button>
-          <button type="button" className="button" disabled title="사용자 프로필 수정은 조직 인증 시스템이 관리합니다."><Save size={14} /> 변경사항 저장</button>
         </div>
         {profile.password_change_supported && onLocalPasswordChange ? <form className="mt-4 grid gap-3 rounded-enterprise border border-slate-300 bg-slate-50 p-4" aria-labelledby="local-password-title" onSubmit={(event) => void submitLocalPassword(event)}>
           <div><span className="text-xs font-black tracking-[.14em] text-enterprise-blue uppercase">Local credential</span><h3 className="mb-1 mt-1 text-sm font-black text-navy-900" id="local-password-title">비밀번호 변경</h3><p className="m-0 text-xs leading-5 text-slate-600">변경하면 현재 세션을 포함해 모든 기기에서 로그아웃됩니다. 새 비밀번호로 다시 로그인해야 합니다.</p></div>
@@ -133,8 +134,8 @@ export function ProfilePage({
         </section>
       </section>
       <aside className="grid content-start gap-3">
-        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Change Request History</div><strong className="mt-3 block text-2xl text-navy-900">{membership?.change_request_count ?? 0}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">결재 요청 내역 건수</p></article>
-        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Owned Datasets</div><strong className="mt-3 block text-2xl text-navy-900">{membership?.owned_table_count ?? 0}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">담당 중인 데이터셋</p></article>
+        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Change Request History</div><strong className="mt-3 block text-2xl text-navy-900">{membershipCount(membership?.change_request_count)}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">결재 요청 내역 건수</p></article>
+        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Owned Datasets</div><strong className="mt-3 block text-2xl text-navy-900">{membershipCount(membership?.owned_table_count)}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">담당 중인 데이터셋</p></article>
         <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><ShieldCheck size={16} className="text-enterprise-blue" /> DataHub Integration</div><span className="badge mt-3">{capabilityState(capabilities, 'datahub')}</span>{dataHubLink ? <a className="mt-3 block text-xs font-bold text-enterprise-blue" href={dataHubLink.url} target="_blank" rel="noreferrer">서버 승인 DataHub 링크 열기</a> : <p className="mb-0 mt-3 text-[10px] leading-5 text-slate-500">서버가 승인한 DataHub 외부 링크가 없습니다.</p>}</article>
       </aside>
     </div>

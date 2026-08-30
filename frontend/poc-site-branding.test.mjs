@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   POC_SITE_BRANDING_MAX_LOGO_BYTES,
+  POC_SITE_BRANDING_MAX_CUSTOM_BADGES,
   applySiteBrandingUpdate,
   defaultSiteBrandingDocument,
   normalizeSiteBrandingDocument,
@@ -26,6 +27,12 @@ function update(overrides = {}, context = commandContext) {
     favicon: null,
     restore_default: false,
     ...overrides,
+  }, context)
+}
+
+function updateBadges(current, customBadges, context = commandContext) {
+  return applySiteBrandingUpdate(current, {
+    site_name: 'Generic Portal', logo: null, favicon: null, custom_badges: customBadges, restore_default: false,
   }, context)
 }
 
@@ -152,4 +159,60 @@ test('normalizes every durable replay projection and fails closed on copied or i
       code: 'SITE_BRANDING_STATE_INVALID', statusCode: 503,
     })
   }
+})
+
+test('accepts the legacy persisted document and upgrades its empty badge state without changing its public shape', () => {
+  const legacy = {
+    schema_version: 1, site_name: 'Generic Portal', logo: null, favicon: null,
+    updated_at: null, updated_by: null, idempotency_receipts: [],
+  }
+  const normalized = normalizeSiteBrandingDocument(legacy)
+  assert.equal(normalized.schema_version, 2)
+  assert.deepEqual(normalized.custom_badges, [])
+  assert.deepEqual(publicSiteBranding(normalized), { site_name: 'Generic Portal', logo: null, favicon: null })
+})
+
+test('creates and updates an ordered badge while preserving its server-owned identity', () => {
+  const first = updateBadges(defaultSiteBrandingDocument(), [{
+    name: 'Generic Docs', url: 'https://docs.example.test/path', logo: null, enabled: true, order: 0,
+  }])
+  const badge = first.projection.custom_badges[0]
+  assert.match(badge.badge_id, /^[0-9a-f-]{36}$/)
+  assert.equal(badge.name, 'Generic Docs')
+
+  const second = updateBadges(first.document, [{
+    badge_id: badge.badge_id, name: 'Updated Docs', url: badge.url, logo: null, enabled: false, order: 0,
+  }], { ...commandContext, idempotencyKey: 'generic-badge-update', version: 2 })
+  assert.equal(second.projection.custom_badges[0].badge_id, badge.badge_id)
+  assert.equal(second.projection.custom_badges[0].enabled, false)
+})
+
+test('accepts zero through five badges and rejects a sixth before persistence', () => {
+  assert.equal(updateBadges(defaultSiteBrandingDocument(), []).document.custom_badges.length, 0)
+  const five = Array.from({ length: POC_SITE_BRANDING_MAX_CUSTOM_BADGES }, (_, order) => ({
+    name: `Generic Link ${order + 1}`, url: `https://example.test/${order + 1}`, logo: null, enabled: true, order,
+  }))
+  assert.equal(updateBadges(defaultSiteBrandingDocument(), five).document.custom_badges.length, 5)
+  assert.throws(() => updateBadges(defaultSiteBrandingDocument(), [...five, {
+    name: 'Generic Link 6', url: 'https://example.test/6', logo: null, enabled: true, order: 5,
+  }]), { code: 'SITE_BRANDING_BADGE_LIMIT_EXCEEDED' })
+})
+
+test('rejects unsafe badge URLs, client-invented identities and malformed durable badge order', () => {
+  for (const url of ['javascript:alert(1)', 'data:text/plain,unsafe', 'https://user:secret@example.test/']) {
+    assert.throws(() => updateBadges(defaultSiteBrandingDocument(), [{
+      name: 'Generic Link', url, logo: null, enabled: true, order: 0,
+    }]), { code: 'SITE_BRANDING_BADGE_INVALID' })
+  }
+  assert.throws(() => updateBadges(defaultSiteBrandingDocument(), [{
+    badge_id: '00000000-0000-4000-8000-000000000000',
+    name: 'Foreign Link', url: 'https://example.test', logo: null, enabled: true, order: 0,
+  }]), { code: 'SITE_BRANDING_BADGE_REFERENCE_INVALID' })
+
+  const applied = updateBadges(defaultSiteBrandingDocument(), [{
+    name: 'Generic Link', url: 'https://example.test', logo: null, enabled: true, order: 0,
+  }])
+  const malformed = structuredClone(applied.document)
+  malformed.custom_badges[0].order = 1
+  assert.throws(() => normalizeSiteBrandingDocument(malformed), { code: 'SITE_BRANDING_STATE_INVALID' })
 })
