@@ -801,13 +801,26 @@ function governanceDetail(documentId: string) {
   const document = governanceDocuments.find((item) => item.document_id === documentId)
   if (!document) throw new Error('POC 거버넌스 문서를 찾을 수 없습니다.')
   document.allowed_actions = [...governanceActions(document)]
+  const versions = governanceVersions
+    .filter((item) => item.document_id === documentId)
+    .sort((left, right) => right.version_number - left.version_number)
+  const reviews = governanceReviews.filter((item) => item.document_id === documentId)
+  const attachments = governanceAttachments.filter((item) => item.document_id === documentId)
+  const subjectIds = new Set([
+    document.owner_subject_id,
+    ...versions.map((item) => item.author_id),
+    ...versions.flatMap((item) => item.reviewed_by ? [item.reviewed_by] : []),
+    ...reviews.map((item) => item.reviewer_id),
+    ...attachments.map((item) => item.uploaded_by),
+  ])
+  const subject_display_names = Object.fromEntries(adminMemberships
+    .filter((member) => subjectIds.has(member.subject_id) && member.display_name.trim())
+    .map((member) => [member.subject_id, member.display_name.trim()]))
   return {
     document,
-    versions: governanceVersions
-      .filter((item) => item.document_id === documentId)
-      .sort((left, right) => right.version_number - left.version_number),
-    reviews: governanceReviews.filter((item) => item.document_id === documentId),
-    attachments: governanceAttachments.filter((item) => item.document_id === documentId),
+    versions,
+    reviews,
+    attachments,
     parent_document: document.current_published_version_id
       ? (() => {
           const version = governanceVersions.find((item) => item.version_id === document.current_published_version_id)
@@ -819,6 +832,7 @@ function governanceDetail(documentId: string) {
     child_documents: governanceDocuments.filter((candidate) => governanceVersions.some((version) => (
       version.document_id === candidate.document_id && version.parent_document_id === documentId
     ))),
+    subject_display_names,
   }
 }
 

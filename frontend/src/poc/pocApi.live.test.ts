@@ -1540,6 +1540,9 @@ describe('POC live-provider compatibility adapter', () => {
     )
     expect(reviewed.item.document.state).toBe('ACTIVE')
     expect(reviewed.item.versions[0]?.state).toBe('PUBLISHED')
+    expect(reviewed.item.subject_display_names[reviewed.item.document.owner_subject_id]).toBe('POC User')
+    expect(reviewed.item.subject_display_names[reviewed.item.versions[0]!.author_id]).toBe('POC User')
+    expect(reviewed.item.subject_display_names[reviewed.item.versions[0]!.reviewed_by!]).toBe('POC User')
 
     const importedHtml = await api.importDocument({
       file: new File(['<style>.policy{color:#123456;padding:12px;position:fixed}</style><h1 class="policy">HTML 정책</h1><p><strong>서식</strong> 본문</p><script>alert(1)</script>'], 'policy.html', { type: 'text/html' }),
