@@ -1813,14 +1813,23 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     mappingDocument.bindings[0].active = false
     const inactiveBinding = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
     assert.deepEqual(inactiveBinding.items, [])
-    assert.deepEqual(inactiveBinding.overview, [])
+    assert.equal(inactiveBinding.overview.length, 1)
+    assert.deepEqual({
+      system_id: inactiveBinding.overview[0].system_id,
+      system_resolution: inactiveBinding.overview[0].system_resolution,
+      event_count: inactiveBinding.overview[0].event_count,
+      total_count: inactiveBinding.overview[0].total_count,
+    }, { system_id: null, system_resolution: 'UNMAPPED', event_count: 1, total_count: 0 })
     mappingDocument.bindings[0].active = true
     projection.core.value.adminSystems[0].active = false
     projection.core.value.adminSystemSchemaScopes[0][1][0].active = false
     projection.access.value.system_assignments.forEach((assignment) => { assignment.active = false })
     const inactiveSystem = await (await fetch(`${base}/api/v1/change-requests/summaries?limit=25&date_from=2026-08-11&date_to=2026-08-12`)).json()
     assert.deepEqual(inactiveSystem.items, [])
-    assert.deepEqual(inactiveSystem.overview, [])
+    assert.equal(inactiveSystem.overview.length, 1)
+    assert.equal(inactiveSystem.overview[0].system_resolution, 'UNMAPPED')
+    assert.equal(inactiveSystem.overview[0].event_count, 1)
+    assert.equal(inactiveSystem.overview[0].total_count, 0)
     projection.core.value.adminSystems[0].active = true
     projection.core.value.adminSystemSchemaScopes[0][1][0].active = true
     projection.access.value.system_assignments.forEach((assignment) => { assignment.active = true })
