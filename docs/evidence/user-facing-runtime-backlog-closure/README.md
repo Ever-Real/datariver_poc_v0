@@ -73,16 +73,17 @@ The clean Product image was built for `linux/amd64` and exported through the app
 contract:
 
 - image: `datariver-poc:86f1d0a1e99f188bf3bde261038429b93f05ec75`;
-- archive SHA-256: `7de257ba3f7ce8b241ed0d96c9ab1f81c44bb7e554f3b50ddcb494b5732c06c4`;
-- child manifest: `sha256:cfababa4812616b082a5e93f114311076ea014eebccdc9a657ae2522e2f4987e`;
-- config: `sha256:0f2c99a6d9a049264bb6b8f211597b9016b1667c4e72e29aa7811b55856699f0`;
+- archive SHA-256: `7a52684cd77886dc09998534ff6e32ab07b38787bd9f7abc7836511602a5f922`;
+- child manifest: `sha256:40ac298bc6013131a888b87d64a54ce0d6eefd54c463166c0139889ca046bc16`;
+- config: `sha256:cebc06e588bf09bd99991db852916d63381ded4b7f87e699f0bc28966582b54b`;
 - platform: `linux/amd64`;
 - OCI revision: `86f1d0a1e99f188bf3bde261038429b93f05ec75`.
 
-The first Docker invocation stopped before Product compilation and before creating an image because
-the canonical worktree lacked its ignored offline npm directory. No tag was produced. The current
-lockfile-matched amd64 offline cache was generated with the repository's pinned Node image; the
-successful exact Product image was then built once. PREP/TEST deploy never builds or pulls it.
+An initial non-canonical frontend-only image was exported during release preparation. TEST doctor
+rejected it before service start because it could not execute the required Product Node preflight.
+That archive was superseded and was never deployed. The exact image recorded above was then built
+once from the tracked canonical `deploy/poc/Dockerfile.example`; TEST/PREP deployment never builds
+or pulls it.
 
 ## Runtime gate
 
