@@ -7,25 +7,25 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  8e7d9f3fe3a620c4a7b301ff96b05939e4b57798
-Evidence 38025af4dff18b8d2b757648d6a3f98c3d2c0582
+Product  32377cf3b8b5cdd97cdaaa6833495f2f445b46a2
+Evidence 41ee3a9787cef47881618e70971b33259b51c764
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`8e7d9f3fe3a620c4a7b301ff96b05939e4b57798`. Its SHA-256, child manifest,
+`32377cf3b8b5cdd97cdaaa6833495f2f445b46a2`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
-This Handoff adds the bounded `USER-FACING-RUNTIME-CLOSURE-2` Product surfaces: exact authorized
-unmapped Change History visibility, System creation error fidelity, page-bounded Glossary assignment
-counts, Home Dataset drill-down with complete schema coverage metrics, Governance editor/table preservation, cursor-append Resource Tree,
-bounded detail-history restore, and owner-bound Catalog CSV/XLSX export. Missing System mappings do
-not widen permission or enable CR actions, and no reviewed GX provider was invented. The prior TEST
-Product remains the last runtime-accepted release until this exact artifact completes TEST deploy,
-same-command rerun, and browser/API acceptance.
+This Handoff retains the accepted `USER-FACING-RUNTIME-CLOSURE-2` surfaces and adds only the
+interruption-recovery corrections: the Resource Tree server honors its bounded 200-item cursor page
+without changing ordinary Catalog's 100-item cap, and the POC Governance detail response resolves
+document actor names from the existing workspace membership source. Neither correction widens
+authorization or introduces a target-data dependency. The prior TEST Product remains the last
+runtime-accepted release until this exact artifact completes TEST deploy, same-command rerun, and
+the bounded Resource Tree/Governance browser acceptance.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
