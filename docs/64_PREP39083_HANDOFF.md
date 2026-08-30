@@ -7,15 +7,15 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  888a484c2d03dc9221f63e2a623c301fa0e69c1b
-Evidence 2543526d233fc626bbcad371b8d717f22858dd67
+Product  51734c788aaa0ce1cef8c49f3b78ae923fe600dc
+Evidence aecd89731fc88a685677c4ffe2db4c10a41cd813
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`888a484c2d03dc9221f63e2a623c301fa0e69c1b`. Its SHA-256, child manifest,
+`51734c788aaa0ce1cef8c49f3b78ae923fe600dc`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
@@ -23,7 +23,8 @@ This Handoff retains the accepted `USER-FACING-RUNTIME-CLOSURE-2` surfaces and a
 interruption-recovery corrections: the Resource Tree server honors its bounded 200-item cursor page
 without changing ordinary Catalog's 100-item cap, and the POC Governance detail response resolves
 document actor names from the existing workspace membership source. A referenced legacy POC actor
-uses its bounded presentation label only when no real same-subject membership name exists. None of
+uses its bounded presentation label only when no real same-subject membership name exists. The
+published metadata viewer alone uses readable 11px/13px label/value typography. None of
 these corrections widens authorization or introduces a target-data dependency. The prior TEST Product remains the last
 runtime-accepted release until this exact artifact completes TEST deploy, same-command rerun, and
 the bounded Resource Tree/Governance browser acceptance.
