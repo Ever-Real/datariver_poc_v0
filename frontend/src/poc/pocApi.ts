@@ -167,9 +167,14 @@ function localDispatchCapability(path: string, method: string): PocCapability | 
   if (path === '/capabilities') return 'monitoring.read'
   if (path.startsWith('/admin/')) return 'admin.manage'
   if (path === '/poc/glossary' || path.startsWith('/poc/glossary/')) {
+    if (path === '/poc/glossary/assignments/batch-counts' && method === 'POST') {
+      return 'catalog.read'
+    }
     return method === 'GET' ? 'catalog.read' : 'catalog.manage'
   }
   if (path.startsWith('/catalog/') || path === '/catalog') {
+    if (path === '/catalog/export-capability' || path === '/catalog/exports'
+      || /^\/catalog\/exports\/[^/]+(?:\/download)?$/.test(path)) return 'catalog.read'
     if (method === 'GET') return 'catalog.read'
     return /(?:bulk|submissions)(?:\/|$)/.test(path)
       ? 'catalog.execute'
@@ -2101,7 +2106,36 @@ class PocApiClient {
       await this.persistCore()
       return monitoringConfiguration
     }
-    if (path === '/catalog/export-capability') return { enabled: false }
+    if (path === '/catalog/export-capability') {
+      return gatewayRequest('/poc-api/datahub/catalog/export-capability', { signal: options.signal })
+    }
+    if (path === '/catalog/exports' && method === 'POST') {
+      const headers = options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : undefined
+      return gatewayRequest('/poc-api/datahub/catalog/exports', {
+        method: 'POST', headers, signal: options.signal, body: options.body,
+      })
+    }
+    const catalogExportDownloadMatch = path.match(/^\/catalog\/exports\/([^/]+)\/download$/)
+    if (catalogExportDownloadMatch && method === 'POST') {
+      return gatewayRequest(`/poc-api/datahub/catalog/exports/${encodeURIComponent(decodeURIComponent(catalogExportDownloadMatch[1]!))}/download`, {
+        method: 'POST', signal: options.signal,
+      })
+    }
+    const catalogExportStatusMatch = path.match(/^\/catalog\/exports\/([^/]+)$/)
+    if (catalogExportStatusMatch && method === 'GET') {
+      return gatewayRequest(`/poc-api/datahub/catalog/exports/${encodeURIComponent(decodeURIComponent(catalogExportStatusMatch[1]!))}`, {
+        signal: options.signal,
+      })
+    }
+    if (path === '/poc/glossary/assignments/batch-counts') {
+      if (method !== 'POST') throw new Error('용어 적용 수량은 POST 요청으로만 조회할 수 있습니다.')
+      if (!runtimeFlags().datahub) throw new Error('DataHub 용어 적용 수량을 확인할 수 없습니다.')
+      return gatewayRequest('/poc-api/datahub/glossary/assignments/batch-counts', {
+        method: 'POST',
+        signal: options.signal,
+        body: JSON.stringify(jsonBody(options)),
+      })
+    }
     if (path === '/poc/glossary/detail') {
       return runtimeFlags().datahub
         ? gatewayRequest(`/poc-api/datahub/glossary?detail=true&${url.searchParams.toString()}`, { signal: options.signal })

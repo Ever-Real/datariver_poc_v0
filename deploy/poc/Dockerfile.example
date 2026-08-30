@@ -50,6 +50,7 @@ COPY frontend/poc-table-data-access.mjs ./poc-table-data-access.mjs
 COPY frontend/poc-cr-lifecycle.mjs ./poc-cr-lifecycle.mjs
 COPY frontend/poc-access-document.mjs ./poc-access-document.mjs
 COPY frontend/poc-table-system-mappings.mjs ./poc-table-system-mappings.mjs
+COPY frontend/poc-catalog-export.mjs ./poc-catalog-export.mjs
 COPY frontend/poc-datahub-current-table.mjs ./poc-datahub-current-table.mjs
 COPY frontend/poc-feature-security-policy.mjs ./poc-feature-security-policy.mjs
 COPY frontend/poc-site-branding.mjs ./poc-site-branding.mjs

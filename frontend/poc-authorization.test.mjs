@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 93)
+  assert.equal(POC_ROUTE_REGISTRY.length, 99)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 8,
     AUTHENTICATED: 3,
-    CAPABILITY_PROTECTED: 80,
+    CAPABILITY_PROTECTED: 86,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -121,6 +121,12 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['GET', '/poc-api/knowledge/catalog', 'knowledge.catalog.search'],
     ['GET', '/poc-api/knowledge/catalog/asset', 'knowledge.catalog.detail'],
     ['GET', '/poc-api/datahub/glossary/smoke-target', 'catalog.glossary-smoke-target'],
+    ['POST', '/poc-api/datahub/glossary/assignments/batch-counts', 'catalog.glossary-assignment-counts'],
+    ['GET', '/poc-api/datahub/catalog/export-capability', 'catalog.export-capability'],
+    ['POST', '/poc-api/datahub/catalog/exports', 'catalog.export-create'],
+    ['GET', '/poc-api/datahub/catalog/exports/export-1', 'catalog.export-status'],
+    ['POST', '/poc-api/datahub/catalog/exports/export-1/download', 'catalog.export-download'],
+    ['GET', '/poc-api/datahub/catalog/exports/export-1/file', 'catalog.export-file'],
     ['GET', '/poc-api/knowledge/managed-assets', 'knowledge.managed-assets.list'],
     ['GET', '/poc-api/knowledge/managed-assets/graph-1/detail', 'knowledge.managed-assets.detail'],
     ['GET', '/poc-api/knowledge/managed-assets/graph-1/versions', 'knowledge.managed-assets.versions'],

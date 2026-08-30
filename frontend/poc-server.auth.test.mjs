@@ -185,6 +185,120 @@ test('separates loopback transport from canonical intranet Origin for authentica
   }
 })
 
+test('exports the complete authorized Catalog selection as owner-bound CSV and XLSX artifacts', async () => {
+  const fixture = await serverFixture()
+  try {
+    const admin = await fixture.login('first@example.com', 'first correct password')
+    const viewer = await fixture.login('second@example.com', 'second correct password')
+    assert.ok(admin.cookie)
+    assert.ok(viewer.cookie)
+    const create = async (format, idempotencyKey) => fetch(`${fixture.origin}/poc-api/datahub/catalog/exports`, {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+        Origin: fixture.canonicalOrigin,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        q: '*',
+        sort: 'NAME_ASC',
+        format,
+      }),
+    })
+
+    const csvCreate = await create('CSV', 'generic-catalog-export-csv')
+    const csvCreated = await csvCreate.json()
+    assert.equal(csvCreate.status, 201, JSON.stringify(csvCreated))
+    assert.equal(csvCreated.state, 'COMPLETED')
+
+    const replay = await create('CSV', 'generic-catalog-export-csv')
+    assert.equal(replay.status, 201)
+    assert.equal((await replay.json()).export_id, csvCreated.export_id)
+
+    const statusResponse = await fetch(
+      `${fixture.origin}/poc-api/datahub/catalog/exports/${csvCreated.export_id}`,
+      { headers: { Cookie: admin.cookie } },
+    )
+    const status = await statusResponse.json()
+    assert.equal(statusResponse.status, 200, JSON.stringify(status))
+    assert.equal(status.row_count, 1)
+    assert.equal(status.state, 'COMPLETED')
+
+    const deniedOwner = await fetch(
+      `${fixture.origin}/poc-api/datahub/catalog/exports/${csvCreated.export_id}`,
+      { headers: { Cookie: viewer.cookie } },
+    )
+    assert.equal(deniedOwner.status, 404)
+
+    const downloadResponse = await fetch(
+      `${fixture.origin}/poc-api/datahub/catalog/exports/${csvCreated.export_id}/download`,
+      { method: 'POST', headers: { Cookie: admin.cookie, Origin: fixture.canonicalOrigin } },
+    )
+    const download = await downloadResponse.json()
+    assert.equal(downloadResponse.status, 200, JSON.stringify(download))
+    const fileResponse = await fetch(`${fixture.origin}${download.url}`, {
+      headers: { Cookie: admin.cookie },
+    })
+    const csv = Buffer.from(await fileResponse.arrayBuffer())
+    assert.equal(fileResponse.status, 200)
+    assert.equal(fileResponse.headers.get('content-type'), 'text/csv; charset=utf-8')
+    assert.deepEqual([...csv.subarray(0, 3)], [0xef, 0xbb, 0xbf])
+    assert.match(csv.toString('utf8'), /table_c/)
+
+    const xlsxCreate = await create('XLSX', 'generic-catalog-export-xlsx')
+    const xlsxCreated = await xlsxCreate.json()
+    assert.equal(xlsxCreate.status, 201, JSON.stringify(xlsxCreated))
+    const xlsxDownload = await (await fetch(
+      `${fixture.origin}/poc-api/datahub/catalog/exports/${xlsxCreated.export_id}/download`,
+      { method: 'POST', headers: { Cookie: admin.cookie, Origin: fixture.canonicalOrigin } },
+    )).json()
+    const xlsxResponse = await fetch(`${fixture.origin}${xlsxDownload.url}`, {
+      headers: { Cookie: admin.cookie },
+    })
+    const xlsx = Buffer.from(await xlsxResponse.arrayBuffer())
+    assert.equal(xlsxResponse.status, 200)
+    assert.equal(xlsx.subarray(0, 2).toString('ascii'), 'PK')
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('Catalog export fails closed for missing origin, malformed input, and RESTRICTED scope', async () => {
+  const fixture = await serverFixture()
+  try {
+    const admin = await fixture.login('first@example.com', 'first correct password')
+    assert.ok(admin.cookie)
+    const request = (body, headers = {}) => fetch(`${fixture.origin}/poc-api/datahub/catalog/exports`, {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'generic-catalog-export-deny',
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    })
+    const payload = { q: '*', sort: 'NAME_ASC', format: 'CSV' }
+    const missingOrigin = await request(payload)
+    assert.equal(missingOrigin.status, 403)
+    assert.equal((await missingOrigin.json()).code, 'ORIGIN_FORBIDDEN')
+
+    const malformed = await request({ ...payload, unsupported: true }, { Origin: fixture.canonicalOrigin })
+    assert.equal(malformed.status, 400)
+    assert.equal((await malformed.json()).code, 'CATALOG_EXPORT_INPUT_INVALID')
+
+    const restricted = await request(
+      { ...payload, classification: 'RESTRICTED' },
+      { Origin: fixture.canonicalOrigin, 'Idempotency-Key': 'generic-catalog-export-restricted' },
+    )
+    assert.equal(restricted.status, 403)
+    assert.equal((await restricted.json()).code, 'CATALOG_EXPORT_RESTRICTED')
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('user MCP requires a real local session and exact canonical Origin while service MCP remains bearer-only', async () => {
   const fixture = await serverFixture('http://17.20.30.40:39083')
   try {

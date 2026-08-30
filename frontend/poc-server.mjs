@@ -87,6 +87,10 @@ import {
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
 import {
+  POC_CATALOG_EXPORT_MAXIMUM_ROWS,
+  createPocCatalogExportStore,
+} from './poc-catalog-export.mjs'
+import {
   applyFinalLane,
   applyTestRun,
   applyTransition,
@@ -4258,6 +4262,91 @@ async function datahubDashboard(principal) {
   }
 }
 
+const catalogExportClassifications = new Set(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
+const catalogExportFilterFields = Object.freeze([
+  'asset_type', 'platform', 'database_name', 'schema_name', 'domain',
+  'search_fields', 'classification', 'lifecycle',
+])
+
+function catalogExportRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw accessError(400, 'CATALOG_EXPORT_INPUT_INVALID', 'A Catalog export request object is required.')
+  }
+  const allowed = new Set(['q', ...catalogExportFilterFields, 'sort', 'format'])
+  if (Object.keys(body).some((key) => !allowed.has(key))
+    || typeof body.q !== 'string' || body.q.length > 500
+    || body.sort !== 'NAME_ASC' || !['CSV', 'XLSX'].includes(body.format)) {
+    throw accessError(400, 'CATALOG_EXPORT_INPUT_INVALID', 'Catalog export filters, sort, or format are invalid.')
+  }
+  for (const field of catalogExportFilterFields) {
+    const value = body[field]
+    if (value !== undefined && (typeof value !== 'string' || value.length > 500 || hasAccessControlCharacter(value))) {
+      throw accessError(400, 'CATALOG_EXPORT_INPUT_INVALID', `Catalog export ${field} is invalid.`)
+    }
+  }
+  if (body.classification !== undefined && !catalogExportClassifications.has(body.classification)) {
+    throw accessError(400, 'CATALOG_EXPORT_INPUT_INVALID', 'Catalog export classification is invalid.')
+  }
+  if (body.lifecycle !== undefined && body.lifecycle !== 'ACTIVE') {
+    throw accessError(400, 'CATALOG_EXPORT_INPUT_INVALID', 'Catalog export lifecycle is invalid.')
+  }
+  if (body.classification === 'RESTRICTED') {
+    throw accessError(403, 'CATALOG_EXPORT_RESTRICTED', 'RESTRICTED assets cannot be exported.')
+  }
+  return body
+}
+
+function catalogExportSearchParameters(body) {
+  const parameters = new URLSearchParams({ q: body.q || '*' })
+  const mappings = {
+    asset_type: 'asset_type', platform: 'platform', database_name: 'database',
+    schema_name: 'schema', domain: 'domain', search_fields: 'search_fields',
+    classification: 'classification', lifecycle: 'lifecycle',
+  }
+  for (const [field, parameter] of Object.entries(mappings)) {
+    if (body[field]) parameters.set(parameter, body[field])
+  }
+  return parameters
+}
+
+function catalogExportRow(asset) {
+  return {
+    asset_id: asset.id,
+    external_urn: asset.external_urn || asset.id,
+    platform: asset.platform || '',
+    database_name: asset.database_name || '',
+    schema_name: asset.schema_name || '',
+    name: asset.name,
+    asset_type: asset.asset_type,
+    classification: asset.classification,
+    lifecycle: asset.lifecycle,
+    description: asset.description || '',
+    source_version: asset.source_version || 'datahub-live',
+    observed_at: asset.observed_at || '',
+  }
+}
+
+async function createCatalogExport(request, context) {
+  const body = catalogExportRequest(await bodyJson(request))
+  const idempotencyKey = request.headers['idempotency-key']
+  const selection = await datahubCatalogSelection(
+    catalogExportSearchParameters(body),
+    context.principal,
+    'catalog',
+  )
+  if (selection.allItems.some((asset) => asset.classification === 'RESTRICTED')) {
+    throw accessError(403, 'CATALOG_EXPORT_RESTRICTED', 'RESTRICTED assets cannot be exported.')
+  }
+  const status = context.catalogExportStore.create({
+    ownerId: context.principal.subjectId,
+    idempotencyKey,
+    requestHash: canonicalHash(body),
+    format: body.format,
+    rows: selection.allItems.map(catalogExportRow),
+  })
+  return { export_id: status.export_id, job_id: status.job_id, state: status.state }
+}
+
 async function datahubProfileCoverage(principal) {
   const bindingHash = catalogEmbeddingBindingHash()
   if (bindingHash && principal.role === 'admin') {
@@ -4432,6 +4521,64 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
     total: items.length,
     page: { next_cursor: nextOffset < items.length ? String(nextOffset) : null, limit },
   }
+}
+
+function exactGlossaryTermUrns(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) {
+    throw accessError(400, 'GLOSSARY_ASSIGNMENT_COUNT_SCOPE_INVALID', 'urns must contain between 1 and 50 exact Glossary Term URNs.')
+  }
+  const urns = value.map((item) => typeof item === 'string' ? item.trim() : '')
+  if (urns.some((urn) => urn.length > 4_096
+    || !urn.startsWith('urn:li:glossaryTerm:')
+    || urn === 'urn:li:glossaryTerm:'
+    || hasAccessControlCharacter(urn))
+    || new Set(urns).size !== urns.length) {
+    throw accessError(400, 'GLOSSARY_ASSIGNMENT_COUNT_SCOPE_INVALID', 'urns must be unique exact Glossary Term URNs.')
+  }
+  return urns
+}
+
+export function glossaryAssignmentCountsFromInventory(urns, inventory) {
+  const counts = new Map(urns.map((urn) => [urn, {
+    urn,
+    table_asset_count: 0,
+    column_asset_count: 0,
+  }]))
+  for (const asset of Array.isArray(inventory) ? inventory : []) {
+    if (asset?.dataset_kind !== 'TABLE' || typeof asset.id !== 'string') continue
+    const tableTerms = new Set([
+      ...(Array.isArray(asset.glossary_terms) ? asset.glossary_terms : []),
+      ...(Array.isArray(asset.term_references) ? asset.term_references : []),
+    ].flatMap((term) => typeof term?.urn === 'string' ? [term.urn] : []))
+    for (const termUrn of tableTerms) {
+      const count = counts.get(termUrn)
+      if (count) count.table_asset_count += 1
+    }
+    for (const field of Array.isArray(asset.schema_fields) ? asset.schema_fields : []) {
+      const fieldTerms = new Set((field?.glossaryTerms?.terms || []).flatMap((reference) => (
+        typeof reference?.term?.urn === 'string' ? [reference.term.urn] : []
+      )))
+      for (const termUrn of fieldTerms) {
+        const count = counts.get(termUrn)
+        if (count) count.column_asset_count += 1
+      }
+    }
+  }
+  return { items: urns.map((urn) => counts.get(urn)) }
+}
+
+async function datahubGlossaryAssignmentBatchCounts(body, principal) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || Object.keys(body).length !== 1 || !Object.hasOwn(body, 'urns')) {
+    throw accessError(400, 'GLOSSARY_ASSIGNMENT_COUNT_SCOPE_INVALID', 'Only the urns field is supported.')
+  }
+  const urns = exactGlossaryTermUrns(body.urns)
+  const inventory = filterAssetsForPrincipal(
+    principal,
+    await datahubInventory(),
+    'governance',
+  )
+  return glossaryAssignmentCountsFromInventory(urns, inventory)
 }
 
 export function reconcileDatahubGlossaryScrollPage(page, state = {}) {
@@ -12023,6 +12170,41 @@ async function api(request, response, url, context) {
     return json(response, 200, await knowledgeCatalogDetail(url.searchParams, context.principal))
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog') return json(response, 200, await datahubCatalog(url.searchParams, context.principal))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog/export-capability') {
+    return json(response, 200, { enabled: true, maximum_rows: POC_CATALOG_EXPORT_MAXIMUM_ROWS })
+  }
+  if (request.method === 'POST' && url.pathname === '/poc-api/datahub/catalog/exports') {
+    return json(response, 201, await createCatalogExport(request, context))
+  }
+  const catalogExportFileMatch = url.pathname.match(/^\/poc-api\/datahub\/catalog\/exports\/([^/]+)\/file$/)
+  if (request.method === 'GET' && catalogExportFileMatch) {
+    const artifact = context.catalogExportStore.file(context.principal.subjectId, decodeURIComponent(catalogExportFileMatch[1]))
+    response.writeHead(200, {
+      ...securityHeaders(),
+      'Cache-Control': 'no-store',
+      'Content-Type': artifact.format === 'XLSX'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'text/csv; charset=utf-8',
+      'Content-Length': artifact.bytes.length,
+      'Content-Disposition': `attachment; filename="${artifact.displayName}"; filename*=UTF-8''${encodeURIComponent(artifact.displayName)}`,
+      ETag: `"${artifact.contentSha256}"`,
+    })
+    return response.end(artifact.bytes)
+  }
+  const catalogExportDownloadMatch = url.pathname.match(/^\/poc-api\/datahub\/catalog\/exports\/([^/]+)\/download$/)
+  if (request.method === 'POST' && catalogExportDownloadMatch) {
+    return json(response, 200, context.catalogExportStore.download(
+      context.principal.subjectId,
+      decodeURIComponent(catalogExportDownloadMatch[1]),
+    ))
+  }
+  const catalogExportStatusMatch = url.pathname.match(/^\/poc-api\/datahub\/catalog\/exports\/([^/]+)$/)
+  if (request.method === 'GET' && catalogExportStatusMatch) {
+    return json(response, 200, context.catalogExportStore.status(
+      context.principal.subjectId,
+      decodeURIComponent(catalogExportStatusMatch[1]),
+    ))
+  }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog/locate') return json(response, 200, await datahubCatalogLocate(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/tree') return json(response, 200, await datahubTree(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams, context.principal))
@@ -12033,6 +12215,9 @@ async function api(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/smoke-target') return json(response, 200, await datahubGlossarySmokeTarget(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams, context.principal))
+  if (request.method === 'POST' && url.pathname === '/poc-api/datahub/glossary/assignments/batch-counts') {
+    return json(response, 200, await datahubGlossaryAssignmentBatchCounts(await bodyJson(request), context.principal))
+  }
   if (request.method === 'GET' && url.pathname === '/poc-api/chat/sessions') {
     const rawLimit = url.searchParams.get('limit') ?? '50'
     if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100) {
@@ -12672,6 +12857,7 @@ export function createPocServer({
   mcpUserTimeoutMs = 60_000,
   currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
   currentDatahubTables: currentDatahubTablesProvider = currentDatahubTables,
+  catalogExportStore = createPocCatalogExportStore(),
   k9SchedulerConfig = null,
   k9SchedulerStatus = null,
 } = {}) {
@@ -12684,6 +12870,7 @@ export function createPocServer({
     airflowProvider: airflowProvider ?? defaultAirflowControlProvider(),
     currentDatahubInventory: currentDatahubInventoryProvider,
     currentDatahubTables: currentDatahubTablesProvider,
+    catalogExportStore,
     k9SchedulerConfig,
     k9SchedulerStatus,
   }
