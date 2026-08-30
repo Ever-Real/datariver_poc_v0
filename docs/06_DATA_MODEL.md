@@ -77,6 +77,8 @@ startup dependency and it does not authorize deleting historical migrations or `
 | `poc_local_credentials` | login only | operator bootstrap/reset and bounded lock state | local authentication only; no role/System columns | `subject_id` references the access-document identity by application CAS | same additive idempotent SQL | `ACTIVE` |
 | `poc_local_sessions` | every protected request | login/logout/revoke/expiry lifecycle | opaque server session; token hash only | FK to `poc_local_credentials.subject_id` | same additive idempotent SQL | `ACTIVE` |
 | `poc_user_table_grants` | Admin account access management; PHASE 1D enforcement consumer | exact grant/remove active lifecycle | explicit User ↔ current DataHub Table relation only | `subject_id` and dataset URN are validated against the access document/current provider by the application | same additive idempotent SQL | `ACTIVE` |
+| `poc_chat_sessions` | owner Chat history | create/favorite/archive/version lifecycle | owner-scoped POC Chat session | composite parent of owner-bound messages | `001-poc-state.sql` | `ACTIVE` |
+| `poc_chat_messages` | owner Chat history and authorized result pagination | append-only user/assistant turns | bounded answer evidence plus a bounded server-owned Catalog discovery descriptor; stored discovery items are never authorization authority and are revalidated through the current canonical Catalog path on history read and every cursor page | composite FK to `poc_chat_sessions`; message ID anchors the server-owned pagination descriptor | `001-poc-state.sql` plus additive `007-poc-chat-discovery.sql` | `HISTORY_REQUIRED` |
 
 `poc_state` also owns the bounded `table-system-mappings-v1` document introduced by ADR-0125.
 It is an exact N:M relation between a current DataHub dataset URN (`dataset_kind=TABLE`) and an
@@ -110,18 +112,20 @@ stored in `poc_user_table_grants`; the relation intentionally has no Role, capab
 deny, schema inheritance or expression columns. Cross-feature retrieval-time enforcement remains
 PHASE 1D so management-state introduction does not empty existing user views prematurely.
 
-The current POC deployment still has two schema-application paths: clean volumes execute
-`deploy/poc/postgres-init/001-poc-state.sql` once, while Node startup performs bounded additive
-`CREATE ... IF NOT EXISTS`; existing volumes require documented manual SQL reapplication. There is no
-ordered/checksummed migration ledger. ADR-0126 therefore keeps `POC_SCHEMA_MIGRATION_CONTRACT`
-`PARTIAL` and reserves numbered migrations plus a minimal checksum ledger for a separate deployment
-slice; no migration squash or schema reset is part of PHASE 1C-3.
+Clean POC volumes execute the immutable numbered `deploy/poc/postgres-init` sequence. With schema
+integrity required, Node startup fingerprints the exact Product-owned PostgreSQL catalog, accepts
+only the recorded immutable ancestry, and converges the accepted V4 catalog to V5 by adding the
+bounded `poc_chat_messages.discovery_json` descriptor through migration `007`; partial, unknown or
+newer catalogs fail closed without mutation. The non-integrity development path remains bounded
+additive initialization rather than a general migration authority; no migration squash, direct
+database patch or schema reset is part of this change.
 
 ```mermaid
 erDiagram
     POC_STATE ||--o{ POC_LOCAL_CREDENTIALS : binds_subject_by_CAS
     POC_LOCAL_CREDENTIALS ||--o{ POC_LOCAL_SESSIONS : authenticates
     POC_STATE ||--o{ POC_USER_TABLE_GRANTS : validates_subject
+    POC_CHAT_SESSIONS ||--o{ POC_CHAT_MESSAGES : contains
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_CHECKPOINTS : fences
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_LEDGER_EVENTS : captures
     POC_CHANGE_HISTORY_LEDGER_EVENTS ||--o{ POC_CHANGE_HISTORY_CR_LINK_EVENTS : links

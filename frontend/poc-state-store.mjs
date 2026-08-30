@@ -522,6 +522,7 @@ const CHAT_HISTORY_SCHEMA = [
       role text NOT NULL,
       content text NOT NULL,
       evidence_json jsonb,
+      discovery_json jsonb,
       route_json jsonb,
       workflow_json jsonb NOT NULL DEFAULT '[]'::jsonb,
       created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -536,6 +537,9 @@ const CHAT_HISTORY_SCHEMA = [
       CONSTRAINT ck_poc_chat_message_evidence CHECK (
         evidence_json IS NULL OR (jsonb_typeof(evidence_json) = 'array' AND octet_length(evidence_json::text) <= 1048576)
       ),
+      CONSTRAINT ck_poc_chat_message_discovery CHECK (
+        discovery_json IS NULL OR (jsonb_typeof(discovery_json) = 'object' AND octet_length(discovery_json::text) <= 1048576)
+      ),
       CONSTRAINT ck_poc_chat_message_route CHECK (
         route_json IS NULL OR (jsonb_typeof(route_json) = 'object' AND octet_length(route_json::text) <= 262144)
       ),
@@ -547,6 +551,16 @@ const CHAT_HISTORY_SCHEMA = [
   `
     CREATE INDEX IF NOT EXISTS ix_poc_chat_messages_owner_session
       ON poc_chat_messages (owner_subject_id, session_id, ordinal)
+  `,
+]
+
+const CHAT_DISCOVERY_SCHEMA_V5 = [
+  `
+    ALTER TABLE poc_chat_messages
+      ADD COLUMN discovery_json jsonb,
+      ADD CONSTRAINT ck_poc_chat_message_discovery CHECK (
+        discovery_json IS NULL OR (jsonb_typeof(discovery_json) = 'object' AND octet_length(discovery_json::text) <= 1048576)
+      )
   `,
 ]
 
@@ -767,6 +781,9 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
       },
       applyV4Schema: async (migrationClient) => {
         for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await migrationClient.query(statement)
+      },
+      applyV5Schema: async (migrationClient) => {
+        for (const statement of CHAT_DISCOVERY_SCHEMA_V5) await migrationClient.query(statement)
       },
     })
   } finally {
@@ -3388,7 +3405,7 @@ export function createPocStateStore({ databasePool } = {}) {
       `, [sessionId, subjectId])
       if (!session.rows.length) throw chatHistoryNotFound()
       const result = await pool.query(`
-        SELECT message_id AS id, session_id, role, content, evidence_json,
+        SELECT message_id AS id, session_id, role, content, evidence_json, discovery_json,
           route_json AS route, workflow_json AS workflow, created_at
         FROM poc_chat_messages
         WHERE session_id = $1 AND owner_subject_id = $2
@@ -3430,15 +3447,15 @@ export function createPocStateStore({ databasePool } = {}) {
         await client.query(`
           INSERT INTO poc_chat_messages (
             message_id, session_id, owner_subject_id, ordinal, role, content,
-            evidence_json, route_json, workflow_json, created_at
+            evidence_json, discovery_json, route_json, workflow_json, created_at
           ) VALUES
-            ($1, $2, $3, $4, 'user', $5, NULL, NULL, '[]'::jsonb, $6),
-            ($7, $2, $3, $8, 'assistant', $9, $10::jsonb, $11::jsonb, $12::jsonb, $13)
+            ($1, $2, $3, $4, 'user', $5, NULL, NULL, NULL, '[]'::jsonb, $6),
+            ($7, $2, $3, $8, 'assistant', $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14)
         `, [
           command.requestMessageId, command.sessionId, command.subjectId, firstOrdinal,
           command.question, command.createdAt, command.responseMessageId, firstOrdinal + 1,
-          command.answer, JSON.stringify(command.evidence), JSON.stringify(command.route),
-          JSON.stringify(command.workflow), command.createdAt,
+          command.answer, JSON.stringify(command.evidence), JSON.stringify(command.discovery),
+          JSON.stringify(command.route), JSON.stringify(command.workflow), command.createdAt,
         ])
         if (existing) {
           await client.query(`
@@ -3461,8 +3478,8 @@ export function createPocStateStore({ databasePool } = {}) {
       if (existing && (existing.owner_subject_id !== command.subjectId || existing.archived)) throw chatHistoryNotFound()
       const messages = memoryChatMessages.get(command.sessionId) ?? []
       messages.push(
-        chatMessageRecord({ id: command.requestMessageId, session_id: command.sessionId, role: 'user', content: command.question, evidence_json: null, route: null, workflow: [], created_at: command.createdAt }),
-        chatMessageRecord({ id: command.responseMessageId, session_id: command.sessionId, role: 'assistant', content: command.answer, evidence_json: command.evidence, route: command.route, workflow: command.workflow, created_at: command.createdAt }),
+        chatMessageRecord({ id: command.requestMessageId, session_id: command.sessionId, role: 'user', content: command.question, evidence_json: null, discovery_json: null, route: null, workflow: [], created_at: command.createdAt }),
+        chatMessageRecord({ id: command.responseMessageId, session_id: command.sessionId, role: 'assistant', content: command.answer, evidence_json: command.evidence, discovery_json: command.discovery, route: command.route, workflow: command.workflow, created_at: command.createdAt }),
       )
       memoryChatMessages.set(command.sessionId, messages)
       memoryChatSessions.set(command.sessionId, existing ? {
@@ -3681,6 +3698,9 @@ function normalizeChatTurn(value) {
     answer,
     title,
     evidence: boundedChatJson(value.evidence, 'turn.evidence', 'array', 1_048_576),
+    discovery: value.discovery == null
+      ? null
+      : boundedChatJson(value.discovery, 'turn.discovery', 'object', 1_048_576),
     route: boundedChatJson(value.route, 'turn.route', 'object', 262_144),
     workflow: boundedChatJson(value.workflow, 'turn.workflow', 'array', 262_144),
     createdAt,
@@ -3716,6 +3736,7 @@ function chatMessageRecord(row) {
     role: row.role,
     content: row.content,
     evidence_json: row.evidence_json ?? null,
+    discovery_json: row.discovery_json ?? null,
     created_at: timestampValue(row.created_at),
     route: row.route ?? row.route_json ?? null,
     workflow: row.workflow ?? row.workflow_json ?? [],

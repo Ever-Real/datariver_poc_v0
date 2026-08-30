@@ -179,8 +179,13 @@ function liveActivityLabel(
 
 async function copyVisibleMessageText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // A present Clipboard API can still be denied by browser policy. The
+      // visible-text fallback below is safe to try before reporting failure.
+    }
   }
 
   if (typeof document.execCommand !== 'function') {
@@ -195,11 +200,15 @@ async function copyVisibleMessageText(text: string): Promise<void> {
   // transient and gives older secure contexts a browser-native copy path.
   fallback.value = text
   document.body.append(fallback)
-  fallback.focus()
-  fallback.select()
-  const copied = document.execCommand('copy')
-  fallback.remove()
-  activeElement?.focus()
+  let copied = false
+  try {
+    fallback.focus()
+    fallback.select()
+    copied = document.execCommand('copy')
+  } finally {
+    fallback.remove()
+    activeElement?.focus()
+  }
   if (!copied) throw new Error('Clipboard fallback was denied')
 }
 
@@ -310,12 +319,14 @@ export function ChatPage({
   const [selectedAssistantMessageId, setSelectedAssistantMessageId] = useState<string>()
   const [selectedEvidenceAssetId, setSelectedEvidenceAssetId] = useState<string>()
   const [streamingAssistantMessageId, setStreamingAssistantMessageId] = useState<string>()
+  const [discoveryPageLoading, setDiscoveryPageLoading] = useState(false)
   const historyRequestVersion = useRef(0)
   const evidenceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const chatLogRef = useRef<HTMLDivElement | null>(null)
   const messageElementsRef = useRef(new Map<string, HTMLElement>())
   const answerFocusEnabledRef = useRef(false)
   const activeRequestRef = useRef<AbortController | undefined>(undefined)
+  const activeDiscoveryRequestRef = useRef<AbortController | undefined>(undefined)
   const initialQuestionHandledRef = useRef(false)
   const composerFormRef = useRef<HTMLFormElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
@@ -332,6 +343,7 @@ export function ChatPage({
   useEffect(() => {
     const controller = new AbortController()
     activeRequestRef.current?.abort()
+    activeDiscoveryRequestRef.current?.abort()
     historyRequestVersion.current += 1
     setSessions([])
     setSessionId(undefined)
@@ -343,11 +355,13 @@ export function ChatPage({
     setPersistence(undefined)
     setCopyFeedback(undefined)
     setStreamingAssistantMessageId(undefined)
+    setDiscoveryPageLoading(false)
     answerFocusEnabledRef.current = false
     void refreshSessions(controller.signal)
     return () => {
       controller.abort()
       activeRequestRef.current?.abort()
+      activeDiscoveryRequestRef.current?.abort()
     }
   }, [client, refreshSessions])
 
@@ -443,6 +457,7 @@ export function ChatPage({
 
   const startNewSession = useCallback(() => {
     activeRequestRef.current?.abort()
+    activeDiscoveryRequestRef.current?.abort()
     historyRequestVersion.current += 1
     setSessionId(undefined)
     setQuestion('')
@@ -456,6 +471,7 @@ export function ChatPage({
     setSelectedEvidenceAssetId(undefined)
     setCopyFeedback(undefined)
     setStreamingAssistantMessageId(undefined)
+    setDiscoveryPageLoading(false)
     answerFocusEnabledRef.current = false
     setError(undefined)
     setLoading(false)
@@ -511,6 +527,64 @@ export function ChatPage({
       setCopyFeedback({ messageId: message.id, status: 'SUCCESS', label })
     } catch {
       setCopyFeedback({ messageId: message.id, status: 'FAILED', label })
+    }
+  }
+
+  const loadMoreDiscovery = async () => {
+    const message = visibleAssistant
+    const discovery = message?.discovery
+    if (!sessionId || !message || !discovery?.next_cursor || discoveryPageLoading) return
+    const requestedCursor = discovery.next_cursor
+    const controller = new AbortController()
+    activeDiscoveryRequestRef.current?.abort()
+    activeDiscoveryRequestRef.current = controller
+    setDiscoveryPageLoading(true)
+    setError(undefined)
+    try {
+      const parameters = new URLSearchParams({
+        discovery_message_id: message.id,
+        cursor: requestedCursor,
+      })
+      const page = await client.request<ChatAuthorizedDiscovery>(
+        `/chat/sessions/${encodeURIComponent(sessionId)}/messages?${parameters.toString()}`,
+        { signal: controller.signal },
+      )
+      if (controller.signal.aborted) return
+      setMessages((current) => current.map((item) => {
+        if (item.id !== message.id || item.discovery?.next_cursor !== requestedCursor) return item
+        const observed = new Set(item.discovery.items.map((candidate) => candidate.resource_id))
+        const additions = page.items.filter((candidate) => {
+          if (observed.has(candidate.resource_id)) return false
+          observed.add(candidate.resource_id)
+          return true
+        }).map((candidate, index) => ({
+          ...candidate,
+          chunk_id: `${message.id}:discovery:${candidate.resource_id}`,
+          rank: item.discovery!.items.length + index + 1,
+        }))
+        const items = [...item.discovery.items, ...additions]
+        return {
+          ...item,
+          discovery: {
+            ...item.discovery,
+            items,
+            returned_count: items.length,
+            limit: page.limit,
+            truncated: page.next_cursor !== null,
+            total: page.total,
+            total_exact: page.total_exact,
+            next_cursor: page.next_cursor,
+          },
+        }
+      }))
+      setDiscoveryExpanded(true)
+    } catch (next) {
+      if (!controller.signal.aborted) setError(next)
+    } finally {
+      if (activeDiscoveryRequestRef.current === controller) {
+        activeDiscoveryRequestRef.current = undefined
+        setDiscoveryPageLoading(false)
+      }
     }
   }
 
@@ -1106,6 +1180,20 @@ export function ChatPage({
                       {discoveryExpanded
                         ? '검색 후보 처음 5개만 보기'
                         : `검색 후보 나머지 ${visibleDiscovery.items.length - evidencePreviewLimit}개 보기`}
+                    </button>
+                  )}
+                  {visibleDiscovery.next_cursor && (
+                    <button
+                      className="chat-citation-header"
+                      disabled={discoveryPageLoading}
+                      onClick={() => void loadMoreDiscovery()}
+                      type="button"
+                    >
+                      {discoveryPageLoading
+                        ? '다음 검색 후보 조회 중'
+                        : visibleDiscovery.total_exact && visibleDiscovery.total !== null
+                          ? `다음 ${Math.min(visibleDiscovery.limit, Math.max(0, visibleDiscovery.total - visibleDiscovery.returned_count))}개 검색 후보 조회`
+                          : '다음 검색 후보 조회'}
                     </button>
                   )}
                   {canExploreCatalog && (

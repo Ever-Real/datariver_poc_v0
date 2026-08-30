@@ -360,6 +360,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const securityInitSql = readFileSync(new URL('../deploy/poc/postgres-init/004-poc-local-security-events.sql', import.meta.url), 'utf8')
   const mcpInitSql = readFileSync(new URL('../deploy/poc/postgres-init/005-poc-mcp-read-receipts.sql', import.meta.url), 'utf8')
   const credentialAuditInitSql = readFileSync(new URL('../deploy/poc/postgres-init/006-poc-local-credential-provision-audit.sql', import.meta.url), 'utf8')
+  const chatDiscoveryInitSql = readFileSync(new URL('../deploy/poc/postgres-init/007-poc-chat-discovery.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -385,6 +386,12 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   assert.match(mcpInitSql, /COMMIT;\s*$/)
   assert.match(credentialAuditInitSql, /^BEGIN;/)
   assert.match(credentialAuditInitSql, /COMMIT;\s*$/)
+  assert.match(chatDiscoveryInitSql, /^BEGIN;/)
+  assert.match(chatDiscoveryInitSql, /COMMIT;\s*$/)
+  assert.match(startupSql, /discovery_json jsonb/)
+  assert.match(startupSql, /ck_poc_chat_message_discovery/)
+  assert.match(chatDiscoveryInitSql, /ADD COLUMN discovery_json jsonb/)
+  assert.match(chatDiscoveryInitSql, /ck_poc_chat_message_discovery/)
   for (const contract of [
     'PRIMARY KEY (source_identity_hash, topic_contract, source_partition)',
     'UNIQUE (source_identity_hash, source_event_identity, deterministic_ordinal)',
@@ -480,6 +487,12 @@ test('persists immutable bounded Chat turns by subject and fences favorite/archi
     answer: '데이터 계보는 데이터의 출처와 흐름을 설명합니다.',
     title: '데이터 계보가 무엇인지 알려줘.',
     evidence: [],
+    discovery: {
+      items: [], returned_count: 0, limit: 20, truncated: false,
+      retrieved_count: 0, reranked_count: 0, answer_context_count: 0,
+      catalog_search_query: '계보', catalog_search_fields: [], total: 0,
+      total_exact: true, next_cursor: null,
+    },
     route: { requested_mode: 'GENERAL', selected_mode: 'GENERAL' },
     workflow: [{ stage: 'PERSISTENCE', status: 'COMPLETED', detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED' }],
     createdAt: '2026-08-26T01:00:00.000Z',
@@ -488,12 +501,15 @@ test('persists immutable bounded Chat turns by subject and fences favorite/archi
   const sessions = await store.listChatSessions('subject-a')
   assert.equal(sessions.length, 1)
   assert.equal(sessions[0].message_count, 2)
-  assert.deepEqual((await store.listChatMessages('subject-a', 'session-a')).map((message) => (
+  const messages = await store.listChatMessages('subject-a', 'session-a')
+  assert.deepEqual(messages.map((message) => (
     [message.role, message.content]
   )), [
     ['user', command.question],
     ['assistant', command.answer],
   ])
+  assert.equal(messages[0].discovery_json, null)
+  assert.deepEqual(messages[1].discovery_json, command.discovery)
   assert.deepEqual(await store.listChatSessions('subject-b'), [])
   await assert.rejects(store.listChatMessages('subject-b', 'session-a'), (error) => error.statusCode === 404)
 

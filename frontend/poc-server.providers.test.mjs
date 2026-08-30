@@ -101,7 +101,9 @@ function canonicalTestHash(value) {
 
 function keywordScaleEntity(index) {
   const ordinal = String(index).padStart(3, '0')
-  const name = index === 4 ? 'exact_table_fixture' : `scale_asset_${ordinal}`
+  const name = index === 4
+    ? 'exact_table_fixture'
+    : index === 5 ? '순수한글식별자' : `scale_asset_${ordinal}`
   const description = [
     'massivekeyword',
     index < 25 ? 'twentyfivekeyword' : '',
@@ -1442,6 +1444,36 @@ test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable 
     }
     return ids
   }
+  const streamChat = async (keyword) => {
+    const response = await fetch(`${origin}/poc-api/llm/chat/stream`, {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: `List assets for ${keyword}`, mode: 'AUTO' }),
+    })
+    assert.equal(response.status, 200, await response.clone().text())
+    const frames = (await response.text()).trim().split(/\n\n+/)
+    const result = frames.findLast((frame) => frame.startsWith('event: result\n'))
+    assert.ok(result)
+    return JSON.parse(result.split('\ndata: ')[1])
+  }
+  const remainingChatIds = async (chat) => {
+    const ids = chat.discovery.items.map((item) => item.resource_id)
+    let cursor = chat.discovery.next_cursor
+    while (cursor) {
+      const parameters = new globalThis.URLSearchParams({
+        discovery_message_id: chat.response_message_id,
+        cursor,
+      })
+      const response = await fetch(
+        `${origin}/poc-api/chat/sessions/${chat.session_id}/messages?${parameters}`,
+      )
+      assert.equal(response.status, 200, await response.clone().text())
+      const page = await response.json()
+      ids.push(...page.items.map((item) => item.resource_id))
+      cursor = page.next_cursor
+    }
+    return ids
+  }
 
   try {
     for (const [keyword, total] of [
@@ -1451,13 +1483,7 @@ test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable 
       ['massivekeyword', 205],
     ]) {
       forcedClassifierResponse = routeFor(keyword)
-      const response = await fetch(`${origin}/poc-api/llm/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: `List assets for ${keyword}`, mode: 'AUTO' }),
-      })
-      assert.equal(response.status, 200, await response.clone().text())
-      const chat = await response.json()
+      const chat = await streamChat(keyword)
       assert.equal(chat.discovery.catalog_search_query, keyword)
       assert.equal(chat.discovery.total, total)
       assert.equal(chat.discovery.total_exact, true)
@@ -1470,12 +1496,7 @@ test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable 
         chat.discovery.items.map((item) => item.resource_id),
         canonicalFirst.items.map((item) => item.id),
       )
-      const chatIds = await remainingCatalogIds(
-        keyword,
-        chat.discovery.items.map((item) => item.resource_id),
-        chat.discovery.next_cursor,
-        chat.discovery.limit,
-      )
+      const chatIds = await remainingChatIds(chat)
       const canonicalIds = await remainingCatalogIds(
         keyword,
         canonicalFirst.items.map((item) => item.id),
@@ -1484,6 +1505,30 @@ test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable 
       )
       assert.equal(chatIds.length, total)
       assert.deepEqual(new Set(chatIds), new Set(canonicalIds))
+
+      if (total === 25) {
+        const injectedQuery = await fetch(
+          `${origin}/poc-api/chat/sessions/${chat.session_id}/messages?discovery_message_id=${chat.response_message_id}&cursor=${chat.discovery.next_cursor}&q=massivekeyword`,
+        )
+        assert.equal(injectedQuery.status, 400)
+        const fabricatedCursor = await fetch(
+          `${origin}/poc-api/chat/sessions/${chat.session_id}/messages?discovery_message_id=${chat.response_message_id}&cursor=client-fabricated-cursor`,
+        )
+        assert.equal(fabricatedCursor.status, 400)
+      }
+
+      const historyResponse = await fetch(
+        `${origin}/poc-api/chat/sessions/${chat.session_id}/messages?limit=200`,
+      )
+      assert.equal(historyResponse.status, 200, await historyResponse.clone().text())
+      const history = await historyResponse.json()
+      const restored = history.find((message) => message.id === chat.response_message_id)
+      assert.ok(restored)
+      assert.equal(restored.discovery_json.total, total)
+      assert.deepEqual(
+        restored.discovery_json.items.map((item) => item.resource_id),
+        canonicalFirst.items.map((item) => item.id),
+      )
     }
 
     for (const [keyword, field] of [
@@ -1512,6 +1557,16 @@ test('makes 0, 3, over-20 and over-200 structured keyword sets exactly pageable 
     const exact = await exactResponse.json()
     assert.equal(exact.discovery.total, 1)
     assert.equal(exact.discovery.items[0].name, 'exact_table_fixture')
+
+    forcedClassifierResponse = routeFor('순수한글식별자')
+    const unicodeExactResponse = await fetch(`${origin}/poc-api/llm/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '순수한글식별자', mode: 'AUTO' }),
+    })
+    const unicodeExact = await unicodeExactResponse.json()
+    assert.equal(unicodeExact.discovery.total, 1)
+    assert.equal(unicodeExact.discovery.items[0].name, '순수한글식별자')
+    assert.equal(unicodeExact.evidence[0].retrieval_method, 'CATALOG_EXACT')
   } finally {
     forcedClassifierResponse = undefined
     keywordFixtureAssets = undefined
@@ -2713,12 +2768,40 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     assert.ok(unauthorizedAutoPayload.discovery.items.every((item) => item.resource_id !== inspectionUrn && item.name !== 'inspection_results'))
     assert.doesNotMatch(JSON.stringify(unauthorizedAutoPayload), /MANUFACTURING\.QUALITY\.inspection_results/)
 
+    forcedClassifierResponse = JSON.stringify({
+      mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+      entity_resolution_required: false, graph_traversal_required: false,
+      semantic_retrieval_required: false, fallback_mode: null,
+      primary_concepts: ['wafer_events'], secondary_concepts: [], relation_intent: null,
+      entity_type_hints: ['TABLE'], selected_graph_asset: null, retrieval_method: 'LEXICAL',
+    })
+    const persistedChatResponse = await fetch(`${origin}/poc-api/llm/chat/stream`, {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'List assets for wafer_events', mode: 'AUTO' }),
+    })
+    forcedClassifierResponse = undefined
+    assert.equal(persistedChatResponse.status, 200, await persistedChatResponse.clone().text())
+    const persistedFrames = (await persistedChatResponse.text()).trim().split(/\n\n+/)
+    const persistedResultFrame = persistedFrames.findLast((frame) => frame.startsWith('event: result\n'))
+    assert.ok(persistedResultFrame)
+    const persistedChat = JSON.parse(persistedResultFrame.split('\ndata: ')[1])
+    assert.equal(persistedChat.discovery.total, 1)
+
     const deniedPolicy = structuredClone(allowedPolicy)
     deniedPolicy.cells.find((cell) => (
       cell.feature === 'catalog' && cell.role === 'developer' && cell.grade === 'credential'
     )).allow = false
     await stateStore.write('feature-security-policy-v1', deniedPolicy)
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    const reauthorizedHistory = await getJson(
+      `/poc-api/chat/sessions/${persistedChat.session_id}/messages?limit=200`,
+    )
+    const reauthorizedAssistant = reauthorizedHistory.find(
+      (message) => message.id === persistedChat.response_message_id,
+    )
+    assert.equal(reauthorizedAssistant.discovery_json.total, 0)
+    assert.deepEqual(reauthorizedAssistant.discovery_json.items, [])
     forcedClassifierResponse = JSON.stringify({
       mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
       entity_resolution_required: false, graph_traversal_required: false,

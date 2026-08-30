@@ -429,6 +429,65 @@ describe('ChatPage', () => {
     expect(new URL(window.location.href).searchParams.get('search_fields')).toBe('TABLE')
   })
 
+  it('consumes the server cursor inside Chat until all 25 canonical keyword matches are visible', async () => {
+    const discoveryItems = Array.from({ length: 25 }, (_, index) => ({
+      ...response.evidence[0]!,
+      chunk_id: `discovery-${index + 1}`,
+      resource_id: `urn:li:dataset:(platform,SCALE.asset_${index + 1},PROD)`,
+      name: `asset_${index + 1}`,
+      rank: index + 1,
+    }))
+    const discoveryResponse: ChatResponse = {
+      ...response,
+      discovery: {
+        items: discoveryItems.slice(0, 20),
+        returned_count: 20,
+        limit: 20,
+        truncated: true,
+        retrieved_count: 20,
+        reranked_count: 5,
+        answer_context_count: 5,
+        catalog_search_query: 'twentyfivekeyword',
+        catalog_search_fields: [],
+        total: 25,
+        total_exact: true,
+        next_cursor: 'server-cursor-page-2',
+      },
+    }
+    const { client: baseClient } = chatClient()
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/chat/sessions?limit=50') return baseClient.request(path, options)
+      if (path === `/chat/sessions/${session.id}/messages?discovery_message_id=message-assistant-1&cursor=server-cursor-page-2`) {
+        return Promise.resolve({
+          ...discoveryResponse.discovery,
+          items: discoveryItems.slice(20).map((item, index) => ({ ...item, rank: index + 1 })),
+          returned_count: 5,
+          truncated: false,
+          next_cursor: null,
+        })
+      }
+      return baseClient.request(path, options)
+    })
+    render(<ChatPage client={{
+      request,
+      requestEventStream: vi.fn(() => Promise.resolve(discoveryResponse)),
+    } as unknown as ApiClient} />)
+
+    await screen.findByText('주문 데이터')
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '25개 자산을 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    fireEvent.click(await screen.findByRole('button', { name: '다음 5개 검색 후보 조회' }))
+
+    expect(await screen.findByRole('button', { name: '검색 후보 25 asset_25 상세 열기' })).toBeInTheDocument()
+    expect(screen.getByText(/전체 25개 중 25개 조회/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /다음 .*검색 후보 조회/ })).not.toBeInTheDocument()
+    const pageCall = request.mock.calls.find(([path]) => path.includes('discovery_message_id='))
+    expect(pageCall?.[0]).toBe(
+      `/chat/sessions/${session.id}/messages?discovery_message_id=message-assistant-1&cursor=server-cursor-page-2`,
+    )
+    expect(pageCall?.[1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('keeps an empty canonical candidate query as a full-inventory Catalog handoff', async () => {
     const discoveryResponse: ChatResponse = {
       ...response,
@@ -785,6 +844,44 @@ describe('ChatPage', () => {
     expect(request).toHaveBeenCalledWith(`/chat/sessions/${session.id}/messages?limit=200`)
   })
 
+  it('restores a currently reauthorized discovery page from durable history', async () => {
+    const discovery = {
+      items: [response.evidence[0]!],
+      returned_count: 1,
+      limit: 20,
+      truncated: false,
+      retrieved_count: 1,
+      reranked_count: 1,
+      answer_context_count: 1,
+      catalog_search_query: 'orders',
+      catalog_search_fields: [] as const,
+      total: 1,
+      total_exact: true,
+      next_cursor: null,
+    }
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/chat/sessions?limit=50') return Promise.resolve([session])
+      if (path === `/chat/sessions/${session.id}/messages?limit=200`) return Promise.resolve([
+        {
+          id: 'history-user', session_id: session.id, role: 'user', content: 'orders',
+          evidence_json: null, discovery_json: null, created_at: '2026-07-26T01:00:00Z',
+          route: null, workflow: [],
+        },
+        {
+          id: 'history-assistant', session_id: session.id, role: 'assistant', content: '저장된 답변',
+          evidence_json: response.evidence, discovery_json: discovery,
+          created_at: '2026-07-26T01:00:01Z', route: response.route, workflow: response.workflow,
+        },
+      ])
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '주문 데이터 열기' }))
+    expect(await screen.findByText('전체 1개 중 1개 조회 · 현재 범위 완료 · 검색 1 · 재정렬 1 · 답변 입력 1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '검색 후보 1 orders 상세 열기' })).toBeInTheDocument()
+  })
+
   it('persists favorites with optimistic concurrency and reports copy success and failure', async () => {
     const clipboard = { writeText: vi.fn<() => Promise<void>>().mockResolvedValueOnce() }
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
@@ -835,6 +932,28 @@ describe('ChatPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '질문 복사' }))
 
     expect(await screen.findByRole('status')).toHaveTextContent('질문 복사 완료')
+    expect(fallback).toHaveBeenCalledWith('copy')
+    expect(document.querySelector('.chat-copy-fallback')).toBeNull()
+    delete (document as unknown as Record<string, unknown>).execCommand
+    delete (navigator as unknown as Record<string, unknown>).clipboard
+  })
+
+  it('uses the visible-text fallback when Clipboard API exists but rejects', async () => {
+    const clipboard = { writeText: vi.fn().mockRejectedValue(new Error('denied')) }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
+    const fallback = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: fallback })
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '거부 후 복사' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    await screen.findByRole('heading', { name: '확인된 테이블' })
+    fireEvent.click(screen.getByRole('button', { name: '질문 복사' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('질문 복사 완료')
+    expect(clipboard.writeText).toHaveBeenCalledWith('거부 후 복사')
     expect(fallback).toHaveBeenCalledWith('copy')
     expect(document.querySelector('.chat-copy-fallback')).toBeNull()
     delete (document as unknown as Record<string, unknown>).execCommand

@@ -6353,8 +6353,7 @@ function normalizedCatalogIdentifier(value) {
 
 function questionCatalogIdentifiers(question) {
   const quoted = [...question.matchAll(/["'`]([^"'`]{2,200})["'`]/g)].map((match) => match[1])
-  const technicalTokens = (question.match(/[\p{L}\p{N}_.$-]{3,200}/gu) || [])
-    .filter((token) => /[A-Za-z0-9_]/.test(token))
+  const technicalTokens = question.match(/[\p{L}\p{N}_.$-]{3,200}/gu) || []
   return [...new Set([...quoted, ...technicalTokens].map(normalizedCatalogIdentifier).filter(Boolean))]
     .sort((left, right) => right.length - left.length)
     .slice(0, 20)
@@ -7351,6 +7350,64 @@ function publicChatDiscovery(discovery) {
         : item
     )),
   }
+}
+
+function chatDiscoveryDescriptorParameters(discovery, cursor = null) {
+  if (!discovery || typeof discovery !== 'object' || Array.isArray(discovery)
+    || typeof discovery.catalog_search_query !== 'string'
+    || discovery.catalog_search_query.length > 500
+    || !Array.isArray(discovery.catalog_search_fields)
+    || discovery.catalog_search_fields.length > catalogSearchFieldNames.size
+    || discovery.catalog_search_fields.some((field) => !catalogSearchFieldNames.has(field))
+    || new Set(discovery.catalog_search_fields).size !== discovery.catalog_search_fields.length
+    || !Number.isInteger(discovery.limit) || discovery.limit < 1
+    || discovery.limit > maximumChatEvidenceItems) {
+    throw accessError(500, 'CHAT_DISCOVERY_DESCRIPTOR_INVALID', 'The persisted Chat discovery descriptor is invalid.')
+  }
+  if (cursor !== null && (typeof cursor !== 'string' || !cursor || cursor.length > 4_096)) {
+    throw accessError(400, 'CHAT_DISCOVERY_CURSOR_INVALID', 'The Chat discovery cursor is invalid.')
+  }
+  const parameters = new URLSearchParams({
+    q: discovery.catalog_search_query || '*',
+    limit: String(discovery.limit),
+  })
+  if (discovery.catalog_search_fields.length) {
+    parameters.set('search_fields', discovery.catalog_search_fields.join(','))
+  }
+  if (cursor !== null) parameters.set('cursor', cursor)
+  return parameters
+}
+
+function chatDiscoveryMetric(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : 0
+}
+
+async function currentChatDiscovery(discovery, principal, cursor = null) {
+  const parameters = chatDiscoveryDescriptorParameters(discovery, cursor)
+  const catalog = await datahubCatalog(parameters, principal, 'catalog')
+  return publicChatDiscovery({
+    items: catalog.items,
+    returned_count: catalog.items.length,
+    limit: catalog.page.limit,
+    truncated: catalog.page.next_cursor !== null,
+    retrieved_count: chatDiscoveryMetric(discovery.retrieved_count),
+    reranked_count: chatDiscoveryMetric(discovery.reranked_count),
+    answer_context_count: chatDiscoveryMetric(discovery.answer_context_count),
+    catalog_search_query: discovery.catalog_search_query,
+    catalog_search_fields: discovery.catalog_search_fields,
+    total: catalog.total,
+    total_exact: catalog.total_exact,
+    next_cursor: catalog.page.next_cursor,
+  })
+}
+
+async function currentChatHistoryMessages(context, sessionId, limit) {
+  const messages = await context.stateStore.listChatMessages(
+    context.principal.subjectId, sessionId, limit,
+  )
+  return Promise.all(messages.map(async (message) => message.discovery_json
+    ? { ...message, discovery_json: await currentChatDiscovery(message.discovery_json, context.principal) }
+    : message))
 }
 
 function persistedChatMemory(messages) {
@@ -12568,12 +12625,34 @@ async function api(request, response, url, context) {
   }
   const chatMessagesMatch = url.pathname.match(/^\/poc-api\/chat\/sessions\/([^/]+)\/messages$/)
   if (request.method === 'GET' && chatMessagesMatch) {
+    const sessionId = decodeURIComponent(chatMessagesMatch[1])
+    if (url.searchParams.has('discovery_message_id') || url.searchParams.has('cursor')) {
+      if ([...url.searchParams.keys()].some((key) => !['discovery_message_id', 'cursor'].includes(key))) {
+        return problem(response, 400, 'CHAT_DISCOVERY_PAGE_INVALID', 'Chat discovery pagination accepts only its message and server cursor.')
+      }
+      const messageId = boundedString(url.searchParams.get('discovery_message_id'), 200).trim()
+      const cursor = url.searchParams.get('cursor')
+      const messages = await context.stateStore.listChatMessages(
+        context.principal.subjectId, sessionId, 500,
+      )
+      const message = messages.find((item) => item.id === messageId
+        && item.role === 'assistant' && item.discovery_json)
+      if (!message) {
+        throw accessError(404, 'CHAT_DISCOVERY_NOT_FOUND', 'The Chat discovery result was not found.')
+      }
+      return json(response, 200, await currentChatDiscovery(
+        message.discovery_json, context.principal, cursor,
+      ))
+    }
+    if ([...url.searchParams.keys()].some((key) => key !== 'limit')) {
+      return problem(response, 400, 'CHAT_PAGE_INVALID', 'Chat history accepts only a numeric limit.')
+    }
     const rawLimit = url.searchParams.get('limit') ?? '200'
     if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 500) {
       return problem(response, 400, 'CHAT_PAGE_INVALID', 'Chat message limit must be between 1 and 500.')
     }
-    return json(response, 200, await context.stateStore.listChatMessages(
-      context.principal.subjectId, decodeURIComponent(chatMessagesMatch[1]), Number(rawLimit),
+    return json(response, 200, await currentChatHistoryMessages(
+      context, sessionId, Number(rawLimit),
     ))
   }
   const chatFavoriteMatch = url.pathname.match(/^\/poc-api\/chat\/sessions\/([^/]+)\/favorite$/)
@@ -12858,6 +12937,7 @@ async function api(request, response, url, context) {
       const requestMessageId = randomUUID()
       const responseMessageId = randomUUID()
       const workflow = persistedChatWorkflow(result.workflow)
+      const discovery = publicChatDiscovery(result.discovery)
       await context.stateStore.appendChatTurn({
         subjectId: context.principal.subjectId,
         sessionId,
@@ -12867,6 +12947,7 @@ async function api(request, response, url, context) {
         answer: result.answer,
         title: question.trim().slice(0, 240),
         evidence,
+        discovery,
         route: result.route,
         workflow,
         createdAt,
@@ -12884,7 +12965,7 @@ async function api(request, response, url, context) {
         route: result.route,
         workflow,
         evidence,
-        discovery: publicChatDiscovery(result.discovery),
+        discovery,
         performance: result.performance,
       })
     } catch (error) {
