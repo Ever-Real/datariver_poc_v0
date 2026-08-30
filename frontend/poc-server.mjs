@@ -4245,9 +4245,13 @@ async function datahubDashboard(principal) {
       schema_name: asset.schema_name,
       asset_count: 0,
       described_asset_count: 0,
+      tagged_asset_count: 0,
+      term_asset_count: 0,
     }
     current.asset_count += 1
     if (asset.description?.trim()) current.described_asset_count += 1
+    if (Array.isArray(asset.tags) && asset.tags.length > 0) current.tagged_asset_count += 1
+    if (Array.isArray(asset.terms) && asset.terms.length > 0) current.term_asset_count += 1
     schemaMetrics.set(key, current)
   }
   const meta = catalogMeta({ projection: true })
