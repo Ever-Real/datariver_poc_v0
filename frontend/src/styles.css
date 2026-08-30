@@ -1434,12 +1434,12 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   padding: 4px 5px;
   color: var(--navy-900);
   background: white;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .dashboard-schema-asset-counts > div > span strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1556,18 +1556,18 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   white-space: nowrap;
 }
 .dashboard-schema-coverage-row > span strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 .dashboard-schema-coverage-row > span small {
   color: var(--text-500);
-  font-size: 9px;
+  font-size: 10px;
 }
 .dashboard-schema-coverage-row .metric-tile {
   min-width: 0;
   padding: 3px;
 }
 .dashboard-schema-coverage-row .metric-tile small {
-  font-size: 9px;
+  font-size: 10px;
 }
 .dashboard-schema-coverage-row .metric-tile strong {
   font-size: 11px;
