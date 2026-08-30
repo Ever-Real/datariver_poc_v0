@@ -926,7 +926,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
           )}
           <label>분류등급<select disabled={busy} value={classification} onChange={(event) => setClassification(event.target.value)}><option>PUBLIC</option><option>INTERNAL</option><option>CONFIDENTIAL</option><option>RESTRICTED</option></select></label>
           <button className="button" disabled={!file || busy}>{busy ? '처리 중…' : '검증 업로드 시작'}</button>
-          <div className="progress-track" role="progressbar" aria-label="업로드 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+          <progress className="progress-track" aria-label="업로드 진행률" max={100} value={Math.round(progress * 100)} />
           <p className="muted" aria-live="polite">{status}</p>
         </form>
         <div className="registration-recent-list">
@@ -1411,17 +1411,13 @@ function PreparationStatusBar({
         <strong>{preparation?.state ?? (busy ? 'LOADING' : loaded ? 'READY TO PREPARE' : 'STATUS REQUIRED')}</strong>
         <small>{label}</small>
       </div>
-      <div
+      <progress
         className="registration-bulk-statusprogress"
-        role="progressbar"
         aria-label="후보 준비 진행률"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={determinate ? progress : undefined}
+        max={100}
+        value={determinate ? progress : undefined}
         aria-valuetext={determinate ? undefined : '전체 행 수 확인 전'}
-      >
-        <span style={{ width: `${progress}%` }} />
-      </div>
+      />
       <b>{determinate ? `${progress}%` : '—'}</b>
     </section>
   )

@@ -595,7 +595,7 @@ export function KnowledgeSourceUpload({
           {uploadBusy ? <LoaderCircle size={14} className="animate-spin" /> : <FileUp size={14} />}
           {uploadBusy ? '검증 중…' : '문서 검증 업로드 시작'}
         </button>
-        <div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-label="지식 문서 업로드 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span className="block h-full bg-enterprise-blue transition-[width]" style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+        <progress className="h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 [&::-moz-progress-bar]:bg-enterprise-blue [&::-moz-progress-bar]:transition-all [&::-webkit-progress-bar]:bg-slate-200 [&::-webkit-progress-value]:bg-enterprise-blue [&::-webkit-progress-value]:transition-all" aria-label="지식 문서 업로드 진행률" max={100} value={Math.round(progress * 100)} />
         <p className="m-0 text-xs text-slate-600" aria-live="polite">{status}</p>
         {record && <dl className="grid gap-2 text-xs sm:grid-cols-2">
           <div><dt className="font-black text-slate-500">Upload ID</dt><dd className="m-0 break-all"><code>{record.id}</code></dd></div>

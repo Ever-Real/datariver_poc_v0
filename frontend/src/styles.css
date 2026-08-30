@@ -347,8 +347,10 @@ textarea { min-height: 110px; resize: vertical; }
 .form-stack { display: grid; gap: 16px; max-width: 720px; }
 .form-stack label, .inline-form label { display: grid; gap: 6px; color: #526762; font-size: 12px; font-weight: 700; }
 .inline-form { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 12px; margin-bottom: 18px; }
-.progress-track { height: 7px; overflow: hidden; border-radius: var(--radius); background: #e8ebe5; }
-.progress-track span { display: block; height: 100%; background: #7eb843; transition: width .2s; }
+progress.progress-track { height: 7px; width: 100%; overflow: hidden; border: none; border-radius: var(--radius); background: #e8ebe5; appearance: none; -webkit-appearance: none; }
+progress.progress-track::-webkit-progress-bar { background: #e8ebe5; }
+progress.progress-track::-webkit-progress-value { background: #7eb843; transition: inline-size .2s, width .2s; }
+progress.progress-track::-moz-progress-bar { background: #7eb843; transition: inline-size .2s, width .2s; }
 .muted { color: #75837f; }
 .code-editor { min-height: 190px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .compact-list { display: grid; gap: 8px; max-height: 620px; overflow: auto; }
@@ -605,8 +607,10 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-bulk-statuscopy { min-width: 0; display: grid; gap: 2px; }
 .registration-bulk-statuscopy strong { font-size: 10px; letter-spacing: .04em; }
 .registration-bulk-statuscopy small { overflow: hidden; color: #b9c5ca; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.registration-bulk-statusprogress { height: 6px; overflow: hidden; border: 1px solid #405159; background: #26343a; }
-.registration-bulk-statusprogress span { height: 100%; display: block; background: #71a9c7; transition: width .2s ease; }
+progress.registration-bulk-statusprogress { height: 6px; overflow: hidden; border: 1px solid #405159; background: #26343a; appearance: none; -webkit-appearance: none; }
+progress.registration-bulk-statusprogress::-webkit-progress-bar { background: #26343a; }
+progress.registration-bulk-statusprogress::-webkit-progress-value { background: #71a9c7; transition: inline-size .2s ease, width .2s ease; }
+progress.registration-bulk-statusprogress::-moz-progress-bar { background: #71a9c7; transition: inline-size .2s ease, width .2s ease; }
 .registration-bulk-statusbar > b { color: #d5e4eb; font-size: 10px; text-align: right; }
 .knowledge-workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 10px; }
 .knowledge-sidebar { align-self: start; display: grid; gap: 10px; padding: 11px; }

@@ -1061,24 +1061,18 @@ export function DataEnricherStep({
               {latestIngestion.maximum_attempts} · Vector 대상 {latestIngestion.vector_target_count}개
             </span>
           </div>
-          <div
-            className="mt-2 h-2 overflow-hidden rounded-full bg-blue-100"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={latestIngestion.progress_percent}
-          >
-            <div
-              className={`h-full transition-[width] ${
-                ['FAILED', 'STALE'].includes(latestIngestion.state)
-                  ? 'bg-red-600'
-                  : latestIngestion.state === 'SUCCESS'
-                    ? 'bg-emerald-600'
-                    : 'bg-enterprise-blue'
-              }`}
-              style={{ width: `${latestIngestion.progress_percent}%` }}
-            />
-          </div>
+          <progress
+            className={`mt-2 h-2 w-full appearance-none overflow-hidden rounded-full bg-blue-100 [&::-webkit-progress-bar]:bg-blue-100 ${
+              ['FAILED', 'STALE'].includes(latestIngestion.state)
+                ? '[&::-webkit-progress-value]:bg-red-600 [&::-moz-progress-bar]:bg-red-600'
+                : latestIngestion.state === 'SUCCESS'
+                  ? '[&::-webkit-progress-value]:bg-emerald-600 [&::-moz-progress-bar]:bg-emerald-600'
+                  : '[&::-webkit-progress-value]:bg-enterprise-blue [&::-moz-progress-bar]:bg-enterprise-blue'
+            } [&::-webkit-progress-value]:transition-all [&::-moz-progress-bar]:transition-all`}
+            aria-label="데이터 수집 진행률"
+            max={100}
+            value={latestIngestion.progress_percent}
+          />
           {latestIngestion.error_code && (
             <p role="alert" className="mb-0 mt-2 text-[11px] text-red-800">
               실패 코드 · {latestIngestion.error_code}
