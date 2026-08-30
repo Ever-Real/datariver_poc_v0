@@ -10,7 +10,7 @@ import {
 } from './governancePresentationStyle'
 
 const allowedElements = new Set([
-  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'u', 's',
+  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'i', 'u', 's',
   'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'hr', 'br', 'table',
   'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'a',
 ])
@@ -215,8 +215,9 @@ function sanitizeNode(node: Node, output: Document): Node | undefined {
     anchor.append(...children)
     return anchor
   }
-  const element = output.createElement(tag)
-  const presentation = presentationElements.has(tag)
+  const canonicalTag = tag === 'i' ? 'em' : tag
+  const element = output.createElement(canonicalTag)
+  const presentation = presentationElements.has(tag) || tag === 'th' || tag === 'td'
     ? safeGovernancePresentation(node.getAttribute('data-governance-style'))
     : ''
   if (presentation) element.setAttribute('data-governance-style', presentation)

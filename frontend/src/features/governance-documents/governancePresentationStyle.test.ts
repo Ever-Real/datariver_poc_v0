@@ -17,6 +17,14 @@ const allowedTokens = [
   'padding-left:12em',
   'text-align:center',
   'text-align:right',
+  'background-color:var(--blue-50)',
+  'background-color:var(--red-50)',
+  'background-color:var(--green-50)',
+  'background-color:var(--yellow-50)',
+  'background-color:#f4f8fa',
+  'background-color:#fff3f2',
+  'background-color:#eff9f2',
+  'background-color:#fff9e9',
 ] as const
 
 describe('governance presentation token contract', () => {

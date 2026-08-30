@@ -157,3 +157,15 @@
   .governance-editor-layout { height: auto; grid-template-columns: 1fr; }
   .governance-editor-main { min-height: 560px; }
 }
+
+.governance-safe-html [data-governance-style*='background-color:#f4f8fa'], .governance-editor-surface [data-governance-style*='background-color:#f4f8fa'] { background-color: #f4f8fa; }
+.governance-safe-html [data-governance-style*='background-color:#fff3f2'], .governance-editor-surface [data-governance-style*='background-color:#fff3f2'] { background-color: #fff3f2; }
+.governance-safe-html [data-governance-style*='background-color:#eff9f2'], .governance-editor-surface [data-governance-style*='background-color:#eff9f2'] { background-color: #eff9f2; }
+.governance-safe-html [data-governance-style*='background-color:#fff9e9'], .governance-editor-surface [data-governance-style*='background-color:#fff9e9'] { background-color: #fff9e9; }
+
+.governance-editor-surface ul, .governance-editor-surface ol, .governance-safe-html ul, .governance-safe-html ol { padding-left: 2.2em; margin: 0.8em 0; }
+.governance-editor-surface li, .governance-safe-html li { margin-bottom: 0.3em; }
+.governance-editor-surface ul, .governance-safe-html ul { list-style-type: disc; }
+.governance-editor-surface ul ul, .governance-safe-html ul ul { list-style-type: circle; }
+.governance-editor-surface ul ul ul, .governance-safe-html ul ul ul { list-style-type: square; }
+.governance-editor-surface ol, .governance-safe-html ol { list-style-type: decimal; }

@@ -7,33 +7,9 @@ import {
 import { safeGovernancePresentation } from './governancePresentationStyle'
 
 const allowedElements = new Set([
-  'p',
-  'h1',
-  'h2',
-  'h3',
-  'h4',
-  'h5',
-  'h6',
-  'strong',
-  'em',
-  'u',
-  's',
-  'ul',
-  'ol',
-  'li',
-  'blockquote',
-  'code',
-  'pre',
-  'hr',
-  'br',
-  'table',
-  'thead',
-  'tbody',
-  'tfoot',
-  'tr',
-  'th',
-  'td',
-  'a',
+  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'i', 'u', 's',
+  'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'hr', 'br', 'table',
+  'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'a'
 ])
 
 const suppressedElements = new Set([

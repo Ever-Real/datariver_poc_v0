@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, type ReactNode } from 'react'
+import { memo, useEffect, useId, useState, type ReactNode } from 'react'
 import { Extension } from '@tiptap/core'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
@@ -36,7 +36,7 @@ const GovernanceBlockPresentation = Extension.create({
   name: 'governanceBlockPresentation',
   addGlobalAttributes() {
     return [{
-      types: ['heading', 'paragraph'],
+      types: ['heading', 'paragraph', 'tableCell', 'tableHeader'],
       attributes: {
         governancePresentation: {
           default: null,
@@ -75,6 +75,30 @@ function activePresentation(editor: Editor): Map<string, string> {
   return presentationEntries(
     editor.getAttributes(activeBlockType(editor)).governancePresentation,
   )
+}
+
+function activeTableCellPresentation(editor: Editor): Map<string, string> {
+  const cellType = editor.isActive('tableHeader') ? 'tableHeader' : 'tableCell'
+  return presentationEntries(
+    editor.getAttributes(cellType).governancePresentation,
+  )
+}
+
+function updateTableCellPresentation(
+  editor: Editor,
+  property: 'background-color',
+  value: string | null,
+) {
+  const cellType = editor.isActive('tableHeader') ? 'tableHeader' : 'tableCell'
+  const entries = activeTableCellPresentation(editor)
+  if (value) entries.set(property, value)
+  else entries.delete(property)
+  const presentation = [...entries]
+    .map(([name, candidate]) => `${name}:${candidate}`)
+    .join(';')
+  editor.chain().focus().updateAttributes(cellType, {
+    governancePresentation: presentation || null,
+  }).run()
 }
 
 function updatePresentation(
@@ -162,6 +186,8 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
   onHtmlChange: (html: string) => void
   onEditorReady?: (editor: Editor) => void
 }) {
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null)
+  const id = useId()
   const editor = useEditor({
     immediatelyRender: false,
     shouldRerenderOnTransaction: true,
@@ -262,17 +288,123 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
         <ToolbarButton label="왼쪽 정렬" active={!activePresentation(editor).has('text-align') || activePresentation(editor).get('text-align') === 'left'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', null)}><AlignLeft size={14} /></ToolbarButton>
         <ToolbarButton label="가운데 정렬" active={activePresentation(editor).get('text-align') === 'center'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'center')}><AlignCenter size={14} /></ToolbarButton>
         <ToolbarButton label="오른쪽 정렬" active={activePresentation(editor).get('text-align') === 'right'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'right')}><AlignRight size={14} /></ToolbarButton>
-        <ToolbarButton label="3열 표 삽입" disabled={commandDisabled} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><Table2 size={14} /></ToolbarButton>
+        <select
+          aria-label="표 삽입"
+          title="표 삽입"
+          disabled={commandDisabled}
+          value="default"
+          onChange={(event) => {
+            const match = /^(\d+)x(\d+)$/.exec(event.target.value)
+            if (match) {
+              const rows = parseInt(match[1], 10)
+              const cols = parseInt(match[2], 10)
+              editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()
+            }
+            // Reset select
+            event.target.value = 'default'
+          }}
+          className="governance-editor-table-select"
+        >
+          <option value="default" hidden>+ 표 삽입</option>
+          <option value="2x2">2 × 2</option>
+          <option value="3x3">3 × 3</option>
+          <option value="4x4">4 × 4</option>
+          <option value="5x5">5 × 5</option>
+          <option value="10x5">10 × 5</option>
+        </select>
         <ToolbarButton label="서식 지우기" disabled={commandDisabled} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><Eraser size={14} /></ToolbarButton>
       </div>
       {editor.isActive('table') && <div className="governance-editor-tool-group governance-editor-table-tools" aria-label="표 편집">
-        <ToolbarButton label="행 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addRowAfter().run()}>+행</ToolbarButton>
-        <ToolbarButton label="열 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addColumnAfter().run()}>+열</ToolbarButton>
+        <select
+          aria-label="셀 배경색"
+          title="셀 배경색"
+          disabled={commandDisabled}
+          value={activeTableCellPresentation(editor).get('background-color') ?? 'transparent'}
+          onChange={(event) => updateTableCellPresentation(
+            editor,
+            'background-color',
+            event.target.value === 'transparent' ? null : event.target.value,
+          )}
+        >
+          <option value="transparent">기본 배경색</option>
+          <option value="var(--blue-50)">강조 1</option>
+          <option value="var(--red-50)">강조 2</option>
+          <option value="var(--green-50)">강조 3</option>
+          <option value="var(--yellow-50)">강조 4</option>
+          <option value="#f4f8fa">회색 1</option>
+          <option value="#fff3f2">회색 2</option>
+          <option value="#eff9f2">회색 3</option>
+          <option value="#fff9e9">회색 4</option>
+        </select>
+        <ToolbarButton label="앞에 행 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addRowBefore().run()}>+위 행</ToolbarButton>
+        <ToolbarButton label="뒤에 행 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addRowAfter().run()}>+아래 행</ToolbarButton>
+        <ToolbarButton label="앞에 열 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addColumnBefore().run()}>+왼 열</ToolbarButton>
+        <ToolbarButton label="뒤에 열 추가" disabled={commandDisabled} onClick={() => editor.chain().focus().addColumnAfter().run()}>+오른 열</ToolbarButton>
         <ToolbarButton label="행 삭제" disabled={commandDisabled} onClick={() => editor.chain().focus().deleteRow().run()}>−행</ToolbarButton>
         <ToolbarButton label="열 삭제" disabled={commandDisabled} onClick={() => editor.chain().focus().deleteColumn().run()}>−열</ToolbarButton>
         <ToolbarButton label="표 삭제" disabled={commandDisabled} onClick={() => editor.chain().focus().deleteTable().run()}>표 삭제</ToolbarButton>
       </div>}
     </div>
-    <EditorContent className="governance-editor-content" editor={editor} />
+    <div
+      onContextMenu={(event) => {
+        if (editor.isActive('table')) {
+          event.preventDefault()
+          setContextMenu({ x: event.clientX, y: event.clientY })
+        }
+      }}
+      onClick={() => setContextMenu(null)}
+    >
+      <EditorContent className="governance-editor-content" editor={editor} />
+    </div>
+    {contextMenu && <div
+      style={{
+        position: 'fixed',
+        left: contextMenu.x,
+        top: contextMenu.y,
+        backgroundColor: 'var(--canvas)',
+        border: '1px solid var(--border)',
+        boxShadow: 'var(--shadow-popup)',
+        padding: '0.5rem',
+        borderRadius: '0.25rem',
+        zIndex: 1000,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem'
+      }}
+      onMouseLeave={() => setContextMenu(null)}
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem' }}>
+        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addRowBefore().run(); setContextMenu(null) }}>+ 위 행</button>
+        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addRowAfter().run(); setContextMenu(null) }}>+ 아래 행</button>
+        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnBefore().run(); setContextMenu(null) }}>+ 왼 열</button>
+        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnAfter().run(); setContextMenu(null) }}>+ 오른 열</button>
+        <button type="button" className="button button-danger" onClick={() => { editor.chain().focus().deleteRow().run(); setContextMenu(null) }}>- 행 삭제</button>
+        <button type="button" className="button button-danger" onClick={() => { editor.chain().focus().deleteColumn().run(); setContextMenu(null) }}>- 열 삭제</button>
+      </div>
+      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.85rem' }}>
+        셀 배경색
+        <select
+          value={activeTableCellPresentation(editor).get('background-color') ?? 'transparent'}
+          onChange={(event) => {
+            updateTableCellPresentation(
+              editor,
+              'background-color',
+              event.target.value === 'transparent' ? null : event.target.value,
+            )
+            setContextMenu(null)
+          }}
+        >
+          <option value="transparent">기본 배경색</option>
+          <option value="var(--blue-50)">강조 1</option>
+          <option value="var(--red-50)">강조 2</option>
+          <option value="var(--green-50)">강조 3</option>
+          <option value="var(--yellow-50)">강조 4</option>
+          <option value="#f4f8fa">회색 1</option>
+          <option value="#fff3f2">회색 2</option>
+          <option value="#eff9f2">회색 3</option>
+          <option value="#fff9e9">회색 4</option>
+        </select>
+      </label>
+    </div>}
   </section>
 })

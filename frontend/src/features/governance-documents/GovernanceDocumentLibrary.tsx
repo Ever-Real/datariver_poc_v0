@@ -1095,15 +1095,48 @@ function EditorDialog({
   onClose: () => void
 }) {
   const [htmlBytes, setHtmlBytes] = useState(() => utf8Bytes(initialHtml))
+  const [currentHtml, setCurrentHtml] = useState(initialHtml)
   const [importFeedback, setImportFeedback] = useState<string>()
   const [importError, setImportError] = useState<unknown>()
   const [importing, setImporting] = useState(false)
-  useEffect(() => setHtmlBytes(utf8Bytes(initialHtml)), [initialHtml, mode])
+  const initialSnapshot = useRef<{ title: string; summary: string; applicabilityScope: string; html: string; htmlBytes: number; category: string; classification: number; templateVersionId: string; blueprintId: string; parentDocumentId: string; importFile?: File; attachmentFile?: File } | null>(null)
+
+  useEffect(() => {
+    setHtmlBytes(utf8Bytes(initialHtml))
+    setCurrentHtml(initialHtml)
+  }, [initialHtml, mode])
+  
   useEffect(() => {
     setImportFeedback(undefined)
     setImportError(undefined)
     setImporting(false)
+    if (mode) {
+      initialSnapshot.current = { title, summary, applicabilityScope, html: initialHtml, htmlBytes: utf8Bytes(initialHtml), category, classification, templateVersionId, blueprintId, parentDocumentId, importFile, attachmentFile }
+    } else {
+      initialSnapshot.current = null
+    }
   }, [mode])
+
+  const isDirty = initialSnapshot.current !== null && (
+    title !== initialSnapshot.current.title ||
+    summary !== initialSnapshot.current.summary ||
+    applicabilityScope !== initialSnapshot.current.applicabilityScope ||
+    currentHtml !== initialSnapshot.current.html ||
+    category !== initialSnapshot.current.category ||
+    classification !== initialSnapshot.current.classification ||
+    templateVersionId !== initialSnapshot.current.templateVersionId ||
+    blueprintId !== initialSnapshot.current.blueprintId ||
+    parentDocumentId !== initialSnapshot.current.parentDocumentId ||
+    importFile !== initialSnapshot.current.importFile ||
+    attachmentFile !== initialSnapshot.current.attachmentFile
+  )
+
+  const handleClose = (reason?: 'BACKDROP' | 'CANCEL' | 'CLOSE_BUTTON') => {
+    if (isDirty && (reason === 'BACKDROP' || reason === 'CANCEL')) return
+    if (isDirty && !window.confirm('저장하지 않은 변경 사항이 있습니다. 취소하시겠습니까?')) return
+    onClose()
+  }
+
   const importValid = !importFile
     || (importFile.size <= maximumImportBytes && supportedImport(importFile))
   const attachmentValid = !attachmentFile || attachmentFile.size <= maximumImportBytes
@@ -1135,6 +1168,7 @@ function EditorDialog({
     try {
       const imported = await governanceMarkupFromFile(file)
       onMarkupImported(imported.html)
+      setCurrentHtml(imported.html)
       setHtmlBytes(utf8Bytes(imported.html))
       setImportFeedback(`${imported.format === 'MARKDOWN' ? 'Markdown' : 'HTML'} 서식을 안전한 편집 본문으로 불러왔습니다. 저장 전에 아래에서 수정할 수 있습니다.`)
     } catch (next) {
@@ -1150,9 +1184,9 @@ function EditorDialog({
       ? '선택한 exact Template version 또는 안전한 HTML 편집 결과로 생성합니다.'
       : '현재 본문을 편집하거나 HTML·Markdown·Word 파일을 서버 변환 경계로 가져옵니다.'}
     size="workspace"
-    onRequestClose={onClose}
+    onRequestClose={handleClose}
     footer={<>
-      <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
+      <button type="button" className="button button-secondary" disabled={busy} onClick={() => handleClose('CLOSE_BUTTON')}>취소</button>
       <button type="button" className="button" disabled={busy || importing || !createValid} onClick={onSubmit}>{busy ? '저장 중…' : '저장'}</button>
     </>}
   >
@@ -1166,6 +1200,7 @@ function EditorDialog({
           initialHtml={initialHtml}
           disabled={busy || importing}
           onHtmlChange={(value) => {
+            setCurrentHtml(value)
             setHtmlBytes(utf8Bytes(value))
             onHtmlChange(value)
           }}
@@ -1389,7 +1424,8 @@ function shortId(value: string): string {
 }
 
 function subjectName(detail: GovernanceDocumentDetail, subjectId: string): string {
-  return detail.subject_display_names?.[subjectId] ?? shortId(subjectId)
+  const displayName = detail.subject_display_names?.[subjectId]
+  return displayName ? `${displayName} (${shortId(subjectId)})` : shortId(subjectId)
 }
 
 function formatBytes(value: number): string {

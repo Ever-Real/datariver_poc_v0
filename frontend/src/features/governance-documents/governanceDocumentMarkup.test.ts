@@ -57,4 +57,9 @@ describe('governance document markup import', () => {
       '<p data-governance-style="font-size:18px;padding-left:2em;text-align:center">본문</p>',
     )
   })
+
+  it('canonicalizes italic tags to em', () => {
+    expect(sanitizeGovernanceHtml('<p><i>italic</i> <em>em</em></p>'))
+      .toBe('<p><em>italic</em> <em>em</em></p>')
+  })
 })
