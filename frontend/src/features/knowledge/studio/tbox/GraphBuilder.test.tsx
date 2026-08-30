@@ -155,8 +155,8 @@ describe('GraphBuilder', () => {
     fireEvent.click(screen.getByLabelText('Employee Class 편집기 열기'))
     const quickEditor = screen.getByLabelText('Employee Class 빠른 편집')
     expect(quickEditor).toBeInTheDocument()
-    expect(quickEditor).toHaveStyle({ transform: 'scale(1)' })
-    expect(quickEditor.parentElement?.style.transform).not.toContain('scale')
+    expect(quickEditor).not.toHaveAttribute('style')
+    expect(quickEditor.parentElement).toHaveClass('react-flow__node-toolbar')
     fireEvent.click(screen.getByLabelText('Employee Class 편집기 닫기'))
     expect(screen.queryByLabelText('Employee Class 빠른 편집')).not.toBeInTheDocument()
 

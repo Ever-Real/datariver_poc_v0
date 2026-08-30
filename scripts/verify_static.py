@@ -882,7 +882,7 @@ def verify_runtime_hardening() -> None:
         (
             "add_header Content-Security-Policy \"default-src 'self'; base-uri 'self'; "
             "object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; "
-            "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' "
+            "style-src 'self'; script-src 'self'; connect-src 'self' "
             "${S3_PUBLIC_ORIGIN} ${OIDC_PUBLIC_ORIGIN}; frame-src ${OIDC_PUBLIC_ORIGIN} "
             "${DATAHUB_EMBED_BASE_URL} ${GRAFANA_EMBED_BASE_URL} http: https:; "
             "form-action 'self' ${OIDC_PUBLIC_ORIGIN}\" always;"

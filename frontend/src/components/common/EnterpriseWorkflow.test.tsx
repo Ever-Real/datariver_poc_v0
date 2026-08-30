@@ -37,7 +37,46 @@ describe('enterprise workflow primitives', () => {
     )
 
     const canvas = screen.getByRole('region', { name: '영향도 그래프' })
-    expect(canvas).toHaveStyle({ height: '420px' })
+    expect(canvas).toHaveClass('flow-canvas-height-420')
+    expect(canvas).not.toHaveAttribute('style')
     expect(screen.getByLabelText('인가된 계보가 없습니다., 대상을 선택하세요.')).toBeInTheDocument()
+  })
+
+  it.each([1, 5, 50, 200])(
+    'renders %i graph nodes with external presentation classes',
+    (nodeCount) => {
+      const nodes = Array.from({ length: nodeCount }, (_, index) => ({
+        id: `node-${index}`,
+        label: `Node ${index}`,
+        kind: index % 2 === 0 ? 'source' as const : 'target' as const,
+      }))
+      const { container, unmount } = render(
+        <FlowCanvas
+          ariaLabel={`${nodeCount} node graph`}
+          nodes={nodes}
+          edges={[]}
+          showMiniMap={false}
+        />,
+      )
+
+      expect(container.querySelectorAll('.flow-canvas-node')).toHaveLength(nodeCount)
+      expect(container.querySelector('.flow-canvas-node')).toHaveClass('flow-canvas-node')
+      expect(container.querySelector('.flow-canvas-node')?.getAttribute('style') ?? '')
+        .not.toMatch(/background|border|padding|font/)
+      unmount()
+    },
+  )
+
+  it.each([
+    [420, 'flow-canvas-height-420'],
+    [430, 'flow-canvas-height-430'],
+    [480, 'flow-canvas-height-480'],
+  ] as const)('maps the %i pixel canvas height to a finite class', (height, className) => {
+    const { unmount } = render(
+      <FlowCanvas ariaLabel={`${height} pixel graph`} nodes={[]} edges={[]} height={height} />,
+    )
+
+    expect(screen.getByRole('region', { name: `${height} pixel graph` })).toHaveClass(className)
+    unmount()
   })
 })

@@ -26,7 +26,7 @@ ORIGINS = {
 EXPECTED_CSP = (
     "default-src 'self'; base-uri 'self'; object-src 'none'; "
     "frame-ancestors 'none'; img-src 'self' data:; "
-    "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+    "style-src 'self'; script-src 'self'; "
     f"connect-src 'self' {ORIGINS['S3_PUBLIC_ORIGIN']} {ORIGINS['OIDC_PUBLIC_ORIGIN']}; "
     f"frame-src {ORIGINS['OIDC_PUBLIC_ORIGIN']} {ORIGINS['DATAHUB_EMBED_BASE_URL']} "
     f"{ORIGINS['GRAFANA_EMBED_BASE_URL']} http: https:; "

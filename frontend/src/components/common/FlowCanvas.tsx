@@ -33,7 +33,7 @@ interface FlowCanvasProps {
   nodes: FlowCanvasNode[]
   edges: FlowCanvasEdge[]
   ariaLabel: string
-  height?: number
+  height?: 420 | 430 | 480
   editable?: boolean
   locked?: boolean
   showMiniMap?: boolean
@@ -45,16 +45,21 @@ interface FlowCanvasProps {
 
 type CanvasNode = Node<{ label: string; subtitle?: string; kind: FlowCanvasNode['kind'] }>
 
-const nodeColors: Record<NonNullable<FlowCanvasNode['kind']>, { background: string; border: string }> = {
-  source: { background: '#e7f1f8', border: '#004b87' },
-  target: { background: '#ecfdf5', border: '#047857' },
-  neutral: { background: '#ffffff', border: '#64748b' },
-  empty: { background: '#f8fafc', border: '#94a3b8' },
+const nodeClasses: Record<NonNullable<FlowCanvasNode['kind']>, string> = {
+  source: 'flow-canvas-node-source',
+  target: 'flow-canvas-node-target',
+  neutral: 'flow-canvas-node-neutral',
+  empty: 'flow-canvas-node-empty',
+}
+
+const heightClasses: Record<NonNullable<FlowCanvasProps['height']>, string> = {
+  420: 'flow-canvas-height-420',
+  430: 'flow-canvas-height-430',
+  480: 'flow-canvas-height-480',
 }
 
 function mapNode(node: FlowCanvasNode, index: number): CanvasNode {
   const kind = node.kind ?? 'neutral'
-  const color = nodeColors[kind]
   return {
     id: node.id,
     position: {
@@ -62,17 +67,7 @@ function mapNode(node: FlowCanvasNode, index: number): CanvasNode {
       y: node.y ?? 45 + Math.floor(index / 4) * 130,
     },
     data: { label: node.label, subtitle: node.subtitle, kind },
-    style: {
-      width: 180,
-      border: `1px solid ${color.border}`,
-      borderRadius: 4,
-      background: color.background,
-      color: '#0a192f',
-      padding: '10px 12px',
-      fontSize: 12,
-      fontWeight: 800,
-      boxShadow: '0 2px 8px rgba(7, 20, 38, .10)',
-    },
+    className: `flow-canvas-node ${nodeClasses[kind]}`,
     ariaLabel: node.subtitle ? `${node.label}, ${node.subtitle}` : node.label,
   }
 }
@@ -81,8 +76,7 @@ function mapEdge(edge: FlowCanvasEdge): Edge {
   return {
     ...edge,
     markerEnd: { type: MarkerType.ArrowClosed, color: '#526274' },
-    style: { stroke: '#526274', strokeWidth: 1.5 },
-    labelStyle: { fill: '#334155', fontSize: 10, fontWeight: 700 },
+    className: 'flow-canvas-edge',
   }
 }
 
@@ -126,7 +120,10 @@ export function FlowCanvas({
   }
 
   return (
-    <section aria-label={ariaLabel} className="w-full overflow-hidden rounded-enterprise border border-slate-300 bg-slate-50" style={{ height }}>
+    <section
+      aria-label={ariaLabel}
+      className={`w-full overflow-hidden rounded-enterprise border border-slate-300 bg-slate-50 ${heightClasses[height]}`}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}

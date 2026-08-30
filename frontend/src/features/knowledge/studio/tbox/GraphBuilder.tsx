@@ -13,7 +13,7 @@ import {
   BaseEdge,
   ConnectionMode,
   Controls,
-  EdgeLabelRenderer,
+  EdgeToolbar,
   Handle,
   MarkerType,
   MiniMap,
@@ -97,7 +97,6 @@ interface SchemaNodeData extends Record<string, unknown> {
   locked: boolean
   selected: boolean
   editorOpen: boolean
-  editorScale: number
   canStartConnection: boolean
   canReceiveConnection: boolean
   blockLabel: string
@@ -411,15 +410,11 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           isConnectable={data.canStartConnection}
           isConnectableStart={data.canStartConnection}
           isConnectableEnd={false}
-          className="border-sky-100! bg-cyan-400! shadow-[0_0_0_3px_rgba(34,211,238,.16)]"
-          style={{
-            width: 9,
-            height: 9,
-            minWidth: 9,
-            minHeight: 9,
-            opacity: hovered || connectionInProgress ? 1 : 0.42,
-            zIndex: 24,
-          }}
+          className={`tbox-relationship-source-handle border-sky-100! bg-cyan-400! shadow-[0_0_0_3px_rgba(34,211,238,.16)] ${
+            hovered || connectionInProgress
+              ? 'tbox-relationship-source-handle-active'
+              : 'tbox-relationship-source-handle-idle'
+          }`}
         />
       ))}
       <Handle
@@ -434,17 +429,9 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
         }
         isConnectableStart={false}
         isConnectableEnd={data.canReceiveConnection}
-        className="border-transparent! bg-transparent!"
-        style={{
-          inset: -1,
-          width: 'calc(100% + 2px)',
-          height: 'calc(100% + 2px)',
-          transform: 'none',
-          borderRadius: 7,
-          opacity: 0,
-          pointerEvents: connectionInProgress ? 'all' : 'none',
-          zIndex: 23,
-        }}
+        className={`tbox-body-target-handle border-transparent! bg-transparent! ${
+          connectionInProgress ? 'pointer-events-auto!' : 'pointer-events-none!'
+        }`}
       />
       {([
         { position: Position.Top, id: 'target-top' },
@@ -458,8 +445,7 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           type="target"
           position={position}
           isConnectable={false}
-          className="border-transparent! bg-transparent!"
-          style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+          className="tbox-hidden-handle border-transparent! bg-transparent!"
         />
       ))}
       <Handle
@@ -467,16 +453,14 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
         type="source"
         position={Position.Bottom}
         isConnectable={false}
-        className="border-transparent! bg-transparent!"
-        style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+        className="tbox-hidden-handle border-transparent! bg-transparent!"
       />
       <Handle
         id="hierarchy-target-top"
         type="target"
         position={Position.Top}
         isConnectable={false}
-        className="border-transparent! bg-transparent!"
-        style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+        className="tbox-hidden-handle border-transparent! bg-transparent!"
       />
       <button
         type="button"
@@ -546,10 +530,6 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           className="grid gap-2"
           role="dialog"
           aria-label={`${data.label} Class 빠른 편집`}
-          style={{
-            transform: `scale(${data.editorScale})`,
-            transformOrigin: 'left center',
-          }}
           onPointerDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-center justify-between gap-2">
@@ -655,7 +635,6 @@ function EditableSchemaEdge({
   sourcePosition,
   targetPosition,
   markerEnd,
-  style,
 }: EdgeProps<SchemaEdge>) {
   const [hovered, setHovered] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -689,7 +668,6 @@ function EditableSchemaEdge({
           id={id}
           path={path}
           markerEnd={markerEnd}
-          style={style}
           interactionWidth={28}
         />
         <circle
@@ -702,14 +680,13 @@ function EditableSchemaEdge({
           pointerEvents="none"
         />
       </g>
-      <EdgeLabelRenderer>
+      <EdgeToolbar edgeId={id} x={labelX} y={labelY} isVisible>
         <div
-          className={`nodrag nopan absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded border px-1.5 py-1 text-[9px] font-black shadow ${
+          className={`nodrag nopan flex items-center gap-1 rounded border px-1.5 py-1 text-[9px] font-black shadow ${
             data?.hierarchy
               ? 'border-emerald-300 bg-emerald-950/90 text-emerald-100'
               : 'border-sky-300 bg-[#10253d]/95 text-sky-100'
           }`}
-          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
           onPointerEnter={() => setHovered(true)}
           onPointerLeave={() => setHovered(false)}
           onPointerDown={(event) => event.stopPropagation()}
@@ -762,7 +739,7 @@ function EditableSchemaEdge({
             </>
           )}
         </div>
-      </EdgeLabelRenderer>
+      </EdgeToolbar>
     </>
   )
 }
@@ -882,7 +859,7 @@ function ClassHierarchyTree({
     onReparent(classId, parentId)
   }
 
-  const renderBranch = (parentId = '', depth = 0): ReactNode => (
+  const renderBranch = (parentId = ''): ReactNode => (
     (childrenByParent.get(parentId) ?? []).map((item) => {
       const editable = (
         (item.block_id === activeBlockId || item.block_id === undefined)
@@ -894,8 +871,7 @@ function ClassHierarchyTree({
         <li key={item.stable_element_id}>
           {parentId && (
             <div
-              className="flex h-5 items-center gap-1 text-[9px] text-emerald-700"
-              style={{ marginLeft: Math.max(4, depth * 12 - 8) }}
+              className="-ml-2 flex h-5 items-center gap-1 text-[9px] text-emerald-700"
               title={`${classById.get(parentId)?.display_name ?? parentId} → ${item.display_name}: ${hierarchyRelation}`}
             >
               <span
@@ -951,7 +927,6 @@ function ClassHierarchyTree({
                 ? 'bg-blue-100 text-blue-950'
                 : 'text-slate-700 hover:bg-slate-100'
             }`}
-            style={{ marginLeft: depth * 12 }}
             draggable={editable && !disabled}
             onDragStart={() => {
               draggedId.current = item.stable_element_id
@@ -999,8 +974,8 @@ function ClassHierarchyTree({
               </button>
             )}
           </div>
-          {children.length > 0 && <ul className="m-0 list-none p-0">
-            {renderBranch(item.stable_element_id, depth + 1)}
+          {children.length > 0 && <ul className="m-0 ml-3 list-none p-0">
+            {renderBranch(item.stable_element_id)}
           </ul>}
         </li>
       )
@@ -1314,7 +1289,8 @@ function flowGraph(
           label: `${block.ordinal + 1}. ${block.title} · 읽기 전용`,
           later: block.ordinal > activeOrdinal,
         },
-        style: { width: maxX - minX, height: maxY - minY },
+        width: maxX - minX,
+        height: maxY - minY,
         draggable: false,
         selectable: false,
         connectable: false,
@@ -1342,7 +1318,6 @@ function flowGraph(
       locked: item.locked_by_later_block,
       selected: item.stable_element_id === selectedElementId,
       editorOpen: false,
-      editorScale: 1,
       canStartConnection: connectableInActiveView,
       canReceiveConnection: connectableInActiveView,
       blockLabel: block?.title ?? '현재 블록',
@@ -1395,7 +1370,7 @@ function flowGraph(
         markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
         sourceHandle: handles.sourceHandle,
         targetHandle: handles.targetHandle,
-        style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
+        className: 'tbox-schema-edge',
       }]
     })
   const hierarchyEdges = classes.flatMap((item): SchemaEdge[] => {
@@ -1414,7 +1389,7 @@ function flowGraph(
         editable: item.block_id === editableBlockId && !item.locked_by_later_block,
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
-      style: { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray: '6 4' },
+      className: 'tbox-schema-edge tbox-hierarchy-edge',
     }]
   })
   return {
@@ -3207,7 +3182,6 @@ export function GraphBuilder({
         locked: item.locked_by_later_block,
         selected: item.stable_element_id === selectedElementId,
         editorOpen: item.stable_element_id === editorOpenId,
-        editorScale: Math.max(0.65, Math.min(1.25, viewport.zoom / 0.8)),
         canStartConnection: connectable,
         canReceiveConnection: connectable,
         properties: elements
@@ -3535,6 +3509,7 @@ export function GraphBuilder({
                     )}
                     <ReactFlow<CanvasNode, SchemaEdge>
                       aria-label="T-Box 그래프 캔버스"
+                      className="tbox-graph-flow"
                       nodes={renderedNodes}
                       edges={renderedEdges}
                       nodeTypes={schemaNodeTypes}
@@ -3556,11 +3531,6 @@ export function GraphBuilder({
                       edgesReconnectable={!locked && !working && !canvasLocked}
                       elementsSelectable={!canvasLocked}
                       connectionMode={ConnectionMode.Loose}
-                      connectionLineStyle={{
-                        stroke: '#67e8f9',
-                        strokeWidth: 1.8,
-                        strokeDasharray: '6 4',
-                      }}
                       deleteKeyCode={null}
                       viewport={viewport}
                       onViewportChange={setViewport}

@@ -16,7 +16,7 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; base-uri 'self'; object-src 'none'; "
         "frame-ancestors 'none'; img-src 'self' data:; "
-        "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+        "style-src 'self'; script-src 'self'; "
         "connect-src 'self' ${S3_PUBLIC_ORIGIN} ${OIDC_PUBLIC_ORIGIN}; "
         "frame-src ${OIDC_PUBLIC_ORIGIN} ${DATAHUB_EMBED_BASE_URL} "
         "${GRAFANA_EMBED_BASE_URL} http: https:; form-action 'self' ${OIDC_PUBLIC_ORIGIN}"
@@ -77,6 +77,31 @@ def test_nginx_merges_security_headers_into_every_location_and_normalizes_api() 
     assert 'add_header Cache-Control "public, immutable";' in _location(source, "location /assets/")
     assert "client_max_body_size 12m;" in api
     assert "strict-transport-security" not in source.casefold()
+    assert "'unsafe-inline'" not in source
+
+
+def test_strict_style_csp_has_no_application_owned_reactflow_style_boundary() -> None:
+    application_sources = (
+        ROOT / "frontend" / "src" / "components" / "common" / "FlowCanvas.tsx",
+        ROOT
+        / "frontend"
+        / "src"
+        / "features"
+        / "knowledge"
+        / "studio"
+        / "tbox"
+        / "GraphBuilder.tsx",
+    )
+    forbidden = ("style={{", "style={style}", "style: {", ".style.", "setProperty(")
+
+    for path in application_sources:
+        source = path.read_text(encoding="utf-8")
+        assert not any(token in source for token in forbidden), path
+
+    for name in ("index.html", "oidc-silent-callback.html"):
+        shell = (ROOT / "frontend" / name).read_text(encoding="utf-8")
+        assert "<style" not in shell.casefold()
+        assert " style=" not in shell.casefold()
 
 
 def test_studio_proposal_jobs_use_the_standard_bounded_api_proxy() -> None:
