@@ -85,7 +85,6 @@ export function ControlledVocabularyInput({
   const [open, setOpen] = useState(false)
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [lookupFailed, setLookupFailed] = useState(false)
-  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; width: number }>()
 
   // limit이나 open 상태 변경 시 초기화
   useEffect(() => { if (!open) setLimit(12) }, [open])
@@ -126,19 +125,6 @@ export function ControlledVocabularyInput({
 
   useEffect(() => () => requestRef.current?.abort(), [])
 
-  useEffect(() => {
-    if (!open) { setMenuPosition(undefined); return }
-    const updatePosition = () => {
-      const rectangle = rootRef.current?.getBoundingClientRect()
-      if (!rectangle) return
-      setMenuPosition({ left: rectangle.left, top: rectangle.bottom + 2, width: Math.max(rectangle.width, 220) })
-    }
-    updatePosition()
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-    return () => { window.removeEventListener('resize', updatePosition); window.removeEventListener('scroll', updatePosition, true) }
-  }, [open])
-
   const appendValues = (candidates: readonly string[]): boolean => {
     const available = Array.from(new Set(candidates.map((value) => value.trim()).filter(Boolean)))
       .filter((value) => !values.includes(value))
@@ -178,9 +164,9 @@ export function ControlledVocabularyInput({
       track.scrollLeft += left
     }
   }
-  const menu = open && menuPosition && typeof document !== 'undefined'
+  const menu = open && typeof document !== 'undefined'
     ? createPortal(
-      <div className="controlled-vocabulary-menu" role="listbox" aria-label={`${label} 검색 결과`} style={menuPosition}>
+      <div className="controlled-vocabulary-menu" role="listbox" aria-label={`${label} 검색 결과`}>
         <input aria-label={label} autoFocus onBlur={() => window.setTimeout(() => setOpen(false), 120)} onChange={(event) => {
           const chunks = event.target.value.split(',')
           if (chunks.length > 1 && canProposeNew) appendValues(chunks.slice(0, -1))
@@ -214,7 +200,7 @@ export function ControlledVocabularyInput({
     : null
 
 
-  return <div className="controlled-vocabulary-input" ref={rootRef}>
+  return <div className={`controlled-vocabulary-input${open ? ' controlled-vocabulary-input-open' : ''}`} ref={rootRef}>
     <div className="controlled-vocabulary-row">
       <button aria-label={`${label} 이전 항목`} className="controlled-vocabulary-arrow" disabled={!values.length} onClick={() => scrollValues(-140)} type="button"><ChevronLeft size={10} /></button>
       <div aria-label={`${label} 선택된 값`} className="controlled-vocabulary-track" ref={trackRef}>
