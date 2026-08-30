@@ -115,6 +115,9 @@ function reconciliationStateStore() {
       async cacheGet() { return undefined },
       async cacheSet() {},
       async cacheDelete() {},
+      async withCatalogEmbeddingGenerationLock(_bindingHash, _sourceGeneration, task) {
+        return task()
+      },
       async catalogEmbeddingActiveGeneration(bindingHash) { return activeGenerations.get(bindingHash) },
       async catalogEmbeddingHashes(bindingHash) {
         return new Map([...embeddingRows.values()]
@@ -146,7 +149,12 @@ function reconciliationStateStore() {
       persisted.observed_at = new Date(Date.now() - 16 * 60 * 1_000).toISOString()
     },
     observation() {
-      return { persisted: structuredClone(persisted), writes, historyWrites }
+      return {
+        persisted: structuredClone(persisted),
+        writes,
+        historyWrites,
+        embeddingAssetUrns: [...embeddingRows.values()].map((row) => row.assetUrn).sort(),
+      }
     },
   }
 }
@@ -177,6 +185,10 @@ function lifecycleStateStore(initialProjection) {
       async cacheGet() { guard(); return undefined },
       async cacheSet() { guard() },
       async cacheDelete() { guard() },
+      async withCatalogEmbeddingGenerationLock(_bindingHash, _sourceGeneration, task) {
+        guard()
+        return task()
+      },
       async catalogEmbeddingActiveGeneration() { guard(); return undefined },
       async catalogEmbeddingHashes() { guard(); return new Map() },
       async replaceCatalogEmbeddingGeneration() {
@@ -184,11 +196,22 @@ function lifecycleStateStore(initialProjection) {
         embeddingReplacements += 1
       },
       async readLocalCredential() { guard(); return null },
+      async readLocalCredentialForSubject() { guard(); return null },
       async recordLocalLoginFailure() { guard(); return false },
       async recordLocalLoginSuccess() { guard(); return false },
       async createLocalSession() { guard() },
       async readLocalSession() { guard(); return null },
       async revokeLocalSession() { guard(); return false },
+      async changeOwnLocalPassword() { guard(); return false },
+      async getK9Policy() { guard(); return null },
+      async executeK9Transaction() {
+        guard()
+        throw new Error('K9 execution is not expected in the Catalog shutdown fixture.')
+      },
+      async runK9Scheduler(_options, task) {
+        guard()
+        return task()
+      },
       async runChangeHistoryScheduler(_options, task) {
         guard()
         return task()
@@ -498,11 +521,15 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
     }
     if (url.pathname === '/chat/completions') {
       const schemaName = body.response_format?.json_schema?.name
+      const routePrompt = body.messages?.at(-1)?.content || ''
+      const exactMetadata = routePrompt.includes('inspection_results')
       const content = schemaName === 'datariver_chat_route'
         ? JSON.stringify({
-            mode: 'VECTOR', confidence: 1, intent: 'EXACT_METADATA',
-            entity_resolution_required: true, graph_traversal_required: false,
-            semantic_retrieval_required: false, fallback_mode: 'GENERAL',
+            mode: 'VECTOR', confidence: 1,
+            intent: exactMetadata ? 'EXACT_METADATA' : 'SEMANTIC_DISCOVERY',
+            primary_concepts: exactMetadata ? ['inspection_results'] : ['related table assets'],
+            secondary_concepts: [],
+            relation_intent: null, entity_type_hints: ['TABLE'], selected_graph_asset: null,
           })
         : 'current projection evidence [1]'
       response.writeHead(200, { 'Content-Type': 'application/json' })
@@ -549,10 +576,13 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
   assert.deepEqual(searchB.items, [])
   const treeB = await (await fetch(`${originB}/poc-api/datahub/tree?parent_kind=SCHEMA&platform=postgres&database=MANUFACTURING&schema=QUALITY`)).json()
   assert.equal(treeB.items.some((item) => item.asset.id === removed.urn), false)
-  const chatExactB = await (await fetch(`${originB}/poc-api/llm/chat`, {
+  const chatExactResponseB = await fetch(`${originB}/poc-api/llm/chat`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question: 'inspection_results table metadata', mode: 'AUTO' }),
-  })).json()
+  })
+  const chatExactTextB = await chatExactResponseB.text()
+  assert.equal(chatExactResponseB.status, 200, chatExactTextB)
+  const chatExactB = JSON.parse(chatExactTextB)
   assert.equal(chatExactB.evidence.some((item) => item.id === removed.urn), false)
   const chatVectorB = await (await fetch(`${originB}/poc-api/llm/chat`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -569,6 +599,10 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
   const originC = await listen(serverC)
   assert.equal((await (await fetch(`${originC}/poc-api/datahub/catalog?limit=20`)).json()).total, 1)
   await waitFor(() => store.observation().writes === 3, 'generation C did not reactivate the same URN')
+  await waitFor(
+    () => store.observation().embeddingAssetUrns.includes(removed.urn),
+    'generation C embeddings did not reactivate the same URN',
+  )
   const searchC = await (await fetch(`${originC}/poc-api/datahub/catalog?q=inspection_results&limit=20`)).json()
   assert.deepEqual(searchC.items.map((item) => item.id), [removed.urn])
   const treeC = await (await fetch(`${originC}/poc-api/datahub/tree?parent_kind=SCHEMA&platform=postgres&database=MANUFACTURING&schema=QUALITY`)).json()
@@ -583,7 +617,11 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question: 'find related table assets', mode: 'AUTO' }),
   })).json()
-  assert.equal(chatVectorC.evidence.some((item) => item.id === removed.urn && item.retrieval_method === 'PGVECTOR_COSINE'), true)
+  assert.equal(
+    chatVectorC.evidence.some((item) => item.id === removed.urn && item.retrieval_method === 'PGVECTOR_COSINE'),
+    true,
+    JSON.stringify(chatVectorC.evidence),
+  )
   assert.equal(store.observation().historyWrites, 0, 'current inventory reconciliation must not write the history ledger')
   assert.deepEqual(store.observation().persisted.items.map((item) => item.id).sort(), [removed.urn, retained.urn].sort())
   await close(serverC)
