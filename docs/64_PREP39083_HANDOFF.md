@@ -7,30 +7,29 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  1adfe1ced2c9311bcbb880bfac400a1edf8d9178
-Evidence e3eb9af2a3700a3b715f4be2c54259bef0a95997
+Product  86f1d0a1e99f188bf3bde261038429b93f05ec75
+Evidence 1a62b14389c56892a96b9e7d2a6441eeb1892e5e
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`1adfe1ced2c9311bcbb880bfac400a1edf8d9178`. Its SHA-256, child manifest,
+`86f1d0a1e99f188bf3bde261038429b93f05ec75`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
-This Handoff retains the accepted `USER-FACING-RUNTIME-CLOSURE-2` surfaces and adds only the
-interruption-recovery corrections: the Resource Tree server honors its bounded 200-item cursor page
-without changing ordinary Catalog's 100-item cap, and the POC Governance detail response resolves
-document actor names from the existing workspace membership source. A referenced legacy POC actor
-uses its bounded presentation label only when no real same-subject membership name exists. The
-published metadata viewer alone uses readable 11px/13px label/value typography. This descendant
-also coalesces concurrent force-current DataHub inventory reads onto one in-flight generation, so a
-smoke retry does not start a duplicate provider scroll after its client envelope expires. The shared
-refresh preserves the same typed terminal failure for every waiter and never promotes a failed
-candidate. None of these corrections widens authorization or introduces a target-data dependency.
-The prior TEST Product remains the last runtime-accepted release until this exact artifact completes
-TEST deploy and same-command rerun.
+This Handoff retains every accepted `USER-FACING-RUNTIME-CLOSURE-2` and interruption-recovery
+contract and adds one cumulative user-facing backlog closure. Home uses compact canonical summaries
+without fabricated historical values; Chat exposes an evidence-bound Catalog scope without changing
+router, recall, or authorization; System creation is server-owned and CR intake remains exact-mapped
+and fail-closed for classification and calendar validity. Quality/GX does not fabricate an executor.
+Governance keeps the existing TipTap/ProseMirror and sanitizer contracts, Catalog export downloads
+directly through its complete authorized server job, and Site Management stores at most five safe
+ordered custom links behind the existing CAS/idempotency boundary. No migration, provider scope,
+runtime target-data dependency, user metadata mutation, reset, or secret contract changed. Product
+`1adfe1ced2c9311bcbb880bfac400a1edf8d9178` remains the last TEST-accepted runtime until this exact
+artifact completes accepted-state deploy and same-command rerun.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
