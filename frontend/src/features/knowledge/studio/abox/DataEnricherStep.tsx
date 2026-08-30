@@ -1070,6 +1070,9 @@ export function DataEnricherStep({
                   : '[&::-webkit-progress-value]:bg-enterprise-blue [&::-moz-progress-bar]:bg-enterprise-blue'
             } [&::-webkit-progress-value]:transition-all [&::-moz-progress-bar]:transition-all`}
             aria-label="데이터 수집 진행률"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={latestIngestion.progress_percent}
             max={100}
             value={latestIngestion.progress_percent}
           />
