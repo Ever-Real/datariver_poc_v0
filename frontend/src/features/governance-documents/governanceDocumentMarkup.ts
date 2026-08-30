@@ -6,6 +6,7 @@ const MAXIMUM_STYLE_MATCHES = 5_000
 
 import {
   mergeGovernancePresentations,
+  mergeGovernanceTableCellPresentations,
   safeGovernancePresentation,
 } from './governancePresentationStyle'
 
@@ -54,22 +55,27 @@ export function importGovernanceHtml(value: string): string {
     return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)].slice(0, MAXIMUM_STYLE_RULES)
   }).slice(0, MAXIMUM_STYLE_RULES)
   for (const rule of rules) {
-    const presentation = safeGovernancePresentation(rule[2])
+    const presentation = safeGovernancePresentation(rule[2], { allowBackground: true })
     if (!presentation) continue
     for (const selector of (rule[1] ?? '').split(',').map((item) => item.trim())) {
       if (!safePresentationSelector(selector)) continue
       for (const element of Array.from(parsed.body.querySelectorAll(selector))) {
         if (matched >= MAXIMUM_STYLE_MATCHES) break
-        element.setAttribute('data-governance-style', mergeGovernancePresentations(
-          element.getAttribute('data-governance-style'),
-          presentation,
+        const mergePresentation = ['TD', 'TH'].includes(element.tagName)
+          ? mergeGovernanceTableCellPresentations
+          : mergeGovernancePresentations
+        element.setAttribute('data-governance-style', mergePresentation(
+          element.getAttribute('data-governance-style'), presentation,
         ))
         matched += 1
       }
     }
   }
   for (const element of Array.from(parsed.body.querySelectorAll('[style]'))) {
-    element.setAttribute('data-governance-style', mergeGovernancePresentations(
+    const mergePresentation = ['TD', 'TH'].includes(element.tagName)
+      ? mergeGovernanceTableCellPresentations
+      : mergeGovernancePresentations
+    element.setAttribute('data-governance-style', mergePresentation(
       element.getAttribute('data-governance-style'),
       element.getAttribute('style'),
     ))
@@ -218,7 +224,10 @@ function sanitizeNode(node: Node, output: Document): Node | undefined {
   const canonicalTag = tag === 'i' ? 'em' : tag
   const element = output.createElement(canonicalTag)
   const presentation = presentationElements.has(tag) || tag === 'th' || tag === 'td'
-    ? safeGovernancePresentation(node.getAttribute('data-governance-style'))
+    ? safeGovernancePresentation(
+      node.getAttribute('data-governance-style'),
+      { allowBackground: tag === 'th' || tag === 'td' },
+    )
     : ''
   if (presentation) element.setAttribute('data-governance-style', presentation)
   if (tag === 'th' || tag === 'td') {

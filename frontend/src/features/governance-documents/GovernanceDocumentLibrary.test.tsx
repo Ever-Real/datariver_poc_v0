@@ -117,7 +117,7 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     expect(editor.closest('.governance-editor-content')).toBeInTheDocument()
   })
 
-  it('blocks Esc/backdrop when dirty (comparing exact HTML, not just bytes), and requests Cancel confirm', async () => {
+  it('keeps the editor open for Esc/backdrop and confirms only the explicit Cancel action', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/governance/documents/capability') {
         const value = capability('AVAILABLE')
@@ -144,24 +144,27 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     fireEvent.click(create)
     const editor = await screen.findByRole('textbox', { name: '문서 본문' })
 
-    // Insert a table to make the document dirty
     fireEvent.focus(editor)
     const blockStyle = await screen.findByRole('combobox', { name: '문단 스타일' })
     fireEvent.change(blockStyle, { target: { value: 'heading-2' } })
 
-    // Trigger BACKDROP close (Dialog primitive typically uses onInteractOutside or similar, let's just test CLOSE_BUTTON to keep it simple, or mock window.confirm)
+    const dialog = screen.getByRole('dialog', { name: '문서 작성' })
     const cancel = screen.getByRole('button', { name: '취소' })
-    
-    // Wait for internal debounce/state update if needed (but Tiptap is sync on UI commands)
-    // If dirty, clicking Cancel calls window.confirm
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent.click(dialog)
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: '문서 작성' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '문서 작성 닫기' })).not.toBeInTheDocument()
+
     fireEvent.click(cancel)
     expect(confirmSpy).toHaveBeenCalledWith('저장하지 않은 변경 사항이 있습니다. 취소하시겠습니까?')
-    expect(screen.getByRole('dialog', { name: '문서 작성' })).toBeInTheDocument() // still open
+    expect(screen.getByRole('dialog', { name: '문서 작성' })).toBeInTheDocument()
 
     confirmSpy.mockReturnValue(true)
     fireEvent.click(cancel)
-    expect(screen.queryByRole('dialog', { name: '문서 작성' })).not.toBeInTheDocument() // closed
+    expect(screen.queryByRole('dialog', { name: '문서 작성' })).not.toBeInTheDocument()
 
     confirmSpy.mockRestore()
   })

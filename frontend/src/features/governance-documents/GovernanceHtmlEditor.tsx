@@ -22,7 +22,6 @@ import {
   Quote,
   Redo2,
   Strikethrough,
-  Table2,
   UnderlineIcon,
   Undo2,
 } from 'lucide-react'
@@ -36,7 +35,7 @@ const GovernanceBlockPresentation = Extension.create({
   name: 'governanceBlockPresentation',
   addGlobalAttributes() {
     return [{
-      types: ['heading', 'paragraph', 'tableCell', 'tableHeader'],
+      types: ['heading', 'paragraph'],
       attributes: {
         governancePresentation: {
           default: null,
@@ -53,12 +52,35 @@ const GovernanceBlockPresentation = Extension.create({
           },
         },
       },
+    }, {
+      types: ['tableCell', 'tableHeader'],
+      attributes: {
+        governancePresentation: {
+          default: null,
+          parseHTML: (element) => safeGovernancePresentation(
+            element.getAttribute('data-governance-style') ?? element.getAttribute('style'),
+            { allowBackground: true },
+          ) || null,
+          renderHTML: (attributes) => {
+            const presentation = safeGovernancePresentation(
+              typeof attributes.governancePresentation === 'string'
+                ? attributes.governancePresentation
+                : '',
+              { allowBackground: true },
+            )
+            return presentation ? { 'data-governance-style': presentation } : {}
+          },
+        },
+      },
     }]
   },
 })
 
-function presentationEntries(value: unknown): Map<string, string> {
-  const presentation = safeGovernancePresentation(typeof value === 'string' ? value : '')
+function presentationEntries(value: unknown, allowBackground = false): Map<string, string> {
+  const presentation = safeGovernancePresentation(
+    typeof value === 'string' ? value : '',
+    { allowBackground },
+  )
   return new Map(presentation.split(';').flatMap((declaration) => {
     const delimiter = declaration.indexOf(':')
     return delimiter > 0
@@ -81,6 +103,7 @@ function activeTableCellPresentation(editor: Editor): Map<string, string> {
   const cellType = editor.isActive('tableHeader') ? 'tableHeader' : 'tableCell'
   return presentationEntries(
     editor.getAttributes(cellType).governancePresentation,
+    true,
   )
 }
 
@@ -186,8 +209,7 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
   onHtmlChange: (html: string) => void
   onEditorReady?: (editor: Editor) => void
 }) {
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null)
-  const id = useId()
+  const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const editor = useEditor({
     immediatelyRender: false,
     shouldRerenderOnTransaction: true,
@@ -296,8 +318,8 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
           onChange={(event) => {
             const match = /^(\d+)x(\d+)$/.exec(event.target.value)
             if (match) {
-              const rows = parseInt(match[1], 10)
-              const cols = parseInt(match[2], 10)
+              const rows = Number(match[1]!)
+              const cols = Number(match[2]!)
               editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()
             }
             // Reset select
@@ -327,10 +349,6 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
           )}
         >
           <option value="transparent">기본 배경색</option>
-          <option value="var(--blue-50)">강조 1</option>
-          <option value="var(--red-50)">강조 2</option>
-          <option value="var(--green-50)">강조 3</option>
-          <option value="var(--yellow-50)">강조 4</option>
           <option value="#f4f8fa">회색 1</option>
           <option value="#fff3f2">회색 2</option>
           <option value="#eff9f2">회색 3</option>
@@ -346,65 +364,52 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
       </div>}
     </div>
     <div
+      className="governance-editor-context-host"
       onContextMenu={(event) => {
         if (editor.isActive('table')) {
           event.preventDefault()
-          setContextMenu({ x: event.clientX, y: event.clientY })
+          setContextMenuOpen(true)
         }
       }}
-      onClick={() => setContextMenu(null)}
+      onClick={() => setContextMenuOpen(false)}
     >
       <EditorContent className="governance-editor-content" editor={editor} />
+      {contextMenuOpen && <div
+        className="governance-editor-context-menu"
+        role="menu"
+        aria-label="표 셀 편집"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => { if (event.key === 'Escape') setContextMenuOpen(false) }}
+      >
+        <div className="governance-editor-context-actions">
+          <button type="button" role="menuitem" className="button button-secondary" onClick={() => { editor.chain().focus().addRowBefore().run(); setContextMenuOpen(false) }}>+ 위 행</button>
+          <button type="button" role="menuitem" className="button button-secondary" onClick={() => { editor.chain().focus().addRowAfter().run(); setContextMenuOpen(false) }}>+ 아래 행</button>
+          <button type="button" role="menuitem" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnBefore().run(); setContextMenuOpen(false) }}>+ 왼 열</button>
+          <button type="button" role="menuitem" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnAfter().run(); setContextMenuOpen(false) }}>+ 오른 열</button>
+          <button type="button" role="menuitem" className="button button-danger" onClick={() => { editor.chain().focus().deleteRow().run(); setContextMenuOpen(false) }}>- 행 삭제</button>
+          <button type="button" role="menuitem" className="button button-danger" onClick={() => { editor.chain().focus().deleteColumn().run(); setContextMenuOpen(false) }}>- 열 삭제</button>
+        </div>
+        <label className="governance-editor-context-color">
+          셀 배경색
+          <select
+            value={activeTableCellPresentation(editor).get('background-color') ?? 'transparent'}
+            onChange={(event) => {
+              updateTableCellPresentation(
+                editor,
+                'background-color',
+                event.target.value === 'transparent' ? null : event.target.value,
+              )
+              setContextMenuOpen(false)
+            }}
+          >
+            <option value="transparent">기본 배경색</option>
+            <option value="#f4f8fa">회색 1</option>
+            <option value="#fff3f2">회색 2</option>
+            <option value="#eff9f2">회색 3</option>
+            <option value="#fff9e9">회색 4</option>
+          </select>
+        </label>
+      </div>}
     </div>
-    {contextMenu && <div
-      style={{
-        position: 'fixed',
-        left: contextMenu.x,
-        top: contextMenu.y,
-        backgroundColor: 'var(--canvas)',
-        border: '1px solid var(--border)',
-        boxShadow: 'var(--shadow-popup)',
-        padding: '0.5rem',
-        borderRadius: '0.25rem',
-        zIndex: 1000,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '0.5rem'
-      }}
-      onMouseLeave={() => setContextMenu(null)}
-    >
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem' }}>
-        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addRowBefore().run(); setContextMenu(null) }}>+ 위 행</button>
-        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addRowAfter().run(); setContextMenu(null) }}>+ 아래 행</button>
-        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnBefore().run(); setContextMenu(null) }}>+ 왼 열</button>
-        <button type="button" className="button button-secondary" onClick={() => { editor.chain().focus().addColumnAfter().run(); setContextMenu(null) }}>+ 오른 열</button>
-        <button type="button" className="button button-danger" onClick={() => { editor.chain().focus().deleteRow().run(); setContextMenu(null) }}>- 행 삭제</button>
-        <button type="button" className="button button-danger" onClick={() => { editor.chain().focus().deleteColumn().run(); setContextMenu(null) }}>- 열 삭제</button>
-      </div>
-      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.85rem' }}>
-        셀 배경색
-        <select
-          value={activeTableCellPresentation(editor).get('background-color') ?? 'transparent'}
-          onChange={(event) => {
-            updateTableCellPresentation(
-              editor,
-              'background-color',
-              event.target.value === 'transparent' ? null : event.target.value,
-            )
-            setContextMenu(null)
-          }}
-        >
-          <option value="transparent">기본 배경색</option>
-          <option value="var(--blue-50)">강조 1</option>
-          <option value="var(--red-50)">강조 2</option>
-          <option value="var(--green-50)">강조 3</option>
-          <option value="var(--yellow-50)">강조 4</option>
-          <option value="#f4f8fa">회색 1</option>
-          <option value="#fff3f2">회색 2</option>
-          <option value="#eff9f2">회색 3</option>
-          <option value="#fff9e9">회색 4</option>
-        </select>
-      </label>
-    </div>}
   </section>
 })

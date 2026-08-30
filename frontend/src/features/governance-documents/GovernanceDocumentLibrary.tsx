@@ -1131,8 +1131,7 @@ function EditorDialog({
     attachmentFile !== initialSnapshot.current.attachmentFile
   )
 
-  const handleClose = (reason?: 'BACKDROP' | 'CANCEL' | 'CLOSE_BUTTON') => {
-    if (isDirty && (reason === 'BACKDROP' || reason === 'CANCEL')) return
+  const requestCancel = () => {
     if (isDirty && !window.confirm('저장하지 않은 변경 사항이 있습니다. 취소하시겠습니까?')) return
     onClose()
   }
@@ -1184,9 +1183,10 @@ function EditorDialog({
       ? '선택한 exact Template version 또는 안전한 HTML 편집 결과로 생성합니다.'
       : '현재 본문을 편집하거나 HTML·Markdown·Word 파일을 서버 변환 경계로 가져옵니다.'}
     size="workspace"
-    onRequestClose={handleClose}
+    showCloseButton={false}
+    onRequestClose={() => undefined}
     footer={<>
-      <button type="button" className="button button-secondary" disabled={busy} onClick={() => handleClose('CLOSE_BUTTON')}>취소</button>
+      <button type="button" className="button button-secondary" disabled={busy} onClick={requestCancel}>취소</button>
       <button type="button" className="button" disabled={busy || importing || !createValid} onClick={onSubmit}>{busy ? '저장 중…' : '저장'}</button>
     </>}
   >

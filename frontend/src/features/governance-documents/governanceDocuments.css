@@ -162,6 +162,10 @@
 .governance-safe-html [data-governance-style*='background-color:#fff3f2'], .governance-editor-surface [data-governance-style*='background-color:#fff3f2'] { background-color: #fff3f2; }
 .governance-safe-html [data-governance-style*='background-color:#eff9f2'], .governance-editor-surface [data-governance-style*='background-color:#eff9f2'] { background-color: #eff9f2; }
 .governance-safe-html [data-governance-style*='background-color:#fff9e9'], .governance-editor-surface [data-governance-style*='background-color:#fff9e9'] { background-color: #fff9e9; }
+.governance-editor-context-host { position: relative; min-height: 0; }
+.governance-editor-context-menu { position: absolute; z-index: 30; top: 12px; right: 12px; display: grid; gap: 8px; min-width: 250px; border: 1px solid var(--line-300); border-radius: 6px; box-shadow: 0 10px 30px rgba(15, 32, 47, .22); padding: 8px; background: #fff; }
+.governance-editor-context-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.governance-editor-context-color { display: grid; gap: 4px; color: var(--text-600); font-size: 12px; font-weight: 700; }
 
 .governance-editor-surface ul, .governance-editor-surface ol, .governance-safe-html ul, .governance-safe-html ol { padding-left: 2.2em; margin: 0.8em 0; }
 .governance-editor-surface li, .governance-safe-html li { margin-bottom: 0.3em; }

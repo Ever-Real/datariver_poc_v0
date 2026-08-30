@@ -110,6 +110,25 @@ describe('GovernanceHtmlEditor', () => {
     click('다시 실행'); expect(tiptap?.getHTML()).toBe(beforeUndo)
   })
 
+  it('offers table edits from both the toolbar and the CSP-safe context menu', async () => {
+    let tiptap: Editor | undefined
+    render(<GovernanceHtmlEditor
+      initialHtml="<table><tbody><tr><td>값</td></tr></tbody></table>"
+      disabled={false}
+      onHtmlChange={vi.fn()}
+      onEditorReady={(editor) => { tiptap = editor }}
+    />)
+    const surface = await screen.findByRole('textbox', { name: '문서 본문' })
+    await waitFor(() => expect(tiptap).toBeDefined())
+    tiptap?.commands.setTextSelection(2)
+
+    expect(screen.getByRole('button', { name: '뒤에 행 추가' })).toBeEnabled()
+    fireEvent.contextMenu(surface)
+    const menu = screen.getByRole('menu', { name: '표 셀 편집' })
+    expect(within(menu).getByRole('menuitem', { name: '+ 아래 행' })).toBeInTheDocument()
+    expect(menu).not.toHaveAttribute('style')
+  })
+
   it('provides accessible focus tooltips and rejects unsafe link schemes', async () => {
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('javascript:alert(1)')
     let tiptap: Editor | undefined

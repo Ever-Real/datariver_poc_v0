@@ -9,6 +9,7 @@ interface DialogProps {
   description?: string
   size?: 'medium' | 'large' | 'workspace'
   compactHeight?: boolean
+  showCloseButton?: boolean
   children: ReactNode
   footer?: ReactNode
   onRequestClose: (reason: DialogCloseReason) => void
@@ -25,6 +26,7 @@ export function Dialog({
   description,
   size = 'medium',
   compactHeight = false,
+  showCloseButton = true,
   children,
   footer,
   onRequestClose,
@@ -101,7 +103,7 @@ export function Dialog({
             <h2 id={titleId}>{title}</h2>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
-          <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => onRequestCloseRef.current('CLOSE_BUTTON')}>×</button>
+          {showCloseButton && <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => onRequestCloseRef.current('CLOSE_BUTTON')}>×</button>}
         </header>
         <div className="app-dialog-body">{children}</div>
         {footer && <footer className="app-dialog-footer">{footer}</footer>}

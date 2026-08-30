@@ -101,8 +101,12 @@ function safeNode(node: Node, key: string): ReactNode[] {
   const children = Array.from(node.childNodes).flatMap((child, index) => (
     safeNode(child, `${key}-${index}`)
   ))
-  const presentation = presentationElements.has(tag)
-    ? safeGovernancePresentation(node.getAttribute('data-governance-style'))
+  const canonicalTag = tag === 'i' ? 'em' : tag
+  const presentation = presentationElements.has(tag) || tag === 'th' || tag === 'td'
+    ? safeGovernancePresentation(
+      node.getAttribute('data-governance-style'),
+      { allowBackground: tag === 'th' || tag === 'td' },
+    )
     : ''
   const presentationProps = presentation ? { 'data-governance-style': presentation } : {}
   if (!allowedElements.has(tag)) return children
@@ -119,15 +123,15 @@ function safeNode(node: Node, key: string): ReactNode[] {
   if (tag === 'th' || tag === 'td') {
     const span = boundedSpan(node.getAttribute('colspan'))
     const rowSpan = boundedSpan(node.getAttribute('rowspan'))
-    return [createElement(tag, {
+    return [createElement(canonicalTag, {
       key,
       ...presentationProps,
       ...(span ? { colSpan: span } : {}),
       ...(rowSpan ? { rowSpan } : {}),
     }, children)]
   }
-  if (voidElements.has(tag)) return [createElement(tag, { key, ...presentationProps })]
-  return [createElement(tag, { key, ...presentationProps }, children)]
+  if (voidElements.has(tag)) return [createElement(canonicalTag, { key, ...presentationProps })]
+  return [createElement(canonicalTag, { key, ...presentationProps }, children)]
 }
 
 function safeHref(value: string | null): string | undefined {

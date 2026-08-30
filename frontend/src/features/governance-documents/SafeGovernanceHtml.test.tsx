@@ -53,6 +53,22 @@ describe('SafeGovernanceHtml', () => {
     expect(container.querySelector('h2')).not.toHaveAttribute('style')
   })
 
+  it('canonicalizes legacy italic markup and renders bounded table-cell colors without inline style', () => {
+    const { container } = render(<SafeGovernanceHtml
+      html={'<p><i>기울임</i></p><table><tbody><tr><td data-governance-style="background-color:#f4f8fa">셀</td></tr></tbody></table>'}
+      contentHash={'9'.repeat(64)}
+      sanitizerPolicyVersion="GOVERNANCE_HTML_SANITIZER_V4_TABLE_PRESENTATION_TOKENS"
+    />)
+
+    expect(container.querySelector('i')).toBeNull()
+    expect(container.querySelector('em')).toHaveTextContent('기울임')
+    expect(container.querySelector('td')).toHaveAttribute(
+      'data-governance-style',
+      'background-color:#f4f8fa',
+    )
+    expect(container.querySelector('td')).not.toHaveAttribute('style')
+  })
+
   it('keeps legacy V2 canonical markup readable without presentation attributes', () => {
     const { container } = render(<SafeGovernanceHtml
       html={'<h2>Legacy policy</h2><p><strong>Approved</strong> body</p>'}

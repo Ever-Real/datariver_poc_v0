@@ -46,12 +46,14 @@ def test_sanitizer_persists_only_static_presentation_tokens_without_inline_style
         '<p style="font-size:32px" '
         'data-governance-style="text-align:CENTER;position:fixed;font-size:18px;'
         'padding-left:2em;background:url(https://evil.test/x)">Policy</p>'
-        '<table><tr><td data-governance-style="font-size:18px">Cell</td></tr></table>'
+        '<table><tr><td data-governance-style="font-size:18px;'
+        'background-color:#f4f8fa">Cell</td></tr></table>'
     )
 
     assert result.html == (
         '<p data-governance-style="font-size:18px;padding-left:2em;text-align:center">Policy</p>'
-        '<table><tbody><tr><td>Cell</td></tr></tbody></table>'
+        '<table><tbody><tr><td data-governance-style="font-size:18px;'
+        'background-color:#f4f8fa">Cell</td></tr></tbody></table>'
     )
     assert " style=" not in result.html
     assert "position" not in result.html
@@ -76,6 +78,7 @@ def test_sanitizer_persists_only_static_presentation_tokens_without_inline_style
         ("padding-left:12em", "padding-left:12em"),
         ("text-align:center", "text-align:center"),
         ("text-align:right", "text-align:right"),
+        ("background-color:#f4f8fa", None),
         ("font-size:11px", None),
         ("padding-left:3em", None),
         ("text-align:justify", None),
@@ -91,6 +94,18 @@ def test_presentation_token_contract_is_exact(
 
     attribute = f' data-governance-style="{expected}"' if expected else ""
     assert result.html == f"<p{attribute}>Policy</p>"
+
+
+def test_table_cell_background_presentation_is_bounded_and_persists() -> None:
+    result = sanitize_governance_html(
+        '<table><tr><th data-governance-style="background-color:#f4f8fa">H</th>'
+        '<td data-governance-style="background-color:#fff3f2;position:fixed">V</td></tr></table>'
+    )
+
+    assert result.html == (
+        '<table><tbody><tr><th data-governance-style="background-color:#f4f8fa">H</th>'
+        '<td data-governance-style="background-color:#fff3f2">V</td></tr></tbody></table>'
+    )
 
 
 def test_legacy_v2_canonical_html_remains_safe_when_resanitized_by_v3() -> None:

@@ -13,7 +13,7 @@ from bleach.sanitizer import Cleaner  # type: ignore[import-untyped]
 
 from datariver.domain.common import ValidationError, canonical_json_hash
 
-GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V3_PRESENTATION_TOKENS"
+GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V4_TABLE_PRESENTATION_TOKENS"
 
 _ALLOWED_TAGS: Final = frozenset(
     {
@@ -47,19 +47,35 @@ _ALLOWED_TAGS: Final = frozenset(
     }
 )
 _TAG_ALIASES: Final = {"b": "strong", "i": "em"}
-_PRESENTATION_TAGS: Final = frozenset({"h1", "h2", "h3", "h4", "h5", "h6", "p"})
+_PRESENTATION_TAGS: Final = frozenset({"h1", "h2", "h3", "h4", "h5", "h6", "p", "td", "th"})
 _PRESENTATION_VALUES: Final = {
     "font-size": frozenset({"10px", "12px", "14px", "16px", "18px", "24px", "32px"}),
     "padding-left": frozenset({"2em", "4em", "6em", "8em", "10em", "12em"}),
     "text-align": frozenset({"center", "right"}),
+    "background-color": frozenset(
+        {
+            "#f4f8fa",
+            "#fff3f2",
+            "#eff9f2",
+            "#fff9e9",
+        }
+    ),
 }
-_PRESENTATION_PROPERTY_ORDER: Final = ("font-size", "padding-left", "text-align")
+_PRESENTATION_PROPERTY_ORDER: Final = (
+    "font-size",
+    "padding-left",
+    "text-align",
+    "background-color",
+)
 _ALLOWED_ATTRIBUTES: Final = {
     "a": frozenset({"href", "title"}),
     "ol": frozenset({"start"}),
-    "td": frozenset({"colspan", "rowspan"}),
-    "th": frozenset({"colspan", "rowspan", "scope"}),
-    **{tag: frozenset({"data-governance-style"}) for tag in _PRESENTATION_TAGS},
+    "td": frozenset({"colspan", "rowspan", "data-governance-style"}),
+    "th": frozenset({"colspan", "rowspan", "scope", "data-governance-style"}),
+    **{
+        tag: frozenset({"data-governance-style"})
+        for tag in _PRESENTATION_TAGS - {"td", "th"}
+    },
 }
 _ALLOWED_URL_SCHEMES: Final = frozenset({"https"})
 _DROP_CONTENT_TAGS: Final = frozenset(
@@ -430,7 +446,7 @@ class _GovernanceHtmlCanonicalizer(HTMLParser):
             lowered = value.lower()
             return lowered if lowered in {"col", "colgroup", "row", "rowgroup"} else None
         if tag in _PRESENTATION_TAGS and name == "data-governance-style":
-            return _sanitize_presentation(value)
+            return _sanitize_presentation(value, allow_background=tag in {"td", "th"})
         return value
 
     def _count_node(self) -> None:
@@ -520,7 +536,7 @@ def _normalize_attribute_value(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def _sanitize_presentation(value: str) -> str | None:
+def _sanitize_presentation(value: str, *, allow_background: bool = False) -> str | None:
     declarations: dict[str, str] = {}
     for raw_declaration in value[:256].split(";"):
         property_name, delimiter, raw_candidate = raw_declaration.partition(":")
@@ -528,6 +544,8 @@ def _sanitize_presentation(value: str) -> str | None:
             continue
         normalized_property = property_name.strip().lower()
         normalized_candidate = raw_candidate.strip().lower()
+        if normalized_property == "background-color" and not allow_background:
+            continue
         if normalized_candidate in _PRESENTATION_VALUES.get(normalized_property, frozenset()):
             declarations[normalized_property] = normalized_candidate
     canonical = ";".join(

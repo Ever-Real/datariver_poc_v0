@@ -17,14 +17,6 @@ const allowedTokens = [
   'padding-left:12em',
   'text-align:center',
   'text-align:right',
-  'background-color:var(--blue-50)',
-  'background-color:var(--red-50)',
-  'background-color:var(--green-50)',
-  'background-color:var(--yellow-50)',
-  'background-color:#f4f8fa',
-  'background-color:#fff3f2',
-  'background-color:#eff9f2',
-  'background-color:#fff9e9',
 ] as const
 
 describe('governance presentation token contract', () => {
@@ -44,4 +36,13 @@ describe('governance presentation token contract', () => {
       'text-align:right;padding-left:4em;font-size:16px',
     )).toBe('font-size:16px;padding-left:4em;text-align:right')
   })
+
+  it.each(['#f4f8fa', '#fff3f2', '#eff9f2', '#fff9e9'])(
+    'accepts bounded table-cell color %s only for a table cell',
+    (color) => {
+      const token = `background-color:${color}`
+      expect(safeGovernancePresentation(token)).toBe('')
+      expect(safeGovernancePresentation(token, { allowBackground: true })).toBe(token)
+    },
+  )
 })
