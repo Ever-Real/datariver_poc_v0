@@ -3436,7 +3436,7 @@ async function currentDatahubInventory({ signal = serverBackgroundAbortControlle
   if (!datahub) {
     throw Object.assign(new Error('DataHub is not configured for current Table identity validation.'), { statusCode: 503 })
   }
-  if (inventoryRefreshPromise) await inventoryRefreshPromise
+  if (inventoryRefreshPromise) return (await inventoryRefreshPromise).items
   return (await startDatahubInventoryRefresh({ signal, deferSemanticIndex: true })).items
 }
 

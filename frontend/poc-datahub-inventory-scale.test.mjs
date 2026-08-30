@@ -248,6 +248,7 @@ async function classifiedFailureScenario(suffix, providerHandler, stateStoreOver
   return {
     origin,
     requests: () => requests,
+    store,
     close: async () => {
       await close(server)
       await close(provider)
@@ -268,6 +269,79 @@ async function terminalCatalogFailure(scenario) {
   }
   throw new Error(`Terminal inventory diagnostic did not surface: ${response?.status} ${body?.code}`)
 }
+
+test('coalesces concurrent force-current reads onto one in-flight provider refresh', async () => {
+  let releaseProvider
+  let providerStarted
+  const providerStartedPromise = new Promise((resolvePromise) => { providerStarted = resolvePromise })
+  const providerReleasePromise = new Promise((resolvePromise) => { releaseProvider = resolvePromise })
+  const scenario = await classifiedFailureScenario('concurrent-force-current-success', async ({ response }) => {
+    providerStarted()
+    await providerReleasePromise
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: 1, total: 1, nextScrollId: null,
+      searchResults: [{ entity: dataset(1) }],
+    } } }))
+  })
+  try {
+    const target = `${scenario.origin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`
+    const first = fetch(target)
+    await providerStartedPromise
+    const lateConcurrent = fetch(target)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+    releaseProvider()
+
+    const responses = await Promise.all([first, lateConcurrent])
+    const bodies = await Promise.all(responses.map((response) => response.json()))
+    assert.deepEqual(responses.map((response) => response.status), [200, 200])
+    assert.deepEqual(bodies.map((body) => body.items.map((item) => item.label)), [
+      ['postgres'],
+      ['postgres'],
+    ])
+    assert.equal(scenario.requests(), 1, 'a late force-current caller must reuse the active provider scroll')
+    assert.equal(scenario.store.observation().writes, 1, 'one provider scroll must promote one projection')
+  } finally {
+    releaseProvider()
+    await scenario.close()
+  }
+})
+
+test('shares one typed terminal failure with concurrent force-current waiters', async () => {
+  let releaseProvider
+  let providerStarted
+  const providerStartedPromise = new Promise((resolvePromise) => { providerStarted = resolvePromise })
+  const providerReleasePromise = new Promise((resolvePromise) => { releaseProvider = resolvePromise })
+  const scenario = await classifiedFailureScenario('concurrent-force-current-failure', async ({ response }) => {
+    providerStarted()
+    await providerReleasePromise
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ errors: [{ message: 'bounded fixture rejection' }] }))
+  })
+  try {
+    const target = `${scenario.origin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`
+    const first = fetch(target)
+    await providerStartedPromise
+    const lateConcurrent = fetch(target)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+    releaseProvider()
+
+    const responses = await Promise.all([first, lateConcurrent])
+    const bodies = await Promise.all(responses.map((response) => response.json()))
+    assert.deepEqual(responses.map((response) => response.status), [502, 502])
+    assert.deepEqual(bodies.map((body) => body.code), [
+      'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED',
+      'PREP_DATAHUB_INVENTORY_GRAPHQL_FAILED',
+    ])
+    assert.deepEqual(bodies[0].diagnostic, bodies[1].diagnostic)
+    assert.equal(bodies[0].diagnostic.terminal, true)
+    assert.equal(scenario.requests(), 1, 'all waiters must observe the same failed provider scroll')
+    assert.equal(scenario.store.observation().writes, 0, 'a failed shared refresh must not promote a projection')
+  } finally {
+    releaseProvider()
+    await scenario.close()
+  }
+})
 
 test('keeps inventory pagination count-independent at dynamic provider boundaries', async () => {
   const counts = [
