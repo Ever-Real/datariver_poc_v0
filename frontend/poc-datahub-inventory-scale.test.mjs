@@ -1,4 +1,4 @@
-/* global Buffer, fetch, process, structuredClone, setTimeout */
+/* global Buffer, URL, URLSearchParams, fetch, process, structuredClone, setTimeout */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
@@ -315,6 +315,55 @@ test('accepts a cursor-driven partial terminal page whose provider count metadat
     assert.equal(terminal.nextScrollId, null)
     assert.equal(body.meta.inventory_refresh.raw_search_result_count, generatedCount)
     assert.equal(body.meta.inventory_refresh.expected_total, generatedCount)
+  } finally {
+    await scenario.close()
+  }
+})
+
+test('caps ordinary catalog pages at 100 while the schema tree advances in 200-item pages', async () => {
+  const scenario = await exactInventoryScenario(
+    Array.from({ length: 450 }, (_value, index) => dataset(index)),
+    'tree-page-size',
+  )
+  try {
+    await waitForCatalog(scenario.origin)
+
+    const catalogResponse = await fetch(`${scenario.origin}/poc-api/datahub/catalog?limit=200`)
+    const catalog = await catalogResponse.json()
+    assert.equal(catalogResponse.status, 200, JSON.stringify(catalog))
+    assert.equal(catalog.page.limit, 100)
+    assert.equal(catalog.items.length, 100)
+    assert.ok(catalog.page.next_cursor)
+
+    const treeUrl = new URL('/poc-api/datahub/tree', scenario.origin)
+    treeUrl.search = new URLSearchParams({
+      parent_kind: 'SCHEMA',
+      platform: 'postgres',
+      database: 'warehouse',
+      schema: 'analytics',
+      limit: '200',
+    }).toString()
+    const firstResponse = await fetch(treeUrl)
+    const first = await firstResponse.json()
+    assert.equal(firstResponse.status, 200, JSON.stringify(first))
+    assert.equal(first.page.limit, 200)
+    assert.equal(first.items.length, 200)
+    assert.ok(first.page.next_cursor)
+
+    treeUrl.searchParams.set('cursor', first.page.next_cursor)
+    const secondResponse = await fetch(treeUrl)
+    const second = await secondResponse.json()
+    assert.equal(secondResponse.status, 200, JSON.stringify(second))
+    assert.equal(second.page.limit, 200)
+    assert.equal(second.items.length, 200)
+    assert.ok(second.page.next_cursor)
+    assert.notEqual(second.page.next_cursor, first.page.next_cursor)
+    assert.equal(new Set([...first.items, ...second.items].map((item) => item.id)).size, 400)
+
+    const wrongScope = await fetch(
+      `${scenario.origin}/poc-api/datahub/catalog?limit=200&cursor=${encodeURIComponent(first.page.next_cursor)}`,
+    )
+    assert.equal(wrongScope.status, 400)
   } finally {
     await scenario.close()
   }

@@ -3993,9 +3993,10 @@ function parameterScope(prefix, searchParameters, keys) {
   return `${prefix}:${keys.map((key) => `${key}=${searchParameters.get(key) || ''}`).join('&')}`
 }
 
-function offsetPage(items, searchParameters, scope, defaultLimit = 100) {
+function offsetPage(items, searchParameters, scope, defaultLimit = 100, maxLimit = 100) {
   const requested = Number(searchParameters.get('limit') || defaultLimit)
-  const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : defaultLimit))
+  const boundedMaxLimit = Math.min(200, Math.max(1, Number.isInteger(maxLimit) ? maxLimit : 100))
+  const limit = Math.min(boundedMaxLimit, Math.max(1, Number.isFinite(requested) ? requested : defaultLimit))
   const offset = Number(cursorValue(searchParameters.get('cursor'), scope) ?? 0)
   if (!Number.isInteger(offset) || offset < 0 || offset > items.length) {
     throw Object.assign(new Error('The POC cursor offset is invalid.'), { statusCode: 400 })
@@ -4198,7 +4199,7 @@ async function datahubTree(searchParameters, principal) {
     throw Object.assign(new Error('Unsupported DataHub hierarchy parent kind.'), { statusCode: 400 })
   }
   const scope = parameterScope('catalog-tree', searchParameters, ['parent_kind', 'platform', 'database', 'schema', 'limit'])
-  return { ...offsetPage(items, searchParameters, scope), meta: catalogMeta({ projection: true }) }
+  return { ...offsetPage(items, searchParameters, scope, 100, 200), meta: catalogMeta({ projection: true }) }
 }
 
 function facetCounts(values) {
