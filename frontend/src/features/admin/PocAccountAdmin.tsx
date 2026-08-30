@@ -53,6 +53,7 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
   const [selectedId, setSelectedId] = useState('')
   const [editOpen, setEditOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [createDiscardConfirmationOpen, setCreateDiscardConfirmationOpen] = useState(false)
   const [draft, setDraft] = useState<ReturnType<typeof userDraft>>()
   const [credential, setCredential] = useState({ username: '', password: '', login_enabled: true, must_change_password: true })
   const [create, setCreate] = useState(emptyCreateUser)
@@ -196,10 +197,17 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
     || create.role !== 'viewer' || create.max_security_grade !== 'normal'
     || create.must_change_password !== true,
   )
-  const closeCreate = () => {
-    if (createDirty && !window.confirm('저장하지 않은 사용자 정보가 있습니다. 작성을 취소할까요?')) return
+  const discardCreate = () => {
     setCreate(emptyCreateUser())
+    setCreateDiscardConfirmationOpen(false)
     setCreateOpen(false)
+  }
+  const requestCreateClose = () => {
+    if (createDirty) {
+      setCreateDiscardConfirmationOpen(true)
+      return
+    }
+    discardCreate()
   }
 
   const toggleResponsibleSystem = (systemId: string, checked: boolean) => {
@@ -253,7 +261,7 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
       ]} />
     </section>
 
-    <Dialog open={createOpen} dirty={createDirty} title="Local human 사용자 생성" description="로그인 계정과 기본 권한을 함께 만듭니다." onRequestClose={closeCreate} onRequestDiscardChanges={closeCreate} footer={<><button type="button" className="button button-secondary" onClick={closeCreate}>취소</button><button type="button" className="button" disabled={!create.username.trim() || !create.display_name.trim() || !create.email.trim() || !passwordInPolicy(create.password)} onClick={createUser}>생성 확인</button></>}>
+    <Dialog open={createOpen} dirty={createDirty} title="Local human 사용자 생성" description="로그인 계정과 기본 권한을 함께 만듭니다." onRequestClose={requestCreateClose} onRequestDiscardChanges={() => setCreateDiscardConfirmationOpen(true)} footer={<><button type="button" className="button button-secondary" onClick={requestCreateClose}>취소</button><button type="button" className="button" disabled={!create.username.trim() || !create.display_name.trim() || !create.email.trim() || !passwordInPolicy(create.password)} onClick={createUser}>생성 확인</button></>}>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="grid gap-1 text-xs font-bold">Username<input value={create.username} onChange={(event) => setCreate({ ...create, username: event.target.value })} autoComplete="off" /></label>
         <label className="grid gap-1 text-xs font-bold">초기 비밀번호<input type="password" minLength={minimumPasswordCharacters} aria-describedby="local-human-password-help" value={create.password} onChange={(event) => setCreate({ ...create, password: event.target.value })} autoComplete="new-password" /></label>
@@ -264,6 +272,10 @@ export function PocAccountAdmin({ api, reportError, requestConfirmation }: Admin
         <label className="grid gap-1 text-xs font-bold">최대 보안등급<select value={create.max_security_grade} onChange={(event) => setCreate({ ...create, max_security_grade: event.target.value as TableSecurityGrade })}>{grades.map((grade) => <option key={grade.value} value={grade.value}>{grade.label}</option>)}</select></label>
         <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={create.must_change_password} onChange={(event) => setCreate({ ...create, must_change_password: event.target.checked })} />초기 비밀번호 변경 요구</label>
       </div>
+    </Dialog>
+
+    <Dialog open={createDiscardConfirmationOpen} title="사용자 작성 취소" description="저장하지 않은 사용자 정보가 삭제됩니다." showCloseButton={false} onRequestClose={() => setCreateDiscardConfirmationOpen(false)} footer={<><button type="button" className="button button-secondary" onClick={() => setCreateDiscardConfirmationOpen(false)}>계속 작성</button><button type="button" className="button" onClick={discardCreate}>작성 취소</button></>}>
+      <p className="m-0">작성 중인 Local human 사용자 정보를 취소할까요?</p>
     </Dialog>
 
     <Dialog open={editOpen && Boolean(selectedUser && draft)} size="workspace" compactHeight title="사용자 접근 관리" description="Explicit Table grant와 Responsible System은 서로 독립된 domain relation입니다." onRequestClose={() => setEditOpen(false)} footer={<button type="button" className="button button-secondary" onClick={() => setEditOpen(false)}>닫기</button>}>
