@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   createPocK9RefreshTask,
   createPocK9Scheduler,
+  k9SemanticReconciliationGeneration,
   loadPocK9SchedulerConfig,
   currentScheduleBoundary,
   nextScheduleBoundary,
@@ -51,10 +52,17 @@ function k9SchedulerDatabase(initialValue) {
       }
       if (statement.includes('INSERT INTO poc_state')) {
         const expectedLastSuccessful = parameters[2]
+        const expectedReconciliationGeneration = parameters[3] ?? null
         const currentLastSuccessful = value?.last_successful_schedule ?? null
-        if (currentLastSuccessful !== expectedLastSuccessful) return { rows: [] }
+        const currentReconciliationGeneration = value?.last_successful_reconciliation_generation ?? null
+        if (currentLastSuccessful !== expectedLastSuccessful
+          || currentReconciliationGeneration !== expectedReconciliationGeneration) return { rows: [] }
         value = JSON.parse(parameters[1])
-        return { rows: [{ last_successful_schedule: value.last_successful_schedule }] }
+        return { rows: [{
+          last_successful_schedule: value.last_successful_schedule,
+          last_successful_reconciliation_generation:
+            value.last_successful_reconciliation_generation ?? null,
+        }] }
       }
       if (statement.includes('pg_advisory_unlock')) return { rows: [{ pg_advisory_unlock: true }] }
       throw new Error('Unexpected scheduler test query')
@@ -200,6 +208,177 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
   releaseRefresh()
   await scheduler.stop()
   assert.equal(scheduler.currentAttempt(), null)
+})
+
+test('K9 semantic reconciliation detects only unaligned canonical managed graph generations', () => {
+  const semanticGeneration = 'b'.repeat(64)
+  const graph = (managedIntent, generation = semanticGeneration) => ({
+    managed_intent: managedIntent,
+    active_release_pointer: `k9_${managedIntent}`,
+    active_manifest: { source_snapshot: { catalog_generation: generation } },
+  })
+  const aligned = [graph('metadata-lineage'), graph('data-glossary')]
+
+  assert.equal(k9SemanticReconciliationGeneration(semanticGeneration, aligned), null)
+  assert.equal(k9SemanticReconciliationGeneration(undefined, aligned), null)
+  assert.equal(k9SemanticReconciliationGeneration(semanticGeneration, [
+    graph('metadata-lineage', 'a'.repeat(64)),
+    graph('data-glossary', 'a'.repeat(64)),
+  ]), semanticGeneration)
+  assert.equal(k9SemanticReconciliationGeneration(semanticGeneration, [graph('metadata-lineage')]), semanticGeneration)
+})
+
+test('K9 startup reconciles a newer semantic generation at an already successful daily boundary', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const oldGeneration = 'a'.repeat(64)
+  const newGeneration = 'b'.repeat(64)
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    last_successful_reconciliation_generation: oldGeneration,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+  })
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore: createPocStateStore({ databasePool: database.pool }),
+    triggerK9Refresh,
+    resolveReconciliationGeneration: mock.fn(async () => newGeneration),
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  await scheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.equal(database.readValue().last_successful_schedule, scheduledFor)
+  assert.equal(database.readValue().last_successful_reconciliation_generation, newGeneration)
+  assert.equal(database.readValue().last_attempt.reconciliation_generation, newGeneration)
+})
+
+test('K9 startup performs no graph rebuild when semantic and graph generations are aligned', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+  })
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore: createPocStateStore({ databasePool: database.pool }),
+    triggerK9Refresh,
+    resolveReconciliationGeneration: mock.fn(async () => null),
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  await scheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 0)
+  assert.equal(database.readValue().last_successful_schedule, scheduledFor)
+})
+
+test('K9 same-generation concurrent reconciliation coalesces and the next daily boundary still runs', async () => {
+  const firstBoundary = '2026-08-30T02:00:00.000Z'
+  const nextBoundary = '2026-08-31T02:00:00.000Z'
+  const generation = 'c'.repeat(64)
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: firstBoundary,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  let releaseRefresh
+  const refreshGate = new Promise((resolve) => { releaseRefresh = resolve })
+  const triggerK9Refresh = mock.fn(async () => {
+    if (triggerK9Refresh.mock.calls.length === 1) await refreshGate
+    return { status: 'SUCCESS' }
+  })
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    resolveReconciliationGeneration: async (candidate) => candidate,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  const first = scheduler.reconcileSemanticGeneration(generation)
+  const concurrent = scheduler.reconcileSemanticGeneration(generation)
+  releaseRefresh()
+  await Promise.all([first, concurrent])
+  const replay = await scheduler.reconcileSemanticGeneration(generation)
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.equal(replay.status, 'already_completed')
+
+  const nextScheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    resolveReconciliationGeneration: async () => null,
+    clock: () => new Date('2026-08-31T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+  await nextScheduler.start()
+  await nextScheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 2)
+  assert.equal(database.readValue().last_successful_schedule, nextBoundary)
+})
+
+test('K9 reconciliation failure preserves the successful daily schedule and prior generation receipt', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const oldGeneration = 'd'.repeat(64)
+  const newGeneration = 'e'.repeat(64)
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    last_successful_reconciliation_generation: oldGeneration,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+
+  const result = await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1',
+    scheduledFor,
+    trigger: 'scheduled',
+    reconciliationGeneration: newGeneration,
+  }, async () => ({ status: 'FAILURE', failureCode: 'K9_SEMANTIC_INDEX_FAILED' }))
+
+  assert.equal(result.status, 'failed')
+  assert.equal(database.readValue().last_successful_schedule, scheduledFor)
+  assert.equal(database.readValue().last_successful_reconciliation_generation, oldGeneration)
+  assert.equal(database.readValue().last_attempt.reason, 'K9_SEMANTIC_INDEX_FAILED')
+  assert.equal(database.readValue().last_attempt.reconciliation_generation, newGeneration)
 })
 
 test('K9 Scheduler durably records a first failure without a successful boundary', async () => {

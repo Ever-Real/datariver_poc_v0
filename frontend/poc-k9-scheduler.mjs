@@ -352,6 +352,23 @@ export function createPocK9RefreshTask({
   }
 }
 
+export function k9SemanticReconciliationGeneration(semanticGeneration, managedGraphAssets) {
+  if (semanticGeneration == null) return null
+  if (typeof semanticGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(semanticGeneration)) {
+    throw new Error('The active K9 semantic generation is invalid.')
+  }
+  if (!Array.isArray(managedGraphAssets)) {
+    throw new Error('The managed K9 graph generation snapshot is unavailable.')
+  }
+  const aligned = canonicalManagedIntents.every((managedIntent) => {
+    const matches = managedGraphAssets.filter((row) => row?.managed_intent === managedIntent)
+    return matches.length === 1
+      && Boolean(matches[0].active_release_pointer)
+      && matches[0].active_manifest?.source_snapshot?.catalog_generation === semanticGeneration
+  })
+  return aligned ? null : semanticGeneration
+}
+
 export function loadPocK9SchedulerConfig(environment = process.env) {
   const requested = parseBoolean(environment.POC_K9_SCHEDULER_ENABLED, false)
   const systemSubjectId = environment.POC_K9_SYSTEM_SUBJECT_ID?.trim()
@@ -405,6 +422,7 @@ export function createPocK9Scheduler({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onError = () => undefined,
+  resolveReconciliationGeneration = async () => null,
 } = {}) {
   if (!stateStore || typeof stateStore.runK9Scheduler !== 'function') {
     throw new Error('The POC K9 scheduler state store is unavailable.')
@@ -412,16 +430,20 @@ export function createPocK9Scheduler({
   if (config.requested && (!stateStore.configured?.postgres || typeof triggerK9Refresh !== 'function')) {
     throw new Error('The configured POC K9 refresh policy requires PostgreSQL and the refresh trigger.')
   }
+  if (typeof resolveReconciliationGeneration !== 'function') {
+    throw new Error('The POC K9 semantic reconciliation resolver is invalid.')
+  }
 
   let timer
   let stopped = false
   let activeRun
   let activeAttempt
 
-  const execute = async (scheduledFor, trigger) => stateStore.runK9Scheduler({
+  const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
+    ...(reconciliationGeneration ? { reconciliationGeneration } : {}),
   }, async () => {
     return await triggerK9Refresh({
       systemSubjectId: config.systemSubjectId,
@@ -435,6 +457,13 @@ export function createPocK9Scheduler({
       ? currentScheduleBoundary(clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode)
       : validScheduleBoundary(options.scheduledFor, config)
     const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
+    const reconciliationGeneration = options.reconciliationGeneration == null
+      ? null
+      : options.reconciliationGeneration
+    if (reconciliationGeneration !== null
+      && (typeof reconciliationGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(reconciliationGeneration))) {
+      throw new Error('The requested K9 semantic reconciliation generation is invalid.')
+    }
 
     if (!activeRun) {
       activeAttempt = Object.freeze({
@@ -442,7 +471,7 @@ export function createPocK9Scheduler({
         scheduled_for: scheduledFor.toISOString(),
         trigger: triggerType,
       })
-      activeRun = execute(scheduledFor, triggerType).finally(() => {
+      activeRun = execute(scheduledFor, triggerType, reconciliationGeneration).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
       })
@@ -476,9 +505,25 @@ export function createPocK9Scheduler({
     async start() {
       if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
       if (!config.enabled) return { status: 'idle', mode: config.refreshMode }
-      void trigger({ trigger: 'scheduled' }).catch(onError)
+      let reconciliationGeneration = null
+      try {
+        reconciliationGeneration = await resolveReconciliationGeneration()
+      } catch (error) {
+        onError(error)
+      }
+      void trigger({ trigger: 'scheduled', reconciliationGeneration }).catch(onError)
       scheduleNext()
       return { status: 'started' }
+    },
+    async reconcileSemanticGeneration(candidateGeneration) {
+      if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
+      const reconciliationGeneration = await resolveReconciliationGeneration(candidateGeneration)
+      if (!reconciliationGeneration) return { status: 'already_aligned' }
+      return trigger({
+        ...(config.enabled ? {} : { scheduledFor: clock() }),
+        trigger: config.enabled ? 'scheduled' : 'manual',
+        reconciliationGeneration,
+      })
     },
     triggerManual(scheduledFor) {
       return trigger({ scheduledFor, trigger: 'manual' })

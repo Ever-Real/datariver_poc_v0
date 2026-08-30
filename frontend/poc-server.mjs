@@ -62,6 +62,7 @@ import {
 import {
   createPocK9RefreshTask,
   createPocK9Scheduler,
+  k9SemanticReconciliationGeneration,
   loadPocK9SchedulerConfig,
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
@@ -183,6 +184,7 @@ let catalogEmbeddingLastError
 let catalogEmbeddingRefreshTimer
 let serverBackgroundAbortController
 let backgroundLaunchesStopped = false
+let reconcileK9SemanticGeneration = async () => ({ status: 'unavailable' })
 const bulkPreparations = new Map()
 const bulkTemplatePath = join(sourceDirectory, 'poc-assets/datariver-catalog-metadata-rows.xlsx')
 const catalogMetadataHeaders = [
@@ -6849,6 +6851,9 @@ function scheduleCatalogEmbeddingRefresh() {
   catalogEmbeddingRefreshPromise = ensureCatalogEmbeddingIndex(signal)
     .then((result) => {
       catalogEmbeddingLastError = undefined
+      if (!backgroundLaunchesStopped) {
+        void reconcileK9SemanticGeneration(result.generation)
+      }
       return result
     })
     .catch((error) => {
@@ -13383,6 +13388,7 @@ export async function startPocServer({ stateStore } = {}) {
   const authenticator = createPocLocalAuthenticator({ stateStore: serverStateStore })
   serverBackgroundAbortController = new AbortController()
   backgroundLaunchesStopped = false
+  reconcileK9SemanticGeneration = async () => ({ status: 'unavailable' })
   const backgroundSignal = serverBackgroundAbortController.signal
   const schedulerConfig = loadPocChangeHistorySchedulerConfig()
   let captureMcl
@@ -13804,14 +13810,30 @@ export async function startPocServer({ stateStore } = {}) {
     managedGraphs: k9,
   })
 
+  async function resolveK9SemanticReconciliationGeneration(candidateGeneration) {
+    const bindingHash = catalogEmbeddingBindingHash()
+    if (!bindingHash) return null
+    const [semanticGeneration, managedGraphAssets] = await Promise.all([
+      candidateGeneration || pocStateStore.catalogEmbeddingActiveGeneration(bindingHash),
+      pocStateStore.listK9ManagedGraphAssets(),
+    ])
+    return k9SemanticReconciliationGeneration(semanticGeneration, managedGraphAssets)
+  }
+
+  const reportK9SchedulerError = (error) => {
+    process.stderr.write(`POC K9 scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
+
   const k9Scheduler = createPocK9Scheduler({
     config: k9SchedulerConfig,
     stateStore: pocStateStore,
     triggerK9Refresh,
-    onError(error) {
-      process.stderr.write(`POC K9 scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
-    }
+    resolveReconciliationGeneration: resolveK9SemanticReconciliationGeneration,
+    onError: reportK9SchedulerError,
   })
+  reconcileK9SemanticGeneration = (generation) => (
+    k9Scheduler.reconcileSemanticGeneration(generation).catch(reportK9SchedulerError)
+  )
 
   if (k9SchedulerConfig.requested) {
     const liveAuth = await resolveLiveK9AuthCtx()
@@ -13843,6 +13865,7 @@ export async function startPocServer({ stateStore } = {}) {
   server.stopPoc = () => {
     if (!stopping) {
       backgroundLaunchesStopped = true
+      reconcileK9SemanticGeneration = async () => ({ status: 'unavailable' })
       const serverClosed = server.listening
         ? new Promise((resolvePromise, reject) => server.close((error) => (
             error ? reject(error) : resolvePromise()

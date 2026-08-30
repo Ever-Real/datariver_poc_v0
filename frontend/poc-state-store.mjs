@@ -3262,6 +3262,9 @@ export function createPocStateStore({ databasePool } = {}) {
     const lockName = requireBoundedString(command.lockName, 'lockName', 255)
     const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
     const trigger = requireOneOf(command.trigger || 'scheduled', 'trigger', ['scheduled', 'manual'])
+    const reconciliationGeneration = command.reconciliationGeneration == null
+      ? null
+      : requireSha256(command.reconciliationGeneration, 'reconciliationGeneration')
     await startDatabase()
     if (!pool) throw new Error('PostgreSQL is required for the POC K9 scheduler.')
     const client = await pool.connect()
@@ -3276,7 +3279,15 @@ export function createPocStateStore({ databasePool } = {}) {
       const lastSuccessfulSchedule = storedSuccessfulSchedule == null
         ? null
         : explicitSchedulerTimestamp(storedSuccessfulSchedule, 'stored last_successful_schedule')
-      if (lastSuccessfulSchedule === scheduledFor) return { status: 'already_completed', scheduledFor }
+      const storedReconciliationGeneration = current.rows[0]?.value?.last_successful_reconciliation_generation
+      const lastSuccessfulReconciliationGeneration = storedReconciliationGeneration == null
+        ? null
+        : requireSha256(storedReconciliationGeneration, 'stored last_successful_reconciliation_generation')
+      if (lastSuccessfulSchedule === scheduledFor
+        && (reconciliationGeneration === null
+          || lastSuccessfulReconciliationGeneration === reconciliationGeneration)) {
+        return { status: 'already_completed', scheduledFor }
+      }
       if (lastSuccessfulSchedule !== null && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) return { status: 'stale', scheduledFor }
       const result = await task()
       const completedAt = new Date().toISOString()
@@ -3302,6 +3313,7 @@ export function createPocStateStore({ databasePool } = {}) {
           ...(current.rows[0]?.value || {}),
           version: 1,
           last_successful_schedule: lastSuccessfulSchedule,
+          last_successful_reconciliation_generation: lastSuccessfulReconciliationGeneration,
           last_attempt: {
             status: 'FAILURE',
             reason: failureCode,
@@ -3309,6 +3321,7 @@ export function createPocStateStore({ databasePool } = {}) {
             scheduled_for: scheduledFor,
             completed_at: completedAt,
             trigger,
+            ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
           },
         }
         const failureWrite = await client.query(`
@@ -3316,17 +3329,25 @@ export function createPocStateStore({ databasePool } = {}) {
           ON CONFLICT (scope) DO UPDATE
             SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
             WHERE (poc_state.value ->> 'last_successful_schedule' = $3 OR ($3 IS NULL AND poc_state.value ->> 'last_successful_schedule' IS NULL))
-          RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule
-        `, [scope, JSON.stringify(failureReceipt), lastSuccessfulSchedule])
-        if (failureWrite.rows.length !== 1 || failureWrite.rows[0]?.last_successful_schedule !== lastSuccessfulSchedule) {
+              AND (poc_state.value ->> 'last_successful_reconciliation_generation' = $4
+                OR ($4 IS NULL AND poc_state.value ->> 'last_successful_reconciliation_generation' IS NULL))
+          RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule,
+            poc_state.value ->> 'last_successful_reconciliation_generation' AS last_successful_reconciliation_generation
+        `, [scope, JSON.stringify(failureReceipt), lastSuccessfulSchedule, lastSuccessfulReconciliationGeneration])
+        if (failureWrite.rows.length !== 1
+          || failureWrite.rows[0]?.last_successful_schedule !== lastSuccessfulSchedule
+          || failureWrite.rows[0]?.last_successful_reconciliation_generation !== lastSuccessfulReconciliationGeneration) {
           throw new Error('The POC K9 scheduler failure receipt was not persisted.')
         }
         return { status: 'failed', scheduledFor, completedAt, result }
       }
 
       const receipt = {
+        ...(current.rows[0]?.value || {}),
         version: 1,
         last_successful_schedule: scheduledFor,
+        last_successful_reconciliation_generation: reconciliationGeneration
+          || lastSuccessfulReconciliationGeneration,
         completed_at: completedAt,
         trigger,
         last_attempt: {
@@ -3337,19 +3358,39 @@ export function createPocStateStore({ databasePool } = {}) {
           scheduled_for: scheduledFor,
           completed_at: completedAt,
           trigger,
+          ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
         },
       }
 
       const receiptWrite = await client.query(`
         INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
-        ON CONFLICT (scope) DO UPDATE
-          SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
           WHERE (poc_state.value ->> 'last_successful_schedule' = $3 OR ($3 IS NULL AND poc_state.value ->> 'last_successful_schedule' IS NULL))
-            AND (poc_state.value ->> 'last_successful_schedule' IS NULL OR (poc_state.value ->> 'last_successful_schedule')::timestamptz < $4::timestamptz)
-        RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule
-      `, [scope, JSON.stringify(receipt), lastSuccessfulSchedule, scheduledFor])
+            AND (poc_state.value ->> 'last_successful_reconciliation_generation' = $4
+              OR ($4 IS NULL AND poc_state.value ->> 'last_successful_reconciliation_generation' IS NULL))
+            AND (
+              poc_state.value ->> 'last_successful_schedule' IS NULL
+              OR (poc_state.value ->> 'last_successful_schedule')::timestamptz < $5::timestamptz
+              OR ($6::text IS NOT NULL
+                AND (poc_state.value ->> 'last_successful_schedule')::timestamptz = $5::timestamptz
+                AND poc_state.value ->> 'last_successful_reconciliation_generation' IS DISTINCT FROM $6::text)
+            )
+        RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule,
+          poc_state.value ->> 'last_successful_reconciliation_generation' AS last_successful_reconciliation_generation
+      `, [
+        scope,
+        JSON.stringify(receipt),
+        lastSuccessfulSchedule,
+        lastSuccessfulReconciliationGeneration,
+        scheduledFor,
+        reconciliationGeneration,
+      ])
 
-      if (receiptWrite.rows.length !== 1 || receiptWrite.rows[0]?.last_successful_schedule !== scheduledFor) {
+      if (receiptWrite.rows.length !== 1
+        || receiptWrite.rows[0]?.last_successful_schedule !== scheduledFor
+        || receiptWrite.rows[0]?.last_successful_reconciliation_generation
+          !== (reconciliationGeneration || lastSuccessfulReconciliationGeneration)) {
         throw new Error('The POC K9 scheduler receipt was not advanced.')
       }
 
