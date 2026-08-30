@@ -7,15 +7,15 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  51734c788aaa0ce1cef8c49f3b78ae923fe600dc
-Evidence aecd89731fc88a685677c4ffe2db4c10a41cd813
+Product  1adfe1ced2c9311bcbb880bfac400a1edf8d9178
+Evidence e3eb9af2a3700a3b715f4be2c54259bef0a95997
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`51734c788aaa0ce1cef8c49f3b78ae923fe600dc`. Its SHA-256, child manifest,
+`1adfe1ced2c9311bcbb880bfac400a1edf8d9178`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
 
@@ -24,10 +24,13 @@ interruption-recovery corrections: the Resource Tree server honors its bounded 2
 without changing ordinary Catalog's 100-item cap, and the POC Governance detail response resolves
 document actor names from the existing workspace membership source. A referenced legacy POC actor
 uses its bounded presentation label only when no real same-subject membership name exists. The
-published metadata viewer alone uses readable 11px/13px label/value typography. None of
-these corrections widens authorization or introduces a target-data dependency. The prior TEST Product remains the last
-runtime-accepted release until this exact artifact completes TEST deploy, same-command rerun, and
-the bounded Resource Tree/Governance browser acceptance.
+published metadata viewer alone uses readable 11px/13px label/value typography. This descendant
+also coalesces concurrent force-current DataHub inventory reads onto one in-flight generation, so a
+smoke retry does not start a duplicate provider scroll after its client envelope expires. The shared
+refresh preserves the same typed terminal failure for every waiter and never promotes a failed
+candidate. None of these corrections widens authorization or introduces a target-data dependency.
+The prior TEST Product remains the last runtime-accepted release until this exact artifact completes
+TEST deploy and same-command rerun.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
@@ -174,14 +177,13 @@ identity.
 ## Current cumulative evidence and historical checkpoints
 
 The cumulative local Evidence is
-[`docs/evidence/test-rerun-k9-query-boundary/README.md`](evidence/test-rerun-k9-query-boundary/README.md).
-It records the fail-closed TEST same-command rerun, its exact K9 query-boundary
-root cause, the bounded correction, focused verification, and the fresh exact
-Product OCI. The first deployment acceptance of Product `44fc36b...` is not
-inherited by this descendant candidate. TEST PC accepted-state resume and
-same-command rerun validation are pending. This Handoff does not claim Actual
-PREP or OPS execution. The canonical no-build, ownership, schema-integrity,
-provider, smoke, and non-destructive resume contracts remain unchanged.
+[`docs/evidence/datahub-current-inventory-latency/README.md`](evidence/datahub-current-inventory-latency/README.md).
+It records the exact 300-second smoke envelope, the duplicate forced-refresh path, the bounded
+in-flight generation coalescing correction, focused verification and the fresh exact Product OCI.
+The TEST acceptance of Product `51734c7...` is not inherited by this descendant candidate. TEST PC
+accepted-state resume and same-command rerun validation are pending. This Handoff does not claim
+Actual PREP or OPS execution. The canonical no-build, ownership, schema-integrity, provider, smoke,
+and non-destructive resume contracts remain unchanged.
 
 The preceding user-facing stabilization Evidence remains at
 [`docs/evidence/user-facing-stabilization-bundle/README.md`](evidence/user-facing-stabilization-bundle/README.md).
