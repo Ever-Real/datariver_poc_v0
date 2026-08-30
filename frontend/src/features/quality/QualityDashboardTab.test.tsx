@@ -29,6 +29,40 @@ describe('QualityDashboardTab', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /완전성/ }))
     expect(within(dialog).getByRole('heading', { name: '완전성 분석' })).toBeInTheDocument()
   })
+
+  it('renders ScoreGauge as an SVG with bounded geometry to satisfy CSP', async () => {
+    const request = vi.fn().mockResolvedValue(dashboard)
+    renderDashboard(request)
+
+    // Open the dialog first
+    fireEvent.click(await screen.findByTitle('정확성 · 최근 성공 실행의 유효 값 수 ÷ 평가 값 수'))
+
+    const dialog = await screen.findByRole('dialog', {
+      name: 'snowflake / analytics / manufacturing · 품질 분석',
+    })
+    
+    // The gauge has aria-label: "정확성 품질 수치 95%"
+    const gauge = within(dialog).getByLabelText('정확성 품질 수치 95%')
+    
+    // Ensure no style prop on the container
+    expect(gauge).not.toHaveAttribute('style')
+    
+    // Ensure SVG is used
+    const svg = gauge.querySelector('svg')
+    expect(svg).toBeInTheDocument()
+    expect(svg).toHaveAttribute('viewBox', '0 0 118 118')
+    
+    // Check progress circle dashoffset for 95%
+    const circles = svg!.querySelectorAll('circle')
+    expect(circles).toHaveLength(2)
+    // The second circle is the progress
+    const progressCircle = circles[1]
+    const dasharray = Number(progressCircle!.getAttribute('stroke-dasharray'))
+    const dashoffset = Number(progressCircle!.getAttribute('stroke-dashoffset'))
+    expect(dasharray).toBeGreaterThan(0)
+    // 95% progress => dashoffset should be 5% of dasharray
+    expect(dashoffset).toBeCloseTo(dasharray * 0.05, 1)
+  })
 })
 
 function renderDashboard(request: ReturnType<typeof vi.fn>) {

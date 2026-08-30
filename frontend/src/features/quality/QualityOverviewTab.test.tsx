@@ -45,6 +45,20 @@ describe('QualityOverviewTab', () => {
     })
     expect(within(table).getByRole('rowheader', { name: '평가 없음' })).toBeInTheDocument()
   })
+
+  it('uses finite external classes instead of inline styles for legend to satisfy CSP', async () => {
+    renderOverview(overview())
+
+    const chartScroll = await screen.findByLabelText('품질 Rule 결과 건수 추이 차트 스크롤 영역')
+    const legend = chartScroll.querySelector('.quality-result-count-legend')
+    expect(legend).toBeInTheDocument()
+    const indicators = legend!.querySelectorAll('i')
+    expect(indicators).toHaveLength(3)
+    indicators.forEach((i) => {
+      expect(i).not.toHaveAttribute('style')
+      expect(i.className).toMatch(/^legend-color-/)
+    })
+  })
 })
 
 function renderOverview(value: QualityOverview) {

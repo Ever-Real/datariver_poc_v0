@@ -1594,3 +1594,15 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   .dashboard-analytics-grid { grid-template-columns: minmax(0, 1fr); }
   .dashboard-stat-card { min-height: 132px; }
 }
+
+/* CSP-safe legend colors */
+.legend-color-passed_count { background-color: #2f855a; }
+.legend-color-advisory_failed_count { background-color: #b7791f; }
+.legend-color-blocking_failed_count { background-color: #c53030; }
+
+/* SVG Gauge stacking */
+.quality-score-gauge { position: relative; }
+.quality-score-gauge > svg,
+.quality-score-gauge > div {
+  grid-area: 1 / 1;
+}

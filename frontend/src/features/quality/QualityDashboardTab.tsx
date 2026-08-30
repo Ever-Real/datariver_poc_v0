@@ -401,13 +401,23 @@ function QualityAnalysisDialog({
 }
 
 function ScoreGauge({ value, label }: { value: number | null; label: string }) {
-  const degrees = value === null ? 0 : Math.round(value / 10_000 * 360)
+  const pct = value === null ? 0 : Math.min(1, Math.max(0, value / 10_000))
+  const circumference = 2 * Math.PI * 51
+  const dashoffset = circumference - pct * circumference
+
   return <div
     className="quality-score-gauge"
-    style={{ background: `conic-gradient(var(--blue-700) ${degrees}deg, #e8eef1 ${degrees}deg)` }}
     role="img"
     aria-label={`${label} 품질 수치 ${basisPointsText(value)}`}
   >
+    <svg width="118" height="118" viewBox="0 0 118 118" aria-hidden="true">
+      <circle cx="59" cy="59" r="51" fill="none" stroke="#e8eef1" strokeWidth="16" />
+      <circle cx="59" cy="59" r="51" fill="none" stroke="var(--blue-700)" strokeWidth="16"
+        strokeDasharray={circumference}
+        strokeDashoffset={dashoffset}
+        transform="rotate(-90 59 59)"
+      />
+    </svg>
     <div><strong>{basisPointsText(value)}</strong><span>품질 수치</span></div>
   </div>
 }

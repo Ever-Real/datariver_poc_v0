@@ -239,9 +239,9 @@ function QualityResultCountTrend({ overview }: { overview: QualityOverview }) {
   const barWidth = Math.max(1, Math.min(12, groupWidth / 4))
   const barHeight = (value: number) => maximum === 0 ? 0 : value / maximum * chartHeight
   const series = [
-    { key: 'passed_count', label: 'PASS', fill: '#2f855a' },
-    { key: 'advisory_failed_count', label: 'Advisory fail', fill: '#b7791f' },
-    { key: 'blocking_failed_count', label: 'Blocking fail', fill: '#c53030' },
+    { key: 'passed_count', label: 'PASS', fill: '#2f855a', legendClass: 'legend-color-passed_count' },
+    { key: 'advisory_failed_count', label: 'Advisory fail', fill: '#b7791f', legendClass: 'legend-color-advisory_failed_count' },
+    { key: 'blocking_failed_count', label: 'Blocking fail', fill: '#c53030', legendClass: 'legend-color-blocking_failed_count' },
   ] as const
 
   return <section className="quality-trend panel" aria-labelledby={titleId}>
@@ -259,7 +259,7 @@ function QualityResultCountTrend({ overview }: { overview: QualityOverview }) {
         <div className="quality-chart-scroll" tabIndex={0} aria-label="품질 Rule 결과 건수 추이 차트 스크롤 영역">
           <div className="quality-result-count-legend" aria-hidden="true">
             {series.map((item) => <span key={item.key}>
-              <i style={{ backgroundColor: item.fill }} />{item.label}
+              <i className={item.legendClass} />{item.label}
             </span>)}
           </div>
           <svg viewBox="0 0 600 160" role="img" aria-labelledby={`${titleId} ${descriptionId}`}>
