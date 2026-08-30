@@ -2,6 +2,7 @@ import { useId, type ReactNode } from 'react'
 
 interface AccordionItemProps {
   itemId: string
+  focusKey?: string
   title: ReactNode
   summary?: ReactNode
   expanded: boolean
@@ -11,6 +12,7 @@ interface AccordionItemProps {
 
 export function AccordionItem({
   itemId,
+  focusKey,
   title,
   summary,
   expanded,
@@ -26,6 +28,7 @@ export function AccordionItem({
       <h3 className="accordion-heading">
         <button
           id={buttonId}
+          data-catalog-focus-key={focusKey}
           type="button"
           aria-expanded={expanded}
           aria-controls={panelId}

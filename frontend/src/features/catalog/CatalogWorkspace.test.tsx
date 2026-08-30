@@ -1375,6 +1375,10 @@ describe('catalog workspace', () => {
     let detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
     expect(await within(detail).findByRole('heading', { name: firstAsset.name })).toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+    fireEvent.click(within(detail).getByRole('button', { name: /Table details/ }))
+    const firstScroll = detail.querySelector<HTMLElement>('.catalog-detail-scroll')!
+    Object.defineProperty(firstScroll, 'scrollTop', { configurable: true, value: 120, writable: true })
+    fireEvent.scroll(firstScroll)
     fireEvent.click(within(detail).getByRole('tab', { name: 'Lineage' }))
     const graph = await within(detail).findByRole('region', { name: '권한 필터링된 DataHub Lineage 그래프' })
     fireEvent.click(within(graph).getByLabelText(`${secondAsset.name} 상세 열기`))
@@ -1386,6 +1390,10 @@ describe('catalog workspace', () => {
     detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
     expect(await within(detail).findByRole('heading', { name: firstAsset.name })).toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: '이전' })).toBeDisabled()
+    expect(within(detail).getByRole('tab', { name: 'Lineage' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(detail).getByRole('button', { name: /Table details/, hidden: true })).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(detail.querySelector<HTMLElement>('.catalog-detail-scroll')?.scrollTop).toBe(120))
+    expect(document.activeElement).toBe(within(detail).getByRole('tab', { name: 'Lineage' }))
 
     fireEvent.click(within(detail).getByRole('button', { name: '상세 닫기' }))
     expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()

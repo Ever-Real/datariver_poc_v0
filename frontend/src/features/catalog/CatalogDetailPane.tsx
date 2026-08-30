@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -107,6 +107,21 @@ export function snapDetailWidth(raw: number): number {
   return closest
 }
 
+export interface CatalogDetailViewState {
+  activeTab: 'metadata' | 'lineage'
+  expandedSections: string[]
+  fieldOffset: number
+  scrollTop: number
+  focusKey?: string
+}
+
+export const defaultCatalogDetailViewState: CatalogDetailViewState = {
+  activeTab: 'metadata',
+  expandedSections: ['details', 'columns'],
+  fieldOffset: 0,
+  scrollTop: 0,
+}
+
 export function CatalogDetailPane({
   client,
   assetId,
@@ -122,6 +137,8 @@ export function CatalogDetailPane({
   qualityLoading = false,
   asOverlay = false,
   asModal = false,
+  initialViewState = defaultCatalogDetailViewState,
+  onViewStateChange,
 }: {
   client: ApiClient
   assetId: string
@@ -139,15 +156,28 @@ export function CatalogDetailPane({
   asOverlay?: boolean
   /** true이면 document portal 안의 중앙 모달 surface를 채웁니다. */
   asModal?: boolean
+  initialViewState?: CatalogDetailViewState
+  onViewStateChange?: (state: CatalogDetailViewState) => void
 }) {
-  const [expanded, setExpanded] = useState(new Set(['details', 'columns']))
-  const [activeTab, setActiveTab] = useState<'metadata' | 'lineage'>('metadata')
+  const [expanded, setExpanded] = useState(new Set(initialViewState.expandedSections))
+  const [activeTab, setActiveTab] = useState<'metadata' | 'lineage'>(initialViewState.activeTab)
   const [copied, setCopied] = useState(false)
   const [toastVisible, setToastVisible] = useState(false)
-  const [fieldOffset, setFieldOffset] = useState(0)
+  const [fieldOffset, setFieldOffset] = useState(initialViewState.fieldOffset)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
   const panelRef = useRef<HTMLElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const viewStateRef = useRef<CatalogDetailViewState>({
+    ...initialViewState,
+    expandedSections: [...initialViewState.expandedSections],
+  })
   const pagedAssetId = useRef(assetId)
+
+  const updateViewState = useCallback((patch: Partial<CatalogDetailViewState>) => {
+    const next = { ...viewStateRef.current, ...patch }
+    viewStateRef.current = next
+    onViewStateChange?.(next)
+  }, [onViewStateChange])
 
   const { data: baseDetail, isFetching: loading, error } = useQuery({
     queryKey: ['catalog', 'asset-detail-base', assetId],
@@ -211,6 +241,25 @@ export function CatalogDetailPane({
     if (detail) onDetailLoaded?.(detail)
     else onDetailLoaded?.(undefined)
   }, [detail, onDetailLoaded])
+
+  useEffect(() => {
+    if (!detail || !scrollRef.current) return
+    if (typeof scrollRef.current.scrollTo === 'function') {
+      scrollRef.current.scrollTo({ top: initialViewState.scrollTop })
+    } else {
+      const descriptor = Object.getOwnPropertyDescriptor(scrollRef.current, 'scrollTop')
+      if (!descriptor || descriptor.writable) scrollRef.current.scrollTop = initialViewState.scrollTop
+    }
+    const focusTarget = initialViewState.focusKey
+      ? [...(panelRef.current?.querySelectorAll<HTMLElement>('[data-catalog-focus-key]') ?? [])]
+        .find((element) => element.dataset.catalogFocusKey === initialViewState.focusKey)
+      : undefined
+    focusTarget?.focus()
+  }, [detail, initialViewState.focusKey, initialViewState.scrollTop])
+
+  useEffect(() => {
+    updateViewState({ expandedSections: [...expanded] })
+  }, [expanded, updateViewState])
 
   const { data: lineage, isFetching: lineageLoading, error: lineageError } = useQuery({
     queryKey: ['catalog', 'lineage', assetId],
@@ -311,6 +360,7 @@ export function CatalogDetailPane({
 
   const showTab = (tab: 'metadata' | 'lineage') => {
     setActiveTab(tab)
+    updateViewState({ activeTab: tab, focusKey: `${tab}-tab` })
   }
 
   const copyUrn = async () => {
@@ -370,6 +420,10 @@ export function CatalogDetailPane({
         ref={panelRef}
         className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}${asModal ? ' catalog-detail--modal' : ''} ${width ? `catalog-detail-w${snapDetailWidth(width)}` : ''}`}
         aria-label="카탈로그 상세"
+        onFocusCapture={(event) => {
+          const key = event.target.closest<HTMLElement>('[data-catalog-focus-key]')?.dataset.catalogFocusKey
+          if (key) updateViewState({ focusKey: key })
+        }}
       >
       {onResizeWidth && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
         if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth(snapDetailWidth((width ?? 550) + 50)) }
@@ -378,11 +432,11 @@ export function CatalogDetailPane({
       <header>
         <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>
         <div className="catalog-detail-header-actions">
-          <button className="button button-secondary" disabled={!onPrevious} onClick={onPrevious} type="button"><ChevronLeft size={14} aria-hidden="true" />이전</button>
-          <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
+          <button className="button button-secondary" data-catalog-focus-key="previous" disabled={!onPrevious} onClick={onPrevious} type="button"><ChevronLeft size={14} aria-hidden="true" />이전</button>
+          <button type="button" data-catalog-focus-key="close" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
         </div>
       </header>
-      <div className="catalog-detail-scroll">
+      <div ref={scrollRef} className="catalog-detail-scroll" onScroll={(event) => updateViewState({ scrollTop: event.currentTarget.scrollTop })}>
       {loading && <div className="catalog-detail-state">상세 정보를 불러오는 중입니다.</div>}
       <ErrorNotice error={error} />
       {detail && <div className="catalog-detail-body">
@@ -431,11 +485,11 @@ export function CatalogDetailPane({
           )}
         </section>}
       <div className="catalog-detail-tabs" role="tablist" aria-label="상세 정보 보기">
-        <button aria-controls="catalog-metadata-panel" aria-selected={activeTab === 'metadata'} className={activeTab === 'metadata' ? 'active' : ''} id="catalog-metadata-tab" onClick={() => showTab('metadata')} role="tab" type="button">Table Details</button>
-        <button aria-controls="catalog-lineage-panel" aria-selected={activeTab === 'lineage'} className={activeTab === 'lineage' ? 'active' : ''} id="catalog-lineage-tab" onClick={() => showTab('lineage')} role="tab" type="button">Lineage</button>
+        <button aria-controls="catalog-metadata-panel" aria-selected={activeTab === 'metadata'} className={activeTab === 'metadata' ? 'active' : ''} data-catalog-focus-key="metadata-tab" id="catalog-metadata-tab" onClick={() => showTab('metadata')} role="tab" type="button">Table Details</button>
+        <button aria-controls="catalog-lineage-panel" aria-selected={activeTab === 'lineage'} className={activeTab === 'lineage' ? 'active' : ''} data-catalog-focus-key="lineage-tab" id="catalog-lineage-tab" onClick={() => showTab('lineage')} role="tab" type="button">Lineage</button>
       </div>
       <section aria-labelledby="catalog-metadata-tab" hidden={activeTab !== 'metadata'} id="catalog-metadata-panel" role="tabpanel">
-        <AccordionItem itemId="details" title="Table details" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
+        <AccordionItem itemId="details" focusKey="details-accordion" title="Table details" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
           {detailQualityLoading && <div className="catalog-detail-state" role="status">프로필과 assertion을 불러오는 중입니다.</div>}
           <ErrorNotice error={detailQualityError} />
           <dl className="catalog-detail-properties">
@@ -458,7 +512,7 @@ export function CatalogDetailPane({
             <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} truncated={detail.tags_truncated} /></dd></div>
           </dl>
         </AccordionItem>
-        <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
+        <AccordionItem itemId="columns" focusKey="columns-accordion" title="Column metadata" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
           {schemaLoading && <div className="catalog-detail-state" role="status">컬럼 메타데이터를 불러오는 중입니다.</div>}
           <ErrorNotice error={schemaError} />
           <div className="catalog-schema-table">
@@ -489,13 +543,13 @@ export function CatalogDetailPane({
             </table>
             {detail.schema_fields.length === 0 && <div className="catalog-detail-state">스키마 필드가 등록되지 않았습니다.</div>}
             {(detail.schema_fields_available ?? detail.schema_fields_total ?? detail.schema_fields.length) > detail.schema_fields.length && <nav aria-label="컬럼 페이지 탐색" className="pagination-bar">
-              <button className="button button-secondary" disabled={(detail.schema_fields_offset ?? 0) === 0} onClick={() => setFieldOffset(Math.max(0, (detail.schema_fields_offset ?? 0) - (detail.schema_fields_limit ?? 100)))} type="button">이전 컬럼</button>
+              <button className="button button-secondary" disabled={(detail.schema_fields_offset ?? 0) === 0} onClick={() => { const next = Math.max(0, (detail.schema_fields_offset ?? 0) - (detail.schema_fields_limit ?? 100)); setFieldOffset(next); updateViewState({ fieldOffset: next }) }} type="button">이전 컬럼</button>
               <span>{(detail.schema_fields_offset ?? 0) + 1}–{(detail.schema_fields_offset ?? 0) + detail.schema_fields.length} / {detail.schema_fields_available ?? detail.schema_fields_total}</span>
-              <button className="button button-secondary" disabled={!detail.schema_fields_has_more} onClick={() => setFieldOffset((detail.schema_fields_offset ?? 0) + (detail.schema_fields_limit ?? 100))} type="button">다음 컬럼</button>
+              <button className="button button-secondary" disabled={!detail.schema_fields_has_more} onClick={() => { const next = (detail.schema_fields_offset ?? 0) + (detail.schema_fields_limit ?? 100); setFieldOffset(next); updateViewState({ fieldOffset: next }) }} type="button">다음 컬럼</button>
             </nav>}
           </div>
         </AccordionItem>
-        <AccordionItem itemId="recommendations" title="Metadata recommendations" summary="review required" expanded={expanded.has('recommendations')} onToggle={() => toggle('recommendations')}>
+        <AccordionItem itemId="recommendations" focusKey="recommendations-accordion" title="Metadata recommendations" summary="review required" expanded={expanded.has('recommendations')} onToggle={() => toggle('recommendations')}>
           {expanded.has('recommendations') && <CatalogMetadataRecommendationPanel client={client} detail={detail} />}
         </AccordionItem>
       </section>

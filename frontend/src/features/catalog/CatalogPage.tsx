@@ -21,7 +21,11 @@ import { BadgeScroller } from '../../components/common/ControlledVocabularyInput
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
-import { CatalogDetailPane } from './CatalogDetailPane'
+import {
+  CatalogDetailPane,
+  defaultCatalogDetailViewState,
+  type CatalogDetailViewState,
+} from './CatalogDetailPane'
 import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { CatalogExportControl } from './CatalogExportControl'
 import { CatalogMatchPreview } from './CatalogMatchText'
@@ -76,6 +80,22 @@ const maximumDetailHistory = 20
 
 export function boundedDetailHistory(current: string[], assetId: string): string[] {
   return [...current, assetId].slice(-maximumDetailHistory)
+}
+
+interface CatalogDetailHistoryEntry {
+  assetId: string
+  viewState: CatalogDetailViewState
+}
+
+function freshCatalogDetailViewState(): CatalogDetailViewState {
+  return { ...defaultCatalogDetailViewState, expandedSections: [...defaultCatalogDetailViewState.expandedSections] }
+}
+
+export function boundedDetailStateHistory(
+  current: CatalogDetailHistoryEntry[],
+  entry: CatalogDetailHistoryEntry,
+): CatalogDetailHistoryEntry[] {
+  return [...current, entry].slice(-maximumDetailHistory)
 }
 
 function clearCatalogAssetUrl(): void {
@@ -142,7 +162,8 @@ export function CatalogPage({
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
   const [focusedAssetId, setFocusedAssetId] = useState<string>()
   const [treeAssetId, setTreeAssetId] = useState<string>()
-  const [detailHistory, setDetailHistory] = useState<string[]>([])
+  const [detailHistory, setDetailHistory] = useState<CatalogDetailHistoryEntry[]>([])
+  const [detailViewState, setDetailViewState] = useState<CatalogDetailViewState>(freshCatalogDetailViewState)
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -170,6 +191,7 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
     setFocusedAssetId(undefined)
     setDetailHistory([])
+    setDetailViewState(freshCatalogDetailViewState())
     browserDetailEntryCreated.current = false
     activeTreeAssetId.current = undefined
     pendingTreeQuerySync.current = undefined
@@ -438,10 +460,15 @@ export function CatalogPage({
   const navigateAsset = (assetId: string) => {
     if (selectedAssetId === assetId) return
     if (!selectedAssetId) {
+      setDetailViewState(freshCatalogDetailViewState())
       selectAsset(assetId)
       return
     }
-    setDetailHistory((current) => boundedDetailHistory(current, selectedAssetId))
+    setDetailHistory((current) => boundedDetailStateHistory(current, {
+      assetId: selectedAssetId,
+      viewState: { ...detailViewState, expandedSections: [...detailViewState.expandedSections] },
+    }))
+    setDetailViewState(freshCatalogDetailViewState())
     const current = new URL(window.location.href)
     if (selectedAssetId && !current.searchParams.has('catalogAsset')) {
       current.searchParams.set('catalogAsset', selectedAssetId)
@@ -459,15 +486,16 @@ export function CatalogPage({
   }
 
   const previousAsset = () => {
-    const assetId = detailHistory.at(-1)
-    if (!assetId) return
+    const previous = detailHistory.at(-1)
+    if (!previous) return
     setDetailHistory((current) => current.slice(0, -1))
     const current = new URL(window.location.href)
     if (current.searchParams.has('catalogAsset')) {
-      current.searchParams.set('catalogAsset', assetId)
+      current.searchParams.set('catalogAsset', previous.assetId)
       window.history.replaceState(window.history.state, '', current.toString())
     }
-    selectAsset(assetId)
+    setDetailViewState({ ...previous.viewState, expandedSections: [...previous.viewState.expandedSections] })
+    selectAsset(previous.assetId)
   }
 
   useEffect(() => {
@@ -480,6 +508,7 @@ export function CatalogPage({
         setSelectedAssetId(assetId)
       } else setSelectedAssetId(undefined)
       setDetailHistory([])
+      setDetailViewState(freshCatalogDetailViewState())
       browserDetailEntryCreated.current = false
     }
     restoreAsset()
@@ -643,6 +672,8 @@ export function CatalogPage({
           assetId={selectedAssetId}
           onClose={closeSelectedAsset}
           onPrevious={detailHistory.length > 0 ? previousAsset : undefined}
+          initialViewState={detailViewState}
+          onViewStateChange={setDetailViewState}
           onSelectAsset={navigateAsset}
           onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
           width={detailWidth}
