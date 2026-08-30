@@ -1381,11 +1381,21 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
 .dashboard-schema-coverage-scroll {
   min-width: 0;
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  padding: 1px 1px 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-block: contain;
+  padding: 1px 4px 1px 1px;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+  touch-action: pan-y;
+}
+.dashboard-schema-asset-counts > div {
+  max-height: 72px;
+}
+.dashboard-schema-coverage-scroll {
+  max-height: 148px;
 }
 .dashboard-schema-asset-counts > div:focus-visible,
 .dashboard-schema-coverage-scroll:focus-visible {
@@ -1393,7 +1403,9 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   outline-offset: 2px;
 }
 .dashboard-schema-asset-counts > div > span {
-  min-width: 104px;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 5px;
@@ -1401,11 +1413,12 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   padding: 4px 5px;
   color: var(--navy-900);
   background: white;
-  font-size: 11px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 .dashboard-schema-asset-counts > div > span strong {
   overflow: hidden;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1500,8 +1513,9 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   font-size: 11px;
 }
 .dashboard-schema-coverage-row {
-  flex: 0 0 270px;
-  min-width: 270px;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(88px, 1.4fr) repeat(3, minmax(38px, .6fr));
   align-items: center;
@@ -1521,21 +1535,21 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
   white-space: nowrap;
 }
 .dashboard-schema-coverage-row > span strong {
-  font-size: 12px;
+  font-size: 10px;
 }
 .dashboard-schema-coverage-row > span small {
   color: var(--text-500);
-  font-size: 11px;
+  font-size: 9px;
 }
 .dashboard-schema-coverage-row .metric-tile {
   min-width: 0;
   padding: 3px;
 }
 .dashboard-schema-coverage-row .metric-tile small {
-  font-size: 11px;
+  font-size: 9px;
 }
 .dashboard-schema-coverage-row .metric-tile strong {
-  font-size: 12px;
+  font-size: 11px;
 }
 .dashboard-analytics-facts {
   display: grid;

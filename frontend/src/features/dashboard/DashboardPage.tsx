@@ -348,7 +348,7 @@ function SchemaCoverageAnalytics({
 
   return (
     <div className="dashboard-schema-coverage" aria-label="Schema metadata 등록률">
-      <p>현재 제공된 {metrics.length.toLocaleString()}개 Schema · 좌우로 이동해 탐색</p>
+      <p>현재 제공된 {metrics.length.toLocaleString()}개 Schema · 상하로 스크롤해 탐색</p>
       <div className="dashboard-schema-coverage-scroll" tabIndex={0} aria-label="Schema별 metadata 등록률 목록">
         {metrics.map((metric) => <SchemaCoverageRow key={metricKey(metric)} metric={metric} />)}
       </div>

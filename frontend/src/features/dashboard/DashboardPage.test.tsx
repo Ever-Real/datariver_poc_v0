@@ -395,6 +395,7 @@ describe('DashboardPage', () => {
 
     const schemaList = await screen.findByLabelText('Schema별 metadata 등록률 목록')
     expect(schemaList).toHaveAttribute('tabindex', '0')
+    expect(screen.getByText(/Schema · 상하로 스크롤해 탐색/)).toBeInTheDocument()
     expect(schemaList).toHaveTextContent('warehouse / alpha')
     expect(schemaList).toHaveTextContent('warehouse / delta')
     const counts = screen.getByLabelText('Schema별 현재 Dataset 수 목록')
