@@ -7,17 +7,25 @@ development checkpoint it identifies the cumulative exact artifact. This is a
 TEST candidate and not an Actual PREP/OPS acceptance claim:
 
 ```text
-Product  b3538f1c74b2cc077a74fe2c80a91515a1cf31d9
-Evidence 20989e5dd547f3374166bbd4993ea9dad66a6633
+Product  e2df77ba03f519785963cabe46ba997dd115c7ad
+Evidence 7fe63a7fce97b9ef286298dba235692931128db5
 Platform linux/amd64
 Port     39083
 Project  datariver-prep39083
 ```
 
 The pinned archive is valid only for Product
-`b3538f1c74b2cc077a74fe2c80a91515a1cf31d9`. Its SHA-256, child manifest,
+`e2df77ba03f519785963cabe46ba997dd115c7ad`. Its SHA-256, child manifest,
 config digest, platform, and OCI revision are exact. A descendant runtime-input
 change invalidates this identity and requires another fresh artifact.
+
+This Handoff adds the bounded `USER-FACING-RUNTIME-CLOSURE-2` Product surfaces: exact authorized
+unmapped Change History visibility, System creation error fidelity, page-bounded Glossary assignment
+counts, Home Dataset drill-down, Governance editor/table preservation, cursor-append Resource Tree,
+bounded detail-history restore, and owner-bound Catalog CSV/XLSX export. Missing System mappings do
+not widen permission or enable CR actions, and no reviewed GX provider was invented. The prior TEST
+Product remains the last runtime-accepted release until this exact artifact completes TEST deploy,
+same-command rerun, and browser/API acceptance.
 
 The CLI resolves the current committed handoff HEAD itself and reuses
 `prep39083_release.py` for Product/Evidence ancestry and runtime-input validation. Operators do not
