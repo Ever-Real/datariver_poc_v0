@@ -1,22 +1,24 @@
 # USER-FACING-RUNTIME-CLOSURE-2 Evidence
 
 Date: 2026-08-30 KST
-Product: `888a484c2d03dc9221f63e2a623c301fa0e69c1b`
-Starting TEST Handoff: `bf57134acf79c7ce26aebb52f942fd0fdb2f512b`
+Product: `51734c788aaa0ce1cef8c49f3b78ae923fe600dc`
+Starting TEST Handoff: `2d491068cf6e9f7eab93e1b2069ef74d0cad492a`
 Actual PREP: not executed
 Actual OPS: not executed
 
 ## Bounded Product scope
 
 This descendant preserves the TEST-accepted timeout, Chat-router, Home, Glossary, Search, Change
-Detection and exact export contracts. Interruption recovery added only three bounded Product deltas:
+Detection and exact export contracts. Interruption recovery added only four bounded Product deltas:
 
 - the Resource Tree endpoint accepts its existing 200-item request while ordinary Catalog pages
   remain capped at 100;
 - the POC Governance detail adapter projects document-scoped display names from the existing
   workspace membership source instead of forcing the UI to fall back to UUIDs;
 - a referenced legacy POC document actor retains its bounded presentation label after live state
-  hydration replaces the default membership list, while a real same-subject membership still wins.
+  hydration replaces the default membership list, while a real same-subject membership still wins;
+- the published Governance metadata viewer overrides its historical 8px/10px label/value typography
+  with scoped 11px/13px readable sizes; global typography and editor styling are unchanged.
 
 Unmapped Change History events are selected only from the principal's exact current Table authority.
 They carry `UNMAPPED`, no System identity, no assignee, no CR link actions, and no authorized linked CR.
@@ -31,6 +33,7 @@ provider for this release, so GX runtime acceptance remains an explicit product/
 - Catalog workspace: `35/35 PASS`, including 10,000+ cursor-append rows with bounded DOM windowing;
 - Governance/POC adapter focused: `57/57 PASS`; editor markup/table subset: `44/44 PASS`;
 - final hydrated legacy-actor regression: `39/39 PASS`;
+- published metadata typography focused: `9/9 PASS`;
 - POC server: `221 PASS`, `10` explicit isolated-PostgreSQL skips;
 - TypeScript typecheck, ESLint, POC build and application build: PASS;
 - static/source and accepted migration checksum integrity: PASS;
@@ -64,7 +67,7 @@ That runtime verified Resource Tree counts `206 -> 406 -> 606` (six hierarchy no
 pages), distinct loaded identities, continued cursor availability, no Tree first/previous/next
 controls and zero browser console errors. It also proved that the initial Governance display-name
 projection remained incomplete for legacy POC-authored documents after live membership hydration;
-the final Product adds only the bounded correction described above. This final successor still
+the final Product adds only the bounded actor and scoped typography corrections described above. This final successor still
 requires one exact-Product accepted-state deploy, 6/6 rerun and Governance browser acceptance before
 it is represented as TEST accepted.
 
@@ -72,11 +75,11 @@ it is represented as TEST accepted.
 
 The clean Product was built once for `linux/amd64` and exported without rebuilding:
 
-- image: `datariver-poc:888a484c2d03dc9221f63e2a623c301fa0e69c1b`;
-- OCI revision: `888a484c2d03dc9221f63e2a623c301fa0e69c1b`;
-- archive SHA-256: `59f60837c3f90c7f60c3b7ae9db6ce93df3e16e917a604732424ed2947257d6d`;
-- child manifest: `sha256:d1550a15782d9c0dc2615f368c1876c85e35243ec6d18b773b1dfc595d2be794`;
-- config: `sha256:2228da4bcd9c2b00f374bacb72350c06a5ab400fb90e2450b0331f6be66fe822`;
+- image: `datariver-poc:51734c788aaa0ce1cef8c49f3b78ae923fe600dc`;
+- OCI revision: `51734c788aaa0ce1cef8c49f3b78ae923fe600dc`;
+- archive SHA-256: `a8abc5c5cbb592f38a912c3198e186c84aef37b5726dd15701c38cf68a6400e4`;
+- child manifest: `sha256:f9260d69ff56f5a7e3b64a65db9a20c25e5ece19fecd7883b4d7cc364d1553aa`;
+- config: `sha256:c561aea95a7b6446665a6bafc2035edc08b69d7c8a9e2766f673f506d1717229`;
 - runtime user: `node` (`1000:1000` in the PREP Compose contract).
 
 The archive is ignored and transported separately. TEST must verify checksum, manifest, config,
