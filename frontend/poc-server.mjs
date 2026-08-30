@@ -13810,11 +13810,11 @@ export async function startPocServer({ stateStore } = {}) {
     managedGraphs: k9,
   })
 
-  async function resolveK9SemanticReconciliationGeneration(candidateGeneration) {
+  async function resolveK9SemanticReconciliationGeneration() {
     const bindingHash = catalogEmbeddingBindingHash()
     if (!bindingHash) return null
     const [semanticGeneration, managedGraphAssets] = await Promise.all([
-      candidateGeneration || pocStateStore.catalogEmbeddingActiveGeneration(bindingHash),
+      pocStateStore.catalogEmbeddingActiveGeneration(bindingHash),
       pocStateStore.listK9ManagedGraphAssets(),
     ])
     return k9SemanticReconciliationGeneration(semanticGeneration, managedGraphAssets)
