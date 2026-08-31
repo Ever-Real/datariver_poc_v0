@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import getpass
 import hashlib
 import hmac
@@ -21,12 +22,12 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TextIO
 
 from prep39083_artifact import (
     ArtifactError,
@@ -37,6 +38,12 @@ from prep39083_artifact import (
     sha256_file,
 )
 from prep39083_release import ReleaseError, source_contract
+from prep39083_transport import (
+    GitTransportIdentity,
+    TransportError,
+    read_transport_identity,
+    retrieve_git_artifact,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOYMENT = ROOT / "deploy" / "prep39083"
@@ -47,12 +54,17 @@ OPTIONAL_ENV = DEPLOYMENT / ".env.prep.optional"
 RUNTIME_ENV = DEPLOYMENT / ".env.prep.runtime"
 ENV_CONTRACT = DEPLOYMENT / "env-contract.json"
 RELEASE_IDENTITY = DEPLOYMENT / "release.json"
+TRANSPORT_IDENTITY = DEPLOYMENT / "transport.json"
 SMOKE_TOOL = ROOT / "scripts" / "smoke_prep39083.mjs"
 RELEASE_TOOL = ROOT / "scripts" / "prep39083_release.py"
 RUNTIME_ROOT = ROOT / "runtime" / "prep39083"
 ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
 ATTEMPT_RECEIPT = RUNTIME_ROOT / "deploy-attempt.json"
 SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
+DEPLOY_LOCK = RUNTIME_ROOT / "deploy.lock"
+LAST_COMMAND = RUNTIME_ROOT / "last-command.json"
+COMMAND_LOGS = RUNTIME_ROOT / "logs"
+PREP_RELEASE_BRANCH = "prep39083-release"
 ACCEPTED_CONTRACT_V1 = "DATARIVER_PREP39083_ACCEPTED_V1"
 ACCEPTED_CONTRACT_V2 = "DATARIVER_PREP39083_ACCEPTED_V2"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -199,8 +211,28 @@ class Runner:
             raise CommandFailure(command, completed)
         return completed
 
-    def output(self, arguments: Sequence[str | os.PathLike[str]]) -> str:
-        return self.run(arguments).stdout.strip()
+    def output(
+        self,
+        arguments: Sequence[str | os.PathLike[str]],
+        *,
+        cwd: Path = ROOT,
+    ) -> str:
+        return self.run(arguments, cwd=cwd).stdout.strip()
+
+
+class _Tee:
+    def __init__(self, terminal: TextIO, log: TextIO) -> None:
+        self.terminal = terminal
+        self.log = log
+
+    def write(self, value: str) -> int:
+        written = self.terminal.write(value)
+        self.log.write(value)
+        return written
+
+    def flush(self) -> None:
+        self.terminal.flush()
+        self.log.flush()
 
 
 @dataclass(frozen=True)
@@ -211,6 +243,7 @@ class ReleaseIdentity:
     port: int
     project: str
     web_artifact: WebArtifactIdentity | None = None
+    git_transport: GitTransportIdentity | None = None
 
 
 class TargetState(str, Enum):
@@ -362,6 +395,22 @@ def load_release_identity(path: Path = RELEASE_IDENTITY) -> ReleaseIdentity:
             "The tracked promoted web artifact identity is invalid.",
             "Restore release.json from the exact approved Handoff; do not rebuild on PREP.",
         ) from error
+    git_transport = None
+    if TRANSPORT_IDENTITY.is_file():
+        try:
+            git_transport = read_transport_identity(
+                TRANSPORT_IDENTITY,
+                product_sha=product_sha,
+                evidence_sha=evidence_sha,
+                artifact=web_artifact,
+            )
+        except TransportError as error:
+            raise PrepError(
+                "RELEASE_IDENTITY",
+                "PREP_GIT_TRANSPORT_IDENTITY_INVALID",
+                "The tracked Git artifact transport identity is invalid.",
+                "Restore the exact dedicated PREP release snapshot and retry.",
+            ) from error
     return ReleaseIdentity(
         product_sha,
         evidence_sha,
@@ -369,6 +418,7 @@ def load_release_identity(path: Path = RELEASE_IDENTITY) -> ReleaseIdentity:
         port,
         value["project"],
         web_artifact,
+        git_transport,
     )
 
 
@@ -1328,6 +1378,208 @@ def verify_source_identity(release: ReleaseIdentity) -> dict[str, str]:
             "Product/Evidence ancestry, cleanliness, or runtime-input stability failed.",
             "Run git switch dev and fast-forward origin/dev, then retry from a clean checkout.",
         ) from error
+
+
+def ensure_git_transport_artifact(release: ReleaseIdentity) -> str:
+    transport = release.git_transport
+    artifact = release.web_artifact
+    if transport is None:
+        return "LEGACY_MANUAL_ARTIFACT_CONTRACT"
+    if artifact is None:
+        raise PrepError(
+            "ARTIFACT_RETRIEVAL",
+            "PREP_GIT_TRANSPORT_RELEASE_INVALID",
+            "The Git transport has no exact Product artifact identity.",
+            "Restore the exact dedicated PREP release snapshot and retry.",
+        )
+    try:
+        return retrieve_git_artifact(
+            transport,
+            root=ROOT,
+            artifact=artifact,
+        )
+    except TransportError as error:
+        raise PrepError(
+            "ARTIFACT_RETRIEVAL",
+            "PREP_GIT_TRANSPORT_FAILED",
+            "The pinned Git artifact could not be reconstructed and verified.",
+            "Run ./scripts/prep39083 status; preserve the existing archive and PREP state.",
+        ) from error
+
+
+def sync_release_source(*, root: Path | None = None) -> str:
+    repository = ROOT if root is None else root
+    runner = Runner(environment=child_environment({}))
+    if runner.output(["git", "rev-parse", "--show-toplevel"], cwd=repository) != os.fspath(
+        repository
+    ):
+        raise PrepError(
+            "SOURCE_SYNC",
+            "PREP_RELEASE_REPOSITORY_INVALID",
+            "The PREP command is not running from its canonical repository.",
+            "Run the tracked ./scripts/prep39083 command from the PREP repository.",
+        )
+    if runner.output(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=repository,
+    ):
+        raise PrepError(
+            "SOURCE_SYNC",
+            "PREP_RELEASE_SOURCE_DIRTY",
+            "Tracked PREP source files have local changes.",
+            "Preserve and review those changes; do not overwrite them with release sync.",
+        )
+    try:
+        runner.run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"refs/heads/{PREP_RELEASE_BRANCH}:"
+                f"refs/remotes/origin/{PREP_RELEASE_BRANCH}",
+            ],
+            cwd=repository,
+        )
+        target = runner.output(
+            ["git", "rev-parse", f"origin/{PREP_RELEASE_BRANCH}"],
+            cwd=repository,
+        )
+        current_branch = runner.output(["git", "branch", "--show-current"], cwd=repository)
+        local = runner.run(
+            ["git", "show-ref", "--verify", f"refs/heads/{PREP_RELEASE_BRANCH}"],
+            check=False,
+            cwd=repository,
+        )
+        if current_branch != PREP_RELEASE_BRANCH:
+            if local.returncode == 0:
+                runner.run(["git", "switch", PREP_RELEASE_BRANCH], cwd=repository)
+            else:
+                runner.run(
+                    [
+                        "git",
+                        "switch",
+                        "--track",
+                        "-c",
+                        PREP_RELEASE_BRANCH,
+                        f"origin/{PREP_RELEASE_BRANCH}",
+                    ],
+                    cwd=repository,
+                )
+        current = runner.output(["git", "rev-parse", "HEAD"], cwd=repository)
+        if current != target:
+            if (
+                runner.run(
+                    ["git", "merge-base", "--is-ancestor", current, target],
+                    check=False,
+                    cwd=repository,
+                ).returncode
+                != 0
+            ):
+                raise PrepError(
+                    "SOURCE_SYNC",
+                    "PREP_RELEASE_SOURCE_DIVERGED",
+                    "The local PREP release branch is not an ancestor of the dedicated remote ref.",
+                    "Preserve the checkout and inspect its source history; do not reset it.",
+                )
+            runner.run(["git", "merge", "--ff-only", target], cwd=repository)
+        if runner.output(["git", "rev-parse", "HEAD"], cwd=repository) != target:
+            raise PrepError(
+                "SOURCE_SYNC",
+                "PREP_RELEASE_SOURCE_SYNC_INCOMPLETE",
+                "PREP source did not reach the exact dedicated release snapshot.",
+                "Run ./scripts/prep39083 status and inspect Git connectivity.",
+            )
+        return target
+    except CommandFailure as error:
+        raise PrepError(
+            "SOURCE_SYNC",
+            "PREP_RELEASE_SOURCE_SYNC_FAILED",
+            "The dedicated PREP release ref could not be fast-forwarded.",
+            "Preserve local source and verify the existing Git authentication path.",
+        ) from error
+
+
+@contextmanager
+def deployment_lock(action: str) -> Iterator[None]:
+    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(DEPLOY_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise PrepError(
+                "DEPLOY_LOCK",
+                "PREP_DEPLOY_ALREADY_ACTIVE",
+                "Another stateful PREP operation owns the target-local lock.",
+                "Run ./scripts/prep39083 status; do not start a duplicate deploy.",
+            ) from error
+        payload = json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_OPERATION_LOCK_V1",
+                "action": action,
+                "pid": os.getpid(),
+                "started_at": datetime.now(UTC).isoformat(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def deploy_lock_active(path: Path = DEPLOY_LOCK) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def write_last_command(
+    action: str,
+    result: str,
+    *,
+    error: PrepError | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "contract": "DATARIVER_PREP39083_LAST_COMMAND_V1",
+        "action": action,
+        "result": result,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    if error is not None:
+        payload.update(
+            {
+                "step": error.step,
+                "code": error.code,
+                "reason": error.reason,
+                "next_action": error.action,
+            }
+        )
+    _atomic_json(LAST_COMMAND, payload)
+
+
+@contextmanager
+def command_log(action: str) -> Iterator[Path]:
+    COMMAND_LOGS.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = COMMAND_LOGS / f"{timestamp}-{action}-{os.getpid()}.log"
+    with path.open("x", encoding="utf-8") as stream:
+        with redirect_stdout(_Tee(sys.stdout, stream)), redirect_stderr(_Tee(sys.stderr, stream)):
+            yield path
 
 
 def compose_config(runner: Runner, prefix: Sequence[str]) -> dict[str, Any]:
@@ -3142,12 +3394,85 @@ def doctor(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         )
 
 
-def status(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
-    runner = Runner(environment=child_environment(bundle.effective))
-    with private_effective_environment(bundle.effective) as env_file:
-        prefix = compose_prefix(release, env_file)
-        result = runner.run([*prefix, "ps"], check=False)
-    print(result.stdout.rstrip() or "PREP39083 has no current containers.")
+def _optional_json(path: Path) -> Mapping[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def status(release: ReleaseIdentity) -> None:
+    active = deploy_lock_active()
+    attempt = _optional_json(ATTEMPT_RECEIPT)
+    accepted = _optional_json(ACCEPTED_MARKER)
+    last = _optional_json(LAST_COMMAND)
+    smoke_failure = _optional_json(SMOKE_FAILURE)
+    phase = str(attempt.get("phase", "NONE")) if attempt else "NONE"
+    accepted_product = str(accepted.get("product_sha", "NONE")) if accepted else "NONE"
+    target_state = str(attempt.get("target_state_before", "UNKNOWN")) if attempt else "UNKNOWN"
+    last_result = str(last.get("result", phase)) if last else phase
+    failed_step = str(last.get("step", "NONE")) if last_result == "FAILED" and last else "NONE"
+    code = str(last.get("code", "NONE")) if last_result == "FAILED" and last else "NONE"
+    if active:
+        next_action = "Wait for the active command; run ./scripts/prep39083 status again."
+    elif last_result == "FAILED" and last:
+        next_action = str(last.get("next_action", "Run ./scripts/prep39083 doctor."))
+    elif phase == "ACCEPTED" and accepted_product == release.product_sha:
+        next_action = "No action required; rerun deploy only for an explicit acceptance check."
+    elif phase in ATTEMPT_PHASES and phase not in {"ACCEPTED", "NONE"}:
+        next_action = "Run ./scripts/prep39083 deploy to resume the owned attempt."
+    else:
+        next_action = "Run ./scripts/prep39083 deploy."
+
+    runner = Runner(environment=child_environment({}))
+    web = "UNKNOWN"
+    containers = runner.run(
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={release.project}",
+            "--format",
+            '{{.Label "com.docker.compose.service"}}|{{.State}}|{{.Status}}',
+        ],
+        check=False,
+    )
+    if containers.returncode == 0:
+        web_lines = [line for line in containers.stdout.splitlines() if line.startswith("web|")]
+        if len(web_lines) == 1:
+            web = (
+                "HEALTHY"
+                if "(healthy)" in web_lines[0]
+                else web_lines[0].split("|", 2)[1].upper()
+            )
+        elif not web_lines:
+            web = "ABSENT"
+    ready = phase == "ACCEPTED" and accepted_product == release.product_sha
+    failed_stage = str(smoke_failure.get("stage", "")) if smoke_failure else ""
+    k9 = "READY" if ready else ("FAILED" if failed_stage.startswith("K9") else "UNKNOWN")
+    semantic = "READY" if ready else "UNKNOWN"
+    mcl = "READY" if ready else ("FAILED" if failed_stage.startswith("MCL") else "UNKNOWN")
+    general = "READY" if ready else ("FAILED" if failed_stage == "GENERAL" else "UNKNOWN")
+    handoff = Runner().output(["git", "rev-parse", "HEAD"])
+    print(f"Product: {release.product_sha}")
+    print(f"Handoff: {handoff}")
+    print(f"Target state: {target_state}")
+    print(f"Deploy active: {'YES' if active else 'NO'}")
+    print(f"Deploy phase: {phase}")
+    print(f"Last result: {last_result}")
+    print(f"Last failed step: {failed_step}")
+    print(f"Code: {code}")
+    print(f"Accepted Product: {accepted_product}")
+    print(f"Web: {web}")
+    print(f"K9: {k9}")
+    print(f"Semantic: {semantic}")
+    print(f"MCL: {mcl}")
+    print(f"GENERAL: {general}")
+    print(f"Exact next action: {next_action}")
 
 
 def logs(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
@@ -3219,7 +3544,10 @@ def export(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("deploy", "doctor", "status", "logs", "smoke", "export"))
+    parser.add_argument(
+        "action",
+        choices=("sync", "deploy", "doctor", "status", "logs", "smoke", "export"),
+    )
     return parser.parse_args()
 
 
@@ -3282,53 +3610,92 @@ def fail(error: PrepError) -> NoReturn:
     raise SystemExit(2)
 
 
-def main() -> None:
-    arguments = parse_arguments()
+def execute(arguments: argparse.Namespace) -> None:
     try:
+        if arguments.action == "sync":
+            with deployment_lock("sync"):
+                snapshot = sync_release_source()
+                print("PREP39083 SOURCE SYNC PASS")
+                print(f"Handoff: {snapshot}")
+                write_last_command("sync", "PASS")
+            return
         release = load_release_identity()
+        if arguments.action == "status":
+            status(release)
+            return
         if arguments.action == "deploy":
-            bundle, preparation = prepare_deployment(release)
-            deploy(release, bundle, preparation)
+            with deployment_lock("deploy"):
+                retrieval = ensure_git_transport_artifact(release)
+                print(f"Artifact retrieval: {retrieval}", flush=True)
+                bundle, preparation = prepare_deployment(release)
+                deploy(release, bundle, preparation)
+                write_last_command("deploy", "ACCEPTED")
+            return
+        if arguments.action == "doctor":
+            with deployment_lock("doctor"):
+                retrieval = ensure_git_transport_artifact(release)
+                print(f"Artifact retrieval: {retrieval}", flush=True)
+                bundle = prepare_operational_bundle(release, arguments.action)
+                doctor(release, bundle)
+                write_last_command("doctor", "PASS")
             return
         bundle = prepare_operational_bundle(release, arguments.action)
         actions = {
-            "doctor": doctor,
-            "status": status,
             "logs": logs,
             "smoke": smoke,
             "export": export,
         }
         actions[arguments.action](release, bundle)
+        write_last_command(arguments.action, "PASS")
     except PrepError as error:
+        try:
+            write_last_command(arguments.action, "FAILED", error=error)
+        except OSError:
+            pass
         fail(error)
     except CommandFailure:
-        fail(
-            PrepError(
-                "COMMAND_EXECUTION",
-                "PREP_COMMAND_FAILED",
-                "A bounded deployment command failed without completing its gate.",
-                "Run ./scripts/prep39083 doctor, then logs; secrets and raw command "
-                "output were suppressed.",
-            )
+        error = PrepError(
+            "COMMAND_EXECUTION",
+            "PREP_COMMAND_FAILED",
+            "A bounded deployment command failed without completing its gate.",
+            "Run ./scripts/prep39083 doctor, then logs; secrets and raw command "
+            "output were suppressed.",
         )
+        try:
+            write_last_command(arguments.action, "FAILED", error=error)
+        except OSError:
+            pass
+        fail(error)
     except (EOFError, KeyboardInterrupt):
-        fail(
-            PrepError(
-                "OPERATOR_INPUT",
-                "PREP_OPERATOR_INPUT_CANCELLED",
-                "Interactive operator input was cancelled.",
-                "Rerun ./scripts/prep39083 deploy when the administrator input is available.",
-            )
+        error = PrepError(
+            "OPERATOR_INPUT",
+            "PREP_OPERATOR_INPUT_CANCELLED",
+            "Interactive operator input was cancelled.",
+            "Rerun ./scripts/prep39083 deploy when the administrator input is available.",
         )
+        try:
+            write_last_command(arguments.action, "FAILED", error=error)
+        except OSError:
+            pass
+        fail(error)
     except (OSError, ValueError):
-        fail(
-            PrepError(
-                "UNEXPECTED",
-                "PREP_DEPLOYMENT_FAILED",
-                "The one-command deployment could not complete its bounded contract.",
-                "Run ./scripts/prep39083 doctor; no persistent state was intentionally deleted.",
-            )
+        error = PrepError(
+            "UNEXPECTED",
+            "PREP_DEPLOYMENT_FAILED",
+            "The one-command deployment could not complete its bounded contract.",
+            "Run ./scripts/prep39083 doctor; no persistent state was intentionally deleted.",
         )
+        try:
+            write_last_command(arguments.action, "FAILED", error=error)
+        except OSError:
+            pass
+        fail(error)
+
+
+def main() -> None:
+    arguments = parse_arguments()
+    with command_log(arguments.action):
+        execute(arguments)
 
 
 if __name__ == "__main__":

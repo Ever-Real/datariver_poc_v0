@@ -71,6 +71,7 @@
 | 73 | [PREP39083 to OPS image promotion](65_PREP_TO_OPS_PROMOTION.md) | exact tested-image export, checksum/manifest, no-build OPS import and rollback | DEV-authored operator handoff; target gates open |
 | 74 | [DEV → PREP39083 → OPS release cycle](66_RELEASE_CYCLE.md) | serial Product/Evidence, source, artifact and persistent-state authority | PREP handoff contract |
 | 75 | [Migration governance and accepted-history integrity](68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md) | immutable accepted revisions, checksum gate, bounded new-migration review and baseline-V2 backlog | Active fail-closed release contract |
+| 76 | [Dedicated PREP release and Git artifact transport](adr/0132-prep-release-and-development-isolation.md) | dirty-development isolation, one-command release preparation, automatic PREP retrieval and receipt status | Accepted PREP operations contract |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

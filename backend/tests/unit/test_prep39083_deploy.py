@@ -1,3 +1,5 @@
+# ruff: noqa: S603, S607
+
 from __future__ import annotations
 
 import importlib.util
@@ -85,6 +87,129 @@ def _release_document() -> dict[str, object]:
         "project": "datariver-prep39083",
         "web_artifact": artifact.release_mapping(),
     }
+
+
+def test_stateful_lock_rejects_concurrent_owner_and_ignores_stale_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = tmp_path / "deploy.lock"
+    runtime = tmp_path / "runtime"
+    lock.write_text('{"pid":999999,"action":"deploy"}', encoding="utf-8")
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK", lock)
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime)
+
+    with deploy.deployment_lock("deploy"):
+        assert deploy.deploy_lock_active(lock) is True
+        with pytest.raises(deploy.PrepError) as captured:
+            with deploy.deployment_lock("deploy"):
+                pass
+        assert captured.value.code == "PREP_DEPLOY_ALREADY_ACTIVE"
+
+    assert deploy.deploy_lock_active(lock) is False
+
+
+def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    accepted = tmp_path / "accepted.json"
+    last = tmp_path / "last-command.json"
+    smoke = tmp_path / "smoke-failure.json"
+    lock = tmp_path / "deploy.lock"
+    attempt.write_text(
+        json.dumps(
+            {
+                "phase": "SMOKE_FAILED",
+                "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "AUTHENTICATED_SMOKE",
+                "code": "PREP_SMOKE_K9_NOT_READY",
+                "next_action": "Run ./scripts/prep39083 deploy to resume.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    smoke.write_text(json.dumps({"stage": "K9_INITIAL_REFRESH"}), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke)
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK", lock)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Deploy active: NO" in output
+    assert "Deploy phase: SMOKE_FAILED" in output
+    assert "Code: PREP_SMOKE_K9_NOT_READY" in output
+    assert "K9: FAILED" in output
+    assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
+
+
+def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", remote],
+        check=True,
+        capture_output=True,
+    )
+    author = tmp_path / "author"
+    subprocess.run(
+        ["git", "clone", remote, author],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=author, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=author, check=True)
+    (author / "tracked.txt").write_text("dev", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=author, check=True)
+    subprocess.run(["git", "commit", "-m", "dev"], cwd=author, check=True)
+    subprocess.run(["git", "push", "origin", "HEAD:dev"], cwd=author, check=True)
+    subprocess.run(["git", "switch", "-c", deploy.PREP_RELEASE_BRANCH], cwd=author, check=True)
+    (author / "release.txt").write_text("release", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=author, check=True)
+    subprocess.run(["git", "commit", "-m", "release"], cwd=author, check=True)
+    subprocess.run(
+        ["git", "push", "origin", f"HEAD:{deploy.PREP_RELEASE_BRANCH}"],
+        cwd=author,
+        check=True,
+    )
+    target = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=author,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    prep = tmp_path / "prep"
+    subprocess.run(
+        ["git", "clone", "--branch", "dev", remote, prep],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setattr(deploy, "ROOT", prep)
+
+    assert deploy.sync_release_source(root=prep) == target
+    assert subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=prep,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == deploy.PREP_RELEASE_BRANCH
 
 
 def test_release_identity_requires_exact_artifact_v3_contract(tmp_path: Path) -> None:
@@ -2266,7 +2391,7 @@ def test_wrapper_injects_proxy_into_uv_without_operator_duplication(tmp_path: Pa
     )
     fake_uv.chmod(0o755)
 
-    completed = subprocess.run(  # noqa: S603 - fixed private temporary executable.
+    completed = subprocess.run(
         [root / "scripts/prep39083", "doctor"],
         cwd=root,
         env={"PATH": f"{fake_bin}:/usr/bin:/bin"},

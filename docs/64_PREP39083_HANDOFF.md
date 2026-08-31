@@ -1,5 +1,23 @@
 # PREP39083 one-command exact-artifact deployment
 
+## Current operator interface
+
+The latest PREP-ready source is isolated on `prep39083-release`; ongoing `dev` and controlled
+`main` advancement do not implicitly change it. After the one-time checkout tracks that branch,
+normal updates use:
+
+```bash
+git pull --ff-only origin prep39083-release
+./scripts/prep39083 deploy
+```
+
+The deployer reads `deploy/prep39083/transport.json`, fetches its exact immutable artifact branch,
+reconstructs and validates the archive atomically, and then enters the existing exact-OCI doctor
+and deployment gates. Operators no longer enter Product, artifact branch, chunk or checksum values.
+`./scripts/prep39083 status` is the safe post-disconnection and failure summary. Historical manual
+artifact branches and the older `main` flow remain evidence/backward compatibility, not the normal
+operator path.
+
 ## Fixed release identity and boundary
 
 The machine-readable manifest is `deploy/prep39083/release.json`. At this

@@ -62,6 +62,9 @@ RUNTIME_INPUTS = (
     "scripts/prep39083_deploy.py",
     "scripts/prep39083_artifact.py",
     "scripts/prep39083_release.py",
+    "scripts/prep39083_transport.py",
+    "scripts/prep39083_release_prepare.py",
+    "scripts/prep39083-release",
     "scripts/smoke_prep39083.mjs",
 )
 SERVICES = ("web", "neo4j", "pgvector", "redis")

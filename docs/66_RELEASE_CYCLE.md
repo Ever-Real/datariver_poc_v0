@@ -1,5 +1,31 @@
 # DataRiver POC release cycle: DEV → PREP39083 → OPS
 
+## Isolated release and regular PREP commands
+
+ADR-0132 separates moving development state from the latest PREP-ready snapshot. A release owner
+selects one committed Product without switching or cleaning the active worktree:
+
+```bash
+./scripts/prep39083-release prepare --product-sha <exact-Product-SHA>
+```
+
+The command owns the disposable checkout, canonical gates/build, Evidence/Handoff, immutable Git
+artifact transport and fast-forward update of `prep39083-release`. `dev` may already be ahead of the
+selected Product. `main` is unchanged unless its separate approval gate is exercised.
+
+The regular PREP operator path is now only:
+
+```bash
+git pull --ff-only origin prep39083-release
+./scripts/prep39083 deploy
+```
+
+`deploy` retrieves and verifies the pinned chunks without merging the artifact branch, then runs
+the existing doctor, no-build deployment, migration and smoke gates. At any time, including after
+a disconnected terminal, `./scripts/prep39083 status` reports the receipt phase and exact next
+action. The historical `main` promotion procedure below remains available as a separately approved
+control and is not performed by the PREP release command.
+
 ## Repeatable operator loop
 
 ```text

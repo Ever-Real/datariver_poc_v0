@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf '%s\n' 'FAILED' 'Step: UV_PREFLIGHT' 'Code: PREP_RELEASE_UV_REQUIRED' \
+    'Action: Install the approved uv binary and rerun ./scripts/prep39083-release.' >&2
+  exit 2
+fi
+
+cd "$ROOT"
+exec uv run --frozen python scripts/prep39083_release_prepare.py "$@"

@@ -333,7 +333,8 @@ def test_operator_docs_preserve_ports_state_and_no_build_ops() -> None:
     assert "git merge-base --is-ancestor origin/main" in cycle
     assert '"$CANDIDATE":refs/heads/main' in cycle
     assert "Development and feature pull requests normally target `dev`" in agents
-    assert "PREP39083 updates its release contract only from `origin/main`" in agents
+    assert "PREP39083 updates its normal release contract only from `origin/prep39083-release`" in agents
+    assert "./scripts/prep39083-release prepare --product-sha <SHA>" in agents
     assert "checksum-pinned OCI/Docker archive" in agents
     assert 'branches: [dev, main, "codex/**"]' in workflow
 
