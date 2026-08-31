@@ -428,7 +428,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const runtimeSecurityStart = startupSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events')
   const runtimeSecurityDdl = startupSql.slice(
     runtimeSecurityStart,
-    startupSql.indexOf('\nBEGIN', runtimeSecurityStart),
+    startupSql.indexOf('CREATE TABLE IF NOT EXISTS poc_k9_source_snapshots_v2', runtimeSecurityStart),
   )
   const initSecurityDdl = `${securityInitSql.slice(
     securityInitSql.indexOf('CREATE TABLE IF NOT EXISTS poc_local_security_events'),

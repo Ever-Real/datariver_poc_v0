@@ -28,6 +28,10 @@ import {
   POC_POSTGRES_SCHEMA_V4_FINGERPRINT,
   POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE,
   POC_POSTGRES_SCHEMA_V4_REVISION,
+  POC_POSTGRES_SCHEMA_V5_CONTRACT,
+  POC_POSTGRES_SCHEMA_V5_FINGERPRINT,
+  POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE,
+  POC_POSTGRES_SCHEMA_V5_REVISION,
   canonicalizePocOwnedSchemaRows,
   fingerprintPocOwnedSchema,
   inspectPocPostgresOwnedSchema,
@@ -50,7 +54,8 @@ const migrationNames = [
   '006-poc-local-credential-provision-audit.sql',
   '007-poc-chat-discovery.sql',
 ]
-const migrations = new Map(migrationNames.map((name) => [
+const v6MigrationName = '008-poc-k9-lifecycle-v2.sql'
+const migrations = new Map([...migrationNames, v6MigrationName].map((name) => [
   name,
   readFileSync(new URL(`../deploy/poc/postgres-init/${name}`, import.meta.url), 'utf8'),
 ]))
@@ -103,6 +108,11 @@ const exactV4Receipt = expectedReceipt({
   fingerprint: POC_POSTGRES_SCHEMA_V4_FINGERPRINT,
 })
 const exactV5Receipt = expectedReceipt({
+  contract: POC_POSTGRES_SCHEMA_V5_CONTRACT,
+  revision: POC_POSTGRES_SCHEMA_V5_REVISION,
+  fingerprint: POC_POSTGRES_SCHEMA_V5_FINGERPRINT,
+})
+const exactV6Receipt = expectedReceipt({
   contract: POC_POSTGRES_SCHEMA_CONTRACT,
   revision: POC_POSTGRES_SCHEMA_REVISION,
   fingerprint: POC_POSTGRES_SCHEMA_FINGERPRINT,
@@ -130,6 +140,10 @@ async function applyV4(pool) {
 
 async function applyV5(pool) {
   await applyMigrations(pool, migrationNames)
+}
+
+async function applyV6(pool) {
+  await applyMigrations(pool, [...migrationNames, v6MigrationName])
 }
 
 function normalizeQuery(args) {
@@ -396,7 +410,7 @@ async function insertReceipt(pool, scope, value) {
   )
 }
 
-test('fresh immutable migrations expose the exact current V5 catalog and restart without mutation', {
+test('fresh immutable V5 migrations converge once to V6 and then restart without mutation', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('fresh_v2_catalog', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -404,22 +418,65 @@ test('fresh immutable migrations expose the exact current V5 catalog and restart
     await applyV5(pool)
     const inspected = await inspectPocPostgresOwnedSchema(pool)
     assert.deepEqual(inspected, {
-      state: 'CURRENT',
-      fingerprint: POC_POSTGRES_SCHEMA_FINGERPRINT,
+      state: 'RECEIPTED_V5',
+      fingerprint: POC_POSTGRES_SCHEMA_V5_FINGERPRINT,
     })
-    const snapshot = await catalogSnapshot(pool)
-    assert.equal(snapshot.fingerprint, POC_POSTGRES_SCHEMA_FINGERPRINT)
-    assert.deepEqual(snapshot.receipts, [
+    const before = await catalogSnapshot(pool)
+    assert.equal(before.fingerprint, POC_POSTGRES_SCHEMA_V5_FINGERPRINT)
+    assert.deepEqual(before.receipts, [
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
     ])
 
+    const upgrade = createObservedPool(pool)
+    await initializeActualStore(upgrade)
+    assert.ok(mutatingStatements(upgrade.trace).some((sql) => (
+      sql.startsWith('CREATE TABLE IF NOT EXISTS poc_k9_source_snapshots_v2')
+    )))
+    const snapshot = await catalogSnapshot(pool)
+    assert.equal(snapshot.fingerprint, POC_POSTGRES_SCHEMA_FINGERPRINT)
+    assert.deepEqual(snapshot.receipts, [
+      ...before.receipts,
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
+    ])
     const restart = createObservedPool(pool)
     await initializeActualStore(restart)
     assert.deepEqual(mutatingStatements(restart.trace), [])
     assert.deepEqual(await catalogSnapshot(pool), snapshot)
+  } finally {
+    await pool.end()
+  }
+}))
+
+test('canonical V6 migration matches runtime DDL, receipt and preserved Chat column ordinals', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('canonical_v6_catalog', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 2 })
+  try {
+    await applyV6(pool)
+    assert.deepEqual(await inspectPocPostgresOwnedSchema(pool), {
+      state: 'CURRENT', fingerprint: POC_POSTGRES_SCHEMA_FINGERPRINT,
+    })
+    const columns = await pool.query(`
+      SELECT ordinal_position, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'poc_chat_messages'
+      ORDER BY ordinal_position
+    `)
+    assert.deepEqual(columns.rows.slice(6), [
+      { ordinal_position: 7, column_name: 'evidence_json' },
+      { ordinal_position: 8, column_name: 'route_json' },
+      { ordinal_position: 9, column_name: 'workflow_json' },
+      { ordinal_position: 10, column_name: 'created_at' },
+      { ordinal_position: 11, column_name: 'discovery_json' },
+    ])
+    const before = await catalogSnapshot(pool)
+    const restart = createObservedPool(pool)
+    await initializeActualStore(restart)
+    assert.deepEqual(mutatingStatements(restart.trace), [])
+    assert.deepEqual(await catalogSnapshot(pool), before)
   } finally {
     await pool.end()
   }
@@ -454,13 +511,13 @@ test('PostgreSQL constraint fingerprint casts internal char before text concaten
     assert.deepEqual(second.rows, first.rows)
 
     const snapshot = await catalogSnapshot(pool)
-    assert.equal(snapshot.fingerprint, POC_POSTGRES_SCHEMA_FINGERPRINT)
+    assert.equal(snapshot.fingerprint, POC_POSTGRES_SCHEMA_V5_FINGERPRINT)
   } finally {
     await pool.end()
   }
 }))
 
-test('exact canonical pre-receipt V1 migrates transactionally to V5 and preserves runtime rows', {
+test('exact canonical pre-receipt V1 migrates transactionally to V6 and preserves runtime rows', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('pre_receipt_v1_upgrade', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -490,22 +547,30 @@ test('exact canonical pre-receipt V1 migrates transactionally to V5 and preserve
     assert.deepEqual(Object.fromEntries([
       'TABLE', 'COLUMN', 'CONSTRAINT', 'INDEX', 'TRIGGER', 'FUNCTION', 'TYPE',
     ].map((kind) => [kind, after.rows.filter((row) => row.kind === kind).length])), {
-      TABLE: 16,
-      COLUMN: 171,
-      CONSTRAINT: 94,
-      INDEX: 36,
-      TRIGGER: 4,
-      FUNCTION: 3,
+      TABLE: 24,
+      COLUMN: 238,
+      CONSTRAINT: 136,
+      INDEX: 51,
+      TRIGGER: 11,
+      FUNCTION: 4,
       TYPE: 0,
     })
     assert.deepEqual(after.rows.filter((row) => row.kind === 'TRIGGER').map(({ identity }) => identity), [
       'poc_change_history_cr_link_events.trg_poc_change_history_cr_link_append_only',
       'poc_change_history_ledger_events.trg_poc_change_history_ledger_append_only',
+      'poc_k9_projector_receipts_v2.trg_poc_k9_projector_receipts_v2_immutable',
+      'poc_k9_semantic_batches_v2.trg_poc_k9_semantic_batches_v2_immutable',
+      'poc_k9_semantic_desired_documents_v2.trg_poc_k9_semantic_desired_documents_v2_immutable',
+      'poc_k9_semantic_manifests_v2.trg_poc_k9_semantic_manifests_v2_immutable',
+      'poc_k9_semantic_staging_v2.trg_poc_k9_semantic_staging_v2_immutable',
+      'poc_k9_source_payloads_v2.trg_poc_k9_source_payloads_v2_immutable',
+      'poc_k9_source_snapshots_v2.trg_poc_k9_source_snapshots_v2_immutable',
       'poc_local_security_events.trg_poc_local_security_events_append_only',
       'poc_state.trg_poc_state_schema_receipts_immutable',
     ])
     assert.deepEqual(after.rows.filter((row) => row.kind === 'FUNCTION').map(({ identity }) => identity), [
       'poc_reject_change_history_mutation()',
+      'poc_reject_k9_lifecycle_payload_mutation()',
       'poc_reject_local_security_event_mutation()',
       'poc_reject_schema_receipt_mutation()',
     ])
@@ -514,7 +579,8 @@ test('exact canonical pre-receipt V1 migrates transactionally to V5 and preserve
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
     ])
     assert.deepEqual(await preservedLegacyRows(pool), beforeRows)
     assert.equal((await pool.query(
@@ -563,7 +629,7 @@ test('pre-receipt V1 receipt failure rolls back without schema or row mutation',
   }
 }))
 
-test('actual convergence upgrades exact receipted V1 through V2/V3/V4 to V5 and preserves immutable receipts', {
+test('actual convergence upgrades exact receipted V1 through V6 and preserves immutable receipts', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('receipted_v1_upgrade', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -593,7 +659,8 @@ test('actual convergence upgrades exact receipted V1 through V2/V3/V4 to V5 and 
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
     ])
     assert.deepEqual(await inspectPocPostgresOwnedSchema(pool), {
       state: 'CURRENT',
@@ -609,7 +676,7 @@ test('actual convergence upgrades exact receipted V1 through V2/V3/V4 to V5 and 
   }
 }))
 
-test('actual convergence upgrades exact receipted V2 through V3/V4 to V5 and rolls back a failed V5 receipt', {
+test('actual convergence upgrades exact receipted V2 through V6 and rolls back a failed V6 receipt', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('receipted_v2_upgrade', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -625,7 +692,7 @@ test('actual convergence upgrades exact receipted V2 through V3/V4 to V5 and rol
       code: 'MCP_V3_RECEIPT_FAILURE',
       message: 'synthetic V3 receipt failure',
       matcher: ({ sql, parameters }) => sql.startsWith('INSERT INTO poc_state')
-        && parameters[0] === POC_POSTGRES_SCHEMA_RECEIPT_SCOPE,
+        && parameters[0] === POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE,
     })
     await assert.rejects(initializeActualStore(failed), { code: 'MCP_V3_RECEIPT_FAILURE' })
     assert.equal(failed.trace.at(-1)?.sql, 'ROLLBACK')
@@ -637,14 +704,15 @@ test('actual convergence upgrades exact receipted V2 through V3/V4 to V5 and rol
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
     ])
   } finally {
     await pool.end()
   }
 }))
 
-test('actual convergence upgrades the accepted receipted V3 catalog through V4 to V5 without replacing ancestry', {
+test('actual convergence upgrades the accepted receipted V3 catalog through V6 without replacing ancestry', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('receipted_v3_upgrade', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -661,7 +729,8 @@ test('actual convergence upgrades the accepted receipted V3 catalog through V4 t
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
     ])
     assert.deepEqual(await inspectPocPostgresOwnedSchema(pool), {
       state: 'CURRENT',
@@ -732,7 +801,7 @@ test('PostgreSQL MCP read receipt survives restart, replays once and rejects mut
   }
 }))
 
-test('actual convergence preserves the exact known-older path through V1/V2/V3/V4 to V5', {
+test('actual convergence preserves the exact known-older path through V1 to V6', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('known_older_upgrade', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 2 })
@@ -777,7 +846,7 @@ test('actual convergence preserves the exact known-older path through V1/V2/V3/V
       index > v4ReceiptIndex && sql.startsWith('ALTER TABLE poc_chat_messages')
     ))
     const v5ReceiptIndex = upgrade.trace.findIndex(({ sql, parameters }) => (
-      sql.startsWith('INSERT INTO poc_state') && parameters[0] === POC_POSTGRES_SCHEMA_RECEIPT_SCOPE
+      sql.startsWith('INSERT INTO poc_state') && parameters[0] === POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE
     ))
     assert.ok(v1ReceiptIndex > 0)
     assert.ok(v2DdlIndex > v1ReceiptIndex)
@@ -795,7 +864,8 @@ test('actual convergence preserves the exact known-older path through V1/V2/V3/V
       { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
       { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
-      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV6Receipt, version: '1' },
     ])
     assert.deepEqual(await inspectPocPostgresOwnedSchema(pool), {
       state: 'CURRENT',
@@ -831,9 +901,9 @@ test('actual catalog convergence fails closed before mutation for missing, malfo
       label: 'newer_receipt',
       setup: async (pool) => {
         await applyV1(pool)
-        await insertReceipt(pool, 'product-owned-schema-contract-v6', {
-          contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6',
-          revision: 6,
+        await insertReceipt(pool, 'product-owned-schema-contract-v7', {
+          contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V7',
+          revision: 7,
           fingerprint: '3'.repeat(64),
         })
       },

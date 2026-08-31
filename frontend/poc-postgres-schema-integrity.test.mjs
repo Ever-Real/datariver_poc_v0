@@ -13,6 +13,8 @@ import {
   POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE,
   POC_POSTGRES_SCHEMA_V4_CONTRACT,
   POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE,
+  POC_POSTGRES_SCHEMA_V5_CONTRACT,
+  POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE,
   canonicalizePocOwnedSchemaRows,
   classifyPocPostgresOwnedSchema,
   convergePocPostgresOwnedSchema,
@@ -22,6 +24,7 @@ import {
   recordPocPostgresV2SchemaReceipt,
   recordPocPostgresV3SchemaReceipt,
   recordPocPostgresV4SchemaReceipt,
+  recordPocPostgresV5SchemaReceipt,
 } from './poc-postgres-schema-integrity.mjs'
 
 function ownedSchemaRows() {
@@ -79,9 +82,19 @@ function v4Receipt(fingerprint, overrides = {}) {
 
 function v5Receipt(fingerprint, overrides = {}) {
   return receipt(
+    overrides.scope ?? POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE,
+    overrides.contract ?? POC_POSTGRES_SCHEMA_V5_CONTRACT,
+    overrides.revision ?? 5,
+    overrides.fingerprint ?? fingerprint,
+    overrides.extra,
+  )
+}
+
+function v6Receipt(fingerprint, overrides = {}) {
+  return receipt(
     overrides.scope ?? POC_POSTGRES_SCHEMA_RECEIPT_SCOPE,
     overrides.contract ?? POC_POSTGRES_SCHEMA_CONTRACT,
-    overrides.revision ?? 5,
+    overrides.revision ?? 6,
     overrides.fingerprint ?? fingerprint,
     overrides.extra,
   )
@@ -105,18 +118,23 @@ function versionedSchemas() {
     ...v4Rows,
     { kind: 'COLUMN', identity: 'poc_alpha.3.discovery', definition: 'jsonb|false|||' },
   ]
+  const v6Rows = [
+    ...v5Rows,
+    { kind: 'TABLE', identity: 'poc_k9_source_snapshots_v2', definition: 'r' },
+  ]
   const olderRows = v1Rows.slice(0, -1)
   return {
     olderRows,
     v1Rows,
     v2Rows,
-    v3Rows, v4Rows, v5Rows,
+    v3Rows, v4Rows, v5Rows, v6Rows,
     olderFingerprint: fingerprintPocOwnedSchema(olderRows),
     v1Fingerprint: fingerprintPocOwnedSchema(v1Rows),
     v2Fingerprint: fingerprintPocOwnedSchema(v2Rows),
     v3Fingerprint: fingerprintPocOwnedSchema(v3Rows),
     v4Fingerprint: fingerprintPocOwnedSchema(v4Rows),
     v5Fingerprint: fingerprintPocOwnedSchema(v5Rows),
+    v6Fingerprint: fingerprintPocOwnedSchema(v6Rows),
   }
 }
 
@@ -125,20 +143,21 @@ function classifyVersioned(rows, receipts = [], overrides = {}) {
   return classifyPocPostgresOwnedSchema({
     rows,
     receipts,
-    expectedFingerprint: versions.v5Fingerprint,
+    expectedFingerprint: versions.v6Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
     v2Fingerprint: versions.v2Fingerprint,
     v3Fingerprint: versions.v3Fingerprint,
     v4Fingerprint: versions.v4Fingerprint,
+    v5Fingerprint: versions.v5Fingerprint,
     migratableFingerprints: new Set([versions.olderFingerprint]),
     ...overrides,
   })
 }
 
-test('accepts only exact receipted V5 as current and identifies internal receipt boundaries', () => {
+test('accepts only exact receipted V6 as current and identifies internal receipt boundaries', () => {
   const versions = versionedSchemas()
   assert.equal(classifyVersioned([], []).state, 'FRESH')
-  assert.equal(classifyVersioned(versions.v5Rows, []).state, 'CURRENT_UNVERSIONED')
+  assert.equal(classifyVersioned(versions.v6Rows, []).state, 'CURRENT_UNVERSIONED')
   assert.equal(classifyVersioned(
     versions.v2Rows,
     [v1Receipt(versions.v1Fingerprint)],
@@ -163,6 +182,12 @@ test('accepts only exact receipted V5 as current and identifies internal receipt
   ]).state, 'V5_RECEIPT_PENDING')
   assert.equal(classifyVersioned(versions.v5Rows, [
     v5Receipt(versions.v5Fingerprint),
+  ]).state, 'RECEIPTED_V5')
+  assert.equal(classifyVersioned(versions.v6Rows, [
+    v5Receipt(versions.v5Fingerprint),
+  ]).state, 'V6_RECEIPT_PENDING')
+  assert.equal(classifyVersioned(versions.v6Rows, [
+    v6Receipt(versions.v6Fingerprint),
   ]).state, 'CURRENT')
 })
 
@@ -190,21 +215,23 @@ test('maps the legacy single receipt argument to V1 scope compatibility', () => 
   assert.equal(classifyPocPostgresOwnedSchema({
     rows: versions.v1Rows,
     receipt: legacyReceipt,
-    expectedFingerprint: versions.v5Fingerprint,
+    expectedFingerprint: versions.v6Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
     v2Fingerprint: versions.v2Fingerprint,
     v3Fingerprint: versions.v3Fingerprint,
     v4Fingerprint: versions.v4Fingerprint,
+    v5Fingerprint: versions.v5Fingerprint,
     migratableFingerprints: new Set(),
   }).state, 'RECEIPTED_V1')
   assert.equal(classifyPocPostgresOwnedSchema({
     rows: versions.v2Rows,
     receipt: legacyReceipt,
-    expectedFingerprint: versions.v5Fingerprint,
+    expectedFingerprint: versions.v6Fingerprint,
     v1Fingerprint: versions.v1Fingerprint,
     v2Fingerprint: versions.v2Fingerprint,
     v3Fingerprint: versions.v3Fingerprint,
     v4Fingerprint: versions.v4Fingerprint,
+    v5Fingerprint: versions.v5Fingerprint,
     migratableFingerprints: new Set(),
   }).state, 'V2_RECEIPT_PENDING')
 })
@@ -260,13 +287,13 @@ test('fails closed for missing, malformed, wrong, partial and newer receipt sets
     { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
   )
   assert.throws(
-    () => classifyVersioned(versions.v3Rows, [v3Receipt(versions.v3Fingerprint, { revision: 6 })]),
+    () => classifyVersioned(versions.v3Rows, [v3Receipt(versions.v3Fingerprint, { revision: 7 })]),
     { code: 'POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED' },
   )
   assert.throws(
     () => classifyVersioned(versions.v2Rows, [{
-      scope: 'product-owned-schema-contract-v6',
-      value: { contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6', revision: 6, fingerprint: '0'.repeat(64) },
+      scope: 'product-owned-schema-contract-v7',
+      value: { contract: 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V7', revision: 7, fingerprint: '0'.repeat(64) },
     }]),
     { code: 'POC_POSTGRES_SCHEMA_NEWER_UNSUPPORTED' },
   )
@@ -275,48 +302,52 @@ test('fails closed for missing, malformed, wrong, partial and newer receipt sets
 test('fails closed for missing columns, type drift, constraints and critical indexes', () => {
   const versions = versionedSchemas()
   const invalidCases = [
-    versions.v5Rows.filter((row) => row.kind !== 'COLUMN'),
-    versions.v5Rows.map((row) => row.identity.endsWith('.discovery') ? { ...row, definition: 'text|true|||' } : row),
-    versions.v5Rows.filter((row) => row.kind !== 'CONSTRAINT'),
-    versions.v5Rows.filter((row) => row.kind !== 'INDEX'),
+    versions.v6Rows.filter((row) => row.kind !== 'COLUMN'),
+    versions.v6Rows.map((row) => row.identity.endsWith('.discovery') ? { ...row, definition: 'text|true|||' } : row),
+    versions.v6Rows.filter((row) => row.kind !== 'CONSTRAINT'),
+    versions.v6Rows.filter((row) => row.kind !== 'INDEX'),
   ]
   for (const invalidRows of invalidCases) {
     assert.throws(
-      () => classifyVersioned(invalidRows, [v5Receipt(versions.v5Fingerprint)]),
+      () => classifyVersioned(invalidRows, [v6Receipt(versions.v6Fingerprint)]),
       { code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED' },
     )
   }
 })
 
-test('converges exact V1/V2/V3/V4, known older and fresh schemas to durable V5 in order', async () => {
+test('converges exact V1/V2/V3/V4/V5, known older and fresh schemas to durable V6 in order', async () => {
   const scenarios = [
     {
-      states: ['V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+      states: ['V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
     },
     {
-      states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+      states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
     },
     {
-      states: ['KNOWN_OLDER_MIGRATABLE', 'V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V1_DDL', 'V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+      states: ['KNOWN_OLDER_MIGRATABLE', 'V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V1_DDL', 'V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
     },
     {
-      states: ['RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+      states: ['RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
     },
     {
-      states: ['RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+      states: ['RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
     },
     {
-      states: ['RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
-      actions: ['V5_DDL', 'V5_RECEIPT'],
+      states: ['RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V5_DDL', 'V5_RECEIPT', 'V6_DDL', 'V6_RECEIPT'],
+    },
+    {
+      states: ['RECEIPTED_V5', 'V6_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V6_DDL', 'V6_RECEIPT'],
     },
     {
       states: ['FRESH', 'CURRENT_UNVERSIONED', 'CURRENT'],
-      actions: ['FRESH_DDL', 'V5_RECEIPT'],
+      actions: ['FRESH_DDL', 'V6_RECEIPT'],
     },
   ]
   for (const scenario of scenarios) {
@@ -331,11 +362,13 @@ test('converges exact V1/V2/V3/V4, known older and fresh schemas to durable V5 i
       applyV3Schema: async () => { calls.push('V3_DDL') },
       applyV4Schema: async () => { calls.push('V4_DDL') },
       applyV5Schema: async () => { calls.push('V5_DDL') },
+      applyV6Schema: async () => { calls.push('V6_DDL') },
       recordV1Receipt: async () => { calls.push('V1_RECEIPT') },
       recordV2Receipt: async () => { calls.push('V2_RECEIPT') },
       recordV3Receipt: async () => { calls.push('V3_RECEIPT') },
       recordV4Receipt: async () => { calls.push('V4_RECEIPT') },
-      recordReceipt: async () => { calls.push('V5_RECEIPT') },
+      recordV5Receipt: async () => { calls.push('V5_RECEIPT') },
+      recordReceipt: async () => { calls.push('V6_RECEIPT') },
     })
     assert.deepEqual(calls, ['BEGIN', ...scenario.actions, 'COMMIT'])
     assert.equal(states.length, 0)
@@ -352,11 +385,13 @@ test('converges exact V1/V2/V3/V4, known older and fresh schemas to durable V5 i
     applyV3Schema: async () => { assert.fail('restart must not apply V3 DDL') },
     applyV4Schema: async () => { assert.fail('restart must not apply V4 DDL') },
     applyV5Schema: async () => { assert.fail('restart must not apply V5 DDL') },
+    applyV6Schema: async () => { assert.fail('restart must not apply V6 DDL') },
     recordV1Receipt: async () => { assert.fail('restart must not insert a V1 receipt') },
     recordV2Receipt: async () => { assert.fail('restart must not insert a V2 receipt') },
     recordV3Receipt: async () => { assert.fail('restart must not insert a V3 receipt') },
     recordV4Receipt: async () => { assert.fail('restart must not insert a V4 receipt') },
-    recordReceipt: async () => { assert.fail('restart must not insert another V5 receipt') },
+    recordV5Receipt: async () => { assert.fail('restart must not insert a V5 receipt') },
+    recordReceipt: async () => { assert.fail('restart must not insert another V6 receipt') },
   })
   assert.deepEqual(restartCalls, ['BEGIN', 'COMMIT'])
 })
@@ -368,11 +403,14 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
     { states: ['V3_RECEIPT_PENDING'] },
     { states: ['V4_RECEIPT_PENDING'] },
     { states: ['V5_RECEIPT_PENDING'] },
+    { states: ['V6_RECEIPT_PENDING'] },
     { states: ['RECEIPTED_V1'], ddlError: new Error('DDL failed') },
     { states: ['RECEIPTED_V4'], ddlError: new Error('V5 DDL failed') },
+    { states: ['RECEIPTED_V5'], ddlError: new Error('V6 DDL failed') },
     { states: ['RECEIPTED_V1', 'CURRENT_UNVERSIONED'] },
     { states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING'], receiptError: new Error('receipt failed') },
     { states: ['RECEIPTED_V4', 'V5_RECEIPT_PENDING'], receiptError: new Error('V5 receipt failed') },
+    { states: ['RECEIPTED_V5', 'V6_RECEIPT_PENDING'], receiptError: new Error('V6 receipt failed') },
     { states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'V2_RECEIPT_PENDING'] },
     { states: ['KNOWN_OLDER_MIGRATABLE', 'CURRENT_UNVERSIONED'] },
     { states: ['V1_RECEIPT_PENDING'], v1ReceiptError: new Error('V1 receipt failed') },
@@ -390,10 +428,12 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
       applyV3Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
       applyV4Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
       applyV5Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
+      applyV6Schema: async () => { if (scenario.ddlError) throw scenario.ddlError },
       recordV1Receipt: async () => { if (scenario.v1ReceiptError) throw scenario.v1ReceiptError },
       recordV2Receipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
       recordV3Receipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
       recordV4Receipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
+      recordV5Receipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
       recordReceipt: async () => { if (scenario.receiptError) throw scenario.receiptError },
     }))
     assert.equal(calls[0], 'BEGIN')
@@ -402,12 +442,13 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
   }
 })
 
-test('inserts immutable V1, V2, V3, V4 and V5 receipts without overwrite SQL', async () => {
+test('inserts immutable V1 through V6 receipts without overwrite SQL', async () => {
   for (const [record, expectedScope] of [
     [recordPocPostgresV1SchemaReceipt, POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE],
     [recordPocPostgresV2SchemaReceipt, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE],
     [recordPocPostgresV3SchemaReceipt, POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE],
     [recordPocPostgresV4SchemaReceipt, POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE],
+    [recordPocPostgresV5SchemaReceipt, POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE],
     [recordPocPostgresOwnedSchemaReceipt, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE],
   ]) {
     const calls = []
