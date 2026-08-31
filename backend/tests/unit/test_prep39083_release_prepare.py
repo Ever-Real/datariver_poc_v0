@@ -34,6 +34,16 @@ def _load_module() -> ModuleType:
 prepare = _load_module()
 
 
+def test_disposable_release_builds_runtime_before_server_regression() -> None:
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    build = 'run(["npm", "run", "build:poc"]'
+    regression = 'run(["npm", "run", "test:poc-server"]'
+
+    assert build in source
+    assert regression in source
+    assert source.index(build) < source.index(regression)
+
+
 def _git(cwd: Path, *arguments: str) -> str:
     completed = subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
         ["git", *arguments],  # noqa: S607 - Git is the tested release dependency.

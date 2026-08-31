@@ -207,6 +207,7 @@ def run_product_gates(build_checkout: Path, product_sha: str, output_dir: Path) 
         visible=True,
     )
     run(["npm", "ci", "--ignore-scripts"], cwd=build_checkout / "frontend", visible=True)
+    run(["npm", "run", "build:poc"], cwd=build_checkout / "frontend", visible=True)
     run(["npm", "run", "test:poc-server"], cwd=build_checkout / "frontend", visible=True)
     run(
         [
