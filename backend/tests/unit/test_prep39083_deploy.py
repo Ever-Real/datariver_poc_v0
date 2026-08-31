@@ -222,6 +222,61 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     assert "Batch: 2/6" in output
 
 
+def test_status_projects_same_scope_assignment_failure_accounting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    last = tmp_path / "last-command.json"
+    failure = tmp_path / "smoke-failure.json"
+    attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
+    last.write_text(json.dumps({
+        "result": "FAILED",
+        "step": "AUTHENTICATED_SMOKE",
+        "code": "PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED",
+        "next_action": "Inspect the bounded assignment accounting.",
+    }), encoding="utf-8")
+    failure.write_text(json.dumps({
+        "stage": "K9_INITIAL_REFRESH",
+        "diagnostic": {
+            "failure_stage": "METADATA_COLLECTION",
+            "failure_detail_code": "GLOSSARY_ASSIGNMENT_COUNT_MISMATCH",
+            "metadata_profile": {
+                "assignments": {
+                    "raw_table_refs": 5,
+                    "raw_column_refs": 7,
+                    "projectable_table_refs": 4,
+                    "projectable_column_refs": 5,
+                    "dangling_table_refs": 1,
+                    "dangling_column_refs": 2,
+                    "unique_projected_table_edges": 3,
+                    "unique_projected_column_edges": 5,
+                    "duplicate_table_refs": 0,
+                    "duplicate_column_refs": 0,
+                },
+                "direct_resolution": {},
+            },
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", failure)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "k9-progress.json")
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "K9 detail: GLOSSARY_ASSIGNMENT_COUNT_MISMATCH" in output
+    assert (
+        "Assignment accounting: raw=5/7; projectable=4/5; "
+        "dangling=1/2; unique=3/5; duplicate=0/0"
+    ) in output
+
+
 def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -244,6 +299,13 @@ def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
             "does_not_exist": 1470,
             "removed": 8,
         },
+        "k9_assignment_scope": {
+            "provider_incoming_table_total": 90000,
+            "provider_incoming_column_total": 100,
+            "k9_scoped_table_reference_total": 75431,
+            "k9_scoped_column_reference_total": 80,
+            "provider_scope_relation": "GLOBAL_GREATER",
+        },
     }), encoding="utf-8")
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
@@ -263,6 +325,9 @@ def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
     assert "Absent: 8" in output
     assert "Does not exist: 1470" in output
     assert "Removed: 8" in output
+    assert "K9 assignment scope: GLOBAL_GREATER (advisory)" in output
+    assert "K9 scoped references: table=75431; column=80" in output
+    assert "Provider incoming totals: table=90000; column=100" in output
 
 
 def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(

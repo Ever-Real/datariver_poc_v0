@@ -77,6 +77,28 @@ test('binds graph and semantic projections to one deterministic DataHub source s
   }
   const first = buildDatahubKnowledgeSourceSnapshot(input)
   const firstFingerprint = buildDatahubKnowledgeSourceFingerprint(input)
+  const providerTelemetryOnly = structuredClone(input)
+  providerTelemetryOnly.metadataSource.source_profile.assignments = {
+    ...providerTelemetryOnly.metadataSource.source_profile.assignments,
+    declared_table_assignment_total: 99,
+    provider_incoming_table_total: 99,
+    provider_scope_relation: 'GLOBAL_GREATER',
+  }
+  providerTelemetryOnly.metadataSource.completeness_metadata = {
+    per_assignment: {
+      bounded: { TABLE: { raw: 0, provider_incoming_total: 99 } },
+    },
+  }
+  const providerTelemetryBaseline = structuredClone(providerTelemetryOnly)
+  providerTelemetryBaseline.metadataSource.source_profile.assignments.declared_table_assignment_total = 0
+  providerTelemetryBaseline.metadataSource.source_profile.assignments.provider_incoming_table_total = 0
+  providerTelemetryBaseline.metadataSource.source_profile.assignments.provider_scope_relation = 'EQUAL'
+  providerTelemetryBaseline.metadataSource.completeness_metadata.per_assignment
+    .bounded.TABLE.provider_incoming_total = 0
+  assert.equal(
+    buildDatahubKnowledgeSourceFingerprint(providerTelemetryOnly).source_fingerprint_id,
+    buildDatahubKnowledgeSourceFingerprint(providerTelemetryBaseline).source_fingerprint_id,
+  )
   const observedLater = buildDatahubKnowledgeSourceSnapshot({
     ...input,
     inventoryProjection: { ...input.inventoryProjection, observed_at: '2026-08-24T01:00:00.000Z' },
@@ -205,7 +227,13 @@ test('managed K9 success exposes only bounded dangling glossary warning counts',
         catalog_generation: generation,
         metadata_source_profile: {
           contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
-          assignments: {},
+          assignments: {
+            provider_incoming_table_total: 18,
+            provider_incoming_column_total: 23,
+            raw_table_refs: 11,
+            raw_column_refs: 19,
+            provider_scope_relation: 'GLOBAL_GREATER',
+          },
           direct_resolution: {
             dangling_unique_terms: 3,
             dangling_assignment_references: 11,
@@ -234,6 +262,13 @@ test('managed K9 success exposes only bounded dangling glossary warning counts',
     removed: 1,
   })
   assert.equal(JSON.stringify(summary.k9_source_warning).includes('urn:li:'), false)
+  assert.deepEqual(summary.k9_assignment_scope, {
+    provider_incoming_table_total: 18,
+    provider_incoming_column_total: 23,
+    k9_scoped_table_reference_total: 11,
+    k9_scoped_column_reference_total: 19,
+    provider_scope_relation: 'GLOBAL_GREATER',
+  })
 })
 
 test('managed K9 resume reports an active descendant attempt instead of a retained terminal failure', async () => {
