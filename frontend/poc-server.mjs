@@ -67,6 +67,10 @@ import {
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
 import {
+  buildDatahubKnowledgeSourceFingerprint,
+  buildDatahubKnowledgeSourceSnapshot,
+} from './poc-k9-source-snapshot.mjs'
+import {
   createK9MetadataCollector,
   K9_METADATA_FAILURE_DETAILS,
   normalizeDatahubTagReferences,
@@ -129,6 +133,10 @@ import {
 } from './poc-site-branding.mjs'
 
 export { currentDatahubDatasetExists } from './poc-datahub-current-table.mjs'
+export {
+  buildDatahubKnowledgeSourceFingerprint,
+  buildDatahubKnowledgeSourceSnapshot,
+}
 
 const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
@@ -2698,130 +2706,6 @@ function canonicalJson(value) {
 
 function canonicalHash(value) {
   return sha256(canonicalJson(value))
-}
-
-function k9ScopedMetadataSourceProfile(value) {
-  const profile = sanitizeK9MetadataSourceProfile(value)
-  if (!profile) return null
-  const scoped = structuredClone(profile)
-  // GlossaryTerm incoming relationship totals are provider-wide telemetry:
-  // TermedWith is emitted by many entity types outside the K9 Dataset/Column
-  // universe. Unrelated Chart/Container/etc. changes must not rotate a
-  // Dataset-scoped K9 source generation.
-  for (const key of [
-    'declared_table_assignment_total',
-    'declared_column_assignment_total',
-    'provider_incoming_table_total',
-    'provider_incoming_column_total',
-    'provider_scope_relation',
-  ]) delete scoped.assignments[key]
-  return scoped
-}
-
-function k9ScopedCompletenessMetadata(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const scoped = structuredClone(value)
-  for (const types of Object.values(scoped.per_assignment || {})) {
-    if (!types || typeof types !== 'object' || Array.isArray(types)) continue
-    for (const totals of Object.values(types)) {
-      if (totals && typeof totals === 'object' && !Array.isArray(totals)) {
-        delete totals.provider_incoming_total
-      }
-    }
-  }
-  return scoped
-}
-
-export function buildDatahubKnowledgeSourceFingerprint({
-  inventoryProjection,
-  datahubIdentity,
-  lineageSource,
-  metadataSource,
-}) {
-  const catalogGeneration = inventoryProjection?.source_generation
-  if (typeof catalogGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(catalogGeneration)) {
-    throw new Error('The shared DataHub Catalog generation is unavailable for K9 refresh')
-  }
-  const fingerprintDocument = {
-    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_FINGERPRINT_V1',
-    datahub_version: datahubIdentity?.version || null,
-    datahub_commit: datahubIdentity?.commit || null,
-    catalog_generation: catalogGeneration,
-    lineage_hash: canonicalHash({
-      nodes: lineageSource?.nodes,
-      edges: lineageSource?.edges,
-      completeness_metadata: lineageSource?.completeness_metadata,
-    }),
-    metadata_hash: canonicalHash({
-      table_nodes: metadataSource?.table_nodes,
-      column_nodes: metadataSource?.column_nodes,
-      table_column_edges: metadataSource?.table_column_edges,
-      terms: metadataSource?.terms,
-      parent_nodes: metadataSource?.parent_nodes,
-      term_parent_edges: metadataSource?.term_parent_edges,
-      node_parent_edges: metadataSource?.node_parent_edges,
-      glossary_relationships: metadataSource?.glossary_relationships,
-      table_assignments: metadataSource?.table_assignments,
-      column_assignments: metadataSource?.column_assignments,
-      tags: metadataSource?.tags,
-      domains: metadataSource?.domains,
-      containers: metadataSource?.containers,
-      platform_instances: metadataSource?.platform_instances,
-      table_tag_assignments: metadataSource?.table_tag_assignments,
-      column_tag_assignments: metadataSource?.column_tag_assignments,
-      table_domain_assignments: metadataSource?.table_domain_assignments,
-      table_container_assignments: metadataSource?.table_container_assignments,
-      table_platform_instance_assignments: metadataSource?.table_platform_instance_assignments,
-      completeness_metadata: k9ScopedCompletenessMetadata(metadataSource?.completeness_metadata),
-      // The sanitized source profile contains deterministic raw-reference
-      // accounting and identity hashes. This keeps stale assignment changes
-      // inside the consistency fence even though non-projectable edges are
-      // intentionally excluded from the graph projection.
-      metadata_source_profile: k9ScopedMetadataSourceProfile(metadataSource?.source_profile),
-    }),
-  }
-  return {
-    ...fingerprintDocument,
-    source_fingerprint_id: canonicalHash(fingerprintDocument),
-  }
-}
-
-export function buildDatahubKnowledgeSourceSnapshot({
-  inventoryProjection,
-  datahubIdentity,
-  lineageSource,
-  metadataSource,
-  semanticIndex,
-}) {
-  const sourceFingerprint = buildDatahubKnowledgeSourceFingerprint({
-    inventoryProjection,
-    datahubIdentity,
-    lineageSource,
-    metadataSource,
-  })
-  if (semanticIndex?.generation !== sourceFingerprint.catalog_generation
-    || typeof semanticIndex?.bindingHash !== 'string'
-    || !/^[0-9a-f]{64}$/.test(semanticIndex.bindingHash)) {
-    throw new Error('The semantic index is not bound to the shared DataHub Catalog generation')
-  }
-  const snapshotDocument = {
-    contract_version: 'DATAHUB_KNOWLEDGE_SOURCE_SNAPSHOT_V2',
-    datahub_version: sourceFingerprint.datahub_version,
-    datahub_commit: sourceFingerprint.datahub_commit,
-    catalog_generation: sourceFingerprint.catalog_generation,
-    semantic_index_contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
-    semantic_index_binding_hash: semanticIndex.bindingHash,
-    semantic_index_generation: semanticIndex.generation,
-    metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
-    lineage_hash: sourceFingerprint.lineage_hash,
-    metadata_hash: sourceFingerprint.metadata_hash,
-    source_fingerprint_id: sourceFingerprint.source_fingerprint_id,
-  }
-  return {
-    ...snapshotDocument,
-    source_snapshot_id: canonicalHash(snapshotDocument),
-    observed_at: inventoryProjection?.observed_at || null,
-  }
 }
 
 function malformedDatahubReadback(aspectName) {
