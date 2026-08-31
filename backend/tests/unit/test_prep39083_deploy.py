@@ -62,7 +62,7 @@ def _write_private_env(path: Path, values: dict[str, str]) -> bytes:
     return payload
 
 
-def _release() -> object:
+def _release() -> Any:
     return deploy.ReleaseIdentity("a" * 40, "b" * 40, "linux/amd64", 39083, "datariver-prep39083")
 
 
@@ -139,24 +139,29 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
         ),
         encoding="utf-8",
     )
-    smoke.write_text(json.dumps({
-        "stage": "K9_INITIAL_REFRESH",
-        "diagnostic": {
-            "failure_stage": "METADATA_COLLECTION",
-            "failure_detail_code": "TIMEOUT",
-            "provider_failure_class": "TIMEOUT",
-            "batch_number": 2,
-            "batch_count": 6,
-            "batch_requested_count": 250,
-            "batch_response_count": 0,
-            "batch_elapsed_ms": 60000,
-            "metadata_profile": {
-                "glossary_entities_fetched": 2500,
-                "glossary_reported_total": 2501,
-                "direct_resolution": {"completed_resolution_count": 250, "total": 1387},
-            },
-        },
-    }), encoding="utf-8")
+    smoke.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "failure_stage": "METADATA_COLLECTION",
+                    "failure_detail_code": "TIMEOUT",
+                    "provider_failure_class": "TIMEOUT",
+                    "batch_number": 2,
+                    "batch_count": 6,
+                    "batch_requested_count": 250,
+                    "batch_response_count": 0,
+                    "batch_elapsed_ms": 60000,
+                    "metadata_profile": {
+                        "glossary_entities_fetched": 2500,
+                        "glossary_reported_total": 2501,
+                        "direct_resolution": {"completed_resolution_count": 250, "total": 1387},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
     monkeypatch.setattr(deploy, "LAST_COMMAND", last)
@@ -189,20 +194,30 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
 ) -> None:
     attempt = tmp_path / "deploy-attempt.json"
     progress = tmp_path / "k9-progress.json"
-    attempt.write_text(json.dumps({
-        "phase": "SMOKE_RUNNING",
-        "target_state_before": "EXISTING_OWNED_INCOMPLETE",
-    }), encoding="utf-8")
-    progress.write_text(json.dumps({
-        "contract": "DATARIVER_PREP39083_K9_PROGRESS_V1",
-        "k9": "RUNNING",
-        "stage": "METADATA_COLLECTION",
-        "detail": "DIRECT_GLOSSARY_RESOLUTION",
-        "completed": 500,
-        "total": 1387,
-        "batch_number": 2,
-        "batch_total": 6,
-    }), encoding="utf-8")
+    attempt.write_text(
+        json.dumps(
+            {
+                "phase": "SMOKE_RUNNING",
+                "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    progress.write_text(
+        json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_K9_PROGRESS_V1",
+                "k9": "RUNNING",
+                "stage": "METADATA_COLLECTION",
+                "detail": "DIRECT_GLOSSARY_RESOLUTION",
+                "completed": 500,
+                "total": 1387,
+                "batch_number": 2,
+                "batch_total": 6,
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
     monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
@@ -233,51 +248,66 @@ def test_status_uses_v2_lifecycle_and_independent_smoke_lane_matrix(
     failure = tmp_path / "smoke-failure.json"
     smoke = tmp_path / "smoke.json"
     attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
-    last.write_text(json.dumps({
-        "result": "FAILED",
-        "step": "K9_INITIAL_REFRESH",
-        "code": "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY",
-        "next_action": "Run ./scripts/prep39083 deploy to resume the Semantic projector.",
-    }), encoding="utf-8")
-    failure.write_text(json.dumps({
-        "stage": "K9_INITIAL_REFRESH",
-        "diagnostic": {
-            "failure_stage": "PROVIDER",
-            "failure_detail_code": "K9_SEMANTIC_PROVIDER_TIMEOUT",
-        },
-    }), encoding="utf-8")
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "K9_INITIAL_REFRESH",
+                "code": "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY",
+                "next_action": "Run ./scripts/prep39083 deploy to resume the Semantic projector.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    failure.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "failure_stage": "PROVIDER",
+                    "failure_detail_code": "K9_SEMANTIC_PROVIDER_TIMEOUT",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     projector_ready = {
         "desired_snapshot_id": snapshot,
         "active_snapshot_id": snapshot,
         "status": "READY",
     }
-    smoke.write_text(json.dumps({
-        "contract": "DATARIVER_PREP39083_SMOKE_V2",
-        "readiness": {
-            "DATAHUB": {"status": "PASS"},
-            "K9": {"status": "FAILED"},
-            "MCL": {"status": "PASS"},
-            "GENERAL": {"status": "PASS"},
-        },
-        "k9_lifecycle": {
-            "contract": "DATARIVER_K9_LIFECYCLE_STATUS_V2",
-            "source": {
-                "desired_snapshot_id": snapshot,
-                "active_snapshot_id": None,
-                "status": "READY",
-            },
-            "projectors": {
-                "LINEAGE": projector_ready,
-                "METADATA": projector_ready,
-                "SEMANTIC": {
-                    "desired_snapshot_id": snapshot,
-                    "active_snapshot_id": None,
-                    "status": "FAILED",
+    smoke.write_text(
+        json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_SMOKE_V2",
+                "readiness": {
+                    "DATAHUB": {"status": "PASS"},
+                    "K9": {"status": "FAILED"},
+                    "MCL": {"status": "PASS"},
+                    "GENERAL": {"status": "PASS"},
                 },
-            },
-            "aggregate": {"status": "FAILED"},
-        },
-    }), encoding="utf-8")
+                "k9_lifecycle": {
+                    "contract": "DATARIVER_K9_LIFECYCLE_STATUS_V2",
+                    "source": {
+                        "desired_snapshot_id": snapshot,
+                        "active_snapshot_id": None,
+                        "status": "READY",
+                    },
+                    "projectors": {
+                        "LINEAGE": projector_ready,
+                        "METADATA": projector_ready,
+                        "SEMANTIC": {
+                            "desired_snapshot_id": snapshot,
+                            "active_snapshot_id": None,
+                            "status": "FAILED",
+                        },
+                    },
+                    "aggregate": {"status": "FAILED"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
     monkeypatch.setattr(deploy, "LAST_COMMAND", last)
@@ -310,34 +340,44 @@ def test_status_projects_same_scope_assignment_failure_accounting(
     last = tmp_path / "last-command.json"
     failure = tmp_path / "smoke-failure.json"
     attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
-    last.write_text(json.dumps({
-        "result": "FAILED",
-        "step": "AUTHENTICATED_SMOKE",
-        "code": "PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED",
-        "next_action": "Inspect the bounded assignment accounting.",
-    }), encoding="utf-8")
-    failure.write_text(json.dumps({
-        "stage": "K9_INITIAL_REFRESH",
-        "diagnostic": {
-            "failure_stage": "METADATA_COLLECTION",
-            "failure_detail_code": "GLOSSARY_ASSIGNMENT_COUNT_MISMATCH",
-            "metadata_profile": {
-                "assignments": {
-                    "raw_table_refs": 5,
-                    "raw_column_refs": 7,
-                    "projectable_table_refs": 4,
-                    "projectable_column_refs": 5,
-                    "dangling_table_refs": 1,
-                    "dangling_column_refs": 2,
-                    "unique_projected_table_edges": 3,
-                    "unique_projected_column_edges": 5,
-                    "duplicate_table_refs": 0,
-                    "duplicate_column_refs": 0,
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "AUTHENTICATED_SMOKE",
+                "code": "PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED",
+                "next_action": "Inspect the bounded assignment accounting.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    failure.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "failure_stage": "METADATA_COLLECTION",
+                    "failure_detail_code": "GLOSSARY_ASSIGNMENT_COUNT_MISMATCH",
+                    "metadata_profile": {
+                        "assignments": {
+                            "raw_table_refs": 5,
+                            "raw_column_refs": 7,
+                            "projectable_table_refs": 4,
+                            "projectable_column_refs": 5,
+                            "dangling_table_refs": 1,
+                            "dangling_column_refs": 2,
+                            "unique_projected_table_edges": 3,
+                            "unique_projected_column_edges": 5,
+                            "duplicate_table_refs": 0,
+                            "duplicate_column_refs": 0,
+                        },
+                        "direct_resolution": {},
+                    },
                 },
-                "direct_resolution": {},
-            },
-        },
-    }), encoding="utf-8")
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
     monkeypatch.setattr(deploy, "LAST_COMMAND", last)
@@ -351,8 +391,7 @@ def test_status_projects_same_scope_assignment_failure_accounting(
     output = capsys.readouterr().out
     assert "K9 detail: GLOSSARY_ASSIGNMENT_COUNT_MISMATCH" in output
     assert (
-        "Assignment accounting: raw=5/7; projectable=4/5; "
-        "dangling=1/2; unique=3/5; duplicate=0/0"
+        "Assignment accounting: raw=5/7; projectable=4/5; dangling=1/2; unique=3/5; duplicate=0/0"
     ) in output
 
 
@@ -364,28 +403,38 @@ def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
     attempt = tmp_path / "deploy-attempt.json"
     accepted = tmp_path / "accepted.json"
     smoke = tmp_path / "smoke.json"
-    attempt.write_text(json.dumps({
-        "phase": "ACCEPTED",
-        "target_state_before": "EXISTING_OWNED_INCOMPLETE",
-    }), encoding="utf-8")
+    attempt.write_text(
+        json.dumps(
+            {
+                "phase": "ACCEPTED",
+                "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
     accepted.write_text(json.dumps({"product_sha": _release().product_sha}), encoding="utf-8")
-    smoke.write_text(json.dumps({
-        "k9_source_warning": {
-            "code": "DANGLING_GLOSSARY_ASSIGNMENTS",
-            "dangling_unique_terms": 1486,
-            "dangling_assignment_references": 75431,
-            "absent": 8,
-            "does_not_exist": 1470,
-            "removed": 8,
-        },
-        "k9_assignment_scope": {
-            "provider_incoming_table_total": 90000,
-            "provider_incoming_column_total": 100,
-            "k9_scoped_table_reference_total": 75431,
-            "k9_scoped_column_reference_total": 80,
-            "provider_scope_relation": "GLOBAL_GREATER",
-        },
-    }), encoding="utf-8")
+    smoke.write_text(
+        json.dumps(
+            {
+                "k9_source_warning": {
+                    "code": "DANGLING_GLOSSARY_ASSIGNMENTS",
+                    "dangling_unique_terms": 1486,
+                    "dangling_assignment_references": 75431,
+                    "absent": 8,
+                    "does_not_exist": 1470,
+                    "removed": 8,
+                },
+                "k9_assignment_scope": {
+                    "provider_incoming_table_total": 90000,
+                    "provider_incoming_column_total": 100,
+                    "k9_scoped_table_reference_total": 75431,
+                    "k9_scoped_column_reference_total": 80,
+                    "provider_scope_relation": "GLOBAL_GREATER",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
     monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
@@ -456,13 +505,16 @@ def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(
     monkeypatch.setattr(deploy, "ROOT", prep)
 
     assert deploy.sync_release_source(root=prep) == target
-    assert subprocess.run(
-        ["git", "branch", "--show-current"],
-        cwd=prep,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() == deploy.PREP_RELEASE_BRANCH
+    assert (
+        subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=prep,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == deploy.PREP_RELEASE_BRANCH
+    )
 
 
 def test_release_identity_requires_exact_artifact_v3_contract(tmp_path: Path) -> None:
@@ -1055,7 +1107,7 @@ def _artifact_release(
     *,
     archive_sha256: str | None = None,
     manifest_digest: str | None = None,
-) -> object:
+) -> Any:
     monkeypatch.setattr(deploy, "ROOT", tmp_path)
     identity = deploy.WebArtifactIdentity(
         product_sha="a" * 40,
