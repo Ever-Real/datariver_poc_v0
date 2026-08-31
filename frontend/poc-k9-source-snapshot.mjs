@@ -80,6 +80,19 @@ function normalizeSourceCollection(value) {
     .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)))
 }
 
+export function buildK9SourceInventoryProjection({ items, sourceScope }) {
+  const normalizedItems = normalizeSourceCollection(items)
+  if (typeof sourceScope !== 'string' || !sourceScope.trim()) {
+    throw new Error('The K9 source inventory scope is invalid')
+  }
+  return Object.freeze({
+    projection_version: 2,
+    source_scope: sourceScope.trim(),
+    source_generation: canonicalHash(normalizedItems),
+    items: normalizedItems,
+  })
+}
+
 function normalizedAuthorityPin(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('The K9 source authority pin is unavailable')

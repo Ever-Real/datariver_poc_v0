@@ -1872,7 +1872,7 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert '"run",\n            "--rm",\n            "--no-deps"' in source
     assert '"up", "-d", "--wait", "pgvector", "neo4j", "redis"' in source
     assert 'command = [*prefix, "up", "-d", "--no-build", "--wait"]' in source
-    assert 'command.append("--force-recreate")' in source
+    assert 'command.extend(["--force-recreate", "--no-deps"])' in source
     assert 'runner.run(web_start_command(prefix, bundle.target_state))' in source
     assert source.index('"pgvector", "neo4j", "redis"') < source.index(
         'runner.run(web_start_command(prefix, bundle.target_state))',
@@ -1907,6 +1907,7 @@ def test_web_start_recreates_only_an_owned_incomplete_attempt_for_v2_resume() ->
         "--no-build",
         "--wait",
         "--force-recreate",
+        "--no-deps",
         "web",
     ]
     assert accepted == [*prefix, "up", "-d", "--no-build", "--wait", "web"]

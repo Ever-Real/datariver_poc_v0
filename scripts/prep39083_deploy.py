@@ -1096,7 +1096,7 @@ def compose_prefix(release: ReleaseIdentity, env_file: Path) -> list[str]:
 def web_start_command(prefix: Sequence[str], target_state: TargetState) -> list[str]:
     command = [*prefix, "up", "-d", "--no-build", "--wait"]
     if target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
-        command.append("--force-recreate")
+        command.extend(["--force-recreate", "--no-deps"])
     return [*command, "web"]
 
 

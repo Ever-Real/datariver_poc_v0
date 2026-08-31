@@ -8365,7 +8365,7 @@ def verify_prep_exact_artifact_contract() -> None:
         for node in ast.walk(web_start)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    if not {"up", "-d", "--no-build", "--wait", "web"}.issubset(web_start_literals):
+    if not {"up", "-d", "--no-build", "--wait", "--no-deps", "web"}.issubset(web_start_literals):
         raise AssertionError("PREP Web startup lost its explicit --no-build gate")
 
 

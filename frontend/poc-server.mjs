@@ -67,6 +67,7 @@ import {
 } from './poc-k9-scheduler.mjs'
 import {
   buildDatahubKnowledgeSourceCapture,
+  buildK9SourceInventoryProjection,
 } from './poc-k9-source-snapshot.mjs'
 import { createK9GraphProjectors } from './poc-k9-graph-projector.mjs'
 import {
@@ -13877,9 +13878,9 @@ export async function startPocServer({ stateStore } = {}) {
           item,
           liveAuth.authorityPin.classification_ceiling,
         )),
-      inventoryProjection: (_liveAuth, inventory) => ({
-        ...datahubInventoryProjection(inventory),
-        source_scope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
+      inventoryProjection: (_liveAuth, inventory) => buildK9SourceInventoryProjection({
+        items: inventory,
+        sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
       }),
       collectLineage: collectLineageInventorySeam,
       collectMetadata: collectGlossaryInventorySeam,

@@ -7,6 +7,7 @@ import {
   K9_SOURCE_SNAPSHOT_CONTRACT,
   buildDatahubKnowledgeSourceCapture,
   buildDatahubKnowledgeSourceSnapshot,
+  buildK9SourceInventoryProjection,
 } from './poc-k9-source-snapshot.mjs'
 
 function canonicalJson(value) {
@@ -110,6 +111,33 @@ function changed(mutator) {
   mutator(input)
   return snapshot(input).source_snapshot_id
 }
+
+test('K9 inventory generation is derived from the exact normalized persisted inventory', () => {
+  const first = buildK9SourceInventoryProjection({
+    sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
+    items: [{
+      id: 'urn:li:dataset:a',
+      name: 'A',
+      created_at: '2026-08-30T00:00:00.000Z',
+      observed_at: '2026-08-30T00:00:00.000Z',
+      matches: [{ score: 1 }],
+    }],
+  })
+  const second = buildK9SourceInventoryProjection({
+    sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
+    items: [{
+      matches: [{ score: 999 }],
+      observed_at: '2026-08-31T00:00:00.000Z',
+      created_at: '2026-08-31T00:00:00.000Z',
+      name: 'A',
+      id: 'urn:li:dataset:a',
+    }],
+  })
+
+  assert.deepEqual(first, second)
+  assert.equal(first.source_generation, canonicalHash(first.items))
+  assert.deepEqual(first.items, [{ id: 'urn:li:dataset:a', name: 'A' }])
+})
 
 test('K9 V2 source snapshot is deterministic and source-only', () => {
   const input = fixture()
