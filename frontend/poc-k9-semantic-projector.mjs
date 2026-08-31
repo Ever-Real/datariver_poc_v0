@@ -18,6 +18,10 @@ const diagnostics = Object.freeze({
     code: 'K9_SEMANTIC_CANCELLED', stage: 'PROVIDER', retryable: true,
     message: 'The Semantic projection was cancelled.',
   }),
+  CATALOG_PROJECTION: Object.freeze({
+    code: 'K9_SEMANTIC_CATALOG_PROJECTION_FAILED', stage: 'CATALOG_PROJECTION', retryable: true,
+    message: 'The Semantic desired document manifest could not be persisted.',
+  }),
   GENERATION_LOCK: Object.freeze({
     code: 'K9_SEMANTIC_GENERATION_LOCK_FAILED', stage: 'GENERATION_LOCK', retryable: true,
     message: 'The Semantic generation lock could not be acquired or retained.',
@@ -192,7 +196,7 @@ function requiredPort(persistence) {
     'readActiveDocumentHashes',
     'readStagedDocumentHashes',
     'writeEmbeddingBatch',
-    'materializeSnapshot',
+    'persistDesiredManifest',
     'activateSnapshot',
   ]
   if (!persistence || methods.some((method) => typeof persistence[method] !== 'function')) {
@@ -366,7 +370,7 @@ export function createK9SemanticProjector({
           }
           let batchesCompleted = stagedBatchCount
           let completed = alreadyStaged
-          await persisted(() => port.materializeSnapshot({
+          await persisted(() => port.persistDesiredManifest({
             ...target,
             documents: desired.documents.map((document) => ({
               document_id: document.documentId,
@@ -379,7 +383,7 @@ export function createK9SemanticProjector({
             removed_count: removedCount,
             staged_count: changedDocumentCount,
             batch_total: batchTotal,
-          }), 'MATERIALIZATION')
+          }), 'CATALOG_PROJECTION')
           progress('MANIFEST', 0, desired.documents.length, batchesCompleted)
           progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted)
           for (let offset = 0; offset < pending.length; offset += K9_SEMANTIC_BATCH_SIZE) {

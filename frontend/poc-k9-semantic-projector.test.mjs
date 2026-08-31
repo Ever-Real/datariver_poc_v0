@@ -82,9 +82,9 @@ function fakePersistence({ activeSnapshot, activeDocuments = [], failures = {} }
       state.stagedBatchTotal = batch.batch_total
       for (const record of batch.records) state.staged.set(record.document_id, record.source_hash)
     },
-    async materializeSnapshot(target) {
-      state.calls.push(['materialize', target.document_count])
-      if (failures.materialize) throw new Error('raw URN must not escape')
+    async persistDesiredManifest(target) {
+      state.calls.push(['manifest', target.document_count])
+      if (failures.manifest) throw new Error('raw URN must not escape')
       state.materialized = target
     },
     async activateSnapshot(target) {
@@ -255,14 +255,14 @@ test('rejects a vector dimension change between provider batches before material
     error.diagnostic.code === 'K9_SEMANTIC_VECTOR_DIMENSION_INVALID'
   ))
   assert.equal(persistence.state.staged.size, 32)
-  assert.equal(persistence.state.calls.some(([name]) => name === 'materialize'), true)
+  assert.equal(persistence.state.calls.some(([name]) => name === 'manifest'), true)
   assert.equal(persistence.state.calls.some(([name]) => name === 'activate'), false)
 })
 
-test('reports typed bounded generation-lock, materialization, and active-pointer failures', async () => {
+test('reports typed bounded generation-lock, manifest, and active-pointer failures', async () => {
   for (const [failure, code, forbidden] of [
     ['lock', 'K9_SEMANTIC_GENERATION_LOCK_FAILED', 'token'],
-    ['materialize', 'K9_SEMANTIC_MATERIALIZATION_FAILED', 'URN'],
+    ['manifest', 'K9_SEMANTIC_CATALOG_PROJECTION_FAILED', 'URN'],
     ['pointer', 'K9_SEMANTIC_ACTIVE_POINTER_FAILED', 'database'],
   ]) {
     const persistence = fakePersistence({ failures: { [failure]: true } })
@@ -419,7 +419,7 @@ test('persists the immutable manifest before batches and activates only after ev
   })
   assert.equal(embeddingProvider.calls.length, 63)
   const operations = persistence.state.calls.map(([name]) => name)
-  assert.ok(operations.indexOf('materialize') < operations.indexOf('batch'))
+  assert.ok(operations.indexOf('manifest') < operations.indexOf('batch'))
   assert.ok(operations.lastIndexOf('batch') < operations.indexOf('activate'))
   assert.equal(persistence.state.activeSnapshot, source.source_snapshot.source_snapshot_id)
 })
