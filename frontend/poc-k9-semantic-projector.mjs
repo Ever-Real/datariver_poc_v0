@@ -30,6 +30,10 @@ const diagnostics = Object.freeze({
     code: 'K9_SEMANTIC_MATERIALIZATION_FAILED', stage: 'MATERIALIZATION', retryable: true,
     message: 'The Semantic snapshot could not be materialized.',
   }),
+  PROGRESS: Object.freeze({
+    code: 'K9_SEMANTIC_PROGRESS_FAILED', stage: 'PROGRESS', retryable: true,
+    message: 'The Semantic projector progress receipt could not be persisted.',
+  }),
   PROVIDER_AUTH: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_AUTH_FAILED', stage: 'PROVIDER', retryable: false,
     message: 'The Embedding provider rejected authentication.',
@@ -205,12 +209,21 @@ function requiredPort(persistence) {
   return persistence
 }
 
-function safeProgress(stage, completed, total, batchesCompleted) {
+function safeProgress(stage, completed, total, batchesCompleted, details = {}) {
   return Object.freeze({
     stage,
     completed: Math.max(0, Math.min(total, completed)),
     total,
     batches_completed: Math.max(0, batchesCompleted),
+    ...(Number.isSafeInteger(details.batch_total) && details.batch_total >= 0
+      ? { batch_total: details.batch_total }
+      : {}),
+    ...(Number.isSafeInteger(details.changed_count) && details.changed_count >= 0
+      ? { changed_count: details.changed_count }
+      : {}),
+    ...(Number.isSafeInteger(details.materialized_count) && details.materialized_count >= 0
+      ? { materialized_count: details.materialized_count }
+      : {}),
   })
 }
 
@@ -286,13 +299,22 @@ export function createK9SemanticProjector({
     throw new TypeError('The Semantic provider timer is invalid.')
   }
   const port = requiredPort(persistence)
-  const progress = (stage, completed, total, batchesCompleted) => {
-    if (typeof onProgress === 'function') onProgress(safeProgress(stage, completed, total, batchesCompleted))
+  const progress = async (stage, completed, total, batchesCompleted, details) => {
+    if (typeof onProgress !== 'function') return
+    await persisted(
+      () => onProgress(safeProgress(stage, completed, total, batchesCompleted, details)),
+      'PROGRESS',
+    )
   }
 
   return Object.freeze({
     async project(input, { signal } = {}) {
-      const desired = normalizedInput(input)
+      let desired
+      try {
+        desired = normalizedInput(input)
+      } catch {
+        throw projectorError('CATALOG_PROJECTION')
+      }
       const identity = Object.freeze({ projector_id: exactProjectorId, binding_hash: exactBindingHash })
       const target = Object.freeze({
         ...identity,
@@ -301,16 +323,21 @@ export function createK9SemanticProjector({
         document_count: desired.documents.length,
       })
       let enteredLock = false
+      let activeOwnershipSignal
       try {
         return await port.withProjectorGenerationLock(target, async (ownershipSignal) => {
           enteredLock = true
+          activeOwnershipSignal = ownershipSignal
           signal?.throwIfAborted()
           ownershipSignal?.throwIfAborted()
           await persisted(() => port.setDesiredSnapshot(target), 'MATERIALIZATION')
-          progress('DESIRED', 0, desired.documents.length, 0)
+          await progress('DESIRED', 0, desired.documents.length, 0)
           const state = await persisted(() => port.readProjectorState(identity), 'MATERIALIZATION')
           if (state?.status === 'READY' && state?.active_snapshot_id === desired.sourceSnapshotId) {
-            progress('READY', desired.documents.length, desired.documents.length, 0)
+            await progress('READY', desired.documents.length, desired.documents.length, 0, {
+              changed_count: 0,
+              materialized_count: desired.documents.length,
+            })
             return Object.freeze({
               status: 'READY', outcome: 'REUSED', source_snapshot_id: desired.sourceSnapshotId,
               source_generation: desired.sourceGeneration, document_count: desired.documents.length,
@@ -319,13 +346,24 @@ export function createK9SemanticProjector({
             })
           }
 
-          const activeHashes = normalizedHashMap(await persisted(
-            () => port.readActiveDocumentHashes(identity), 'MATERIALIZATION',
-          ))
+          let activeHashes
+          try {
+            activeHashes = normalizedHashMap(await persisted(
+              () => port.readActiveDocumentHashes(identity), 'MATERIALIZATION',
+            ))
+          } catch (error) {
+            if (error instanceof K9SemanticProjectorError) throw error
+            throw projectorError('MATERIALIZATION')
+          }
           const stagedReceipt = await persisted(
             () => port.readStagedDocumentHashes(target), 'MATERIALIZATION',
           )
-          const stagedHashes = normalizedHashMap(stagedReceipt)
+          let stagedHashes
+          try {
+            stagedHashes = normalizedHashMap(stagedReceipt)
+          } catch {
+            throw projectorError('MATERIALIZATION')
+          }
           let expectedDimension = Number(stagedReceipt?.vector_dimension) || undefined
           if (expectedDimension !== undefined && (!Number.isSafeInteger(expectedDimension)
             || expectedDimension < 1 || expectedDimension > maximumVectorDimension)) {
@@ -384,8 +422,16 @@ export function createK9SemanticProjector({
             staged_count: changedDocumentCount,
             batch_total: batchTotal,
           }), 'CATALOG_PROJECTION')
-          progress('MANIFEST', 0, desired.documents.length, batchesCompleted)
-          progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted)
+          await progress('MANIFEST', 0, desired.documents.length, batchesCompleted, {
+            batch_total: batchTotal,
+            changed_count: changedCount,
+            materialized_count: completed,
+          })
+          await progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted, {
+            batch_total: batchTotal,
+            changed_count: changedCount,
+            materialized_count: completed,
+          })
           for (let offset = 0; offset < pending.length; offset += K9_SEMANTIC_BATCH_SIZE) {
             signal?.throwIfAborted()
             ownershipSignal?.throwIfAborted()
@@ -415,7 +461,11 @@ export function createK9SemanticProjector({
               removed_count: removedCount,
               batches_completed: batchesCompleted,
             }), 'MATERIALIZATION')
-            progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted)
+            await progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted, {
+              batch_total: batchTotal,
+              changed_count: changedCount,
+              materialized_count: completed,
+            })
           }
           signal?.throwIfAborted()
           ownershipSignal?.throwIfAborted()
@@ -427,8 +477,16 @@ export function createK9SemanticProjector({
             batch_total: batchTotal,
             vector_dimension: expectedDimension,
           }), 'ACTIVE_POINTER')
-          progress('MATERIALIZED', desired.documents.length, desired.documents.length, batchesCompleted)
-          progress('READY', desired.documents.length, desired.documents.length, batchesCompleted)
+          await progress('MATERIALIZED', desired.documents.length, desired.documents.length, batchesCompleted, {
+            batch_total: batchTotal,
+            changed_count: changedCount,
+            materialized_count: desired.documents.length,
+          })
+          await progress('READY', desired.documents.length, desired.documents.length, batchesCompleted, {
+            batch_total: batchTotal,
+            changed_count: changedCount,
+            materialized_count: desired.documents.length,
+          })
           const outcome = changedCount === 0
             ? 'ZERO_CHANGE'
             : changedDocumentCount === desired.documents.length ? 'FULL_CHANGE' : 'PARTIAL_CHANGE'
@@ -443,7 +501,8 @@ export function createK9SemanticProjector({
         if (error instanceof K9SemanticProjectorError) throw error
         if (signal?.aborted) throw projectorError('CANCELLED')
         if (!enteredLock) throw projectorError('GENERATION_LOCK')
-        throw projectorError('GENERATION_LOCK')
+        if (activeOwnershipSignal?.aborted) throw projectorError('GENERATION_LOCK')
+        throw projectorError('MATERIALIZATION')
       }
     },
   })

@@ -280,6 +280,25 @@ test('reports typed bounded generation-lock, manifest, and active-pointer failur
   }
 })
 
+test('classifies invalid source input and durable progress receipt failures without raw content', async () => {
+  const invalid = projector()
+  await assert.rejects(invalid.value.project({ source_snapshot: {}, catalog_documents: [] }), (error) => {
+    assert.equal(error.diagnostic.code, 'K9_SEMANTIC_CATALOG_PROJECTION_FAILED')
+    assert.equal(JSON.stringify(error.diagnostic).includes('source_snapshot_id'), false)
+    return true
+  })
+
+  const current = projector({
+    onProgress: async () => { throw new Error('raw progress storage detail') },
+  })
+  await assert.rejects(current.value.project(snapshot(1)), (error) => {
+    assert.equal(error.diagnostic.code, 'K9_SEMANTIC_PROGRESS_FAILED')
+    assert.equal(JSON.stringify(error.diagnostic).includes('storage'), false)
+    return true
+  })
+  assert.equal(current.provider.calls.length, 0)
+})
+
 test('maps generation ownership loss to the bounded lock diagnostic', async () => {
   const persistence = fakePersistence({ failures: { ownership: true } })
   const embeddingProvider = provider(({ signal }) => new Promise((resolve, reject) => {
@@ -365,6 +384,8 @@ test('persists batch progress and resumes the same immutable snapshot without so
     [[32, 32, 1, 3], [32, 64, 2, 3], [6, 70, 3, 3]],
   )
   assert.ok(progress.some((item) => item.stage === 'EMBEDDING' && item.completed === 64))
+  assert.ok(progress.some((item) => item.stage === 'EMBEDDING'
+    && item.batch_total === 3 && item.changed_count === 70 && item.materialized_count === 64))
   const callsAfterSuccess = embeddingProvider.calls.length
   assert.equal((await first.value.project(source)).outcome, 'REUSED')
   assert.equal(embeddingProvider.calls.length, callsAfterSuccess)
