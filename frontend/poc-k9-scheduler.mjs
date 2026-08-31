@@ -559,6 +559,41 @@ export function createPocK9Scheduler({
     return true
   }
 
+  const updateLifecycleProgress = (value) => {
+    if (!activeAttempt || !value || typeof value !== 'object' || Array.isArray(value)) return false
+    const projectorId = ['LINEAGE', 'METADATA', 'SEMANTIC'].includes(value.projector_id)
+      ? value.projector_id
+      : null
+    const status = ['RUNNING', 'READY', 'FAILED'].includes(value.status) ? value.status : null
+    const stage = value.stage === 'SOURCE'
+      ? 'SOURCE_CAPTURE'
+      : value.stage === 'PROJECTOR' && projectorId
+        ? `${projectorId}_PROJECTOR`
+        : value.stage === 'READINESS' ? 'AGGREGATE_READINESS' : null
+    if (!stage || !status) return false
+    const diagnosticCode = typeof value.diagnostic?.code === 'string'
+      && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.diagnostic.code)
+      ? value.diagnostic.code
+      : null
+    const staleMetadataFields = new Set([
+      'stage', 'detail', 'projector_id', 'failure_detail_code', 'direct_resolution_total',
+      'batch_size', 'batch_total', 'batch_number', 'batch_requested_count',
+      'batch_response_count', 'batch_elapsed_ms', 'completed_resolution_count',
+      'dangling_unique_terms', 'dangling_assignment_references', 'retry_attempt',
+      'provider_failure_class',
+    ])
+    const baseAttempt = Object.fromEntries(Object.entries(activeAttempt)
+      .filter(([key]) => !staleMetadataFields.has(key)))
+    activeAttempt = Object.freeze({
+      ...baseAttempt,
+      stage,
+      detail: projectorId ? `${projectorId}_${status}` : status,
+      ...(projectorId ? { projector_id: projectorId } : {}),
+      ...(diagnosticCode ? { failure_detail_code: diagnosticCode } : {}),
+    })
+    return true
+  }
+
   const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
@@ -677,6 +712,7 @@ export function createPocK9Scheduler({
   return {
     config,
     updateProgress,
+    updateLifecycleProgress,
     currentAttempt() {
       return activeAttempt || null
     },

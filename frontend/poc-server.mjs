@@ -60,16 +60,18 @@ import {
   k9GraphAssetDefinition,
 } from './poc-k9-managed-graphs.mjs'
 import {
-  createPocK9RefreshTask,
   createPocK9Scheduler,
-  k9SemanticReconciliationGeneration,
+  createPocK9SourceCaptureTask,
   loadPocK9SchedulerConfig,
   nextScheduleBoundary,
 } from './poc-k9-scheduler.mjs'
 import {
-  buildDatahubKnowledgeSourceFingerprint,
-  buildDatahubKnowledgeSourceSnapshot,
+  buildDatahubKnowledgeSourceCapture,
 } from './poc-k9-source-snapshot.mjs'
+import { createK9GraphProjectors } from './poc-k9-graph-projector.mjs'
+import { createK9V2LifecycleReceiptPort } from './poc-k9-lifecycle-runtime.mjs'
+import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.mjs'
+import { createPocK9V2RefreshTask } from './poc-k9-v2-refresh.mjs'
 import {
   createK9MetadataCollector,
   K9_METADATA_FAILURE_DETAILS,
@@ -136,7 +138,7 @@ export { currentDatahubDatasetExists } from './poc-datahub-current-table.mjs'
 export {
   buildDatahubKnowledgeSourceFingerprint,
   buildDatahubKnowledgeSourceSnapshot,
-}
+} from './poc-k9-source-snapshot.mjs'
 
 const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
@@ -192,6 +194,7 @@ let catalogEmbeddingLastError
 let catalogEmbeddingRefreshTimer
 let serverBackgroundAbortController
 let backgroundLaunchesStopped = false
+let k9V2LifecycleRequested = false
 let reconcileK9SemanticGeneration = async () => ({ status: 'unavailable' })
 const bulkPreparations = new Map()
 const bulkTemplatePath = join(sourceDirectory, 'poc-assets/datariver-catalog-metadata-rows.xlsx')
@@ -6845,7 +6848,7 @@ async function ensureCatalogEmbeddingIndex(
 function scheduleCatalogEmbeddingRefresh() {
   const signal = serverBackgroundAbortController?.signal
   const now = Date.now()
-  if (backgroundLaunchesStopped || signal?.aborted || catalogEmbeddingRefreshPromise
+  if (k9V2LifecycleRequested || backgroundLaunchesStopped || signal?.aborted || catalogEmbeddingRefreshPromise
     || now - catalogEmbeddingRefreshStartedAt < catalogEmbeddingRefreshIntervalMs) return
   catalogEmbeddingRefreshStartedAt = now
   catalogEmbeddingRefreshPromise = ensureCatalogEmbeddingIndex(signal)
@@ -6904,6 +6907,7 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
   const currentGeneration = inventorySnapshot?.projection?.source_generation
   let activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   if (!currentGeneration || activeGeneration !== currentGeneration) {
+    if (k9V2LifecycleRequested) return []
     await ensureCatalogEmbeddingIndex(signal)
     activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   }
@@ -13407,6 +13411,7 @@ export async function startPocServer({ stateStore } = {}) {
   const authenticator = createPocLocalAuthenticator({ stateStore: serverStateStore })
   serverBackgroundAbortController = new AbortController()
   backgroundLaunchesStopped = false
+  k9V2LifecycleRequested = false
   reconcileK9SemanticGeneration = async () => ({ status: 'unavailable' })
   const backgroundSignal = serverBackgroundAbortController.signal
   const schedulerConfig = loadPocChangeHistorySchedulerConfig()
@@ -13482,6 +13487,7 @@ export async function startPocServer({ stateStore } = {}) {
   })
 
   const k9SchedulerConfig = loadPocK9SchedulerConfig()
+  k9V2LifecycleRequested = k9SchedulerConfig.requested
   const k9Neo4jAdapter = {
     run: async (stmt, params) => {
       // Managed refresh performs bounded batches plus an exact large read-back
@@ -13817,30 +13823,57 @@ export async function startPocServer({ stateStore } = {}) {
     }
   }
 
-  const triggerK9Refresh = createPocK9RefreshTask({
-    resolveAuthContext: resolveLiveK9AuthCtx,
-    currentInventory: currentDatahubInventory,
-    inventoryProjection: () => structuredClone(inventorySnapshot?.projection),
-    collectLineage: collectLineageInventorySeam,
-    collectMetadata: collectGlossaryInventorySeam,
-    runtimeIdentity: datahubRuntimeIdentity,
-    ensureSemanticIndex: (inventory, inventoryProjection) => ensureCatalogEmbeddingIndex(
-      serverBackgroundAbortController?.signal,
-      { inventory, inventoryProjection },
-    ),
-    sourceFingerprint: buildDatahubKnowledgeSourceFingerprint,
-    buildSourceSnapshot: buildDatahubKnowledgeSourceSnapshot,
-    managedGraphs: k9,
-  })
-
-  async function resolveK9SemanticReconciliationGeneration() {
+  let reportK9LifecycleTransition = () => false
+  let triggerK9Refresh
+  if (k9SchedulerConfig.requested) {
+    const lifecycle = Object.freeze({
+      readLifecycle: (...args) => pocStateStore.readK9SnapshotLifecycleV2(...args),
+      setDesiredSnapshot: (...args) => pocStateStore.setK9DesiredSourceSnapshotV2(...args),
+      appendProjectorReceipt: (...args) => pocStateStore.appendK9ProjectorReceiptV2(...args),
+      promoteActiveSnapshot: (...args) => pocStateStore.promoteK9ActiveSourceSnapshotV2(...args),
+    })
+    const receipts = createK9V2LifecycleReceiptPort({ lifecycle })
+    const captureSource = createPocK9SourceCaptureTask({
+      resolveAuthContext: resolveLiveK9AuthCtx,
+      currentInventory: currentDatahubInventory,
+      inventoryProjection: () => structuredClone(inventorySnapshot?.projection),
+      collectLineage: collectLineageInventorySeam,
+      collectMetadata: collectGlossaryInventorySeam,
+      runtimeIdentity: datahubRuntimeIdentity,
+      buildSourceCapture: buildDatahubKnowledgeSourceCapture,
+    })
+    const graphProjectors = createK9GraphProjectors({
+      persistence: lifecycle,
+      managedGraphs: k9,
+      resolveAuthContext: resolveLiveK9AuthCtx,
+    })
     const bindingHash = catalogEmbeddingBindingHash()
-    if (!bindingHash) return null
-    const [semanticGeneration, managedGraphAssets] = await Promise.all([
-      pocStateStore.catalogEmbeddingActiveGeneration(bindingHash),
-      pocStateStore.listK9ManagedGraphAssets(),
-    ])
-    return k9SemanticReconciliationGeneration(semanticGeneration, managedGraphAssets)
+    if (!bindingHash || !llm.embedding) {
+      throw new Error('The configured K9 V2 lifecycle requires an Embedding provider binding.')
+    }
+    const semanticProjector = createK9V2SemanticLifecycleProjector({
+      bindingHash,
+      model: llm.embedding.model,
+      lifecycle,
+      semanticPersistence: pocStateStore.k9SemanticPersistenceV2,
+      renderDocument: catalogEmbeddingDocument,
+      projectMetadata: publicDatahubAsset,
+      provider: {
+        embed: ({ model, input, signal }) => llmRequest(
+          llm.embedding,
+          '/embeddings',
+          { model, input },
+          llmProviderTimeoutMs,
+          signal,
+        ),
+      },
+    })
+    triggerK9Refresh = createPocK9V2RefreshTask({
+      captureSource,
+      receipts,
+      projectors: Object.freeze({ ...graphProjectors, SEMANTIC: semanticProjector }),
+      onTransition: (event) => reportK9LifecycleTransition(event),
+    })
   }
 
   const reportK9SchedulerError = (error) => {
@@ -13851,13 +13884,13 @@ export async function startPocServer({ stateStore } = {}) {
     config: k9SchedulerConfig,
     stateStore: pocStateStore,
     triggerK9Refresh,
-    resolveReconciliationGeneration: resolveK9SemanticReconciliationGeneration,
+    // V2 projector receipts bind directly to source_snapshot_id. The legacy
+    // cross-generation reconciler remains readable but is not part of V2.
+    resolveReconciliationGeneration: async () => null,
     onError: reportK9SchedulerError,
   })
   reportK9RefreshProgress = (progress) => k9Scheduler.updateProgress(progress)
-  reconcileK9SemanticGeneration = (generation) => (
-    k9Scheduler.reconcileSemanticGeneration(generation).catch(reportK9SchedulerError)
-  )
+  reportK9LifecycleTransition = (event) => k9Scheduler.updateLifecycleProgress(event)
 
   if (k9SchedulerConfig.requested) {
     const liveAuth = await resolveLiveK9AuthCtx()

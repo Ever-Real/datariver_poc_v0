@@ -264,11 +264,27 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     retry_attempt: 1,
     provider_failure_class: null,
   })
+  assert.equal(scheduler.updateLifecycleProgress({
+    stage: 'PROJECTOR',
+    projector_id: 'SEMANTIC',
+    status: 'FAILED',
+    diagnostic: { code: 'K9_SEMANTIC_PROVIDER_TIMEOUT' },
+  }), true)
+  assert.deepEqual(scheduler.currentAttempt(), {
+    status: 'RUNNING',
+    scheduled_for: scheduler.currentAttempt().scheduled_for,
+    trigger: 'scheduled',
+    stage: 'SEMANTIC_PROJECTOR',
+    detail: 'SEMANTIC_FAILED',
+    projector_id: 'SEMANTIC',
+    failure_detail_code: 'K9_SEMANTIC_PROVIDER_TIMEOUT',
+  })
 
   releaseRefresh()
   await scheduler.stop()
   assert.equal(scheduler.currentAttempt(), null)
   assert.equal(scheduler.updateProgress({ total: 2 }), false)
+  assert.equal(scheduler.updateLifecycleProgress({ stage: 'READINESS', status: 'READY' }), false)
 })
 
 test('K9 semantic reconciliation detects only unaligned canonical managed graph generations', () => {
