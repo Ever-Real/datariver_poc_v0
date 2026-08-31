@@ -16,7 +16,7 @@ selected Product. `main` is unchanged unless its separate approval gate is exerc
 The regular PREP operator path is now only:
 
 ```bash
-git pull --ff-only origin prep39083-release
+./scripts/prep39083 sync
 ./scripts/prep39083 deploy
 ```
 
