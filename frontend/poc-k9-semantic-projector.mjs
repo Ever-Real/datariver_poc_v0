@@ -330,19 +330,41 @@ export function createK9SemanticProjector({
           const desiredHashes = new Map(desired.documents.map((document) => (
             [document.documentId, document.sourceHash]
           )))
-          const pending = desired.documents.filter((document) => (
-            stagedHashes.get(document.documentId) !== document.sourceHash
-            && activeHashes.get(document.documentId) !== document.sourceHash
-          ))
-          const changedDocumentCount = desired.documents.filter((document) => (
+          const changedDocuments = desired.documents.filter((document) => (
             activeHashes.get(document.documentId) !== document.sourceHash
-          )).length
+          ))
+          const changedDocumentCount = changedDocuments.length
           const removedCount = [...activeHashes.keys()].filter((documentId) => (
             !desiredHashes.has(documentId)
           )).length
           const changedCount = changedDocumentCount + removedCount
-          const alreadyStaged = changedDocumentCount - pending.length
-          let batchesCompleted = 0
+          const stagedPrefix = changedDocuments.filter((document) => (
+            stagedHashes.get(document.documentId) === document.sourceHash
+          ))
+          const alreadyStaged = stagedPrefix.length
+          const pending = changedDocuments.slice(alreadyStaged)
+          const batchTotal = Math.ceil(changedDocumentCount / K9_SEMANTIC_BATCH_SIZE)
+          const expectedStagedKeys = new Set(stagedPrefix.map((document) => document.documentId))
+          const stagedBatchCount = Number(stagedReceipt?.batch_count ?? Math.ceil(
+            alreadyStaged / K9_SEMANTIC_BATCH_SIZE,
+          ))
+          const reportedBatchTotal = Number(stagedReceipt?.batch_total ?? batchTotal)
+          const stagedBatchTotal = alreadyStaged === 0 && reportedBatchTotal === 0
+            ? batchTotal
+            : reportedBatchTotal
+          const stagedPrefixValid = changedDocuments.slice(0, alreadyStaged).every((document) => (
+            expectedStagedKeys.has(document.documentId)
+          ))
+          if (!Number.isSafeInteger(stagedBatchCount) || stagedBatchCount < 0
+            || stagedBatchCount > batchTotal || stagedBatchTotal !== batchTotal
+            || stagedHashes.size !== alreadyStaged || !stagedPrefixValid
+            || (pending.length > 0 && alreadyStaged % K9_SEMANTIC_BATCH_SIZE !== 0)
+            || [...stagedHashes].some(([documentId, sourceHash]) => (
+              desiredHashes.get(documentId) !== sourceHash
+            ))) {
+            throw projectorError('MATERIALIZATION')
+          }
+          let batchesCompleted = stagedBatchCount
           let completed = alreadyStaged
           progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted)
           for (let offset = 0; offset < pending.length; offset += K9_SEMANTIC_BATCH_SIZE) {
@@ -366,6 +388,8 @@ export function createK9SemanticProjector({
             await persisted(() => port.writeEmbeddingBatch({
               ...target,
               records,
+              batch_number: batchesCompleted,
+              batch_total: batchTotal,
               vector_dimension: expectedDimension,
               completed_count: completed,
               changed_count: changedDocumentCount,
@@ -387,9 +411,18 @@ export function createK9SemanticProjector({
             vector_dimension: expectedDimension,
             changed_count: changedCount,
             removed_count: removedCount,
+            staged_count: changedDocumentCount,
+            batch_total: batchTotal,
           }), 'MATERIALIZATION')
           progress('MATERIALIZED', desired.documents.length, desired.documents.length, batchesCompleted)
-          await persisted(() => port.activateSnapshot(target), 'ACTIVE_POINTER')
+          await persisted(() => port.activateSnapshot({
+            ...target,
+            changed_count: changedCount,
+            removed_count: removedCount,
+            staged_count: changedDocumentCount,
+            batch_total: batchTotal,
+            vector_dimension: expectedDimension,
+          }), 'ACTIVE_POINTER')
           progress('READY', desired.documents.length, desired.documents.length, batchesCompleted)
           const outcome = changedCount === 0
             ? 'ZERO_CHANGE'

@@ -39,6 +39,8 @@ function fakePersistence({ activeSnapshot, activeDocuments = [], failures = {} }
     desired: null,
     staged: new Map(),
     stagedDimension: undefined,
+    stagedBatchCount: 0,
+    stagedBatchTotal: 0,
     materialized: null,
     calls: [],
   }
@@ -62,12 +64,22 @@ function fakePersistence({ activeSnapshot, activeDocuments = [], failures = {} }
     },
     async readActiveDocumentHashes() { return new Map(state.activeHashes) },
     async readStagedDocumentHashes() {
-      return { hashes: new Map(state.staged), vector_dimension: state.stagedDimension }
+      return {
+        hashes: new Map(state.staged),
+        vector_dimension: state.stagedDimension,
+        batch_count: state.stagedBatchCount,
+        batch_total: state.stagedBatchTotal,
+      }
     },
     async writeEmbeddingBatch(batch) {
       if (failures.batch) throw new Error('raw vector must not escape')
-      state.calls.push(['batch', batch.records.length, batch.completed_count, batch.changed_count])
+      state.calls.push([
+        'batch', batch.records.length, batch.completed_count, batch.changed_count,
+        batch.batch_number, batch.batch_total,
+      ])
       state.stagedDimension = batch.vector_dimension
+      state.stagedBatchCount = batch.batch_number
+      state.stagedBatchTotal = batch.batch_total
       for (const record of batch.records) state.staged.set(record.document_id, record.source_hash)
     },
     async materializeSnapshot(target) {
@@ -346,13 +358,32 @@ test('persists batch progress and resumes the same immutable snapshot without so
   assert.deepEqual([result.status, result.outcome, result.embedded_count], ['READY', 'FULL_CHANGE', 38])
   assert.equal(embeddingProvider.calls.length - callsBeforeRetry, 2)
   assert.deepEqual(
-    persistence.state.calls.filter(([name]) => name === 'batch').map(([, size, completed]) => [size, completed]),
-    [[32, 32], [32, 64], [6, 70]],
+    persistence.state.calls.filter(([name]) => name === 'batch')
+      .map(([, size, completed, , batchNumber, batchTotal]) => (
+        [size, completed, batchNumber, batchTotal]
+      )),
+    [[32, 32, 1, 3], [32, 64, 2, 3], [6, 70, 3, 3]],
   )
   assert.ok(progress.some((item) => item.stage === 'EMBEDDING' && item.completed === 64))
   const callsAfterSuccess = embeddingProvider.calls.length
   assert.equal((await first.value.project(source)).outcome, 'REUSED')
   assert.equal(embeddingProvider.calls.length, callsAfterSuccess)
+})
+
+test('rejects non-prefix or conflicting immutable staged batches before provider reuse', async () => {
+  const source = snapshot(70, { snapshotId: '8'.repeat(64) })
+  const persistence = fakePersistence()
+  persistence.state.staged.set(
+    source.catalog_documents[32].document_id,
+    source.catalog_documents[32].source_hash,
+  )
+  persistence.state.stagedBatchCount = 1
+  persistence.state.stagedBatchTotal = 3
+  const current = projector({ persistence })
+  await assert.rejects(current.value.project(source), (error) => (
+    error.diagnostic.code === 'K9_SEMANTIC_MATERIALIZATION_FAILED'
+  ))
+  assert.equal(current.provider.calls.length, 0)
 })
 
 test('retries active-pointer failure from staged vectors without another provider call', async () => {
