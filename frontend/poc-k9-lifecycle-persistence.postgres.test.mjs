@@ -54,6 +54,7 @@ function sourceEnvelope(generation = '1', identityVariant = 'provider-commit') {
       subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
       projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
       classification_policy_version: 1, authorization_generation: 7,
+      authorization_fingerprint: 'f'.repeat(64),
     },
     inventory_projection_hash: computeSha256(source_payloads.inventory),
     lineage_hash: computeSha256(source_payloads.lineage),
@@ -153,6 +154,7 @@ function prepShapedSourceReceipt(documentCount = 2_003) {
       subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
       projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
       classification_policy_version: 1, authorization_generation: 7,
+      authorization_fingerprint: 'f'.repeat(64),
     },
     inventory_projection_hash: computeSha256(source_payloads.inventory),
     lineage_hash: computeSha256(source_payloads.lineage),
@@ -442,6 +444,18 @@ test('V5 adoption preserves accepted/failed legacy runs, LKG and semantic pointe
     assert.deepEqual((await pool.query('SELECT * FROM poc_k9_managed_graph_policies')).rows, before.policy)
     assert.deepEqual((await pool.query('SELECT * FROM poc_k9_refresh_runs ORDER BY run_id')).rows, before.runs)
     assert.deepEqual((await pool.query("SELECT * FROM poc_state WHERE scope LIKE 'catalog-embedding-active-v1:%'")).rows, before.pointer)
+    const adoption = (await pool.query(
+      "SELECT value, version FROM poc_state WHERE scope = 'k9-lifecycle-adoption-v2'",
+    )).rows[0]
+    assert.equal(Number(adoption.version), 1)
+    assert.deepEqual(adoption.value, {
+      contract: 'DATARIVER_K9_LEGACY_ADOPTION_V2',
+      state: 'NEW_SNAPSHOT_REQUIRED',
+      legacy_lkg_state: 'PRESERVED',
+      policy_count: 1,
+      run_count: 2,
+      semantic_pointer_count: 1,
+    })
     for (const table of [
       'poc_k9_source_snapshots_v2', 'poc_k9_source_payloads_v2',
       'poc_k9_semantic_manifests_v2', 'poc_k9_semantic_desired_documents_v2',

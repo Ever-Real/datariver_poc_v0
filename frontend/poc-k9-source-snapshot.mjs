@@ -92,6 +92,7 @@ function normalizedAuthorityPin(value) {
     policy_version: value.policy_version,
     classification_policy_version: value.classification_policy_version,
     authorization_generation: value.authorization_generation,
+    authorization_fingerprint: value.authorization_fingerprint,
   }
   if (typeof pin.subject_id !== 'string' || !pin.subject_id.trim()
     || typeof pin.workspace_id !== 'string' || !pin.workspace_id.trim()
@@ -100,6 +101,10 @@ function normalizedAuthorityPin(value) {
     || typeof pin.policy_version !== 'string' || !pin.policy_version.trim()
     || !Number.isSafeInteger(pin.classification_policy_version) || pin.classification_policy_version < 1
     || !Number.isSafeInteger(pin.authorization_generation) || pin.authorization_generation < 1) {
+    throw new Error('The K9 source authority pin is invalid')
+  }
+  if (typeof pin.authorization_fingerprint !== 'string'
+    || !sha256Pattern.test(pin.authorization_fingerprint)) {
     throw new Error('The K9 source authority pin is invalid')
   }
   return pin

@@ -147,7 +147,7 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(k9BatchQueryMatch[1], /outgoingRelationships/);
   assert.match(product, /currentDatahubInventory[\s\S]*?startDatahubInventoryRefresh\(\{ signal, deferSemanticIndex: true \}\)/);
   assert.match(product, /if \(llm\.embedding && !deferSemanticIndex\)/);
-  assert.match(product, /createPocK9SourceCaptureTask\(\{[\s\S]*?currentInventory: currentDatahubInventory,[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?buildSourceCapture: buildDatahubKnowledgeSourceCapture/);
+  assert.match(product, /createPocK9SourceCaptureTask\(\{[\s\S]*?currentInventory: async \(liveAuth\) => \(await currentDatahubInventory\(\)\)[\s\S]*?\.filter\(\(item\) => k9SourceClassification\([\s\S]*?liveAuth\.authorityPin\.classification_ceiling,[\s\S]*?inventoryProjection: \(_liveAuth, inventory\) => \(\{[\s\S]*?\.\.\.datahubInventoryProjection\(inventory\),[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?buildSourceCapture: buildDatahubKnowledgeSourceCapture/);
   assert.match(product, /createK9GraphProjectors\(\{[\s\S]*?managedGraphs: k9,[\s\S]*?resolveAuthContext: resolveLiveK9AuthCtx/);
   assert.match(product, /createK9V2SemanticLifecycleProjector\(\{[\s\S]*?semanticPersistence: pocStateStore\.k9SemanticPersistenceV2/);
   assert.match(product, /createPocK9V2RefreshTask\(\{[\s\S]*?captureSource,[\s\S]*?projectors: Object\.freeze\(\{ \.\.\.graphProjectors, SEMANTIC: semanticProjector \}\)/);

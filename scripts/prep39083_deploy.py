@@ -1093,6 +1093,13 @@ def compose_prefix(release: ReleaseIdentity, env_file: Path) -> list[str]:
     ]
 
 
+def web_start_command(prefix: Sequence[str], target_state: TargetState) -> list[str]:
+    command = [*prefix, "up", "-d", "--no-build", "--wait"]
+    if target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
+        command.append("--force-recreate")
+    return [*command, "web"]
+
+
 def resolve_web_image(config: Mapping[str, Any]) -> str:
     services = config.get("services")
     web = services.get("web") if isinstance(services, dict) else None
@@ -3228,7 +3235,11 @@ def deploy(
             "PREP_WEB_START_FAILED",
             "The exact Product web service could not start under the Compose contract.",
         ):
-            runner.run([*prefix, "up", "-d", "--no-build", "--wait", "web"])
+            # A proven incomplete same-Product attempt may leave a healthy Web
+            # container running. Recreate only that stateless service so startup
+            # resumes persisted V2 projector receipts; state services and volumes
+            # remain untouched. Accepted reruns continue to reuse the healthy Web.
+            runner.run(web_start_command(prefix, bundle.target_state))
             web_id = runner.output([*prefix, "ps", "-q", "web"])
         if (
             not web_id

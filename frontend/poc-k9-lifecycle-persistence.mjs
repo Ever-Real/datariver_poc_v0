@@ -6,6 +6,8 @@ export const K9_SOURCE_SNAPSHOT_CONTRACT_V2 = 'DATARIVER_K9_SOURCE_SNAPSHOT_V2'
 export const K9_PROJECTOR_RECEIPT_CONTRACT_V2 = 'DATARIVER_K9_PROJECTOR_RECEIPT_V2'
 export const K9_PROJECTORS_V2 = Object.freeze(['SOURCE', 'LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_LIFECYCLE_STATES_V2 = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
+export const K9_LEGACY_ADOPTION_SCOPE_V2 = 'k9-lifecycle-adoption-v2'
+export const K9_LEGACY_ADOPTION_CONTRACT_V2 = 'DATARIVER_K9_LEGACY_ADOPTION_V2'
 export const K9_SOURCE_PAYLOAD_KINDS_V2 = Object.freeze([
   'INVENTORY', 'LINEAGE', 'METADATA', 'DANGLING_STATE',
 ])
@@ -392,7 +394,7 @@ export function normalizeK9SourceSnapshotV2(value) {
       : structuredClone(value.metadata_source_profile),
   }
   const authorityKeys = [
-    'authorization_generation', 'classification_ceiling', 'classification_policy_version',
+    'authorization_fingerprint', 'authorization_generation', 'classification_ceiling', 'classification_policy_version',
     'policy_version', 'projection_version', 'subject_id', 'workspace_id',
   ]
   if (!exactKeys(normalized.authority_pin, authorityKeys)
@@ -402,6 +404,8 @@ export function normalizeK9SourceSnapshotV2(value) {
     || normalized.authority_pin.classification_policy_version < 1
     || !Number.isSafeInteger(normalized.authority_pin.authorization_generation)
     || normalized.authority_pin.authorization_generation < 1
+    || typeof normalized.authority_pin.authorization_fingerprint !== 'string'
+    || !HASH.test(normalized.authority_pin.authorization_fingerprint)
     || typeof normalized.authority_pin.subject_id !== 'string'
     || normalized.authority_pin.subject_id.length < 1 || normalized.authority_pin.subject_id.length > 255
     || typeof normalized.authority_pin.workspace_id !== 'string'
@@ -753,6 +757,20 @@ async function insertReceipt(client, receipt) {
 }
 
 export async function adoptExactLegacyK9LifecycleV2(client) {
+  const persisted = await client.query(
+    'SELECT value, version FROM poc_state WHERE scope = $1',
+    [K9_LEGACY_ADOPTION_SCOPE_V2],
+  )
+  if (persisted.rows.length > 0) {
+    const value = persisted.rows[0]?.value
+    if (persisted.rows.length !== 1 || Number(persisted.rows[0]?.version) !== 1
+      || value?.contract !== K9_LEGACY_ADOPTION_CONTRACT_V2
+      || !['NO_LEGACY_STATE', 'NEW_SNAPSHOT_REQUIRED'].includes(value?.state)
+      || !['NOT_PRESENT', 'PRESERVED'].includes(value?.legacy_lkg_state)) {
+      throw lifecycleError('K9_LIFECYCLE_ADOPTION_CONFLICT', 'The durable K9 legacy adoption receipt is invalid.')
+    }
+    return Object.freeze({ state: value.state })
+  }
   const existing = await client.query('SELECT count(*)::integer AS count FROM poc_k9_snapshot_lifecycle_v2')
   if (existing.rows[0]?.count !== 0) {
     throw lifecycleError('K9_LIFECYCLE_ADOPTION_CONFLICT', 'K9 V2 lifecycle state already exists during historical adoption.')
@@ -769,15 +787,33 @@ export async function adoptExactLegacyK9LifecycleV2(client) {
     || !Number.isInteger(evidence.run_count) || !Number.isInteger(evidence.semantic_pointer_count)) {
     throw lifecycleError('K9_LIFECYCLE_ADOPTION_INSPECTION_INVALID', 'The legacy K9 lifecycle inspection was malformed.')
   }
-  if (evidence.policy_count === 0 && evidence.run_count === 0 && evidence.semantic_pointer_count === 0) {
-    return Object.freeze({ state: 'NO_LEGACY_STATE' })
-  }
+  const noLegacyState = evidence.policy_count === 0
+    && evidence.run_count === 0
+    && evidence.semantic_pointer_count === 0
   // ADR-0130 manifests omit authority_pin, inventory_projection_hash and
   // dangling_state_hash. Even matching graph/LKG and semantic pointers cannot
   // prove the canonical DATARIVER_K9_SOURCE_SNAPSHOT_V2 identity. Preserve all
   // legacy payloads and pointers verbatim; the next collector cycle must create
   // the first V2 snapshot and receipts.
-  return Object.freeze({ state: 'NEW_SNAPSHOT_REQUIRED' })
+  const adoption = Object.freeze({
+    contract: K9_LEGACY_ADOPTION_CONTRACT_V2,
+    state: noLegacyState ? 'NO_LEGACY_STATE' : 'NEW_SNAPSHOT_REQUIRED',
+    legacy_lkg_state: noLegacyState ? 'NOT_PRESENT' : 'PRESERVED',
+    policy_count: evidence.policy_count,
+    run_count: evidence.run_count,
+    semantic_pointer_count: evidence.semantic_pointer_count,
+  })
+  const inserted = await client.query(`
+    INSERT INTO poc_state (scope, value, version)
+    VALUES ($1, $2::jsonb, 1)
+    ON CONFLICT (scope) DO NOTHING
+    RETURNING value, version
+  `, [K9_LEGACY_ADOPTION_SCOPE_V2, JSON.stringify(adoption)])
+  if (inserted.rows.length !== 1 || Number(inserted.rows[0]?.version) !== 1
+    || canonicalStringify(inserted.rows[0]?.value) !== canonicalStringify(adoption)) {
+    throw lifecycleError('K9_LIFECYCLE_ADOPTION_CONFLICT', 'The durable K9 legacy adoption receipt could not be recorded exactly once.')
+  }
+  return Object.freeze({ state: adoption.state })
 }
 
 function allowedReceiptTransition(previous, receipt) {

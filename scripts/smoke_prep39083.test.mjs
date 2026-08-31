@@ -89,7 +89,7 @@ async function fixture(k9Mode, {
       observed.logoutOrigins.push(request.headers.origin)
       if (request.headers.origin !== canonicalOrigin) json(403, { code: 'ORIGIN_FORBIDDEN' })
       else json(200, { status: 'PASS' })
-    } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1'
+    } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&limit=1'
       || request.url === '/poc-api/datahub/catalog?limit=1') {
       if (catalogFailure) json(catalogFailure.status, catalogFailure.body)
       else json(200, { items: [], meta: { refresh_state: 'CURRENT_OR_REFRESHING' } })

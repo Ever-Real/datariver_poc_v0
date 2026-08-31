@@ -13833,6 +13833,13 @@ export async function startPocServer({ stateStore } = {}) {
     if (k9Cred.activeSessionCount !== 0) throw new Error('K9 system subject must not have active sessions')
 
     const principal = { ...user, subjectId: user.subject_id }
+    const authorizationFingerprint = canonicalHash({
+      subject_id: user.subject_id,
+      active: user.active,
+      role: user.role,
+      max_security_grade: user.max_security_grade,
+      classification_ceiling: k9SchedulerConfig.classificationCeiling,
+    })
 
     return {
       principal,
@@ -13844,7 +13851,8 @@ export async function startPocServer({ stateStore } = {}) {
         projection_version: 2,
         policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
         classification_policy_version: 1,
-        authorization_generation: 1
+        authorization_generation: snapshot.access.version,
+        authorization_fingerprint: authorizationFingerprint,
       }
     }
   }
@@ -13861,8 +13869,18 @@ export async function startPocServer({ stateStore } = {}) {
     const receipts = createK9V2LifecycleReceiptPort({ lifecycle })
     const captureSource = createPocK9SourceCaptureTask({
       resolveAuthContext: resolveLiveK9AuthCtx,
-      currentInventory: currentDatahubInventory,
-      inventoryProjection: () => structuredClone(inventorySnapshot?.projection),
+      // K9 is a non-interactive service projection. Its source authority is the
+      // validated manager subject plus the configured classification ceiling;
+      // end-user Table grants remain read-time filters on managed releases.
+      currentInventory: async (liveAuth) => (await currentDatahubInventory())
+        .filter((item) => k9SourceClassification(
+          item,
+          liveAuth.authorityPin.classification_ceiling,
+        )),
+      inventoryProjection: (_liveAuth, inventory) => ({
+        ...datahubInventoryProjection(inventory),
+        source_scope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
+      }),
       collectLineage: collectLineageInventorySeam,
       collectMetadata: collectGlossaryInventorySeam,
       runtimeIdentity: datahubRuntimeIdentity,

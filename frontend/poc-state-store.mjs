@@ -18,6 +18,7 @@ import {
   adoptExactLegacyK9LifecycleV2,
   applyK9LifecycleSchemaV6,
   createK9LifecyclePersistenceV2,
+  K9_LEGACY_ADOPTION_SCOPE_V2,
 } from './poc-k9-lifecycle-persistence.mjs'
 import { createK9SemanticPersistenceV2 } from './poc-k9-semantic-persistence.mjs'
 import {
@@ -947,6 +948,11 @@ export function createPocStateStore({ databasePool } = {}) {
     if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
       throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
     }
+    if (scope === K9_LEGACY_ADOPTION_SCOPE_V2) {
+      throw Object.assign(new Error('The K9 lifecycle adoption receipt is append-only.'), {
+        code: 'K9_LIFECYCLE_ADOPTION_IMMUTABLE',
+      })
+    }
     if (scope === 'core') return writeCoreWithAccessFence(value)
     if (pool) {
       const result = await pool.query(`
@@ -967,6 +973,11 @@ export function createPocStateStore({ databasePool } = {}) {
     await startDatabase()
     if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
       throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
+    }
+    if (scope === K9_LEGACY_ADOPTION_SCOPE_V2) {
+      throw Object.assign(new Error('The K9 lifecycle adoption receipt is append-only.'), {
+        code: 'K9_LIFECYCLE_ADOPTION_IMMUTABLE',
+      })
     }
     if (scope === 'core') return writeCoreWithAccessFence(value, expectedVersion)
     if (pool) {

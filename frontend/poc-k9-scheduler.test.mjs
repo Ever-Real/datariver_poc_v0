@@ -1,5 +1,6 @@
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import { setImmediate } from 'node:timers'
 import {
   createPocK9RefreshTask,
   createPocK9SourceCaptureTask,
@@ -104,10 +105,20 @@ function k9RefreshFixture(overrides = {}) {
 
 test('K9 V2 source capture fences two canonical candidates and resumes persisted payloads without DataHub', async () => {
   const calls = { inventory: 0, lineage: 0, metadata: 0, identity: 0 }
+  const liveAuth = { authorityPin: { subject_id: 'k9' }, principal: { subjectId: 'k9' } }
+  const inventoryInputs = []
+  const projectionInputs = []
   const capture = createPocK9SourceCaptureTask({
-    resolveAuthContext: async () => ({ authorityPin: { subject_id: 'k9' } }),
-    currentInventory: async () => { calls.inventory += 1; return [{ id: 'dataset-1' }] },
-    inventoryProjection: async () => ({ source_generation: 'a'.repeat(64) }),
+    resolveAuthContext: async () => liveAuth,
+    currentInventory: async (auth) => {
+      calls.inventory += 1
+      inventoryInputs.push(auth)
+      return [{ id: 'dataset-1' }]
+    },
+    inventoryProjection: async (auth, inventory) => {
+      projectionInputs.push({ auth, inventory })
+      return { source_generation: 'a'.repeat(64) }
+    },
     collectLineage: async () => { calls.lineage += 1; return { nodes: [], edges: [] } },
     collectMetadata: async () => { calls.metadata += 1; return { terms: [] } },
     runtimeIdentity: async () => { calls.identity += 1; return { version: '1.6.0rc1' } },
@@ -122,6 +133,11 @@ test('K9 V2 source capture fences two canonical candidates and resumes persisted
   assert.equal(first.status, 'READY')
   assert.equal(first.source_snapshot_id, 'b'.repeat(64))
   assert.deepEqual(calls, { inventory: 2, lineage: 2, metadata: 2, identity: 2 })
+  assert.deepEqual(inventoryInputs, [liveAuth, liveAuth])
+  assert.deepEqual(projectionInputs, [
+    { auth: liveAuth, inventory: [{ id: 'dataset-1' }] },
+    { auth: liveAuth, inventory: [{ id: 'dataset-1' }] },
+  ])
 
   const resumed = await capture({ currentReceipt: { ...first, status: 'RUNNING' } })
   assert.equal(resumed.status, 'READY')
@@ -293,6 +309,42 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
   assert.equal(scheduler.currentAttempt(), null)
   assert.equal(scheduler.updateProgress({ total: 2 }), false)
   assert.equal(scheduler.updateLifecycleProgress({ stage: 'READINESS', status: 'READY' }), false)
+})
+
+test('K9 startup resumes a failed exact-boundary V2 attempt without refreshing source', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_STUDIO_DATABASE_URL: 'postgres://studio-reader@example.test/studio',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  const stateStore = {
+    configured: { postgres: true },
+    readK9SchedulerReceipt: mock.fn(async () => ({
+      value: { last_attempt: { status: 'FAILURE', scheduled_for: scheduledFor } },
+      version: 3,
+    })),
+    runK9Scheduler: mock.fn(async (_command, task) => task()),
+  }
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  while (triggerK9Refresh.mock.calls.length === 0) await new Promise(setImmediate)
+  await scheduler.stop()
+
+  assert.equal(stateStore.readK9SchedulerReceipt.mock.calls.length, 1)
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.equal(triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode, 'RESUME')
 })
 
 test('K9 semantic reconciliation detects only unaligned canonical managed graph generations', () => {

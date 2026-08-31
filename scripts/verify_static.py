@@ -8355,8 +8355,17 @@ def verify_prep_exact_artifact_contract() -> None:
         raise AssertionError("PREP artifact preparation contains a build/pull fallback")
     if not {"load", "--input"}.issubset(literals):
         raise AssertionError("PREP artifact preparation no longer loads the verified archive")
-    deploy_source = ast.unparse(deploy_tree)
-    if "'up', '-d', '--no-build', '--wait', 'web'" not in deploy_source:
+    web_start = next(
+        node
+        for node in deploy_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "web_start_command"
+    )
+    web_start_literals = {
+        node.value
+        for node in ast.walk(web_start)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if not {"up", "-d", "--no-build", "--wait", "web"}.issubset(web_start_literals):
         raise AssertionError("PREP Web startup lost its explicit --no-build gate")
 
 

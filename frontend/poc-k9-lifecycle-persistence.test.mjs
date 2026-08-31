@@ -38,6 +38,7 @@ function sourceSnapshot(overrides = {}, payloads = sourcePayloads()) {
       policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
       classification_policy_version: 1,
       authorization_generation: 7,
+      authorization_fingerprint: 'f'.repeat(64),
     },
     inventory_projection_hash: computeSha256(payloads.inventory),
     lineage_hash: computeSha256(payloads.lineage),
@@ -204,19 +205,24 @@ test('canonical 008 migration carries the runtime V6 identities and immutable re
   assert.doesNotMatch(migration, /DROP TABLE|TRUNCATE TABLE|DELETE FROM poc_k9_/)
 })
 
-test('preserves every legacy pointer and requires a newly collected canonical snapshot', async () => {
+test('preserves every legacy pointer and records an immutable new-snapshot adoption decision', async () => {
   const statements = []
   const client = {
-    async query(sql) {
+    async query(sql, parameters = []) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
       statements.push(normalized)
+      if (normalized.startsWith('SELECT value, version FROM poc_state')) return { rows: [] }
       if (normalized.startsWith('SELECT count(*)::integer AS count')) return { rows: [{ count: 0 }] }
       if (normalized.startsWith('SELECT (SELECT count(*)::integer')) {
         return { rows: [{ policy_count: 2, run_count: 9, semantic_pointer_count: 1 }] }
+      }
+      if (normalized.startsWith('INSERT INTO poc_state')) {
+        return { rows: [{ value: JSON.parse(parameters[1]), version: 1 }] }
       }
       throw new Error(`Unexpected SQL: ${normalized}`)
     },
   }
   assert.deepEqual(await adoptExactLegacyK9LifecycleV2(client), { state: 'NEW_SNAPSHOT_REQUIRED' })
-  assert.equal(statements.some((sql) => /^(?:INSERT|UPDATE|DELETE)/.test(sql)), false)
+  assert.equal(statements.filter((sql) => /^INSERT INTO poc_state/.test(sql)).length, 1)
+  assert.equal(statements.some((sql) => /^(?:UPDATE|DELETE)/.test(sql)), false)
 })

@@ -63,6 +63,7 @@ test('binds graph and semantic projections to one deterministic DataHub source s
     policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
     classification_policy_version: 1,
     authorization_generation: 1,
+    authorization_fingerprint: 'f'.repeat(64),
   }
   const input = {
     inventoryProjection: { source_generation: generation, observed_at: '2026-08-24T00:00:00.000Z' },
@@ -168,6 +169,7 @@ test('fingerprints a stable large generic source without fixed cardinality assum
         subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
         projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
         classification_policy_version: 1, authorization_generation: 1,
+        authorization_fingerprint: 'f'.repeat(64),
       },
       nodes, edges, completeness_metadata: { stable: true },
     },
@@ -176,6 +178,7 @@ test('fingerprints a stable large generic source without fixed cardinality assum
         subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
         projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
         classification_policy_version: 1, authorization_generation: 1,
+        authorization_fingerprint: 'f'.repeat(64),
       },
       table_nodes: nodes, column_nodes: [], table_column_edges: [], terms: [], parent_nodes: [],
       term_parent_edges: [], node_parent_edges: [], glossary_relationships: [],

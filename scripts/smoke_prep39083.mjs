@@ -581,7 +581,7 @@ async function main() {
   try {
     await retryReadiness(async () => {
       const currentInventory = await withHeartbeat(responseJson(
-        `${transportOrigin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`,
+        `${transportOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=1`,
         { headers: { Cookie: cookie } },
         'DATAHUB',
         'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED',

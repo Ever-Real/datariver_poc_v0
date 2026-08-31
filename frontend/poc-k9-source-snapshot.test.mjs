@@ -30,6 +30,7 @@ function fixture() {
     policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
     classification_policy_version: 1,
     authorization_generation: 7,
+    authorization_fingerprint: 'f'.repeat(64),
   }
   return {
     inventoryProjection: {
@@ -170,6 +171,10 @@ test('K9 V2 source snapshot rotates for every source identity input', () => {
     changed((input) => {
       input.lineageSource.authority_pin.authorization_generation += 1
       input.metadataSource.authority_pin.authorization_generation += 1
+    }),
+    changed((input) => {
+      input.lineageSource.authority_pin.authorization_fingerprint = 'e'.repeat(64)
+      input.metadataSource.authority_pin.authorization_fingerprint = 'e'.repeat(64)
     }),
     changed((input) => {
       input.lineageSource.authority_pin.policy_version = 'POC_DATAHUB_SEMANTIC_MODEL_V3'

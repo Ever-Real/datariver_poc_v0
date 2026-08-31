@@ -80,6 +80,7 @@ function sourceEnvelope() {
       policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
       classification_policy_version: 1,
       authorization_generation: 7,
+      authorization_fingerprint: 'f'.repeat(64),
     },
     inventory_projection_hash: computeSha256(source_payloads.inventory),
     lineage_hash: computeSha256(source_payloads.lineage),

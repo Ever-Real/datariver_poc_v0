@@ -1871,9 +1871,11 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert "accepted.json" in source
     assert '"run",\n            "--rm",\n            "--no-deps"' in source
     assert '"up", "-d", "--wait", "pgvector", "neo4j", "redis"' in source
-    assert '"up", "-d", "--no-build", "--wait", "web"' in source
+    assert 'command = [*prefix, "up", "-d", "--no-build", "--wait"]' in source
+    assert 'command.append("--force-recreate")' in source
+    assert 'runner.run(web_start_command(prefix, bundle.target_state))' in source
     assert source.index('"pgvector", "neo4j", "redis"') < source.index(
-        '"--no-build", "--wait", "web"',
+        'runner.run(web_start_command(prefix, bundle.target_state))',
     )
     assert "snapshot_39080" in source
     assert "ALTER ROLE" in source
@@ -1885,6 +1887,29 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     provider_preflight_source = source[source.index("def run_provider_preflight(") :]
     assert '"compose",\n            "run"' not in provider_preflight_source
     assert 'advance_attempt_phase(attempt, "SMOKE_FAILED")' in source
+
+
+def test_web_start_recreates_only_an_owned_incomplete_attempt_for_v2_resume() -> None:
+    prefix = ["docker", "compose", "--project-name", "datariver-poc"]
+    incomplete = deploy.web_start_command(
+        prefix,
+        deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+    )
+    accepted = deploy.web_start_command(
+        prefix,
+        deploy.TargetState.EXISTING_ACCEPTED_RUNNING,
+    )
+
+    assert incomplete == [
+        *prefix,
+        "up",
+        "-d",
+        "--no-build",
+        "--wait",
+        "--force-recreate",
+        "web",
+    ]
+    assert accepted == [*prefix, "up", "-d", "--no-build", "--wait", "web"]
 
 
 class FailFastPreflightRunner:

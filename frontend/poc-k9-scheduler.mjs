@@ -173,8 +173,16 @@ async function collectStableK9Source({
 }) {
   const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
   const collectCandidate = async () => {
-    const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
-    const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
+    const inventory = await datahubSourceStage(
+      'INVENTORY',
+      () => currentInventory(liveAuth),
+      sourceRetryWait,
+    )
+    const projection = await datahubSourceStage(
+      'INVENTORY_PROJECTION',
+      () => inventoryProjection(liveAuth, inventory),
+      sourceRetryWait,
+    )
     const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
       datahubSourceStage(
         'LINEAGE_COLLECTION',
@@ -732,6 +740,17 @@ export function createPocK9Scheduler({
     async start() {
       if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
       if (!config.enabled) return { status: 'idle', mode: config.refreshMode }
+      const scheduledFor = currentScheduleBoundary(
+        clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode,
+      )
+      let lifecycleMode = 'REFRESH'
+      if (typeof stateStore.readK9SchedulerReceipt === 'function') {
+        const receipt = await stateStore.readK9SchedulerReceipt(config.lockName)
+        const lastAttempt = receipt?.value?.last_attempt
+        if (lastAttempt?.status === 'FAILURE' && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
+          lifecycleMode = 'RESUME'
+        }
+      }
       let reconciliationGeneration = null
       try {
         reconciliationGeneration = await resolveReconciliationGeneration()
@@ -739,12 +758,11 @@ export function createPocK9Scheduler({
         onError(error)
       }
       void trigger({
+        scheduledFor,
         trigger: 'scheduled',
-        // The scheduler receipt suppresses a same-boundary deploy replay before
-        // this callback runs. When a new schedule boundary is genuinely due,
-        // retain REFRESH so source drift is still discovered. Incomplete V2
-        // lifecycles independently reuse their immutable source receipt.
-        lifecycleMode: 'REFRESH',
+        // A failed attempt at this exact boundary resumes persisted V2 work.
+        // A new boundary remains an explicit REFRESH so DataHub drift is found.
+        lifecycleMode,
         reconciliationGeneration,
       }).catch(onError)
       scheduleNext()
