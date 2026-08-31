@@ -425,6 +425,41 @@ test('fresh immutable migrations expose the exact current V5 catalog and restart
   }
 }))
 
+test('PostgreSQL constraint fingerprint casts internal char before text concatenation', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('constraint_contype_text_cast', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 2 })
+  try {
+    await applyV5(pool)
+    const uncastStatement = `
+      SELECT conrelid::regclass::text || '|' ||
+        conname || '|' ||
+        contype || '|' ||
+        pg_get_constraintdef(oid, true) AS fingerprint_row
+      FROM pg_catalog.pg_constraint
+      WHERE conrelid = 'poc_state'::regclass
+      ORDER BY conname
+    `
+    await assert.rejects(pool.query(uncastStatement), (error) => (
+      error?.code === '42725'
+      && /operator is not unique: text \|\| "char"/.test(error.message)
+    ))
+
+    const castStatement = uncastStatement.replace('contype ||', 'contype::text ||')
+    const first = await pool.query(castStatement)
+    const second = await pool.query(castStatement)
+    assert.deepEqual(first.rows, [{
+      fingerprint_row: 'poc_state|poc_state_pkey|p|PRIMARY KEY (scope)',
+    }])
+    assert.deepEqual(second.rows, first.rows)
+
+    const snapshot = await catalogSnapshot(pool)
+    assert.equal(snapshot.fingerprint, POC_POSTGRES_SCHEMA_FINGERPRINT)
+  } finally {
+    await pool.end()
+  }
+}))
+
 test('exact canonical pre-receipt V1 migrates transactionally to V5 and preserves runtime rows', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('pre_receipt_v1_upgrade', async ({ connectionString }) => {

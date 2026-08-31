@@ -57,7 +57,7 @@ export const POC_POSTGRES_OWNED_SCHEMA_QUERY = `
     WHERE attribute.attnum > 0 AND NOT attribute.attisdropped
     UNION ALL
     SELECT 'CONSTRAINT', relation.relname || '.' || constraint_value.conname,
-      concat_ws('|', constraint_value.contype, constraint_value.condeferrable::text,
+      concat_ws('|', constraint_value.contype::text, constraint_value.condeferrable::text,
         constraint_value.condeferred::text, constraint_value.convalidated::text,
         pg_catalog.pg_get_constraintdef(constraint_value.oid, false))
     FROM owned_relations AS relation

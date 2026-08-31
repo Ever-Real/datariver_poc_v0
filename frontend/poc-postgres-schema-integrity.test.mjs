@@ -432,6 +432,7 @@ test('the bounded catalog contract excludes non-owned schemas, extensions and ro
   assert.match(POC_POSTGRES_OWNED_SCHEMA_QUERY, /LIMIT 5001/)
   assert.doesNotMatch(POC_POSTGRES_OWNED_SCHEMA_QUERY, /pg_catalog\.pg_extension/)
   assert.doesNotMatch(POC_POSTGRES_OWNED_SCHEMA_QUERY, /SELECT \* FROM poc_/)
+  assert.match(POC_POSTGRES_OWNED_SCHEMA_QUERY, /constraint_value\.contype::text/)
 })
 
 test('schema canonicalization is deterministic and rejects duplicate owned identity', () => {
