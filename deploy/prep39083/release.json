@@ -1,7 +1,7 @@
 {
   "contract": "DATARIVER_PREP39083_RELEASE_V3",
-  "product_sha": "374f307567bfd93a8a23416af6abf49e33e13cc3",
-  "evidence_sha": "0bd912cab7f4b4e1d280cf3a5262970fa00c6ed2",
+  "product_sha": "631a4f5df4dd64104a0668490e4f942d78af587c",
+  "evidence_sha": "38dab20a467b5e02c44a377b4f061e32cbedfac1",
   "handoff_commit_policy": "CURRENT_COMMITTED_HEAD",
   "platform": "linux/amd64",
   "port": 39083,
@@ -9,13 +9,13 @@
   "web_artifact": {
     "contract": "DATARIVER_PREP39083_WEB_ARTIFACT_V1",
     "transport": "APPROVED_DOCKER_ARCHIVE",
-    "artifact_id": "datariver-poc-374f307567bfd93a8a23416af6abf49e33e13cc3-linux-amd64",
-    "path": "runtime/prep39083/artifacts/datariver-poc-374f307567bfd93a8a23416af6abf49e33e13cc3-linux-amd64.tar",
-    "archive_sha256": "1ecc2e9d308a364540811a250aa6ac378f8478ab3ed975fea5a8a0993b33244b",
-    "image_reference": "datariver-poc:374f307567bfd93a8a23416af6abf49e33e13cc3",
-    "manifest_digest": "sha256:ce6ee262380033c70baff1884dd023d503c86cf6abb3e9a66b4c337da1563b57",
-    "config_digest": "sha256:4829dcbeccd352992f7fff7632997af5afda1e70761e454151102d6f9da23d8a",
+    "artifact_id": "datariver-poc-631a4f5df4dd64104a0668490e4f942d78af587c-linux-amd64",
+    "path": "runtime/prep39083/artifacts/datariver-poc-631a4f5df4dd64104a0668490e4f942d78af587c-linux-amd64.tar",
+    "archive_sha256": "72eb1622ff09084b138f315ca189729a750b16bf08442de27c2e742febb172d0",
+    "image_reference": "datariver-poc:631a4f5df4dd64104a0668490e4f942d78af587c",
+    "manifest_digest": "sha256:74fda2a2271c7b89875baebd493bb35adcf78d0d932931e503c123f090a8579e",
+    "config_digest": "sha256:4722c074662f582a0eeafefd983420786269733369f674d97cc550cfb49ab106",
     "platform": "linux/amd64",
-    "oci_revision": "374f307567bfd93a8a23416af6abf49e33e13cc3"
+    "oci_revision": "631a4f5df4dd64104a0668490e4f942d78af587c"
   }
 }
