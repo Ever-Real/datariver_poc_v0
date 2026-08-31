@@ -255,7 +255,7 @@ test('rejects a vector dimension change between provider batches before material
     error.diagnostic.code === 'K9_SEMANTIC_VECTOR_DIMENSION_INVALID'
   ))
   assert.equal(persistence.state.staged.size, 32)
-  assert.equal(persistence.state.calls.some(([name]) => name === 'materialize'), false)
+  assert.equal(persistence.state.calls.some(([name]) => name === 'materialize'), true)
   assert.equal(persistence.state.calls.some(([name]) => name === 'activate'), false)
 })
 
@@ -403,7 +403,7 @@ test('retries active-pointer failure from staged vectors without another provide
   assert.equal(persistence.state.activeSnapshot, source.source_snapshot.source_snapshot_id)
 })
 
-test('activates only after every batch and full materialization succeed for 2000+ documents', async () => {
+test('persists the immutable manifest before batches and activates only after every batch succeeds', async () => {
   const source = snapshot(2_003, { snapshotId: '6'.repeat(64) })
   const persistence = fakePersistence()
   const { value, provider: embeddingProvider } = projector({ persistence })
@@ -419,7 +419,7 @@ test('activates only after every batch and full materialization succeed for 2000
   })
   assert.equal(embeddingProvider.calls.length, 63)
   const operations = persistence.state.calls.map(([name]) => name)
-  assert.ok(operations.lastIndexOf('batch') < operations.indexOf('materialize'))
-  assert.ok(operations.indexOf('materialize') < operations.indexOf('activate'))
+  assert.ok(operations.indexOf('materialize') < operations.indexOf('batch'))
+  assert.ok(operations.lastIndexOf('batch') < operations.indexOf('activate'))
   assert.equal(persistence.state.activeSnapshot, source.source_snapshot.source_snapshot_id)
 })

@@ -366,6 +366,21 @@ export function createK9SemanticProjector({
           }
           let batchesCompleted = stagedBatchCount
           let completed = alreadyStaged
+          await persisted(() => port.materializeSnapshot({
+            ...target,
+            documents: desired.documents.map((document) => ({
+              document_id: document.documentId,
+              source_hash: document.sourceHash,
+              content_text: document.contentText,
+              metadata: document.metadata,
+            })),
+            vector_dimension: expectedDimension,
+            changed_count: changedCount,
+            removed_count: removedCount,
+            staged_count: changedDocumentCount,
+            batch_total: batchTotal,
+          }), 'MATERIALIZATION')
+          progress('MANIFEST', 0, desired.documents.length, batchesCompleted)
           progress('EMBEDDING', completed, changedDocumentCount, batchesCompleted)
           for (let offset = 0; offset < pending.length; offset += K9_SEMANTIC_BATCH_SIZE) {
             signal?.throwIfAborted()
@@ -400,21 +415,6 @@ export function createK9SemanticProjector({
           }
           signal?.throwIfAborted()
           ownershipSignal?.throwIfAborted()
-          await persisted(() => port.materializeSnapshot({
-            ...target,
-            documents: desired.documents.map((document) => ({
-              document_id: document.documentId,
-              source_hash: document.sourceHash,
-              content_text: document.contentText,
-              metadata: document.metadata,
-            })),
-            vector_dimension: expectedDimension,
-            changed_count: changedCount,
-            removed_count: removedCount,
-            staged_count: changedDocumentCount,
-            batch_total: batchTotal,
-          }), 'MATERIALIZATION')
-          progress('MATERIALIZED', desired.documents.length, desired.documents.length, batchesCompleted)
           await persisted(() => port.activateSnapshot({
             ...target,
             changed_count: changedCount,
@@ -423,6 +423,7 @@ export function createK9SemanticProjector({
             batch_total: batchTotal,
             vector_dimension: expectedDimension,
           }), 'ACTIVE_POINTER')
+          progress('MATERIALIZED', desired.documents.length, desired.documents.length, batchesCompleted)
           progress('READY', desired.documents.length, desired.documents.length, batchesCompleted)
           const outcome = changedCount === 0
             ? 'ZERO_CHANGE'
