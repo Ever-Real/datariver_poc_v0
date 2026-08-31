@@ -230,7 +230,10 @@ export const K9_LIFECYCLE_SCHEMA_V6 = Object.freeze([
       CONSTRAINT ck_poc_k9_snapshot_lifecycle_v2_state CHECK (
         status IN ('PENDING', 'RUNNING', 'READY', 'FAILED')
         AND version > 0
-        AND (status <> 'READY' OR active_snapshot_id = desired_snapshot_id)
+        AND (
+          status <> 'READY'
+          OR (active_snapshot_id IS NOT NULL AND active_snapshot_id = desired_snapshot_id)
+        )
       )
     )
   `,

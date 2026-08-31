@@ -33,7 +33,7 @@ export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-
 // Generated from the pinned PostgreSQL 17 / pgvector 0.8.2 canonical init contract.
 // The fingerprint covers only public Product-owned objects whose names use the reserved
 // poc_ prefix. Unrelated schemas, tables, extensions and rows are deliberately excluded.
-export const POC_POSTGRES_SCHEMA_FINGERPRINT = '4196f374e0ecb6ee26a0d18319e5fbfe1be7bfc70dc994032260a89003dee1bb'
+export const POC_POSTGRES_SCHEMA_FINGERPRINT = '912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc'
 export const POC_POSTGRES_MIGRATABLE_FINGERPRINTS = new Set([
   'd96eab3a780b05349bbccdbf1e2ee25e0d9da4d4b8c63c5cfd9c4fe97935d30b',
 ])

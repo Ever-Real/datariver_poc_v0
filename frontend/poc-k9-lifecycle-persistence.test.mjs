@@ -183,6 +183,7 @@ test('declares additive V6 tables with immutable payload triggers and no payload
     'dangling_state_hash', 'catalog_generation', 'datahub_version', 'datahub_commit',
   ]) assert.match(schema, new RegExp(field))
   assert.match(schema, /status IN \('PENDING', 'RUNNING', 'READY', 'FAILED'\)/)
+  assert.match(schema, /status <> 'READY'[\s\S]*active_snapshot_id IS NOT NULL[\s\S]*active_snapshot_id = desired_snapshot_id/)
   assert.match(schema, /desired_snapshot_id/)
   assert.match(schema, /active_snapshot_id/)
   assert.match(schema, /attempt_number DESC, sequence DESC/)
@@ -199,7 +200,7 @@ test('canonical 008 migration carries the runtime V6 identities and immutable re
     'poc_k9_projector_receipts_v2', 'poc_k9_snapshot_lifecycle_v2',
   ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
   assert.match(migration, /product-owned-schema-contract-v6/)
-  assert.match(migration, /4196f374e0ecb6ee26a0d18319e5fbfe1be7bfc70dc994032260a89003dee1bb/)
+  assert.match(migration, /912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc/)
   assert.doesNotMatch(migration, /DROP TABLE|TRUNCATE TABLE|DELETE FROM poc_k9_/)
 })
 

@@ -128,6 +128,11 @@ test('fresh V6 persists replayable source payloads, retries FAILED attempts, and
       const created = await store.setK9DesiredSourceSnapshotV2(first)
       assert.equal(created.created, true)
       assert.equal(created.payloadsCreated, true)
+      await assert.rejects(pool.query(`
+        UPDATE poc_k9_snapshot_lifecycle_v2
+        SET status = 'READY', active_snapshot_id = NULL
+        WHERE lifecycle_key = 'managed-k9-v2'
+      `), /ck_poc_k9_snapshot_lifecycle_v2_state/)
       assert.deepEqual(await store.setK9DesiredSourceSnapshotV2(first), {
         ...created, created: false, payloadsCreated: false,
       })

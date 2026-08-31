@@ -190,7 +190,10 @@ CREATE TABLE IF NOT EXISTS poc_k9_snapshot_lifecycle_v2 (
   CONSTRAINT ck_poc_k9_snapshot_lifecycle_v2_state CHECK (
     status IN ('PENDING', 'RUNNING', 'READY', 'FAILED')
     AND version > 0
-    AND (status <> 'READY' OR active_snapshot_id = desired_snapshot_id)
+    AND (
+      status <> 'READY'
+      OR (active_snapshot_id IS NOT NULL AND active_snapshot_id = desired_snapshot_id)
+    )
   )
 );
 
@@ -229,7 +232,7 @@ $block$;
 
 INSERT INTO poc_state (scope, value) VALUES (
   'product-owned-schema-contract-v6',
-  '{"contract":"DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6","revision":6,"fingerprint":"4196f374e0ecb6ee26a0d18319e5fbfe1be7bfc70dc994032260a89003dee1bb"}'::jsonb
+  '{"contract":"DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6","revision":6,"fingerprint":"912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc"}'::jsonb
 );
 
 COMMIT;
