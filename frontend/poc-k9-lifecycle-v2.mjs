@@ -121,6 +121,12 @@ function projectorReadiness(projectorId, desiredReceipt, activeReceipt, sourceSn
   const desired = projectorReceiptState(desiredReceipt, projectorId, 'DESIRED')
   const active = projectorReceiptState(activeReceipt, projectorId, 'ACTIVE')
   const invalid = desired.kind === 'INVALID' || active.kind === 'INVALID'
+  const desiredMismatch = desired.kind === 'VALID'
+    && desired.sourceSnapshotId !== sourceSnapshotId
+  const contradictoryActive = desired.kind === 'VALID'
+    && desired.status === 'READY'
+    && active.kind === 'VALID'
+    && active.sourceSnapshotId !== sourceSnapshotId
   const ready = !invalid
     && desired.kind === 'VALID'
     && active.kind === 'VALID'
@@ -128,7 +134,15 @@ function projectorReadiness(projectorId, desiredReceipt, activeReceipt, sourceSn
     && (active.status === undefined || active.status === 'READY')
     && desired.sourceSnapshotId === sourceSnapshotId
     && active.sourceSnapshotId === sourceSnapshotId
-  return Object.freeze({ projectorId, desired, active, invalid, ready })
+  return Object.freeze({
+    projectorId,
+    desired,
+    active,
+    invalid,
+    desiredMismatch,
+    contradictoryActive,
+    ready,
+  })
 }
 
 function readinessSummary(state) {
@@ -162,8 +176,8 @@ export function evaluateK9V2AggregateReadiness({
     const pair = projectorReceipts?.[projectorId]
     const state = projectorReadiness(projectorId, pair?.desired, pair?.active, expected)
     invalid ||= state.invalid
-    if (state.desired.sourceSnapshotId) identities.add(state.desired.sourceSnapshotId)
-    if (state.active.sourceSnapshotId) identities.add(state.active.sourceSnapshotId)
+    if (state.desiredMismatch) identities.add(state.desired.sourceSnapshotId)
+    if (state.contradictoryActive) identities.add(state.active.sourceSnapshotId)
     projectors[projectorId] = readinessSummary(state)
   }
 
@@ -215,10 +229,13 @@ async function readSource(receipts) {
   }
 }
 
-async function captureOrReuseSource(captureSource, receipts) {
-  const currentReceipt = await readSource(receipts)
+async function captureOrReuseSource(captureSource, receipts, {
+  currentReceipt,
+  reuseCurrent = false,
+} = {}) {
+  if (currentReceipt === undefined) currentReceipt = await readSource(receipts)
   const current = sourceReceiptState(currentReceipt)
-  if (current.kind === 'READY') {
+  if (current.kind === 'READY' && reuseCurrent) {
     return Object.freeze({ outcome: 'REUSED', receipt: current.receipt, sourceSnapshotId: current.sourceSnapshotId })
   }
   if (current.kind === 'INVALID') {
@@ -247,6 +264,26 @@ async function captureOrReuseSource(captureSource, receipts) {
   }
   return Object.freeze({
     outcome: 'CAPTURED', receipt: persisted.receipt, sourceSnapshotId: persisted.sourceSnapshotId,
+  })
+}
+
+async function sourceRunDisposition(receipts) {
+  const currentReceipt = await readSource(receipts)
+  const current = sourceReceiptState(currentReceipt)
+  if (current.kind !== 'READY') return Object.freeze({ currentReceipt, reuseCurrent: false })
+  const currentProjectors = await readAllProjectorPairs(receipts)
+  const readiness = evaluateK9V2AggregateReadiness({
+    sourceReceipt: currentReceipt,
+    projectorReceipts: currentProjectors,
+    expectedSourceSnapshotId: current.sourceSnapshotId,
+  })
+  // An incomplete lifecycle resumes its immutable source. Once every
+  // projector is READY, the next scheduled/manual run captures again so
+  // DataHub drift can produce a successor snapshot. A same-source capture
+  // deterministically returns the same identity and all projectors are reused.
+  return Object.freeze({
+    currentReceipt,
+    reuseCurrent: readiness.status !== 'READY',
   })
 }
 
@@ -308,7 +345,8 @@ export function createK9V2LifecycleOrchestrator({
       const projectorOutcomes = {}
       const failures = []
       try {
-        source = await captureOrReuseSource(captureSource, receipts)
+        const disposition = await sourceRunDisposition(receipts)
+        source = await captureOrReuseSource(captureSource, receipts, disposition)
         transition({ stage: 'SOURCE', status: 'READY', outcome: source.outcome })
 
         for (const projectorId of K9_V2_PROJECTOR_IDS) {

@@ -83,14 +83,14 @@ function projectorPorts(receipts, implementations = {}) {
   ]))
 }
 
-test('K9 V2 reuses a durable source and all independently READY desired/active receipts', async () => {
+test('K9 V2 recaptures after aggregate READY and reuses every same-source projector', async () => {
   const pairs = readyProjectorReceipts()
   const receipts = fakeReceiptPort({
     sourceReceipt: readySourceReceipt(),
     desired: Object.fromEntries(K9_V2_PROJECTOR_IDS.map((id) => [id, pairs[id].desired])),
     active: Object.fromEntries(K9_V2_PROJECTOR_IDS.map((id) => [id, pairs[id].active])),
   })
-  const captureSource = mock.fn()
+  const captureSource = mock.fn(async () => readySourceReceipt())
   const projectors = projectorPorts(receipts)
 
   const result = await createK9V2LifecycleOrchestrator({
@@ -98,14 +98,38 @@ test('K9 V2 reuses a durable source and all independently READY desired/active r
   }).run()
 
   assert.equal(result.status, 'READY')
-  assert.equal(result.source.outcome, 'REUSED')
+  assert.equal(result.source.outcome, 'CAPTURED')
   assert.equal(result.readiness.status, 'READY')
-  assert.equal(captureSource.mock.calls.length, 0)
+  assert.equal(captureSource.mock.calls.length, 1)
   for (const projectorId of K9_V2_PROJECTOR_IDS) {
     assert.deepEqual(result.projectors[projectorId], { status: 'READY', outcome: 'REUSED' })
     assert.equal(projectors[projectorId].project.mock.calls.length, 0)
     assert.ok(receipts.state.calls.some(([operation, id]) => operation === 'read-desired' && id === projectorId))
     assert.ok(receipts.state.calls.some(([operation, id]) => operation === 'read-active' && id === projectorId))
+  }
+})
+
+test('an accepted snapshot captures a changed successor and projects every successor receipt', async () => {
+  const pairs = readyProjectorReceipts(snapshotA)
+  const receipts = fakeReceiptPort({
+    sourceReceipt: readySourceReceipt(snapshotA),
+    desired: Object.fromEntries(K9_V2_PROJECTOR_IDS.map((id) => [id, pairs[id].desired])),
+    active: Object.fromEntries(K9_V2_PROJECTOR_IDS.map((id) => [id, pairs[id].active])),
+  })
+  const captureSource = mock.fn(async () => readySourceReceipt(snapshotB))
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run()
+
+  assert.equal(result.status, 'READY')
+  assert.equal(result.source_snapshot_id, snapshotB)
+  assert.equal(result.source.outcome, 'CAPTURED')
+  assert.equal(captureSource.mock.calls.length, 1)
+  for (const projectorId of K9_V2_PROJECTOR_IDS) {
+    assert.equal(result.projectors[projectorId].outcome, 'PROJECTED')
+    assert.equal(projectors[projectorId].project.mock.calls.length, 1)
   }
 })
 
@@ -211,6 +235,25 @@ test('aggregate readiness fails closed when any desired or active receipt has a 
   assert.equal(readiness.projectors.LINEAGE.ready, true)
   assert.equal(readiness.projectors.METADATA.ready, false)
   assert.equal(readiness.projectors.SEMANTIC.ready, true)
+})
+
+test('a FAILED desired snapshot may preserve a stale active LKG without becoming a mixed-ID contradiction', () => {
+  const projectorReceipts = readyProjectorReceipts(snapshotA)
+  projectorReceipts.SEMANTIC = {
+    desired: desiredReceipt('SEMANTIC', snapshotA, 'FAILED'),
+    active: activeReceipt('SEMANTIC', snapshotB),
+  }
+
+  const readiness = evaluateK9V2AggregateReadiness({
+    sourceReceipt: readySourceReceipt(snapshotA),
+    projectorReceipts,
+    expectedSourceSnapshotId: snapshotA,
+  })
+
+  assert.equal(readiness.status, 'NOT_READY')
+  assert.equal(readiness.reason, 'K9_V2_AGGREGATE_NOT_READY')
+  assert.equal(readiness.projectors.SEMANTIC.active, 'VALID')
+  assert.equal(readiness.projectors.SEMANTIC.ready, false)
 })
 
 test('a projector result cannot declare READY without matching durable desired and active receipts', async () => {
