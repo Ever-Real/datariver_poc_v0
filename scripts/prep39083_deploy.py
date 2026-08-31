@@ -3619,6 +3619,18 @@ def status(release: ReleaseIdentity) -> None:
         provider_class = smoke_diagnostic.get("provider_failure_class")
         if provider_class:
             print(f"Provider class: {provider_class}")
+        neo4j_http_class = smoke_diagnostic.get("neo4j_http_class")
+        neo4j_error_class = smoke_diagnostic.get("neo4j_error_class")
+        if neo4j_http_class:
+            print(f"Neo4j HTTP class: {neo4j_http_class}")
+        if neo4j_error_class:
+            print(f"Neo4j error class: {neo4j_error_class}")
+        query_family = smoke_diagnostic.get("query_family")
+        transaction_phase = smoke_diagnostic.get("transaction_phase")
+        if query_family:
+            print(f"Graph query family: {query_family}")
+        if transaction_phase:
+            print(f"Graph transaction phase: {transaction_phase}")
         batch_number = smoke_diagnostic.get("batch_number")
         batch_count = smoke_diagnostic.get("batch_count")
         if isinstance(batch_number, int) and isinstance(batch_count, int):
@@ -3632,6 +3644,20 @@ def status(release: ReleaseIdentity) -> None:
             print(f"Received: {received}")
         if isinstance(elapsed, int):
             print(f"Elapsed: {elapsed} ms")
+        requested_nodes = smoke_diagnostic.get("batch_requested_nodes")
+        requested_edges = smoke_diagnostic.get("batch_requested_edges")
+        written_nodes = smoke_diagnostic.get("batch_written_nodes")
+        written_edges = smoke_diagnostic.get("batch_written_edges")
+        if any(isinstance(value, int) for value in (
+            requested_nodes, requested_edges, written_nodes, written_edges
+        )):
+            print(
+                "Graph batch nodes/edges: "
+                f"requested={requested_nodes if isinstance(requested_nodes, int) else 0}/"
+                f"{requested_edges if isinstance(requested_edges, int) else 0}; "
+                f"written={written_nodes if isinstance(written_nodes, int) else 0}/"
+                f"{written_edges if isinstance(written_edges, int) else 0}"
+            )
         profile = smoke_diagnostic.get("metadata_profile")
         if isinstance(profile, dict):
             assignments = profile.get("assignments", {})

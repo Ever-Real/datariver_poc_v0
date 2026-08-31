@@ -1,6 +1,7 @@
 /* global console, process, structuredClone */
 import { randomUUID } from 'crypto'
 import {
+  assertExactKeys,
   computeSha256,
   canonicalStringify,
   validateClassification,
@@ -15,6 +16,69 @@ const INTERNAL_CLASSIFICATION = 'INTERNAL'
 const NEO4J_WRITE_BATCH_SIZE = 500
 export const KG2_MODEL_VERSION = 2
 const KG2_PROJECTION_VERSION = 2
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u
+const V2_AUTHORITY_PIN_KEYS = Object.freeze([
+  'authorization_fingerprint',
+  'authorization_generation',
+  'classification_ceiling',
+  'classification_policy_version',
+  'policy_version',
+  'projection_version',
+  'subject_id',
+  'workspace_id',
+])
+
+function validatePersistedAuthorityPin(pin) {
+  assertExactKeys(pin, V2_AUTHORITY_PIN_KEYS, 'persisted_authority_pin')
+  const { authorization_fingerprint: authorizationFingerprint, ...legacyPin } = pin
+  validateAuthorityPin(legacyPin)
+  if (typeof authorizationFingerprint !== 'string' || !SHA256_PATTERN.test(authorizationFingerprint)) {
+    throw new Error('authorization_fingerprint must be a canonical SHA-256 identity')
+  }
+}
+
+function safeGraphToken(value, fallback) {
+  return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/u.test(value)
+    ? value
+    : fallback
+}
+
+function safeGraphCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : 0
+}
+
+function neo4jFailureClass(error) {
+  const explicit = safeGraphToken(error?.neo4jErrorClass, null)
+  if (explicit) return explicit
+  const message = typeof error?.message === 'string' ? error.message : ''
+  if (/Neo\.ClientError\.Security\./u.test(message)) return 'AUTH'
+  if (/Neo\.ClientError\./u.test(message)) return 'CLIENT'
+  if (/Neo\.TransientError\./u.test(message)) return 'TRANSIENT'
+  if (/Neo\.DatabaseError\./u.test(message)) return 'DATABASE'
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'TIMEOUT'
+  return null
+}
+
+function graphFailureDiagnostic(state, error = null) {
+  return Object.freeze({
+    failure_stage: safeGraphToken(state.failure_stage, 'GRAPH_CONTRACT'),
+    failure_detail_code: safeGraphToken(state.failure_detail_code, 'GRAPH_PROJECTION_FAILED'),
+    neo4j_http_class: safeGraphToken(error?.neo4jHttpClass, null),
+    neo4j_error_class: neo4jFailureClass(error),
+    batch_number: safeGraphCount(state.batch_number),
+    batch_total: safeGraphCount(state.batch_total),
+    batch_requested_nodes: safeGraphCount(state.batch_requested_nodes),
+    batch_requested_edges: safeGraphCount(state.batch_requested_edges),
+    batch_written_nodes: safeGraphCount(state.batch_written_nodes),
+    batch_written_edges: safeGraphCount(state.batch_written_edges),
+    query_family: safeGraphToken(state.query_family, 'NONE'),
+    transaction_phase: safeGraphToken(state.transaction_phase, 'MATERIALIZATION'),
+    expected_snapshot_id_present: state.expected_snapshot_id_present === true,
+    active_snapshot_id_present: state.active_snapshot_id_present === true,
+    promotion_attempted: state.promotion_attempted === true,
+    promotion_completed: state.promotion_completed === true,
+  })
+}
 
 function hasForbiddenControlCharacters(value) {
   return [...String(value)].some((character) => {
@@ -510,16 +574,45 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       policy_hash: expectedPolicy.policy_hash
     })
     const stagingNamespace = 'k9_stage_' + runId.replace(/-/g, '')
+    const projectionState = {
+      failure_stage: 'GRAPH_BINDING',
+      failure_detail_code: 'MANAGED_POLICY_VALIDATION_FAILED',
+      batch_number: 0,
+      batch_total: 0,
+      batch_requested_nodes: 0,
+      batch_requested_edges: 0,
+      batch_written_nodes: 0,
+      batch_written_edges: 0,
+      query_family: 'NONE',
+      transaction_phase: 'BINDING',
+      expected_snapshot_id_present: false,
+      active_snapshot_id_present: false,
+      promotion_attempted: false,
+      promotion_completed: false,
+    }
 
     const existingPolicy = await stateStore.getK9Policy(expectedPolicy.graph_id)
     if (!existingPolicy) {
       await stateStore.finalizeK9RunFailure(runId, 'K9_POLICY_PIN_DRIFT_FAILED: Managed policy is missing. No publish allowed.')
-      return { runId, status: 'FAILURE', reason: 'Managed policy is missing. No publish allowed.', failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name }
+      return {
+        runId, status: 'FAILURE', reason: 'Managed policy is missing. No publish allowed.',
+        failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name,
+        diagnostic: graphFailureDiagnostic({
+          ...projectionState, failure_detail_code: 'MANAGED_POLICY_MISSING',
+        }),
+      }
     }
     if (existingPolicy.policy_hash !== expectedPolicy.policy_hash) {
       await stateStore.finalizeK9RunFailure(runId, 'K9_POLICY_PIN_DRIFT_FAILED: Managed policy has drifted. No publish allowed.')
-      return { runId, status: 'FAILURE', reason: 'Managed policy has drifted. No publish allowed.', failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name }
+      return {
+        runId, status: 'FAILURE', reason: 'Managed policy has drifted. No publish allowed.',
+        failureCode: 'K9_POLICY_PIN_DRIFT_FAILED', policy: expectedPolicy.name,
+        diagnostic: graphFailureDiagnostic({
+          ...projectionState, failure_detail_code: 'MANAGED_POLICY_HASH_MISMATCH',
+        }),
+      }
     }
+    projectionState.active_snapshot_id_present = Boolean(existingPolicy.active_release_pointer)
 
     let failureReason = null
     let failureCode = 'K9_DATAHUB_SOURCE_FAILED'
@@ -529,11 +622,20 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       const sourceData = await collectorFunc(authCtx)
       failureCode = 'K9_POLICY_PIN_DRIFT_FAILED'
       const pin = sourceData.authority_pin
-      validateAuthorityPin(pin)
+      projectionState.failure_detail_code = 'AUTHORITY_PIN_CONTRACT_MISMATCH'
+      if (sourceData.source_snapshot) {
+        // V2 adds an authorization fingerprint to immutable Source Snapshot identity. Validate
+        // the additive field here without changing the legacy source/policy documents or hashes.
+        validatePersistedAuthorityPin(pin)
+      } else {
+        validateAuthorityPin(pin)
+      }
       if (pin.subject_id !== resolved.subject_id) throw new Error('Authority pin subject_id mismatch')
       if (pin.workspace_id !== resolved.workspace_id) throw new Error('Authority pin workspace_id mismatch')
       if (pin.classification_ceiling !== expectedPolicy.classification) throw new Error('Authority pin classification ceiling mismatch')
 
+      projectionState.failure_stage = 'GRAPH_QUERY_BUILD'
+      projectionState.failure_detail_code = 'GRAPH_MAPPING_FAILED'
       const mappedData = mapperFunc(sourceData, expectedPolicy)
 
       mappedData.nodes.sort(function(a, b) { return a.id.localeCompare(b.id) })
@@ -589,6 +691,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       if (!/^[0-9a-f]{64}$/.test(sourceSnapshot.source_snapshot_id || '')) {
         throw new Error('Managed source snapshot identity is invalid')
       }
+      projectionState.expected_snapshot_id_present = true
       inputSnapshotHash = computeSha256({
         model_version: KG2_MODEL_VERSION,
         source_snapshot_id: sourceSnapshot.source_snapshot_id,
@@ -617,13 +720,22 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       )
 
       failureCode = 'K9_NEO4J_PROJECTION_FAILED'
+      projectionState.failure_stage = 'GRAPH_WRITE'
+      projectionState.failure_detail_code = 'STAGING_CLEANUP_FAILED'
+      projectionState.query_family = 'STAGING_CLEANUP'
+      projectionState.transaction_phase = 'STAGING'
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       )
 
+      projectionState.failure_detail_code = 'GRAPH_SCHEMA_INITIALIZATION_FAILED'
+      projectionState.query_family = 'GRAPH_SCHEMA'
       await ensureK9Neo4jSchema()
 
+      projectionState.batch_total = Math.ceil(mappedData.nodes.length / NEO4J_WRITE_BATCH_SIZE)
+        + Math.ceil(mappedData.edges.length / NEO4J_WRITE_BATCH_SIZE)
+      let batchNumber = 0
       for (let offset = 0; offset < mappedData.nodes.length; offset += NEO4J_WRITE_BATCH_SIZE) {
         const nodes = mappedData.nodes.slice(offset, offset + NEO4J_WRITE_BATCH_SIZE).map((node) => ({
           id: node.id,
@@ -631,11 +743,17 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
           classification: node.classification,
           properties: canonicalStringify(node.properties || {}),
         }))
+        batchNumber += 1
+        projectionState.batch_number = batchNumber
+        projectionState.batch_requested_nodes = nodes.length
+        projectionState.failure_detail_code = 'NODE_BATCH_WRITE_FAILED'
+        projectionState.query_family = 'NODE_BATCH_WRITE'
         await neo4j.run(
           'UNWIND $nodes AS node ' +
           'CREATE (n:K9Node { namespace: $ns, id: node.id, type: node.type, classification: node.classification, properties: node.properties })',
           { ns: stagingNamespace, nodes }
         )
+        projectionState.batch_written_nodes += nodes.length
       }
 
       for (let offset = 0; offset < mappedData.edges.length; offset += NEO4J_WRITE_BATCH_SIZE) {
@@ -645,19 +763,31 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
           type: edge.type,
           properties: canonicalStringify(edge.properties || {}),
         }))
+        batchNumber += 1
+        projectionState.batch_number = batchNumber
+        projectionState.batch_requested_edges = edges.length
+        projectionState.failure_detail_code = 'EDGE_BATCH_WRITE_FAILED'
+        projectionState.query_family = 'EDGE_BATCH_WRITE'
         await neo4j.run(
           'UNWIND $edges AS edge ' +
           'MATCH (source:K9Node { namespace: $ns, id: edge.source }), (target:K9Node { namespace: $ns, id: edge.target }) ' +
           'CREATE (source)-[r:K9Edge { type: edge.type, properties: edge.properties }]->(target)',
           { ns: stagingNamespace, edges }
         )
+        projectionState.batch_written_edges += edges.length
       }
 
+      projectionState.failure_stage = 'GRAPH_VERIFY'
+      projectionState.failure_detail_code = 'NODE_READBACK_FAILED'
+      projectionState.query_family = 'NODE_READBACK'
+      projectionState.transaction_phase = 'VERIFICATION'
       const verifyNodes = await neo4j.run(
         'MATCH (n:K9Node) WHERE n.namespace = $ns AND NOT n:K9Release RETURN n.id AS id, n.type AS type, n.classification AS classification, n.properties AS properties ORDER BY id ASC',
         { ns: stagingNamespace }
       )
 
+      projectionState.failure_detail_code = 'EDGE_READBACK_FAILED'
+      projectionState.query_family = 'EDGE_READBACK'
       const verifyEdges = await neo4j.run(
         'MATCH (source:K9Node { namespace: $ns })-[r:K9Edge]->(target:K9Node { namespace: $ns }) RETURN source.id AS source, target.id AS target, r.type AS type, r.properties AS properties ORDER BY source ASC, target ASC, r.type ASC',
         { ns: stagingNamespace }
@@ -668,9 +798,14 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
 
       if (computeSha256(readBackNodes) !== computeSha256(mappedData.nodes) ||
           computeSha256(readBackEdges) !== computeSha256(mappedData.edges)) {
+        projectionState.failure_detail_code = 'READBACK_HASH_MISMATCH'
         throw new Error('Neo4j verification failed: read-back did not match staging expectations')
       }
 
+      projectionState.failure_stage = 'GRAPH_WRITE'
+      projectionState.failure_detail_code = 'RELEASE_MARKER_WRITE_FAILED'
+      projectionState.query_family = 'RELEASE_MARKER_WRITE'
+      projectionState.transaction_phase = 'RELEASE_MARKER'
       await neo4j.run(
         'CREATE (n:K9Node:K9Release { namespace: $ns, input_snapshot_hash: $hash, policy_hash: $policy, node_count: $ncount, edge_count: $ecount, model_version: $model, source_snapshot_id: $sourceSnapshot })',
         {
@@ -684,6 +819,9 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         }
       )
 
+      projectionState.failure_stage = 'GRAPH_VERIFY'
+      projectionState.failure_detail_code = 'RELEASE_MARKER_VERIFY_FAILED'
+      projectionState.query_family = 'RELEASE_MARKER_READBACK'
       const verifyRelease = await neo4j.run(
         'MATCH (n:K9Release) WHERE n.namespace = $ns RETURN n.input_snapshot_hash AS hash, n.policy_hash AS policy',
         { ns: stagingNamespace }
@@ -714,18 +852,31 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
 
     } catch (e) {
       failureReason = e.message
+      projectionState.error = e
     }
 
     if (failureReason) {
-      await stateStore.finalizeK9RunFailure(runId, `${failureCode}: ${failureReason}`)
+      const diagnostic = graphFailureDiagnostic(projectionState, projectionState.error)
+      await stateStore.finalizeK9RunFailure(
+        runId,
+        `${failureCode}: failure_stage=${diagnostic.failure_stage}; failure_detail_code=${diagnostic.failure_detail_code}.`,
+      )
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       ).catch(function() {})
 
-      return { runId: runId, status: 'FAILURE', reason: failureReason, failureCode, policy: expectedPolicy.name }
+      return {
+        runId: runId, status: 'FAILURE', reason: failureReason, failureCode,
+        policy: expectedPolicy.name, diagnostic,
+      }
     }
 
+    projectionState.failure_stage = 'GRAPH_PROMOTION'
+    projectionState.failure_detail_code = 'POSTGRES_POINTER_PROMOTION_FAILED'
+    projectionState.query_family = 'NONE'
+    projectionState.transaction_phase = 'PROMOTION'
+    projectionState.promotion_attempted = true
     try {
       await stateStore.executeK9Transaction(expectedPolicy.graph_id, runId, canonicalRelease.manifest, canonicalRelease, stagingNamespace, manifestHash, inputSnapshotHash, expectedPolicy.policy_hash)
     } catch (e) {
@@ -733,9 +884,17 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
       ).catch(function() {})
-      await stateStore.finalizeK9RunFailure(runId, 'K9_PROMOTION_FAILED: Canonical finalization failed: ' + e.message)
-      return { runId: runId, status: 'FAILURE', reason: 'Canonical PG commit failed: ' + e.message, failureCode: 'K9_PROMOTION_FAILED', policy: expectedPolicy.name }
+      const diagnostic = graphFailureDiagnostic(projectionState, e)
+      await stateStore.finalizeK9RunFailure(
+        runId,
+        `K9_PROMOTION_FAILED: failure_stage=${diagnostic.failure_stage}; failure_detail_code=${diagnostic.failure_detail_code}.`,
+      )
+      return {
+        runId: runId, status: 'FAILURE', reason: 'Canonical PG commit failed.',
+        failureCode: 'K9_PROMOTION_FAILED', policy: expectedPolicy.name, diagnostic,
+      }
     }
+    projectionState.promotion_completed = true
 
     await cleanupOrphanStaging(expectedPolicy.graph_id, stagingNamespace).catch(function(e) {
       if (log && log.warn) log.warn('Failed to cleanup orphan staging data', e)

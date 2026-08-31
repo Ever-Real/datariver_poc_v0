@@ -516,20 +516,38 @@ function normalizeProgress(value) {
 
 function normalizeDiagnostic(value) {
   if (value === null) return null
-  if (!allowlistedKeys(value, ['code', 'detail_hash', 'provider_failure_class', 'stage'], ['code', 'detail_hash', 'stage'])
+  const optionalKeys = [
+    'active_snapshot_id_present', 'batch_number', 'batch_requested_edges',
+    'batch_requested_nodes', 'batch_total', 'batch_written_edges', 'batch_written_nodes',
+    'failure_detail_code', 'neo4j_error_class', 'neo4j_http_class', 'projector_id',
+    'promotion_attempted', 'promotion_completed', 'provider_failure_class', 'query_family',
+    'transaction_phase', 'expected_snapshot_id_present',
+  ]
+  if (!allowlistedKeys(value, ['code', 'detail_hash', 'stage', ...optionalKeys], ['code', 'detail_hash', 'stage'])
     || typeof value.code !== 'string' || !TOKEN.test(value.code)
     || typeof value.stage !== 'string' || !TOKEN.test(value.stage)
-    || (Object.hasOwn(value, 'provider_failure_class')
-      && value.provider_failure_class !== null
-      && (typeof value.provider_failure_class !== 'string' || !TOKEN.test(value.provider_failure_class)))) {
+    || ['failure_detail_code', 'projector_id', 'query_family', 'transaction_phase']
+      .some((field) => Object.hasOwn(value, field)
+        && (typeof value[field] !== 'string' || !TOKEN.test(value[field])))
+    || ['provider_failure_class', 'neo4j_error_class', 'neo4j_http_class']
+      .some((field) => Object.hasOwn(value, field) && value[field] !== null
+        && (typeof value[field] !== 'string' || !TOKEN.test(value[field])))
+    || ['batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+      'batch_written_nodes', 'batch_written_edges']
+      .some((field) => Object.hasOwn(value, field)
+        && (!Number.isSafeInteger(value[field]) || value[field] < 0 || value[field] > 1_000_000_000))
+    || ['expected_snapshot_id_present', 'active_snapshot_id_present',
+      'promotion_attempted', 'promotion_completed']
+      .some((field) => Object.hasOwn(value, field) && typeof value[field] !== 'boolean')) {
     throw lifecycleError('K9_PROJECTOR_RECEIPT_INVALID', 'The K9 projector diagnostic is invalid.')
   }
   return Object.freeze({
     code: value.code,
     stage: value.stage,
     detail_hash: value.detail_hash === null ? null : hash(value.detail_hash, 'diagnostic.detail_hash'),
-    ...(Object.hasOwn(value, 'provider_failure_class')
-      ? { provider_failure_class: value.provider_failure_class } : {}),
+    ...Object.fromEntries(optionalKeys
+      .filter((field) => Object.hasOwn(value, field))
+      .map((field) => [field, value[field]])),
   })
 }
 

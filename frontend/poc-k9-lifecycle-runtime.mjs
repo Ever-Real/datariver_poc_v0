@@ -85,12 +85,43 @@ function publicProjectorState(state, projectorId) {
     attempt: Number.isSafeInteger(desiredReceipt?.attempt_number)
       ? desiredReceipt.attempt_number : 0,
     progress: desiredReceipt?.progress ? Object.freeze({ ...desiredReceipt.progress }) : null,
-    diagnostic: desiredReceipt?.diagnostic ? Object.freeze({
-      code: desiredReceipt.diagnostic.code,
-      stage: desiredReceipt.diagnostic.stage,
-      provider_failure_class: desiredReceipt.diagnostic.provider_failure_class || null,
-    }) : null,
+    diagnostic: desiredReceipt?.diagnostic ? publicProjectorDiagnostic(desiredReceipt.diagnostic) : null,
   })
+}
+
+function publicProjectorDiagnostic(value) {
+  const diagnostic = {
+    code: value.code,
+    stage: value.stage,
+  }
+  if (Object.hasOwn(value, 'failure_detail_code')) {
+    diagnostic.failure_detail_code = TOKEN.test(value.failure_detail_code || '')
+      ? value.failure_detail_code : value.code
+  }
+  if (Object.hasOwn(value, 'provider_failure_class')) {
+    diagnostic.provider_failure_class = TOKEN.test(value.provider_failure_class || '')
+      ? value.provider_failure_class : null
+  }
+  for (const field of [
+    'projector_id', 'query_family', 'transaction_phase', 'neo4j_http_class', 'neo4j_error_class',
+  ]) {
+    if (Object.hasOwn(value, field)) diagnostic[field] = TOKEN.test(value[field] || '') ? value[field] : null
+  }
+  for (const field of [
+    'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+    'batch_written_nodes', 'batch_written_edges',
+  ]) {
+    if (Object.hasOwn(value, field)) {
+      diagnostic[field] = Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : 0
+    }
+  }
+  for (const field of [
+    'expected_snapshot_id_present', 'active_snapshot_id_present',
+    'promotion_attempted', 'promotion_completed',
+  ]) {
+    if (Object.hasOwn(value, field)) diagnostic[field] = value[field] === true
+  }
+  return Object.freeze(diagnostic)
 }
 
 /**

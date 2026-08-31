@@ -8131,16 +8131,50 @@ async function bulkCandidatePreview(entry, candidate) {
 
 async function neo4jQuery(statement, parameters = {}, timeoutMs = providerTimeoutMs, signal) {
   if (!neo4j) throw Object.assign(new Error('Neo4j is not configured.'), { statusCode: 503 })
-  const response = await providerFetch(joinProviderUrl(neo4j.url, '/db/neo4j/tx/commit'), {
-    method: 'POST',
-    headers: { Authorization: basicAuthorization(neo4j), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ statements: [{ statement, parameters, resultDataContents: ['row'] }] }),
-    timeoutMs,
-    signal,
-  })
-  await requireOk(response, 'Neo4j')
-  const payload = await response.json()
-  if (payload.errors?.length) throw new Error(`Neo4j query failed: ${payload.errors[0]?.code || 'UNKNOWN'}`)
+  let response
+  try {
+    response = await providerFetch(joinProviderUrl(neo4j.url, '/db/neo4j/tx/commit'), {
+      method: 'POST',
+      headers: { Authorization: basicAuthorization(neo4j), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statements: [{ statement, parameters, resultDataContents: ['row'] }] }),
+      timeoutMs,
+      signal,
+    })
+  } catch (error) {
+    throw Object.assign(new Error('Neo4j transport failed.'), {
+      neo4jHttpClass: 'TRANSPORT',
+      neo4jErrorClass: ['TimeoutError', 'AbortError'].includes(error?.name) ? 'TIMEOUT' : 'TRANSPORT',
+    })
+  }
+  if (!response.ok) {
+    throw Object.assign(new Error(`Neo4j returned HTTP ${response.status}.`), {
+      neo4jHttpClass: response.status >= 500 ? 'HTTP_5XX' : 'HTTP_4XX',
+      neo4jErrorClass: response.status === 401 || response.status === 403 ? 'AUTH' : 'HTTP',
+    })
+  }
+  let payload
+  try {
+    payload = await response.json()
+  } catch {
+    throw Object.assign(new Error('Neo4j response was not valid JSON.'), {
+      neo4jHttpClass: 'HTTP_2XX', neo4jErrorClass: 'RESPONSE_CONTRACT',
+    })
+  }
+  if (!payload || !Array.isArray(payload.errors) || !Array.isArray(payload.results)) {
+    throw Object.assign(new Error('Neo4j response contract is invalid.'), {
+      neo4jHttpClass: 'HTTP_2XX', neo4jErrorClass: 'RESPONSE_CONTRACT',
+    })
+  }
+  if (payload.errors.length) {
+    const code = typeof payload.errors[0]?.code === 'string' ? payload.errors[0].code : ''
+    const errorClass = code.startsWith('Neo.ClientError.Security.') ? 'AUTH'
+      : code.startsWith('Neo.ClientError.') ? 'CLIENT'
+        : code.startsWith('Neo.TransientError.') ? 'TRANSIENT'
+          : code.startsWith('Neo.DatabaseError.') ? 'DATABASE' : 'UNKNOWN'
+    throw Object.assign(new Error(`Neo4j query failed: ${code || 'UNKNOWN'}`), {
+      neo4jHttpClass: 'HTTP_2XX', neo4jErrorClass: errorClass,
+    })
+  }
   return payload.results?.[0]?.data || []
 }
 

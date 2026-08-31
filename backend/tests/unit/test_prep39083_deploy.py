@@ -187,6 +187,67 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
 
 
+def test_status_renders_bounded_graph_projector_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    last = tmp_path / "last-command.json"
+    smoke = tmp_path / "smoke-failure.json"
+    attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "K9_INITIAL_REFRESH",
+                "code": "PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED",
+                "next_action": "Run ./scripts/prep39083 deploy to resume the failed projector.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    smoke.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "failure_stage": "GRAPH_WRITE",
+                    "failure_detail_code": "NODE_BATCH_WRITE_FAILED",
+                    "neo4j_http_class": "HTTP_2XX",
+                    "neo4j_error_class": "CLIENT",
+                    "query_family": "NODE_BATCH_WRITE",
+                    "transaction_phase": "STAGING",
+                    "batch_number": 1,
+                    "batch_count": 2,
+                    "batch_requested_nodes": 500,
+                    "batch_requested_edges": 0,
+                    "batch_written_nodes": 0,
+                    "batch_written_edges": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK", tmp_path / "deploy.lock")
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "K9 stage: GRAPH_WRITE" in output
+    assert "K9 detail: NODE_BATCH_WRITE_FAILED" in output
+    assert "Neo4j HTTP class: HTTP_2XX" in output
+    assert "Neo4j error class: CLIENT" in output
+    assert "Graph query family: NODE_BATCH_WRITE" in output
+    assert "Graph transaction phase: STAGING" in output
+    assert "Graph batch nodes/edges: requested=500/0; written=0/0" in output
+
+
 def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -11,14 +11,35 @@ const aggregateFailure = Object.freeze({
 
 function boundedDiagnostic(value, fallback = aggregateFailure) {
   if (!value || !TOKEN.test(value.code || '') || !TOKEN.test(value.stage || '')) return fallback
-  return Object.freeze({
+  const bounded = {
     code: value.code,
     stage: value.stage,
     retryable: value.retryable === true,
     ...(TOKEN.test(value.failure_detail_code || '')
       ? { failure_detail_code: value.failure_detail_code }
       : {}),
-  })
+  }
+  for (const field of ['projector_id', 'query_family', 'transaction_phase']) {
+    if (TOKEN.test(value[field] || '')) bounded[field] = value[field]
+  }
+  for (const field of ['provider_failure_class', 'neo4j_http_class', 'neo4j_error_class']) {
+    if (Object.hasOwn(value, field)) bounded[field] = TOKEN.test(value[field] || '') ? value[field] : null
+  }
+  for (const field of [
+    'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+    'batch_written_nodes', 'batch_written_edges',
+  ]) {
+    if (Object.hasOwn(value, field)) {
+      bounded[field] = Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : 0
+    }
+  }
+  for (const field of [
+    'expected_snapshot_id_present', 'active_snapshot_id_present',
+    'promotion_attempted', 'promotion_completed',
+  ]) {
+    if (Object.hasOwn(value, field)) bounded[field] = value[field] === true
+  }
+  return Object.freeze(bounded)
 }
 
 /**

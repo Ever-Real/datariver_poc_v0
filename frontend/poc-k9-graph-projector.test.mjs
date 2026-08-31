@@ -253,7 +253,28 @@ test('a same-X graph-only retry appends a new attempt and preserves the prior ac
     publishPersistedProjection: mock.fn(async (authContext, input) => {
       inactiveCandidates.push(input.source_snapshot.source_snapshot_id)
       if (inactiveCandidates.length === 1) {
-        return { status: 'FAILURE', failureCode: 'K9_NEO4J_PROJECTION_FAILED' }
+        return {
+          status: 'FAILURE',
+          failureCode: 'K9_NEO4J_PROJECTION_FAILED',
+          diagnostic: {
+            failure_stage: 'GRAPH_WRITE',
+            failure_detail_code: 'NODE_BATCH_WRITE_FAILED',
+            neo4j_http_class: 'HTTP_2XX',
+            neo4j_error_class: 'CLIENT',
+            batch_number: 1,
+            batch_total: 2,
+            batch_requested_nodes: 2,
+            batch_requested_edges: 0,
+            batch_written_nodes: 0,
+            batch_written_edges: 0,
+            query_family: 'NODE_BATCH_WRITE',
+            transaction_phase: 'STAGING',
+            expected_snapshot_id_present: true,
+            active_snapshot_id_present: true,
+            promotion_attempted: false,
+            promotion_completed: false,
+          },
+        }
       }
       activePointer = 'k9-stage-metadata-new'
       return {
@@ -269,11 +290,16 @@ test('a same-X graph-only retry appends a new attempt and preserves the prior ac
   await assert.rejects(value.project(sourceReceipt(envelope)), (error) => {
     assert.ok(error instanceof K9GraphProjectorError)
     assert.equal(error.diagnostic.code, 'K9_GRAPH_PROJECTION_FAILED')
+    assert.equal(error.diagnostic.stage, 'GRAPH_WRITE')
+    assert.equal(error.diagnostic.failure_detail_code, 'NODE_BATCH_WRITE_FAILED')
+    assert.equal(error.diagnostic.query_family, 'NODE_BATCH_WRITE')
     return true
   })
   assert.equal(activePointer, oldReady.output_pointer)
   const failedState = k9GraphProjectorReceiptState(persistence.lifecycle, 'METADATA')
   assert.equal(failedState.desired.status, 'FAILED')
+  assert.equal(failedState.desired.receipt.diagnostic.neo4j_error_class, 'CLIENT')
+  assert.equal(failedState.desired.receipt.diagnostic.batch_requested_nodes, 2)
   assert.equal(failedState.active.active_snapshot_id, oldSnapshotId)
 
   const retried = await value.project(sourceReceipt(envelope))
