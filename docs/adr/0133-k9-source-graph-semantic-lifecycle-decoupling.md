@@ -97,4 +97,3 @@ No PREP release may be prepared until V2 persistence, source identity, all three
 lifecycles, resume/adoption, aggregate readiness, smoke/status, the Actual-PREP-shaped retry test,
 and the full applicable regression are proven. PREP deployment remains a manual operator action
 through the existing `sync`, `status`, and `deploy` command surface.
-
