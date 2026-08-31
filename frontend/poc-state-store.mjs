@@ -18,6 +18,7 @@ import {
   adoptExactLegacyK9LifecycleV2,
   applyK9LifecycleSchemaV6,
   createK9LifecyclePersistenceV2,
+  K9_LIFECYCLE_KEY_V2,
   K9_LEGACY_ADOPTION_SCOPE_V2,
 } from './poc-k9-lifecycle-persistence.mjs'
 import { createK9SemanticPersistenceV2 } from './poc-k9-semantic-persistence.mjs'
@@ -3327,6 +3328,10 @@ export function createPocStateStore({ databasePool } = {}) {
     const lockName = requireBoundedString(command.lockName, 'lockName', 255)
     const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
     const trigger = requireOneOf(command.trigger || 'scheduled', 'trigger', ['scheduled', 'manual'])
+    if (command.bootstrapLifecycleV2 !== undefined && command.bootstrapLifecycleV2 !== true) {
+      throw new Error('The POC K9 scheduler lifecycle bootstrap command is invalid.')
+    }
+    const bootstrapLifecycleV2 = command.bootstrapLifecycleV2 === true
     const reconciliationGeneration = command.reconciliationGeneration == null
       ? null
       : requireSha256(command.reconciliationGeneration, 'reconciliationGeneration')
@@ -3348,9 +3353,24 @@ export function createPocStateStore({ databasePool } = {}) {
       const lastSuccessfulReconciliationGeneration = storedReconciliationGeneration == null
         ? null
         : requireSha256(storedReconciliationGeneration, 'stored last_successful_reconciliation_generation')
+      const lastAttempt = current.rows[0]?.value?.last_attempt
+      const retryFailedExactBoundary = lastAttempt?.status === 'FAILURE'
+        && lastAttempt.scheduled_for === scheduledFor
+      let lifecycleBootstrapRequired = false
+      if (bootstrapLifecycleV2) {
+        const lifecycle = await client.query(`
+          SELECT NOT EXISTS (
+            SELECT 1 FROM poc_k9_snapshot_lifecycle_v2
+            WHERE lifecycle_key = $1
+          ) AS required
+        `, [K9_LIFECYCLE_KEY_V2])
+        lifecycleBootstrapRequired = lifecycle.rows[0]?.required === true
+      }
       if (lastSuccessfulSchedule === scheduledFor
         && (reconciliationGeneration === null
-          || lastSuccessfulReconciliationGeneration === reconciliationGeneration)) {
+          || lastSuccessfulReconciliationGeneration === reconciliationGeneration)
+        && !retryFailedExactBoundary
+        && !lifecycleBootstrapRequired) {
         return { status: 'already_completed', scheduledFor }
       }
       if (lastSuccessfulSchedule !== null && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) return { status: 'stale', scheduledFor }
@@ -3440,6 +3460,7 @@ export function createPocStateStore({ databasePool } = {}) {
               OR ($6::text IS NOT NULL
                 AND (poc_state.value ->> 'last_successful_schedule')::timestamptz = $5::timestamptz
                 AND poc_state.value ->> 'last_successful_reconciliation_generation' IS DISTINCT FROM $6::text)
+              OR $7::boolean
             )
         RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule,
           poc_state.value ->> 'last_successful_reconciliation_generation' AS last_successful_reconciliation_generation
@@ -3450,6 +3471,7 @@ export function createPocStateStore({ databasePool } = {}) {
         lastSuccessfulReconciliationGeneration,
         scheduledFor,
         reconciliationGeneration,
+        retryFailedExactBoundary || lifecycleBootstrapRequired,
       ])
 
       if (receiptWrite.rows.length !== 1

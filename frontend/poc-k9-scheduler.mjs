@@ -611,10 +611,12 @@ export function createPocK9Scheduler({
     trigger,
     reconciliationGeneration,
     lifecycleMode,
+    bootstrapLifecycleV2,
   ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
+    ...(bootstrapLifecycleV2 ? { bootstrapLifecycleV2: true } : {}),
     ...(reconciliationGeneration ? { reconciliationGeneration } : {}),
   }, async () => {
     return await triggerK9Refresh({
@@ -634,6 +636,7 @@ export function createPocK9Scheduler({
     const reconciliationGeneration = options.reconciliationGeneration == null
       ? null
       : options.reconciliationGeneration
+    const bootstrapLifecycleV2 = options.bootstrapLifecycleV2 === true
     if (reconciliationGeneration !== null
       && (typeof reconciliationGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(reconciliationGeneration))) {
       throw new Error('The requested K9 semantic reconciliation generation is invalid.')
@@ -647,7 +650,7 @@ export function createPocK9Scheduler({
         trigger: triggerType,
       })
       activeRun = execute(
-        scheduledFor, triggerType, reconciliationGeneration, lifecycleMode,
+        scheduledFor, triggerType, reconciliationGeneration, lifecycleMode, bootstrapLifecycleV2,
       ).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
@@ -744,10 +747,16 @@ export function createPocK9Scheduler({
         clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode,
       )
       let lifecycleMode = 'REFRESH'
+      let bootstrapLifecycleV2 = false
+      if (typeof stateStore.readK9SnapshotLifecycleV2 === 'function') {
+        bootstrapLifecycleV2 = await stateStore.readK9SnapshotLifecycleV2() === null
+      }
       if (typeof stateStore.readK9SchedulerReceipt === 'function') {
         const receipt = await stateStore.readK9SchedulerReceipt(config.lockName)
         const lastAttempt = receipt?.value?.last_attempt
-        if (lastAttempt?.status === 'FAILURE' && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
+        if (!bootstrapLifecycleV2
+          && lastAttempt?.status === 'FAILURE'
+          && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
           lifecycleMode = 'RESUME'
         }
       }
@@ -763,6 +772,7 @@ export function createPocK9Scheduler({
         // A failed attempt at this exact boundary resumes persisted V2 work.
         // A new boundary remains an explicit REFRESH so DataHub drift is found.
         lifecycleMode,
+        bootstrapLifecycleV2,
         reconciliationGeneration,
       }).catch(onError)
       scheduleNext()

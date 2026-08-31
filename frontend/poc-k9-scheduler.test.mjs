@@ -44,13 +44,16 @@ function metadataSourceProfile(overrides = {}) {
   })
 }
 
-function k9SchedulerDatabase(initialValue) {
+function k9SchedulerDatabase(initialValue, { lifecycleExists = true } = {}) {
   let value = initialValue
   const client = {
     query: mock.fn(async (statement, parameters = []) => {
       if (statement.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] }
       if (statement.includes('SELECT value FROM poc_state')) {
         return { rows: value === undefined ? [] : [{ value }] }
+      }
+      if (statement.includes('FROM poc_k9_snapshot_lifecycle_v2')) {
+        return { rows: [{ required: !lifecycleExists }] }
       }
       if (statement.includes('INSERT INTO poc_state')) {
         const expectedLastSuccessful = parameters[2]
@@ -327,6 +330,10 @@ test('K9 startup resumes a failed exact-boundary V2 attempt without refreshing s
       value: { last_attempt: { status: 'FAILURE', scheduled_for: scheduledFor } },
       version: 3,
     })),
+    readK9SnapshotLifecycleV2: mock.fn(async () => ({
+      desired_snapshot_id: 'a'.repeat(64),
+      status: 'FAILED',
+    })),
     runK9Scheduler: mock.fn(async (_command, task) => task()),
   }
   const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
@@ -343,8 +350,53 @@ test('K9 startup resumes a failed exact-boundary V2 attempt without refreshing s
   await scheduler.stop()
 
   assert.equal(stateStore.readK9SchedulerReceipt.mock.calls.length, 1)
+  assert.equal(stateStore.readK9SnapshotLifecycleV2.mock.calls.length, 1)
   assert.equal(triggerK9Refresh.mock.calls.length, 1)
   assert.equal(triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode, 'RESUME')
+})
+
+test('K9 startup bootstraps a missing V2 lifecycle despite a legacy same-boundary success', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_STUDIO_DATABASE_URL: 'postgres://studio-reader@example.test/studio',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  const commands = []
+  const stateStore = {
+    configured: { postgres: true },
+    readK9SnapshotLifecycleV2: mock.fn(async () => null),
+    readK9SchedulerReceipt: mock.fn(async () => ({
+      value: {
+        last_successful_schedule: scheduledFor,
+        last_attempt: { status: 'SUCCESS', scheduled_for: scheduledFor },
+      },
+      version: 5,
+    })),
+    runK9Scheduler: mock.fn(async (command, task) => {
+      commands.push(command)
+      return task()
+    }),
+  }
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  while (triggerK9Refresh.mock.calls.length === 0) await new Promise(setImmediate)
+  await scheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.equal(triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode, 'REFRESH')
+  assert.equal(commands[0].bootstrapLifecycleV2, true)
 })
 
 test('K9 semantic reconciliation detects only unaligned canonical managed graph generations', () => {
@@ -645,6 +697,83 @@ test('K9 reconciliation failure preserves the successful daily schedule and prio
   assert.equal(database.readValue().last_successful_reconciliation_generation, oldGeneration)
   assert.equal(database.readValue().last_attempt.reason, 'K9_SEMANTIC_INDEX_FAILED')
   assert.equal(database.readValue().last_attempt.reconciliation_generation, newGeneration)
+})
+
+test('K9 Scheduler runs one verified V2 bootstrap at a legacy successful boundary', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    last_successful_reconciliation_generation: null,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+    last_attempt: { status: 'SUCCESS', scheduled_for: scheduledFor },
+  }, { lifecycleExists: false })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const task = mock.fn(async () => ({ status: 'SUCCESS' }))
+
+  const result = await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1',
+    scheduledFor,
+    trigger: 'scheduled',
+    bootstrapLifecycleV2: true,
+  }, task)
+
+  assert.equal(result.status, 'succeeded')
+  assert.equal(task.mock.calls.length, 1)
+  assert.equal(database.readValue().last_attempt.status, 'SUCCESS')
+  assert.equal(database.readValue().last_attempt.scheduled_for, scheduledFor)
+})
+
+test('K9 Scheduler resumes a failed V2 attempt at an already successful boundary', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    last_successful_reconciliation_generation: null,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+    last_attempt: {
+      status: 'FAILURE',
+      reason: 'K9_SEMANTIC_INDEX_FAILED',
+      scheduled_for: scheduledFor,
+    },
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const task = mock.fn(async () => ({ status: 'SUCCESS' }))
+
+  const result = await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1',
+    scheduledFor,
+    trigger: 'scheduled',
+  }, task)
+
+  assert.equal(result.status, 'succeeded')
+  assert.equal(task.mock.calls.length, 1)
+  assert.equal(database.readValue().last_attempt.status, 'SUCCESS')
+})
+
+test('K9 Scheduler still reuses a completed V2 boundary without invoking work', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    last_successful_reconciliation_generation: null,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+    last_attempt: { status: 'SUCCESS', scheduled_for: scheduledFor },
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  const task = mock.fn(async () => ({ status: 'SUCCESS' }))
+
+  const result = await stateStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1',
+    scheduledFor,
+    trigger: 'scheduled',
+  }, task)
+
+  assert.equal(result.status, 'already_completed')
+  assert.equal(task.mock.calls.length, 0)
 })
 
 test('K9 Scheduler durably records a first failure without a successful boundary', async () => {

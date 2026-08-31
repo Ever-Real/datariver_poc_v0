@@ -255,6 +255,76 @@ test('fresh V6 persists replayable source payloads, retries FAILED attempts, and
   await pool.end()
 }))
 
+test('legacy same-boundary success bootstraps V2, resumes its failure, then reuses the boundary', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_v2_legacy_boundary_bootstrap', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 3 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const store = createPocStateStore({ databasePool: pool })
+    const scheduledFor = '2026-08-30T17:00:00.000Z'
+    const schedulerScope = 'k9-scheduler-v1:datariver:poc:k9-scheduler:v1'
+    try {
+      assert.equal(await store.readK9SnapshotLifecycleV2(), null)
+      await pool.query(`
+        INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+      `, [schedulerScope, JSON.stringify({
+        version: 1,
+        last_successful_schedule: scheduledFor,
+        last_successful_reconciliation_generation: null,
+        completed_at: '2026-08-30T17:01:00.000Z',
+        trigger: 'scheduled',
+        last_attempt: {
+          status: 'SUCCESS',
+          scheduled_for: scheduledFor,
+          completed_at: '2026-08-30T17:01:00.000Z',
+          trigger: 'scheduled',
+        },
+      })])
+      let invocations = 0
+      const command = {
+        lockName: 'datariver:poc:k9-scheduler:v1',
+        scheduledFor,
+        trigger: 'scheduled',
+        bootstrapLifecycleV2: true,
+      }
+      const first = await store.runK9Scheduler(command, async () => {
+        invocations += 1
+        await store.setK9DesiredSourceSnapshotV2(sourceEnvelope('3'))
+        return { status: 'FAILURE', failureCode: 'K9_SEMANTIC_INDEX_FAILED' }
+      })
+      assert.equal(first.status, 'failed')
+      assert.equal(invocations, 1)
+      assert.notEqual(await store.readK9SnapshotLifecycleV2(), null)
+
+      const resumed = await store.runK9Scheduler({
+        lockName: command.lockName,
+        scheduledFor,
+        trigger: 'scheduled',
+      }, async () => {
+        invocations += 1
+        return { status: 'SUCCESS' }
+      })
+      assert.equal(resumed.status, 'succeeded')
+      assert.equal(invocations, 2)
+
+      const replay = await store.runK9Scheduler({
+        lockName: command.lockName,
+        scheduledFor,
+        trigger: 'scheduled',
+      }, async () => {
+        invocations += 1
+        return { status: 'SUCCESS' }
+      })
+      assert.equal(replay.status, 'already_completed')
+      assert.equal(invocations, 2)
+    } finally {
+      await store.close()
+    }
+  })
+  await pool.end()
+}))
+
 test('PREP-shaped V2 retry uses persisted PostgreSQL source and reruns only Semantic', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('k9_v2_prep_resume', async ({ connectionString }) => {
