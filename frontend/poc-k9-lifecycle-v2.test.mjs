@@ -299,3 +299,29 @@ test('invalid READY source receipts fail closed without silently recollecting so
     assert.equal(projectors[projectorId].project.mock.calls.length, 0)
   }
 })
+
+test('an interrupted durable source receipt is resumed from its immutable payload without an external recollection', async () => {
+  const incomplete = Object.freeze({
+    status: 'RUNNING',
+    source_snapshot_id: snapshotA,
+    source_snapshot: Object.freeze({ source_snapshot_id: snapshotA }),
+    source_payloads: Object.freeze({ inventory: {}, lineage: {}, metadata: {}, dangling_state: {} }),
+  })
+  const receipts = fakeReceiptPort({ sourceReceipt: incomplete })
+  let externalCollections = 0
+  const captureSource = mock.fn(async ({ currentReceipt }) => {
+    assert.equal(currentReceipt, incomplete)
+    if (!currentReceipt?.source_snapshot || !currentReceipt?.source_payloads) externalCollections += 1
+    return Object.freeze({ ...currentReceipt, status: 'READY' })
+  })
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run()
+
+  assert.equal(result.status, 'READY')
+  assert.equal(result.source.outcome, 'CAPTURED')
+  assert.equal(captureSource.mock.calls.length, 1)
+  assert.equal(externalCollections, 0)
+})

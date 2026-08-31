@@ -244,7 +244,9 @@ async function captureOrReuseSource(captureSource, receipts, {
 
   let capturedReceipt
   try {
-    capturedReceipt = await captureSource()
+    capturedReceipt = await captureSource(Object.freeze({
+      currentReceipt: current.kind === 'INCOMPLETE' ? currentReceipt : null,
+    }))
   } catch {
     throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_CAPTURE_FAILED))
   }
