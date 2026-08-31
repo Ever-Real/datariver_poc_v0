@@ -36,22 +36,27 @@ const diagnostics = Object.freeze({
   }),
   PROVIDER_AUTH: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_AUTH_FAILED', stage: 'PROVIDER', retryable: false,
+    provider_failure_class: 'AUTH',
     message: 'The Embedding provider rejected authentication.',
   }),
   PROVIDER_CONNECTIVITY: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_CONNECTIVITY_FAILED', stage: 'PROVIDER', retryable: true,
+    provider_failure_class: 'CONNECTIVITY',
     message: 'The Embedding provider could not be reached.',
   }),
   PROVIDER_CONTRACT: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_CONTRACT_FAILED', stage: 'PROVIDER', retryable: false,
+    provider_failure_class: 'CONTRACT',
     message: 'The Embedding provider returned an invalid response contract.',
   }),
   PROVIDER_HTTP: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_HTTP_FAILED', stage: 'PROVIDER', retryable: true,
+    provider_failure_class: 'HTTP',
     message: 'The Embedding provider returned an unsuccessful HTTP response.',
   }),
   PROVIDER_TIMEOUT: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_TIMEOUT', stage: 'PROVIDER', retryable: true,
+    provider_failure_class: 'TIMEOUT',
     message: 'The Embedding provider exceeded the bounded request time.',
   }),
   VECTOR_COUNT: Object.freeze({
@@ -96,15 +101,16 @@ function providerStatus(error) {
 function providerError(error, timedOut, externallyAborted) {
   if (externallyAborted) return projectorError('CANCELLED')
   const status = providerStatus(error)
-  const code = String(error?.code || '')
+  const code = String(error?.productCode || error?.code || '')
   if (timedOut || error?.name === 'TimeoutError' || code === 'ETIMEDOUT'
-    || error?.productCode === llmProviderFailureCodes.TIMEOUT) return projectorError('PROVIDER_TIMEOUT')
+    || code === llmProviderFailureCodes.TIMEOUT) return projectorError('PROVIDER_TIMEOUT')
   if (status === 401 || status === 403
-    || error?.productCode === llmProviderFailureCodes.AUTH) return projectorError('PROVIDER_AUTH')
-  if (status !== undefined || error?.productCode === llmProviderFailureCodes.HTTP) {
+    || code === llmProviderFailureCodes.AUTH) return projectorError('PROVIDER_AUTH')
+  if (code === llmProviderFailureCodes.CONNECTIVITY) return projectorError('PROVIDER_CONNECTIVITY')
+  if (code === llmProviderFailureCodes.CONTRACT) return projectorError('PROVIDER_CONTRACT')
+  if (status !== undefined || code === llmProviderFailureCodes.HTTP) {
     return projectorError('PROVIDER_HTTP')
   }
-  if (error?.productCode === llmProviderFailureCodes.CONTRACT) return projectorError('PROVIDER_CONTRACT')
   return projectorError('PROVIDER_CONNECTIVITY')
 }
 
@@ -224,6 +230,9 @@ function safeProgress(stage, completed, total, batchesCompleted, details = {}) {
     ...(Number.isSafeInteger(details.materialized_count) && details.materialized_count >= 0
       ? { materialized_count: details.materialized_count }
       : {}),
+    ...(Number.isSafeInteger(details.batch_elapsed_ms) && details.batch_elapsed_ms >= 0
+      ? { batch_elapsed_ms: details.batch_elapsed_ms }
+      : {}),
   })
 }
 
@@ -247,6 +256,7 @@ async function providerBatch(provider, model, input, externalSignal, ownershipSi
   }, K9_SEMANTIC_PROVIDER_TIMEOUT_MS)
   const signals = [externalSignal, ownershipSignal, timeoutController.signal].filter(Boolean)
   const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals)
+  const startedAt = Date.now()
   try {
     const payload = await provider.embed({
       model,
@@ -257,12 +267,12 @@ async function providerBatch(provider, model, input, externalSignal, ownershipSi
     if (payload && typeof payload === 'object' && 'ok' in payload && 'status' in payload) {
       if (!payload.ok) throw Object.assign(new Error('provider HTTP failure'), { status: payload.status })
       try {
-        return await payload.json()
+        return { payload: await payload.json(), elapsed_ms: Date.now() - startedAt }
       } catch {
         throw projectorError('PROVIDER_CONTRACT')
       }
     }
-    return payload
+    return { payload, elapsed_ms: Date.now() - startedAt }
   } catch (error) {
     if (error instanceof K9SemanticProjectorError) throw error
     if (ownershipSignal?.aborted) throw projectorError('GENERATION_LOCK')
@@ -436,10 +446,12 @@ export function createK9SemanticProjector({
             signal?.throwIfAborted()
             ownershipSignal?.throwIfAborted()
             const batch = pending.slice(offset, offset + K9_SEMANTIC_BATCH_SIZE)
-            const payload = await providerBatch(
+            const providerResult = await providerBatch(
               provider, model, batch.map((document) => document.contentText), signal, ownershipSignal, timer,
             )
-            const validated = validateEmbeddingVectors(payload, batch.length, expectedDimension)
+            const validated = validateEmbeddingVectors(
+              providerResult.payload, batch.length, expectedDimension,
+            )
             expectedDimension = validated.dimension
             const records = batch.map((document, index) => ({
               document_id: document.documentId,
@@ -465,6 +477,7 @@ export function createK9SemanticProjector({
               batch_total: batchTotal,
               changed_count: changedCount,
               materialized_count: completed,
+              batch_elapsed_ms: providerResult.elapsed_ms,
             })
           }
           signal?.throwIfAborted()

@@ -9,6 +9,7 @@ import {
   k9SemanticProjectorDiagnostic,
   validateEmbeddingVectors,
 } from './poc-k9-semantic-projector.mjs'
+import { llmProviderFailureCodes } from './poc-llm-timeout.mjs'
 
 const bindingHash = 'b'.repeat(64)
 const generationA = 'a'.repeat(64)
@@ -147,36 +148,63 @@ test('classifies provider authentication, connectivity, timeout, HTTP, and contr
     error: Object.assign(new Error('raw bearer token'), { status: 401 }),
     expected: {
       code: 'K9_SEMANTIC_PROVIDER_AUTH_FAILED', stage: 'PROVIDER', retryable: false,
+      provider_failure_class: 'AUTH',
       message: 'The Embedding provider rejected authentication.',
     },
   }, {
     error: Object.assign(new TypeError('raw endpoint'), { code: 'ECONNREFUSED' }),
     expected: {
       code: 'K9_SEMANTIC_PROVIDER_CONNECTIVITY_FAILED', stage: 'PROVIDER', retryable: true,
+      provider_failure_class: 'CONNECTIVITY',
       message: 'The Embedding provider could not be reached.',
     },
   }, {
     error: Object.assign(new Error('raw timeout'), { code: 'ETIMEDOUT' }),
     expected: {
       code: 'K9_SEMANTIC_PROVIDER_TIMEOUT', stage: 'PROVIDER', retryable: true,
+      provider_failure_class: 'TIMEOUT',
       message: 'The Embedding provider exceeded the bounded request time.',
     },
   }, {
     error: Object.assign(new Error('raw body'), { status: 503 }),
     expected: {
       code: 'K9_SEMANTIC_PROVIDER_HTTP_FAILED', stage: 'PROVIDER', retryable: true,
+      provider_failure_class: 'HTTP',
       message: 'The Embedding provider returned an unsuccessful HTTP response.',
     },
   }, {
     error: Object.assign(new Error('raw response'), { productCode: 'POC_LLM_PROVIDER_CONTRACT_FAILED' }),
     expected: {
       code: 'K9_SEMANTIC_PROVIDER_CONTRACT_FAILED', stage: 'PROVIDER', retryable: false,
+      provider_failure_class: 'CONTRACT',
       message: 'The Embedding provider returned an invalid response contract.',
     },
   }]
   for (const item of cases) {
     item.error.expected = item.expected
     await diagnosticForProviderFailure(item.error)
+  }
+})
+
+test('classifies the Product llmRequest code/status shape without collapsing it to HTTP', async () => {
+  const cases = [
+    [llmProviderFailureCodes.AUTH, 502, 'K9_SEMANTIC_PROVIDER_AUTH_FAILED', 'AUTH'],
+    [llmProviderFailureCodes.CONNECTIVITY, 502, 'K9_SEMANTIC_PROVIDER_CONNECTIVITY_FAILED', 'CONNECTIVITY'],
+    [llmProviderFailureCodes.CONTRACT, 502, 'K9_SEMANTIC_PROVIDER_CONTRACT_FAILED', 'CONTRACT'],
+    [llmProviderFailureCodes.HTTP, 502, 'K9_SEMANTIC_PROVIDER_HTTP_FAILED', 'HTTP'],
+    [llmProviderFailureCodes.TIMEOUT, 504, 'K9_SEMANTIC_PROVIDER_TIMEOUT', 'TIMEOUT'],
+  ]
+  for (const [code, statusCode, expectedCode, expectedClass] of cases) {
+    const embeddingProvider = provider(() => {
+      throw Object.assign(new Error('private provider payload'), { code, statusCode })
+    })
+    const { value } = projector({ provider: embeddingProvider })
+    await assert.rejects(value.project(snapshot(1)), (error) => {
+      assert.equal(error.diagnostic.code, expectedCode)
+      assert.equal(error.diagnostic.provider_failure_class, expectedClass)
+      assert.equal(JSON.stringify(error.diagnostic).includes('private provider payload'), false)
+      return true
+    })
   }
 })
 
@@ -386,6 +414,8 @@ test('persists batch progress and resumes the same immutable snapshot without so
   assert.ok(progress.some((item) => item.stage === 'EMBEDDING' && item.completed === 64))
   assert.ok(progress.some((item) => item.stage === 'EMBEDDING'
     && item.batch_total === 3 && item.changed_count === 70 && item.materialized_count === 64))
+  assert.ok(progress.some((item) => item.stage === 'EMBEDDING'
+    && Number.isSafeInteger(item.batch_elapsed_ms) && item.batch_elapsed_ms >= 0))
   const callsAfterSuccess = embeddingProvider.calls.length
   assert.equal((await first.value.project(source)).outcome, 'REUSED')
   assert.equal(embeddingProvider.calls.length, callsAfterSuccess)

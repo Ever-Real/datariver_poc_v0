@@ -83,6 +83,9 @@ function semanticProgress(value, sourceReceipt) {
     result.batch_total = value.batch_total
   }
   if (batchCompleted > 0) result.batch_number = batchCompleted
+  if (Number.isSafeInteger(value?.batch_elapsed_ms) && value.batch_elapsed_ms >= 0) {
+    result.batch_elapsed_ms = value.batch_elapsed_ms
+  }
   return Object.freeze(result)
 }
 
