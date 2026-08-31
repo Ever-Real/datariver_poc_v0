@@ -77,7 +77,33 @@ function safeProjectorDiagnostic(error) {
     || typeof candidate.retryable !== 'boolean') {
     return frozenDiagnostic(diagnostics.PROJECTOR_FAILED)
   }
-  return frozenDiagnostic(candidate)
+  const bounded = { ...frozenDiagnostic(candidate) }
+  for (const field of [
+    'failure_detail_code', 'projector_id', 'query_family', 'transaction_phase',
+  ]) {
+    if (safeDiagnosticTokenPattern.test(candidate[field] || '')) bounded[field] = candidate[field]
+  }
+  for (const field of ['provider_failure_class', 'neo4j_http_class', 'neo4j_error_class']) {
+    if (Object.hasOwn(candidate, field)) {
+      bounded[field] = safeDiagnosticTokenPattern.test(candidate[field] || '') ? candidate[field] : null
+    }
+  }
+  for (const field of [
+    'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+    'batch_written_nodes', 'batch_written_edges',
+  ]) {
+    if (Object.hasOwn(candidate, field)) {
+      bounded[field] = Number.isSafeInteger(candidate[field]) && candidate[field] >= 0
+        ? Math.min(candidate[field], 1_000_000_000) : 0
+    }
+  }
+  for (const field of [
+    'expected_snapshot_id_present', 'active_snapshot_id_present',
+    'promotion_attempted', 'promotion_completed',
+  ]) {
+    if (Object.hasOwn(candidate, field)) bounded[field] = candidate[field] === true
+  }
+  return Object.freeze(bounded)
 }
 
 function safeSourceCaptureDiagnostic(error) {

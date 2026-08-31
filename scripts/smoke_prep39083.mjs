@@ -221,6 +221,8 @@ function k9V2ProjectorFailure(lifecycle) {
     const progressValue = state.progress && typeof state.progress === 'object'
       ? state.progress : {}
     const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+    const diagnosticValue = state.diagnostic && typeof state.diagnostic === 'object'
+      ? state.diagnostic : {}
     return {
       projector,
       classification: projector === 'SEMANTIC'
@@ -230,10 +232,11 @@ function k9V2ProjectorFailure(lifecycle) {
         terminal: true,
         product_error_code: code,
         failure_stage: stage,
-        failure_detail_code: code,
+        failure_detail_code: safeK9Token(diagnosticValue.failure_detail_code)
+          ? diagnosticValue.failure_detail_code : code,
         projector,
-        provider_failure_class: safeK9Token(state.diagnostic?.provider_failure_class)
-          ? state.diagnostic.provider_failure_class : null,
+        provider_failure_class: safeK9Token(diagnosticValue.provider_failure_class)
+          ? diagnosticValue.provider_failure_class : null,
         desired_snapshot_id: safeSnapshotHash(state.desired_snapshot_id)
           ? state.desired_snapshot_id : null,
         active_snapshot_id: safeSnapshotHash(state.active_snapshot_id)
@@ -242,8 +245,26 @@ function k9V2ProjectorFailure(lifecycle) {
         documents_total: count(progressValue.total_units),
         documents_changed: count(progressValue.documents_changed),
         documents_materialized: count(progressValue.documents_materialized),
-        batch_number: count(progressValue.batch_number),
-        batch_count: count(progressValue.batch_total),
+        batch_number: count(diagnosticValue.batch_number ?? progressValue.batch_number),
+        batch_count: count(diagnosticValue.batch_total ?? progressValue.batch_total),
+        ...(projector === 'SEMANTIC' ? {} : {
+          neo4j_http_class: safeK9Token(diagnosticValue.neo4j_http_class)
+            ? diagnosticValue.neo4j_http_class : null,
+          neo4j_error_class: safeK9Token(diagnosticValue.neo4j_error_class)
+            ? diagnosticValue.neo4j_error_class : null,
+          query_family: safeK9Token(diagnosticValue.query_family)
+            ? diagnosticValue.query_family : null,
+          transaction_phase: safeK9Token(diagnosticValue.transaction_phase)
+            ? diagnosticValue.transaction_phase : null,
+          batch_requested_nodes: count(diagnosticValue.batch_requested_nodes),
+          batch_requested_edges: count(diagnosticValue.batch_requested_edges),
+          batch_written_nodes: count(diagnosticValue.batch_written_nodes),
+          batch_written_edges: count(diagnosticValue.batch_written_edges),
+          expected_snapshot_id_present: diagnosticValue.expected_snapshot_id_present === true,
+          active_snapshot_id_present: diagnosticValue.active_snapshot_id_present === true,
+          promotion_attempted: diagnosticValue.promotion_attempted === true,
+          promotion_completed: diagnosticValue.promotion_completed === true,
+        }),
       },
     }
   }
@@ -294,6 +315,33 @@ function boundedK9V2LifecycleStatus(lifecycle) {
     const progressValue = value?.progress && typeof value.progress === 'object'
       ? value.progress : null
     const count = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+    const diagnosticValue = value?.diagnostic && typeof value.diagnostic === 'object'
+      ? value.diagnostic : null
+    const diagnostic = diagnosticValue ? {
+      code: safeK9Token(diagnosticValue.code) ? diagnosticValue.code : 'K9_V2_DIAGNOSTIC_INVALID',
+      stage: safeK9Token(diagnosticValue.stage) ? diagnosticValue.stage : 'UNKNOWN',
+      ...(Object.hasOwn(diagnosticValue, 'failure_detail_code') ? {
+        failure_detail_code: safeK9Token(diagnosticValue.failure_detail_code)
+          ? diagnosticValue.failure_detail_code : null,
+      } : {}),
+      ...(Object.hasOwn(diagnosticValue, 'provider_failure_class') ? {
+        provider_failure_class: safeK9Token(diagnosticValue.provider_failure_class)
+          ? diagnosticValue.provider_failure_class : null,
+      } : {}),
+      ...Object.fromEntries(['neo4j_http_class', 'neo4j_error_class', 'query_family', 'transaction_phase']
+        .filter((field) => Object.hasOwn(diagnosticValue, field))
+        .map((field) => [field, safeK9Token(diagnosticValue[field]) ? diagnosticValue[field] : null])),
+      ...Object.fromEntries([
+        'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+        'batch_written_nodes', 'batch_written_edges',
+      ].filter((field) => Object.hasOwn(diagnosticValue, field))
+        .map((field) => [field, count(diagnosticValue[field])])),
+      ...Object.fromEntries([
+        'expected_snapshot_id_present', 'active_snapshot_id_present',
+        'promotion_attempted', 'promotion_completed',
+      ].filter((field) => Object.hasOwn(diagnosticValue, field))
+        .map((field) => [field, diagnosticValue[field] === true])),
+    } : null
     return {
       desired_snapshot_id: snapshot(value?.desired_snapshot_id),
       active_snapshot_id: snapshot(value?.active_snapshot_id),
@@ -308,12 +356,7 @@ function boundedK9V2LifecycleStatus(lifecycle) {
         batch_number: count(progressValue.batch_number),
         batch_total: count(progressValue.batch_total),
       } : null,
-      diagnostic: value?.diagnostic ? {
-        code: safeK9Token(value.diagnostic.code) ? value.diagnostic.code : 'K9_V2_DIAGNOSTIC_INVALID',
-        stage: safeK9Token(value.diagnostic.stage) ? value.diagnostic.stage : 'UNKNOWN',
-        provider_failure_class: safeK9Token(value.diagnostic.provider_failure_class)
-          ? value.diagnostic.provider_failure_class : null,
-      } : null,
+      diagnostic,
     }
   }
   return {

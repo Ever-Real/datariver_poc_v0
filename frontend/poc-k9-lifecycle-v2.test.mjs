@@ -217,6 +217,56 @@ test('Actual-PREP-shaped Semantic retry reuses capture, direct resolution, and b
   assert.equal(semanticAttempts, 2)
 })
 
+test('TEST-shaped graph-only retry reuses Source and Semantic then READY rerun is zero-work', async () => {
+  const receipts = fakeReceiptPort({
+    sourceReceipt: readySourceReceipt(snapshotA, {
+      direct_resolution_count: 1_486,
+      dangling_assignment_reference_count: 75_431,
+    }),
+    desired: {
+      LINEAGE: desiredReceipt('LINEAGE', snapshotA, 'FAILED'),
+      METADATA: desiredReceipt('METADATA', snapshotA, 'FAILED'),
+      SEMANTIC: desiredReceipt('SEMANTIC', snapshotA),
+    },
+    active: {
+      LINEAGE: activeReceipt('LINEAGE', snapshotB),
+      METADATA: activeReceipt('METADATA', snapshotB),
+      SEMANTIC: activeReceipt('SEMANTIC', snapshotA),
+    },
+  })
+  const captureSource = mock.fn()
+  const calls = { LINEAGE: 0, METADATA: 0, SEMANTIC: 0 }
+  const implementations = Object.fromEntries(K9_V2_PROJECTOR_IDS.map((projectorId) => [
+    projectorId,
+    mock.fn(async (sourceReceipt) => {
+      calls[projectorId] += 1
+      receipts.state.desired[projectorId] = desiredReceipt(projectorId, sourceReceipt.source_snapshot_id)
+      receipts.state.active[projectorId] = activeReceipt(projectorId, sourceReceipt.source_snapshot_id)
+      return { status: 'READY', source_snapshot_id: sourceReceipt.source_snapshot_id }
+    }),
+  ]))
+  const projectors = projectorPorts(receipts, implementations)
+  const orchestrator = createK9V2LifecycleOrchestrator({ captureSource, receipts, projectors })
+
+  const resumed = await orchestrator.run({ sourceRunMode: 'RESUME' })
+  assert.equal(resumed.status, 'READY')
+  assert.equal(resumed.source.outcome, 'REUSED')
+  assert.equal(resumed.projectors.LINEAGE.outcome, 'PROJECTED')
+  assert.equal(resumed.projectors.METADATA.outcome, 'PROJECTED')
+  assert.equal(resumed.projectors.SEMANTIC.outcome, 'REUSED')
+  assert.equal(captureSource.mock.calls.length, 0)
+  assert.deepEqual(calls, { LINEAGE: 1, METADATA: 1, SEMANTIC: 0 })
+
+  const rerun = await orchestrator.run({ sourceRunMode: 'RESUME' })
+  assert.equal(rerun.status, 'READY')
+  assert.equal(rerun.source.outcome, 'REUSED')
+  assert.deepEqual(Object.fromEntries(K9_V2_PROJECTOR_IDS.map((projectorId) => [
+    projectorId, rerun.projectors[projectorId].outcome,
+  ])), { LINEAGE: 'REUSED', METADATA: 'REUSED', SEMANTIC: 'REUSED' })
+  assert.equal(captureSource.mock.calls.length, 0)
+  assert.deepEqual(calls, { LINEAGE: 1, METADATA: 1, SEMANTIC: 0 })
+})
+
 test('aggregate readiness fails closed when any desired or active receipt has a mixed snapshot ID', () => {
   const projectorReceipts = readyProjectorReceipts(snapshotA)
   projectorReceipts.METADATA = {

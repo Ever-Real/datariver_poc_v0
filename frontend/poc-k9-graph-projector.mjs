@@ -13,6 +13,14 @@ export const K9_GRAPH_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA'])
 
 const hashPattern = /^[0-9a-f]{64}$/u
 const safeTokenPattern = /^[A-Z][A-Z0-9_]{0,79}$/u
+const graphDiagnosticCountFields = Object.freeze([
+  'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
+  'batch_written_nodes', 'batch_written_edges',
+])
+const graphDiagnosticBooleanFields = Object.freeze([
+  'expected_snapshot_id_present', 'active_snapshot_id_present',
+  'promotion_attempted', 'promotion_completed',
+])
 
 const graphDiagnostics = Object.freeze({
   INPUT: Object.freeze({
@@ -40,9 +48,15 @@ export class K9GraphProjectorError extends Error {
     super(known.message)
     this.name = 'K9GraphProjectorError'
     this.code = known.code
-    this.stage = known.stage
+    this.stage = safeTokenPattern.test(diagnostic?.stage || '') ? diagnostic.stage : known.stage
     this.retryable = known.retryable
-    this.diagnostic = known
+    this.diagnostic = Object.freeze({
+      ...diagnostic,
+      code: known.code,
+      stage: this.stage,
+      retryable: known.retryable,
+      message: known.message,
+    })
     this.projectorId = projectorId
   }
 }
@@ -205,10 +219,29 @@ function boundedFailureDiagnostic(projectorId, sourceSnapshotId, result) {
   const sourceCode = safeTokenPattern.test(result?.failureCode || '')
     ? result.failureCode
     : diagnostic.code
-  return Object.freeze({
+  const detail = result?.diagnostic && typeof result.diagnostic === 'object'
+    ? result.diagnostic : {}
+  const stage = safeTokenPattern.test(detail.failure_stage || '')
+    ? detail.failure_stage : diagnostic.stage
+  const failureDetailCode = safeTokenPattern.test(detail.failure_detail_code || '')
+    ? detail.failure_detail_code : sourceCode
+  const bounded = {
     code: diagnostic.code,
-    stage: diagnostic.stage,
-    detail_hash: computeSha256({ projectorId, sourceSnapshotId, sourceCode }),
+    stage,
+    failure_detail_code: failureDetailCode,
+    projector_id: projectorId,
+    detail_hash: computeSha256({ projectorId, sourceSnapshotId, sourceCode, stage, failureDetailCode }),
+  }
+  for (const field of ['neo4j_http_class', 'neo4j_error_class', 'query_family', 'transaction_phase']) {
+    if (safeTokenPattern.test(detail[field] || '')) bounded[field] = detail[field]
+  }
+  for (const field of graphDiagnosticCountFields) {
+    bounded[field] = Number.isSafeInteger(detail[field]) && detail[field] >= 0
+      ? Math.min(detail[field], 1_000_000_000) : 0
+  }
+  for (const field of graphDiagnosticBooleanFields) bounded[field] = detail[field] === true
+  return Object.freeze({
+    ...bounded,
   })
 }
 

@@ -159,6 +159,34 @@ test('accepts bounded receipt states and rejects payload-shaped diagnostics or i
     },
   })
   assert.deepEqual(normalizeK9ProjectorReceiptV2(boundedSemantic), boundedSemantic)
+  const boundedGraphDocument = {
+    ...pending,
+    receipt_id: undefined,
+    status: 'FAILED',
+    diagnostic: {
+      code: 'K9_GRAPH_PROJECTION_FAILED', stage: 'GRAPH_WRITE',
+      failure_detail_code: 'NODE_BATCH_WRITE_FAILED', projector_id: 'LINEAGE',
+      detail_hash: '9'.repeat(64), provider_failure_class: null,
+      neo4j_http_class: 'HTTP_2XX', neo4j_error_class: 'CLIENT',
+      batch_number: 1, batch_total: 2, batch_requested_nodes: 500,
+      batch_requested_edges: 0, batch_written_nodes: 0, batch_written_edges: 0,
+      query_family: 'NODE_BATCH_WRITE', transaction_phase: 'STAGING',
+      expected_snapshot_id_present: true, active_snapshot_id_present: true,
+      promotion_attempted: false, promotion_completed: false,
+    },
+    output_pointer: null,
+    output_hash: null,
+  }
+  delete boundedGraphDocument.receipt_id
+  const boundedGraph = {
+    ...boundedGraphDocument,
+    receipt_id: computeSha256(boundedGraphDocument),
+  }
+  assert.deepEqual(normalizeK9ProjectorReceiptV2(boundedGraph), boundedGraph)
+  assert.throws(() => normalizeK9ProjectorReceiptV2({
+    ...boundedGraph,
+    diagnostic: { ...boundedGraph.diagnostic, raw_cypher: 'MATCH (n) RETURN n' },
+  }), { code: 'K9_PROJECTOR_RECEIPT_INVALID' })
 })
 
 test('declares additive V6 tables with immutable payload triggers and no payload GC', () => {

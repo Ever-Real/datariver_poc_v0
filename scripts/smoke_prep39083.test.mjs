@@ -371,6 +371,49 @@ test('PREP smoke fails immediately with bounded V2 Semantic projector diagnostic
   assert.ok(result.failure.elapsed_ms < 5_000)
 })
 
+test('PREP smoke preserves bounded V2 graph adapter diagnostics without Cypher or identities', async () => {
+  const lineage = {
+    desired_snapshot_id: sourceSnapshotId,
+    active_snapshot_id: null,
+    status: 'FAILED',
+    attempt: 2,
+    progress: { phase: 'LINEAGE_FAILED', completed_units: 0, total_units: 2 },
+    diagnostic: {
+      code: 'K9_GRAPH_PROJECTION_FAILED', stage: 'GRAPH_WRITE',
+      failure_detail_code: 'NODE_BATCH_WRITE_FAILED', projector_id: 'LINEAGE',
+      neo4j_http_class: 'HTTP_2XX', neo4j_error_class: 'CLIENT',
+      batch_number: 1, batch_total: 2, batch_requested_nodes: 2,
+      batch_requested_edges: 0, batch_written_nodes: 0, batch_written_edges: 0,
+      query_family: 'NODE_BATCH_WRITE', transaction_phase: 'STAGING',
+      expected_snapshot_id_present: true, active_snapshot_id_present: true,
+      promotion_attempted: false, promotion_completed: false,
+      raw_cypher: 'MATCH (secret) RETURN secret',
+    },
+  }
+  const result = await fixture('required', {
+    k9Lifecycle: readyK9Lifecycle({
+      LINEAGE: lineage,
+      lifecycle: {
+        source: { desired_snapshot_id: sourceSnapshotId, active_snapshot_id: null, status: 'READY' },
+        aggregate: { status: 'FAILED', reason: 'K9_GRAPH_PROJECTION_FAILED' },
+      },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED')
+  assert.equal(result.failure.diagnostic.failure_stage, 'GRAPH_WRITE')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'NODE_BATCH_WRITE_FAILED')
+  assert.equal(result.failure.diagnostic.neo4j_error_class, 'CLIENT')
+  assert.equal(result.failure.diagnostic.query_family, 'NODE_BATCH_WRITE')
+  assert.equal(result.failure.diagnostic.batch_requested_nodes, 2)
+  assert.equal(result.failure.diagnostic.expected_snapshot_id_present, true)
+  assert.equal(JSON.stringify(result.failure).includes('MATCH'), false)
+  assert.equal(JSON.stringify(result.failure).includes('secret'), false)
+  assert.equal(result.report.readiness.MCL.status, 'PASS')
+  assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+})
+
 test('PREP smoke fails immediately with the durable pre-snapshot source diagnostic', async () => {
   const result = await fixture('required', {
     managedItems: [

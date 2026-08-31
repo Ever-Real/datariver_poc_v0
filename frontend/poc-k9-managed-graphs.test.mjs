@@ -26,6 +26,10 @@ const validAuthorityPin = {
   classification_policy_version: 1,
   authorization_generation: 1
 }
+const validV2AuthorityPin = {
+  ...validAuthorityPin,
+  authorization_fingerprint: 'f'.repeat(64),
+}
 
 function createBaseStateStore() {
   return {
@@ -122,6 +126,129 @@ test('K9 Managed Graphs - drift no-publish', async () => {
   assert.equal(result.status, 'FAILURE')
   assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
   assert.ok(result.reason.includes('Managed policy has drifted. No publish allowed.'))
+})
+
+test('persisted V2 graph projection bridges the additive authorization fingerprint without policy drift', async () => {
+  const stateStore = createBaseStateStore()
+  let policies = []
+  stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+  stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+    policies.find((item) => item.graph_id === graphId) || null
+  ))
+  let releaseMarker = null
+  const neo4j = createBaseNeo4j()
+  neo4j.run.mock.mockImplementation(async (query, params) => {
+    if (query.startsWith('CREATE (n:K9Node:K9Release')) {
+      releaseMarker = [params.hash, params.policy]
+      return []
+    }
+    if (query.includes('MATCH (n:K9Release)')) return releaseMarker ? [releaseMarker] : []
+    return []
+  })
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+  await k9.bootstrapK9Policies(authCtx)
+  const sourcePayload = {
+    direction: 'BOTH', depth: 1, truncated: false,
+    nodes: [], column_nodes: [], edges: [], completeness_metadata: null,
+  }
+  const sourceSnapshot = {
+    source_snapshot_id: '3'.repeat(64),
+    lineage_hash: computeSha256(sourcePayload),
+    metadata_hash: '4'.repeat(64),
+    authority_pin: validV2AuthorityPin,
+  }
+
+  const result = await k9.publishPersistedProjection(authCtx, {
+    projector_id: 'LINEAGE', source_snapshot: sourceSnapshot, source_payload: sourcePayload,
+  })
+
+  assert.equal(result.status, 'RUN')
+  assert.equal(result.sourceSnapshotId, sourceSnapshot.source_snapshot_id)
+  assert.equal(stateStore.executeK9Transaction.mock.calls.length, 1)
+  assert.equal(stateStore.finalizeK9RunFailure.mock.calls.length, 0)
+})
+
+test('persisted V2 authority mismatch fails before graph materialization with a bounded binding diagnostic', async () => {
+  const stateStore = createBaseStateStore()
+  let policies = []
+  stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+  stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+    policies.find((item) => item.graph_id === graphId) || null
+  ))
+  const neo4j = createBaseNeo4j()
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+  await k9.bootstrapK9Policies(authCtx)
+  const sourcePayload = {
+    direction: 'BOTH', depth: 1, truncated: false,
+    nodes: [], column_nodes: [], edges: [], completeness_metadata: null,
+  }
+  const result = await k9.publishPersistedProjection(authCtx, {
+    projector_id: 'LINEAGE',
+    source_snapshot: {
+      source_snapshot_id: '3'.repeat(64),
+      lineage_hash: computeSha256(sourcePayload),
+      metadata_hash: '4'.repeat(64),
+      authority_pin: { ...validV2AuthorityPin, authorization_fingerprint: 'invalid' },
+    },
+    source_payload: sourcePayload,
+  })
+
+  assert.equal(result.status, 'FAILURE')
+  assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
+  assert.deepEqual(result.diagnostic, {
+    failure_stage: 'GRAPH_BINDING',
+    failure_detail_code: 'AUTHORITY_PIN_CONTRACT_MISMATCH',
+    neo4j_http_class: null,
+    neo4j_error_class: null,
+    batch_number: 0,
+    batch_total: 0,
+    batch_requested_nodes: 0,
+    batch_requested_edges: 0,
+    batch_written_nodes: 0,
+    batch_written_edges: 0,
+    query_family: 'NONE',
+    transaction_phase: 'BINDING',
+    expected_snapshot_id_present: false,
+    active_snapshot_id_present: false,
+    promotion_attempted: false,
+    promotion_completed: false,
+  })
+  assert.equal(neo4j.run.mock.calls.length, 1)
+  assert.match(stateStore.finalizeK9RunFailure.mock.calls[0].arguments[1], /failure_stage=GRAPH_BINDING/)
+  assert.doesNotMatch(stateStore.finalizeK9RunFailure.mock.calls[0].arguments[1], /invalid|fingerprint/u)
+})
+
+test('persisted V2 authority cannot fall back to the legacy seven-field contract', async () => {
+  const stateStore = createBaseStateStore()
+  let policies = []
+  stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+  stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+    policies.find((item) => item.graph_id === graphId) || null
+  ))
+  const neo4j = createBaseNeo4j()
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+  await k9.bootstrapK9Policies(authCtx)
+  const sourcePayload = {
+    direction: 'BOTH', depth: 1, truncated: false,
+    nodes: [], column_nodes: [], edges: [], completeness_metadata: null,
+  }
+
+  const result = await k9.publishPersistedProjection(authCtx, {
+    projector_id: 'LINEAGE',
+    source_snapshot: {
+      source_snapshot_id: '3'.repeat(64),
+      lineage_hash: computeSha256(sourcePayload),
+      metadata_hash: '4'.repeat(64),
+      authority_pin: validAuthorityPin,
+    },
+    source_payload: sourcePayload,
+  })
+
+  assert.equal(result.status, 'FAILURE')
+  assert.equal(result.failureCode, 'K9_POLICY_PIN_DRIFT_FAILED')
+  assert.equal(result.diagnostic.failure_stage, 'GRAPH_BINDING')
+  assert.equal(result.diagnostic.failure_detail_code, 'AUTHORITY_PIN_CONTRACT_MISMATCH')
+  assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
 })
 
 test('K9 Managed Graphs records one typed terminal failure for each requested canonical policy', async () => {
@@ -458,7 +585,7 @@ test('persisted graph projection keeps the legacy manifest/LKG readable when a c
     source_snapshot_id: '3'.repeat(64),
     lineage_hash: computeSha256(sourcePayload),
     metadata_hash: '4'.repeat(64),
-    authority_pin: validAuthorityPin,
+    authority_pin: validV2AuthorityPin,
   }
 
   const result = await k9.publishPersistedProjection(authCtx, {
