@@ -94,6 +94,22 @@ function k9SourceFailureDiagnostic(asset) {
     && k9SourceFailureStages.has(asset?.failure_stage)
     && k9SourceFailureDetails.has(asset?.failure_detail_code))) return null
   const profile = asset?.metadata_source_profile
+  const assignments = profile?.assignments
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const boundedAssignments = assignments && typeof assignments === 'object' ? {
+    raw_table_refs: count(assignments.raw_table_refs),
+    raw_column_refs: count(assignments.raw_column_refs),
+    projectable_table_refs: count(assignments.projectable_table_refs),
+    projectable_column_refs: count(assignments.projectable_column_refs),
+    dangling_table_refs: count(assignments.dangling_table_refs),
+    dangling_column_refs: count(assignments.dangling_column_refs),
+    unique_projected_table_edges: count(assignments.unique_projected_table_edges),
+    unique_projected_column_edges: count(assignments.unique_projected_column_edges),
+    duplicate_table_refs: count(assignments.duplicate_table_refs),
+    duplicate_column_refs: count(assignments.duplicate_column_refs),
+    provider_incoming_table_total: count(assignments.provider_incoming_table_total),
+    provider_incoming_column_total: count(assignments.provider_incoming_column_total),
+  } : null
   const direct = profile?.direct_resolution
   const boundedDirect = direct && typeof direct === 'object' ? {
     total: Number.isSafeInteger(direct.total) ? direct.total : 0,
@@ -153,6 +169,7 @@ function k9SourceFailureDiagnostic(asset) {
         glossary_reported_total: profile.glossary_scroll?.provider_reported_total || 0,
         glossary_entities_fetched: profile.glossary_scroll?.entities_fetched || 0,
         missing_term_reference_count: profile.assignments?.missing_term_reference_count || 0,
+        ...(boundedAssignments ? { assignments: boundedAssignments } : {}),
         direct_resolution: boundedDirect,
       },
     } : {}),
@@ -172,6 +189,20 @@ function k9SourceWarning(asset) {
     removed: count(warning.removed),
   }
   return bounded.dangling_unique_terms > 0 ? bounded : null
+}
+
+function k9AssignmentScope(asset) {
+  const value = asset?.k9_assignment_scope
+  const count = (item) => Number.isSafeInteger(item) && item >= 0 ? item : 0
+  if (!value || !['EQUAL', 'GLOBAL_GREATER', 'GLOBAL_SMALLER', 'MIXED']
+    .includes(value.provider_scope_relation)) return null
+  return {
+    provider_incoming_table_total: count(value.provider_incoming_table_total),
+    provider_incoming_column_total: count(value.provider_incoming_column_total),
+    k9_scoped_table_reference_total: count(value.k9_scoped_table_reference_total),
+    k9_scoped_column_reference_total: count(value.k9_scoped_column_reference_total),
+    provider_scope_relation: value.provider_scope_relation,
+  }
 }
 
 async function privateSecret(path) {
@@ -400,6 +431,7 @@ async function main() {
     metadata_master: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     semantic_index: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     k9_source_warning: null,
+    k9_assignment_scope: null,
     mcl_change_history: 'FAIL',
     llm_general: 'FAIL',
   }
@@ -541,6 +573,7 @@ async function main() {
         report.metadata_master = 'PASS'
         report.semantic_index = 'PASS'
         report.k9_source_warning = k9SourceWarning(metadata)
+        report.k9_assignment_scope = k9AssignmentScope(metadata)
         if (progressOutput) await removeIfPresent(progressOutput)
       }, readinessTimeoutMs, '4/6 K9')
       progress('4/6', 'Managed graphs and semantic index PASS')

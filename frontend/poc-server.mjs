@@ -2700,6 +2700,38 @@ function canonicalHash(value) {
   return sha256(canonicalJson(value))
 }
 
+function k9ScopedMetadataSourceProfile(value) {
+  const profile = sanitizeK9MetadataSourceProfile(value)
+  if (!profile) return null
+  const scoped = structuredClone(profile)
+  // GlossaryTerm incoming relationship totals are provider-wide telemetry:
+  // TermedWith is emitted by many entity types outside the K9 Dataset/Column
+  // universe. Unrelated Chart/Container/etc. changes must not rotate a
+  // Dataset-scoped K9 source generation.
+  for (const key of [
+    'declared_table_assignment_total',
+    'declared_column_assignment_total',
+    'provider_incoming_table_total',
+    'provider_incoming_column_total',
+    'provider_scope_relation',
+  ]) delete scoped.assignments[key]
+  return scoped
+}
+
+function k9ScopedCompletenessMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const scoped = structuredClone(value)
+  for (const types of Object.values(scoped.per_assignment || {})) {
+    if (!types || typeof types !== 'object' || Array.isArray(types)) continue
+    for (const totals of Object.values(types)) {
+      if (totals && typeof totals === 'object' && !Array.isArray(totals)) {
+        delete totals.provider_incoming_total
+      }
+    }
+  }
+  return scoped
+}
+
 export function buildDatahubKnowledgeSourceFingerprint({
   inventoryProjection,
   datahubIdentity,
@@ -2740,12 +2772,12 @@ export function buildDatahubKnowledgeSourceFingerprint({
       table_domain_assignments: metadataSource?.table_domain_assignments,
       table_container_assignments: metadataSource?.table_container_assignments,
       table_platform_instance_assignments: metadataSource?.table_platform_instance_assignments,
-      completeness_metadata: metadataSource?.completeness_metadata,
+      completeness_metadata: k9ScopedCompletenessMetadata(metadataSource?.completeness_metadata),
       // The sanitized source profile contains deterministic raw-reference
       // accounting and identity hashes. This keeps stale assignment changes
       // inside the consistency fence even though non-projectable edges are
       // intentionally excluded from the graph projection.
-      metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
+      metadata_source_profile: k9ScopedMetadataSourceProfile(metadataSource?.source_profile),
     }),
   }
   return {
@@ -9354,6 +9386,7 @@ export function managedK9AssetSummary(
   )
   const activeMetadataProfile = sanitizeK9MetadataSourceProfile(sourceSnapshot.metadata_source_profile)
   const activeDirectResolution = activeMetadataProfile?.direct_resolution
+  const activeAssignments = activeMetadataProfile?.assignments
   const sourceWarning = activeDirectResolution?.dangling_unique_terms > 0 ? {
     code: 'DANGLING_GLOSSARY_ASSIGNMENTS',
     dangling_unique_terms: activeDirectResolution.dangling_unique_terms,
@@ -9361,6 +9394,13 @@ export function managedK9AssetSummary(
     absent: activeDirectResolution.dangling_absent_count,
     does_not_exist: activeDirectResolution.dangling_does_not_exist_count,
     removed: activeDirectResolution.dangling_removed_count,
+  } : null
+  const assignmentScope = activeAssignments ? {
+    provider_incoming_table_total: activeAssignments.provider_incoming_table_total,
+    provider_incoming_column_total: activeAssignments.provider_incoming_column_total,
+    k9_scoped_table_reference_total: activeAssignments.raw_table_refs,
+    k9_scoped_column_reference_total: activeAssignments.raw_column_refs,
+    provider_scope_relation: activeAssignments.provider_scope_relation,
   } : null
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
@@ -9415,6 +9455,7 @@ export function managedK9AssetSummary(
       ? latestFailureProfile || activeMetadataProfile
       : null,
     k9_source_warning: sourceWarning,
+    k9_assignment_scope: assignmentScope,
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
     semantic_index_contract: semanticIndex?.contract || null,
     semantic_index_generation: semanticIndex?.generation || null,

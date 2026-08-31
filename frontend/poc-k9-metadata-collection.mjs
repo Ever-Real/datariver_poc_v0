@@ -37,6 +37,7 @@ export const K9_METADATA_IDENTITY_CLASSIFICATIONS = Object.freeze([
 const supportedMetadataFailureDetails = new Set(K9_METADATA_FAILURE_DETAILS)
 const supportedTagNameSources = new Set(['LEGACY', 'PROPERTIES'])
 const supportedIdentityClassifications = new Set(K9_METADATA_IDENTITY_CLASSIFICATIONS)
+const supportedAssignmentScopeRelations = new Set(['EQUAL', 'GLOBAL_GREATER', 'GLOBAL_SMALLER', 'MIXED'])
 const supportedProviderFailureClasses = new Set([
   'CONNECTIVITY', 'TIMEOUT', 'HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER',
   'GRAPHQL', 'CONTRACT',
@@ -139,6 +140,21 @@ export function sanitizeK9MetadataSourceProfile(value) {
       observed_table_assignment_total: boundedCount(assignments.observed_table_assignment_total),
       declared_column_assignment_total: boundedCount(assignments.declared_column_assignment_total),
       observed_column_assignment_total: boundedCount(assignments.observed_column_assignment_total),
+      provider_incoming_table_total: boundedCount(assignments.provider_incoming_table_total),
+      provider_incoming_column_total: boundedCount(assignments.provider_incoming_column_total),
+      raw_table_refs: boundedCount(assignments.raw_table_refs),
+      raw_column_refs: boundedCount(assignments.raw_column_refs),
+      projectable_table_refs: boundedCount(assignments.projectable_table_refs),
+      projectable_column_refs: boundedCount(assignments.projectable_column_refs),
+      dangling_table_refs: boundedCount(assignments.dangling_table_refs),
+      dangling_column_refs: boundedCount(assignments.dangling_column_refs),
+      unique_projected_table_edges: boundedCount(assignments.unique_projected_table_edges),
+      unique_projected_column_edges: boundedCount(assignments.unique_projected_column_edges),
+      duplicate_table_refs: boundedCount(assignments.duplicate_table_refs),
+      duplicate_column_refs: boundedCount(assignments.duplicate_column_refs),
+      provider_scope_relation: supportedAssignmentScopeRelations.has(assignments.provider_scope_relation)
+        ? assignments.provider_scope_relation
+        : 'EQUAL',
       term_outside_snapshot_count: boundedCount(assignments.term_outside_snapshot_count),
       duplicate_assignment_observation_count: boundedCount(assignments.duplicate_assignment_observation_count),
       missing_term_reference_count: boundedCount(assignments.missing_term_reference_count),
@@ -224,6 +240,40 @@ function providerContractFailure(profile) {
     new Error('The bounded DataHub glossary entity response contract is invalid.'),
     { providerFailureKind: 'CONTRACT' },
   ), profile)
+}
+
+export function validateK9ScopedAssignmentCompleteness(profile, {
+  tableEdgeCount,
+  columnEdgeCount,
+} = {}) {
+  const assignments = profile?.assignments
+  const counts = [
+    assignments?.raw_table_refs,
+    assignments?.raw_column_refs,
+    assignments?.projectable_table_refs,
+    assignments?.projectable_column_refs,
+    assignments?.dangling_table_refs,
+    assignments?.dangling_column_refs,
+    assignments?.unique_projected_table_edges,
+    assignments?.unique_projected_column_edges,
+    assignments?.duplicate_table_refs,
+    assignments?.duplicate_column_refs,
+    tableEdgeCount,
+    columnEdgeCount,
+  ]
+  if (!counts.every(nonNegativeSafeInteger)
+    || assignments.raw_table_refs
+      !== assignments.projectable_table_refs + assignments.dangling_table_refs
+    || assignments.raw_column_refs
+      !== assignments.projectable_column_refs + assignments.dangling_column_refs
+    || assignments.projectable_table_refs
+      !== assignments.unique_projected_table_edges + assignments.duplicate_table_refs
+    || assignments.projectable_column_refs
+      !== assignments.unique_projected_column_edges + assignments.duplicate_column_refs
+    || tableEdgeCount !== assignments.unique_projected_table_edges
+    || columnEdgeCount !== assignments.unique_projected_column_edges) {
+    throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH', undefined, profile)
+  }
 }
 
 function providerFailure(error) {
@@ -370,6 +420,19 @@ function createMetadataSourceProfile(sourceGeneration) {
       observed_table_assignment_total: 0,
       declared_column_assignment_total: 0,
       observed_column_assignment_total: 0,
+      provider_incoming_table_total: 0,
+      provider_incoming_column_total: 0,
+      raw_table_refs: 0,
+      raw_column_refs: 0,
+      projectable_table_refs: 0,
+      projectable_column_refs: 0,
+      dangling_table_refs: 0,
+      dangling_column_refs: 0,
+      unique_projected_table_edges: 0,
+      unique_projected_column_edges: 0,
+      duplicate_table_refs: 0,
+      duplicate_column_refs: 0,
+      provider_scope_relation: 'EQUAL',
       term_outside_snapshot_count: 0,
       duplicate_assignment_observation_count: 0,
       missing_term_reference_count: 0,
@@ -752,7 +815,7 @@ export function createK9MetadataCollector({
       const tableTotal = entity.tableAssignments?.total
       const columnTotal = entity.columnAssignments?.total
       if (!nonNegativeSafeInteger(tableTotal) || !nonNegativeSafeInteger(columnTotal)) {
-        throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
+        throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH', undefined, profile)
       }
       const termValue = {
         urn: entity.urn,
@@ -799,6 +862,8 @@ export function createK9MetadataCollector({
         terms.push(termValue)
         profile.assignments.declared_table_assignment_total += tableTotal
         profile.assignments.declared_column_assignment_total += columnTotal
+        profile.assignments.provider_incoming_table_total += tableTotal
+        profile.assignments.provider_incoming_column_total += columnTotal
         assignmentTotals.set(entity.urn, { TABLE: tableTotal, COLUMN: columnTotal })
       }
       for (const parentNode of entity.parentNodes?.nodes || []) {
@@ -989,6 +1054,7 @@ export function createK9MetadataCollector({
     const assignmentReferences = []
     for (const item of inventory) {
       const classification = classificationFor(item, authorityPin.classification_ceiling)
+      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
       for (const term of item.glossary_terms || []) {
         if (term?.urn) assignmentReferences.push({ type: 'TABLE', reference: term, item, field: null, classification })
       }
@@ -1000,6 +1066,13 @@ export function createK9MetadataCollector({
         }
       }
     }
+    profile.assignments.raw_table_refs = assignmentReferences
+      .filter((assignment) => assignment.type === 'TABLE').length
+    profile.assignments.raw_column_refs = assignmentReferences.length - profile.assignments.raw_table_refs
+    // Backward-compatible aliases: these have always represented observations
+    // in the K9 Dataset/Column inventory, not provider-wide relationship totals.
+    profile.assignments.observed_table_assignment_total = profile.assignments.raw_table_refs
+    profile.assignments.observed_column_assignment_total = profile.assignments.raw_column_refs
     profile.assignments.raw_reference_hash = boundedShapeHash(assignmentReferences.map((assignment) => ({
       assignment_type: assignment.type,
       asset_urn: urnFor(assignment.item),
@@ -1202,27 +1275,47 @@ export function createK9MetadataCollector({
       throw providerContractFailure(profile)
     }
 
-    const observedAssignmentTotals = new Map([...termSet].sort()
-      .map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
+    const scopedAssignmentTotals = new Map()
+    const scopedTotalsFor = (termUrn) => {
+      if (!scopedAssignmentTotals.has(termUrn)) {
+        scopedAssignmentTotals.set(termUrn, {
+          TABLE: { raw: 0, projectable: 0, dangling: 0, unique_projected: 0, duplicates: 0 },
+          COLUMN: { raw: 0, projectable: 0, dangling: 0, unique_projected: 0, duplicates: 0 },
+        })
+      }
+      return scopedAssignmentTotals.get(termUrn)
+    }
     const registerAssignment = (type, termUrn, item, field, classification) => {
-      if (type === 'TABLE') profile.assignments.observed_table_assignment_total += 1
-      else profile.assignments.observed_column_assignment_total += 1
-      if (danglingTerms.has(termUrn)) return
+      const totals = scopedTotalsFor(termUrn)[type]
+      totals.raw += 1
+      if (danglingTerms.has(termUrn)) {
+        totals.dangling += 1
+        if (type === 'TABLE') profile.assignments.dangling_table_refs += 1
+        else profile.assignments.dangling_column_refs += 1
+        return
+      }
       if (!termSet.has(termUrn)) {
         throw providerContractFailure(profile)
       }
+      totals.projectable += 1
+      if (type === 'TABLE') profile.assignments.projectable_table_refs += 1
+      else profile.assignments.projectable_column_refs += 1
       const assignId = type === 'TABLE'
         ? `TABLE:${urnFor(item)}`
         : `COLUMN:${urnFor(item)}:${field.fieldPath}`
       const assignKey = `${assignId}->${termUrn}`
       if (assignmentSet.has(assignKey)) {
+        totals.duplicates += 1
         profile.assignments.duplicate_assignment_observation_count += 1
+        if (type === 'TABLE') profile.assignments.duplicate_table_refs += 1
+        else profile.assignments.duplicate_column_refs += 1
         observeIdentityResolution(profile, 'EXACT_DUPLICATE')
         return
       }
       assignmentSet.add(assignKey)
-      observedAssignmentTotals.get(termUrn)[type] += 1
-      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) return
+      totals.unique_projected += 1
+      if (type === 'TABLE') profile.assignments.unique_projected_table_edges += 1
+      else profile.assignments.unique_projected_column_edges += 1
       const assignment = {
         id: assignId,
         term_urn: termUrn,
@@ -1244,16 +1337,33 @@ export function createK9MetadataCollector({
     }
 
     for (const termUrn of [...termSet].sort()) {
-      const expected = assignmentTotals.get(termUrn)
-      const observed = observedAssignmentTotals.get(termUrn)
+      const provider = assignmentTotals.get(termUrn) || { TABLE: 0, COLUMN: 0 }
+      const scoped = scopedTotalsFor(termUrn)
       completeness_metadata.per_assignment[termUrn] = {
-        TABLE: { fetched: observed.TABLE, total: expected.TABLE },
-        COLUMN: { fetched: observed.COLUMN, total: expected.COLUMN },
+        TABLE: { ...scoped.TABLE, provider_incoming_total: provider.TABLE },
+        COLUMN: { ...scoped.COLUMN, provider_incoming_total: provider.COLUMN },
       }
-      if (observed.TABLE !== expected.TABLE || observed.COLUMN !== expected.COLUMN) {
-        throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
+      for (const type of ['TABLE', 'COLUMN']) {
+        const totals = scoped[type]
+        if (totals.raw !== totals.projectable + totals.dangling
+          || totals.projectable !== totals.unique_projected + totals.duplicates) {
+          throw metadataFailure('GLOSSARY_ASSIGNMENT_COUNT_MISMATCH', undefined, profile)
+        }
       }
     }
+    validateK9ScopedAssignmentCompleteness(profile, {
+      tableEdgeCount: table_assignments.length,
+      columnEdgeCount: column_assignments.length,
+    })
+    const providerGreater = profile.assignments.provider_incoming_table_total
+        > profile.assignments.raw_table_refs
+      || profile.assignments.provider_incoming_column_total > profile.assignments.raw_column_refs
+    const providerSmaller = profile.assignments.provider_incoming_table_total
+        < profile.assignments.raw_table_refs
+      || profile.assignments.provider_incoming_column_total < profile.assignments.raw_column_refs
+    profile.assignments.provider_scope_relation = providerGreater && providerSmaller
+      ? 'MIXED'
+      : providerGreater ? 'GLOBAL_GREATER' : providerSmaller ? 'GLOBAL_SMALLER' : 'EQUAL'
 
     return {
       authority_pin: authorityPin,

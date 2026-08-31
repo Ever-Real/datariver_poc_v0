@@ -4,6 +4,7 @@ import { mock, test } from 'node:test'
 import {
   createK9MetadataCollector,
   normalizeDatahubTagReferences,
+  validateK9ScopedAssignmentCompleteness,
 } from './poc-k9-metadata-collection.mjs'
 
 const authorityPin = { classification_ceiling: 'INTERNAL' }
@@ -325,7 +326,12 @@ test('exact duplicate term, node, parent edge, and assignment observations dedup
   assert.equal(duplicateAssignment.source_profile.assignments.observed_table_assignment_total, 2)
   assert.equal(duplicateAssignment.source_profile.assignments.duplicate_assignment_observation_count, 1)
   assert.deepEqual(duplicateAssignment.completeness_metadata.per_assignment[termUrn].TABLE, {
-    fetched: 1, total: 1,
+    raw: 2,
+    projectable: 2,
+    dangling: 0,
+    unique_projected: 1,
+    duplicates: 1,
+    provider_incoming_total: 1,
   })
 })
 
@@ -348,6 +354,19 @@ test('search snapshot omission resolves the exact Term and preserves its assignm
     observed_table_assignment_total: 1,
     declared_column_assignment_total: 0,
     observed_column_assignment_total: 0,
+    provider_incoming_table_total: 1,
+    provider_incoming_column_total: 0,
+    raw_table_refs: 1,
+    raw_column_refs: 0,
+    projectable_table_refs: 1,
+    projectable_column_refs: 0,
+    dangling_table_refs: 0,
+    dangling_column_refs: 0,
+    unique_projected_table_edges: 1,
+    unique_projected_column_edges: 0,
+    duplicate_table_refs: 0,
+    duplicate_column_refs: 0,
+    provider_scope_relation: 'EQUAL',
     term_outside_snapshot_count: 1,
     duplicate_assignment_observation_count: 0,
     missing_term_reference_count: 1,
@@ -587,6 +606,12 @@ test('Actual-PREP-scale dangling references complete all batches with exact uniq
   assert.equal(result.source_profile.direct_resolution.dangling_assignment_references, referenceCount)
   assert.equal(result.source_profile.direct_resolution.dangling_does_not_exist_count, uniqueCount)
   assert.equal(result.source_profile.direct_resolution.completed_resolution_count, uniqueCount)
+  assert.equal(result.source_profile.assignments.raw_table_refs, referenceCount)
+  assert.equal(result.source_profile.assignments.projectable_table_refs, 0)
+  assert.equal(result.source_profile.assignments.dangling_table_refs, referenceCount)
+  assert.equal(result.source_profile.assignments.unique_projected_table_edges, 0)
+  assert.equal(result.source_profile.assignments.duplicate_table_refs, 0)
+  assert.equal(result.source_profile.assignments.provider_scope_relation, 'GLOBAL_SMALLER')
   assert.equal(refreshGraphql.mock.calls.filter((call) => call.arguments[0] === 'TERMS').length, 6)
   assert.equal(JSON.stringify(result.source_profile).includes('urn:li:'), false)
 })
@@ -737,16 +762,81 @@ test('relationship response identity mismatch has an exact contradiction locus',
   assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
 })
 
-test('malformed and mismatched assignment totals fail as GLOSSARY_ASSIGNMENT_COUNT_MISMATCH', async () => {
+test('malformed provider totals fail while cross-scope totals remain advisory', async () => {
   const malformed = fixture({ pages: [page([{ entity: glossaryTerm({
     tableAssignments: { total: null },
   }) }])] }).collector
   assert.equal(await failureDetail(malformed), 'GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
 
-  const mismatched = fixture({ pages: [page([{ entity: glossaryTerm({
-    tableAssignments: { total: 1 },
-  }) }])] }).collector
-  assert.equal(await failureDetail(mismatched), 'GLOSSARY_ASSIGNMENT_COUNT_MISMATCH')
+  const globalGreater = await fixture({ pages: [page([{ entity: glossaryTerm({
+    tableAssignments: { total: 7 },
+  }) }])] }).collector(authorityPin, [dataset('provider-global', {
+    glossary_terms: [{ urn: termUrn }],
+  })])
+  assert.equal(globalGreater.table_assignments.length, 1)
+  assert.equal(globalGreater.source_profile.assignments.provider_incoming_table_total, 7)
+  assert.equal(globalGreater.source_profile.assignments.raw_table_refs, 1)
+  assert.equal(globalGreater.source_profile.assignments.provider_scope_relation, 'GLOBAL_GREATER')
+
+  const globalSmaller = await fixture({ pages: [page([{ entity: glossaryTerm() }])] })
+    .collector(authorityPin, [dataset('provider-smaller', {
+      glossary_terms: [{ urn: termUrn }],
+    })])
+  assert.equal(globalSmaller.table_assignments.length, 1)
+  assert.equal(globalSmaller.source_profile.assignments.provider_scope_relation, 'GLOBAL_SMALLER')
+})
+
+test('K9 assignment scope excludes unsupported and unauthorized inventory references', async () => {
+  const result = await fixture({ pages: [page([{ entity: glossaryTerm({
+    tableAssignments: { total: 3 },
+  }) }])] }).collector(authorityPin, [
+    dataset('eligible', { glossary_terms: [{ urn: termUrn }] }),
+    dataset('unsupported', { dataset_kind: 'CHART', glossary_terms: [{ urn: termUrn }] }),
+    dataset('unauthorized', { classification: null, glossary_terms: [{ urn: termUrn }] }),
+  ])
+  assert.equal(result.table_assignments.length, 1)
+  assert.equal(result.source_profile.assignments.raw_table_refs, 1)
+  assert.equal(result.source_profile.assignments.provider_incoming_table_total, 3)
+  assert.equal(result.source_profile.assignments.provider_scope_relation, 'GLOBAL_GREATER')
+})
+
+test('column-only scoped assignment completeness uses the same raw universe', async () => {
+  const result = await fixture({ pages: [page([{ entity: glossaryTerm({
+    columnAssignments: { total: 1 },
+  }) }])] }).collector(authorityPin, [dataset('column-only', {
+    schema_fields: [{
+      fieldPath: 'field',
+      glossaryTerms: { terms: [{ term: { urn: termUrn } }] },
+    }],
+  })])
+  assert.equal(result.column_assignments.length, 1)
+  assert.equal(result.source_profile.assignments.raw_column_refs, 1)
+  assert.equal(result.source_profile.assignments.projectable_column_refs, 1)
+  assert.equal(result.source_profile.assignments.unique_projected_column_edges, 1)
+  assert.equal(result.source_profile.assignments.provider_scope_relation, 'EQUAL')
+})
+
+test('same-scope assignment accounting contradiction remains fail closed with bounded diagnostics', () => {
+  const profile = {
+    contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+    assignments: {
+      raw_table_refs: 2,
+      raw_column_refs: 0,
+      projectable_table_refs: 1,
+      projectable_column_refs: 0,
+      dangling_table_refs: 0,
+      dangling_column_refs: 0,
+      unique_projected_table_edges: 1,
+      unique_projected_column_edges: 0,
+      duplicate_table_refs: 0,
+      duplicate_column_refs: 0,
+    },
+  }
+  assert.throws(
+    () => validateK9ScopedAssignmentCompleteness(profile, { tableEdgeCount: 1, columnEdgeCount: 0 }),
+    (error) => error?.k9SourceFailureDetailCode === 'GLOSSARY_ASSIGNMENT_COUNT_MISMATCH'
+      && error?.k9MetadataSourceProfile?.assignments?.raw_table_refs === 2,
+  )
 })
 
 test('unexpected local normalization failure is bounded while provider classification is preserved', async () => {
@@ -779,7 +869,16 @@ test('successful collection preserves exact assignments and completeness', async
     fetched: 1,
     total: 1,
     per_assignment: {
-      [termUrn]: { TABLE: { fetched: 1, total: 1 }, COLUMN: { fetched: 1, total: 1 } },
+      [termUrn]: {
+        TABLE: {
+          raw: 1, projectable: 1, dangling: 0, unique_projected: 1, duplicates: 0,
+          provider_incoming_total: 1,
+        },
+        COLUMN: {
+          raw: 1, projectable: 1, dangling: 0, unique_projected: 1, duplicates: 0,
+          provider_incoming_total: 1,
+        },
+      },
     },
   })
   assert.deepEqual(result.table_assignments.map((item) => item.term_urn), [termUrn])

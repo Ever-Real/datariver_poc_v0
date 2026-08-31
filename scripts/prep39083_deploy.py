@@ -3496,6 +3496,21 @@ def status(release: ReleaseIdentity) -> None:
         print(f"Absent: {warning_count('absent')}")
         print(f"Does not exist: {warning_count('does_not_exist')}")
         print(f"Removed: {warning_count('removed')}")
+    assignment_scope = smoke_report.get("k9_assignment_scope") if smoke_report else None
+    if ready and isinstance(assignment_scope, dict):
+        scope_relation = assignment_scope.get("provider_scope_relation")
+        if scope_relation in {"GLOBAL_GREATER", "GLOBAL_SMALLER", "MIXED"}:
+            print(f"K9 assignment scope: {scope_relation} (advisory)")
+            print(
+                "K9 scoped references: "
+                f"table={assignment_scope.get('k9_scoped_table_reference_total', 0)}; "
+                f"column={assignment_scope.get('k9_scoped_column_reference_total', 0)}"
+            )
+            print(
+                "Provider incoming totals: "
+                f"table={assignment_scope.get('provider_incoming_table_total', 0)}; "
+                f"column={assignment_scope.get('provider_incoming_column_total', 0)}"
+            )
     if k9 == "RUNNING" and isinstance(k9_progress, dict):
         print(f"K9 stage: {k9_progress.get('stage', 'UNKNOWN')}")
         print(f"K9 detail: {k9_progress.get('detail', 'UNKNOWN')}")
@@ -3522,6 +3537,23 @@ def status(release: ReleaseIdentity) -> None:
             print(f"Elapsed: {elapsed} ms")
         profile = smoke_diagnostic.get("metadata_profile")
         if isinstance(profile, dict):
+            assignments = profile.get("assignments", {})
+            if isinstance(assignments, dict) and (
+                smoke_diagnostic.get("failure_detail_code") == "GLOSSARY_ASSIGNMENT_COUNT_MISMATCH"
+            ):
+                print(
+                    "Assignment accounting: "
+                    f"raw={assignments.get('raw_table_refs', 0)}/"
+                    f"{assignments.get('raw_column_refs', 0)}; "
+                    f"projectable={assignments.get('projectable_table_refs', 0)}/"
+                    f"{assignments.get('projectable_column_refs', 0)}; "
+                    f"dangling={assignments.get('dangling_table_refs', 0)}/"
+                    f"{assignments.get('dangling_column_refs', 0)}; "
+                    f"unique={assignments.get('unique_projected_table_edges', 0)}/"
+                    f"{assignments.get('unique_projected_column_edges', 0)}; "
+                    f"duplicate={assignments.get('duplicate_table_refs', 0)}/"
+                    f"{assignments.get('duplicate_column_refs', 0)}"
+                )
             direct = profile.get("direct_resolution", {})
             if isinstance(direct, dict):
                 print(

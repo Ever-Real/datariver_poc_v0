@@ -282,10 +282,24 @@ test('PREP smoke preserves bounded nonfatal dangling glossary warnings on succes
     {
       graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY',
       semantic_index_status: 'READY', k9_source_warning: warning,
+      k9_assignment_scope: {
+        provider_incoming_table_total: 90,
+        provider_incoming_column_total: 120,
+        k9_scoped_table_reference_total: 70,
+        k9_scoped_column_reference_total: 100,
+        provider_scope_relation: 'GLOBAL_GREATER',
+      },
     },
   ] })
   assert.equal(result.completed.code, 0, result.completed.stderr)
   assert.deepEqual(result.report.k9_source_warning, warning)
+  assert.deepEqual(result.report.k9_assignment_scope, {
+    provider_incoming_table_total: 90,
+    provider_incoming_column_total: 120,
+    k9_scoped_table_reference_total: 70,
+    k9_scoped_column_reference_total: 100,
+    provider_scope_relation: 'GLOBAL_GREATER',
+  })
   assert.equal(JSON.stringify(result.report).includes('urn:li:'), true)
   assert.equal(JSON.stringify(result.report.k9_source_warning).includes('urn:li:'), false)
 })
@@ -317,7 +331,21 @@ test('PREP smoke preserves bounded K9 source and provider diagnostics', async ()
         metadata_source_profile: {
           contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
           glossary_scroll: { provider_reported_total: 2501, entities_fetched: 2500 },
-          assignments: { missing_term_reference_count: 1387 },
+          assignments: {
+            missing_term_reference_count: 1387,
+            raw_table_refs: 75_431,
+            raw_column_refs: 0,
+            projectable_table_refs: 0,
+            projectable_column_refs: 0,
+            dangling_table_refs: 75_431,
+            dangling_column_refs: 0,
+            unique_projected_table_edges: 0,
+            unique_projected_column_edges: 0,
+            duplicate_table_refs: 0,
+            duplicate_column_refs: 0,
+            provider_incoming_table_total: 90_000,
+            provider_incoming_column_total: 0,
+          },
           direct_resolution: {
             total: 1387, batch_size: 250, batch_total: 6, batch_number: 2,
             batch_requested_count: 250, batch_response_count: 0, batch_elapsed_ms: 60000,
@@ -342,6 +370,7 @@ test('PREP smoke preserves bounded K9 source and provider diagnostics', async ()
   assert.equal(result.failure.diagnostic.batch_number, 2)
   assert.equal(result.failure.diagnostic.batch_count, 6)
   assert.equal(result.failure.diagnostic.metadata_profile.direct_resolution.total, 1387)
+  assert.equal(result.failure.diagnostic.metadata_profile.assignments.raw_table_refs, 75_431)
   assert.equal(JSON.stringify(result.failure.diagnostic).includes('urn:li:'), false)
 })
 
