@@ -213,6 +213,176 @@ async function catalogSnapshot(pool) {
   }
 }
 
+const legacyRuntimeScopes = [
+  ['catalog-inventory-v1:4cb18532b26324b7', 42],
+  ['change-history-access-v1', 3],
+  ['change-history-capture-status-v1', 4],
+  ['change-history-runtime-status-v1', 24],
+  ['core', 6],
+  ['k0-scheduler-v1:datariver:poc:k9-scheduler:v1', 12],
+  ['mcl-discovery-v1', 8],
+]
+
+async function seedExactPreReceiptV1Rows(pool) {
+  for (const [scope, version] of legacyRuntimeScopes) {
+    await pool.query(
+      'INSERT INTO poc_state (scope, value, version) VALUES ($1, $2::jsonb, $3)',
+      [scope, JSON.stringify({ legacy_marker: scope }), version],
+    )
+  }
+  await pool.query(`
+    INSERT INTO poc_catalog_embedding (
+      binding_hash, asset_urn, source_hash, source_generation,
+      content_text, metadata, embedding
+    ) VALUES (
+      repeat('1', 64), 'urn:li:dataset:(urn:li:dataPlatform:postgres,legacy.table,PROD)',
+      repeat('2', 64), repeat('3', 64), 'legacy catalog content',
+      '{"legacy":true}'::jsonb, '[0.1,0.2]'::vector
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_local_credentials (
+      subject_id, username_normalized, password_hash, version
+    ) VALUES (
+      'legacy-subject', 'legacy@example.com',
+      '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$dmVyaWZpZXI', 9
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_local_sessions (
+      token_hash, subject_id, created_at, expires_at
+    ) VALUES (
+      repeat('4', 64), 'legacy-subject',
+      '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_user_table_grants (
+      subject_id, table_urn, version, created_by, updated_by
+    ) VALUES (
+      'legacy-subject',
+      'urn:li:dataset:(urn:li:dataPlatform:postgres,legacy.table,PROD)',
+      7, 'legacy-admin', 'legacy-admin'
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_chat_sessions (
+      session_id, owner_subject_id, title, version
+    ) VALUES ('legacy-chat', 'legacy-subject', 'Legacy chat', 5)
+  `)
+  await pool.query(`
+    INSERT INTO poc_chat_messages (
+      message_id, session_id, owner_subject_id, ordinal, role, content,
+      evidence_json, route_json, workflow_json
+    ) VALUES (
+      'legacy-message', 'legacy-chat', 'legacy-subject', 1, 'user',
+      'legacy question', '[]'::jsonb, '{"route":"legacy"}'::jsonb, '[]'::jsonb
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_change_history_sources (
+      source_identity_hash, provider_name, provider_version, schema_contract_hash
+    ) VALUES (repeat('5', 64), 'legacy-provider', '1', repeat('6', 64))
+  `)
+  await pool.query(`
+    INSERT INTO poc_change_history_ledger_events (
+      event_identity, event_hash, source_identity_hash, source_event_identity,
+      normalized_change_transaction_id, deterministic_ordinal, topic_contract,
+      source_partition, source_offset, asset_urn, normalized_entity_key,
+      category, source_aspect, operation, detected_at
+    ) VALUES (
+      repeat('7', 64), repeat('8', 64), repeat('5', 64), repeat('9', 64),
+      repeat('a', 64), 0, 'legacy-topic-v1', 0, 1,
+      'urn:li:dataset:(urn:li:dataPlatform:postgres,legacy.table,PROD)',
+      'legacy.table', 'TECHNICAL_SCHEMA', 'schemaMetadata', 'UPDATE',
+      '2026-08-01T00:00:00Z'
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_k9_managed_graph_policies (
+      graph_id, name, status, classification, ontology_version_id,
+      studio_release_id, publication_version, schedule, managed_intent,
+      accepted_proposal_id, subject_id, workspace_id, policy_hash, tbox_hash,
+      contract_hash, proposal_hash, source_hash, mapping_hash, created_at, updated_at
+    ) VALUES (
+      '11111111-1111-4111-8111-111111111111', 'Legacy graph', 'ACTIVE', 'INTERNAL',
+      '22222222-2222-4222-8222-222222222222',
+      '33333333-3333-4333-8333-333333333333', 1, '0 0 * * *',
+      'LEGACY_METADATA', 'legacy-proposal', 'legacy-subject', 'legacy-workspace',
+      repeat('b', 64), repeat('c', 64), repeat('d', 64), repeat('e', 64),
+      repeat('f', 64), repeat('0', 64),
+      '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'
+    )
+  `)
+  await pool.query(`
+    INSERT INTO poc_k9_refresh_runs (
+      run_id, graph_id, status, policy_hash, started_at
+    ) VALUES (
+      '44444444-4444-4444-8444-444444444444',
+      '11111111-1111-4111-8111-111111111111', 'PREPARING', repeat('b', 64),
+      '2026-08-01T00:00:00Z'
+    )
+  `)
+}
+
+async function preservedLegacyRows(pool) {
+  const queries = {
+    state: pool.query(`
+      SELECT scope, value, version::text FROM poc_state
+      WHERE scope = ANY($1::text[]) ORDER BY scope
+    `, [legacyRuntimeScopes.map(([scope]) => scope)]),
+    catalog: pool.query(`
+      SELECT binding_hash, asset_urn, source_hash, source_generation,
+        content_text, metadata, embedding::text
+      FROM poc_catalog_embedding ORDER BY binding_hash, asset_urn
+    `),
+    credentials: pool.query(`
+      SELECT subject_id, username_normalized, password_hash, login_enabled,
+        must_change_password, failed_attempts, locked_until, version::text
+      FROM poc_local_credentials ORDER BY subject_id
+    `),
+    sessions: pool.query(`
+      SELECT token_hash, subject_id, created_at, expires_at, revoked_at
+      FROM poc_local_sessions ORDER BY token_hash
+    `),
+    grants: pool.query(`
+      SELECT subject_id, table_urn, active, version::text, created_by, updated_by
+      FROM poc_user_table_grants ORDER BY subject_id, table_urn
+    `),
+    chatSessions: pool.query(`
+      SELECT session_id, owner_subject_id, title, is_favorite, archived, version::text
+      FROM poc_chat_sessions ORDER BY session_id
+    `),
+    chatMessages: pool.query(`
+      SELECT message_id, session_id, owner_subject_id, ordinal::text, role,
+        content, evidence_json, route_json, workflow_json
+      FROM poc_chat_messages ORDER BY message_id
+    `),
+    changeSources: pool.query(`
+      SELECT source_identity_hash, provider_name, provider_version, schema_contract_hash
+      FROM poc_change_history_sources ORDER BY source_identity_hash
+    `),
+    changeEvents: pool.query(`
+      SELECT event_identity, event_hash, source_identity_hash, source_event_identity,
+        normalized_change_transaction_id, deterministic_ordinal, topic_contract,
+        source_partition, source_offset::text, asset_urn, normalized_entity_key,
+        category, source_aspect, operation
+      FROM poc_change_history_ledger_events ORDER BY event_identity
+    `),
+    k9Policies: pool.query(`
+      SELECT graph_id, status, policy_hash, active_release_pointer
+      FROM poc_k9_managed_graph_policies ORDER BY graph_id
+    `),
+    k9Runs: pool.query(`
+      SELECT run_id, graph_id, status, policy_hash, active_release_pointer
+      FROM poc_k9_refresh_runs ORDER BY run_id
+    `),
+  }
+  return Object.fromEntries(await Promise.all(Object.entries(queries).map(
+    async ([key, query]) => [key, (await query).rows],
+  )))
+}
+
 function mutatingStatements(trace) {
   return trace.map(({ sql }) => sql).filter((sql) => (
     /^(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|TRUNCATE|DO)\b/.test(sql)
@@ -250,6 +420,109 @@ test('fresh immutable migrations expose the exact current V5 catalog and restart
     await initializeActualStore(restart)
     assert.deepEqual(mutatingStatements(restart.trace), [])
     assert.deepEqual(await catalogSnapshot(pool), snapshot)
+  } finally {
+    await pool.end()
+  }
+}))
+
+test('exact canonical pre-receipt V1 migrates transactionally to V5 and preserves runtime rows', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('pre_receipt_v1_upgrade', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 2 })
+  try {
+    await applyV1(pool)
+    assert.deepEqual(await inspectPocPostgresOwnedSchema(pool), {
+      state: 'V1_RECEIPT_PENDING',
+      fingerprint: POC_POSTGRES_SCHEMA_V1_FINGERPRINT,
+    })
+    await seedExactPreReceiptV1Rows(pool)
+    const beforeRows = await preservedLegacyRows(pool)
+
+    const upgrade = createObservedPool(pool)
+    await initializeActualStore(upgrade)
+    const v1ReceiptIndex = upgrade.trace.findIndex(({ sql, parameters }) => (
+      sql.startsWith('INSERT INTO poc_state')
+      && parameters[0] === POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE
+    ))
+    const v2DdlIndex = upgrade.trace.findIndex(({ sql }) => (
+      sql.startsWith('CREATE TABLE IF NOT EXISTS poc_local_security_events')
+    ))
+    assert.ok(v1ReceiptIndex > 0)
+    assert.ok(v2DdlIndex > v1ReceiptIndex)
+
+    const after = await catalogSnapshot(pool)
+    assert.equal(after.fingerprint, POC_POSTGRES_SCHEMA_FINGERPRINT)
+    assert.deepEqual(Object.fromEntries([
+      'TABLE', 'COLUMN', 'CONSTRAINT', 'INDEX', 'TRIGGER', 'FUNCTION', 'TYPE',
+    ].map((kind) => [kind, after.rows.filter((row) => row.kind === kind).length])), {
+      TABLE: 16,
+      COLUMN: 171,
+      CONSTRAINT: 94,
+      INDEX: 36,
+      TRIGGER: 4,
+      FUNCTION: 3,
+      TYPE: 0,
+    })
+    assert.deepEqual(after.rows.filter((row) => row.kind === 'TRIGGER').map(({ identity }) => identity), [
+      'poc_change_history_cr_link_events.trg_poc_change_history_cr_link_append_only',
+      'poc_change_history_ledger_events.trg_poc_change_history_ledger_append_only',
+      'poc_local_security_events.trg_poc_local_security_events_append_only',
+      'poc_state.trg_poc_state_schema_receipts_immutable',
+    ])
+    assert.deepEqual(after.rows.filter((row) => row.kind === 'FUNCTION').map(({ identity }) => identity), [
+      'poc_reject_change_history_mutation()',
+      'poc_reject_local_security_event_mutation()',
+      'poc_reject_schema_receipt_mutation()',
+    ])
+    assert.deepEqual(after.receipts, [
+      { scope: POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, value: exactV1Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE, value: exactV2Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, value: exactV3Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE, value: exactV4Receipt, version: '1' },
+      { scope: POC_POSTGRES_SCHEMA_RECEIPT_SCOPE, value: exactV5Receipt, version: '1' },
+    ])
+    assert.deepEqual(await preservedLegacyRows(pool), beforeRows)
+    assert.equal((await pool.query(
+      'SELECT discovery_json FROM poc_chat_messages WHERE message_id = $1',
+      ['legacy-message'],
+    )).rows[0]?.discovery_json, null)
+    assert.equal((await pool.query(
+      'SELECT count(*)::integer AS count FROM poc_local_security_events',
+    )).rows[0]?.count, 0)
+
+    const restart = createObservedPool(pool)
+    await initializeActualStore(restart)
+    assert.deepEqual(mutatingStatements(restart.trace), [])
+    assert.deepEqual(await catalogSnapshot(pool), after)
+    assert.deepEqual(await preservedLegacyRows(pool), beforeRows)
+  } finally {
+    await pool.end()
+  }
+}))
+
+test('pre-receipt V1 receipt failure rolls back without schema or row mutation', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('pre_receipt_v1_rollback', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 2 })
+  try {
+    await applyV1(pool)
+    await seedExactPreReceiptV1Rows(pool)
+    const beforeCatalog = await catalogSnapshot(pool)
+    const beforeRows = await preservedLegacyRows(pool)
+    const failed = createObservedPool(pool)
+    failed.injectFailure({
+      code: 'LEGACY_V1_RECEIPT_FAILURE',
+      message: 'synthetic pre-receipt V1 failure',
+      matcher: ({ sql, parameters }) => sql.startsWith('INSERT INTO poc_state')
+        && parameters[0] === POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE,
+    })
+    await assert.rejects(initializeActualStore(failed), { code: 'LEGACY_V1_RECEIPT_FAILURE' })
+    assert.equal(failed.trace.at(-1)?.sql, 'ROLLBACK')
+    assert.deepEqual(await catalogSnapshot(pool), beforeCatalog)
+    assert.deepEqual(await preservedLegacyRows(pool), beforeRows)
+    assert.equal((await pool.query(
+      "SELECT to_regclass('public.poc_local_security_events') AS relation",
+    )).rows[0]?.relation, null)
   } finally {
     await pool.end()
   }
@@ -502,11 +775,6 @@ test('actual catalog convergence fails closed before mutation for missing, malfo
   skip: pocPostgresTestSkipReason,
 }, async () => {
   const cases = [
-    {
-      label: 'missing_v1_receipt',
-      setup: applyV1,
-      code: 'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED',
-    },
     {
       label: 'malformed_v1_receipt',
       setup: async (pool) => {

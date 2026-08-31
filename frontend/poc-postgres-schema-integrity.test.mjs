@@ -291,6 +291,10 @@ test('fails closed for missing columns, type drift, constraints and critical ind
 test('converges exact V1/V2/V3/V4, known older and fresh schemas to durable V5 in order', async () => {
   const scenarios = [
     {
+      states: ['V1_RECEIPT_PENDING', 'RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
+      actions: ['V1_RECEIPT', 'V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
+    },
+    {
       states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'RECEIPTED_V2', 'V3_RECEIPT_PENDING', 'RECEIPTED_V3', 'V4_RECEIPT_PENDING', 'RECEIPTED_V4', 'V5_RECEIPT_PENDING', 'CURRENT'],
       actions: ['V2_DDL', 'V2_RECEIPT', 'V3_DDL', 'V3_RECEIPT', 'V4_DDL', 'V4_RECEIPT', 'V5_DDL', 'V5_RECEIPT'],
     },
@@ -360,7 +364,6 @@ test('converges exact V1/V2/V3/V4, known older and fresh schemas to durable V5 i
 test('rolls back unsupported, DDL-failed and receipt-failed convergence', async () => {
   const scenarios = [
     { states: ['CURRENT_UNVERSIONED'] },
-    { states: ['V1_RECEIPT_PENDING'] },
     { states: ['V2_RECEIPT_PENDING'] },
     { states: ['V3_RECEIPT_PENDING'] },
     { states: ['V4_RECEIPT_PENDING'] },
@@ -372,6 +375,7 @@ test('rolls back unsupported, DDL-failed and receipt-failed convergence', async 
     { states: ['RECEIPTED_V4', 'V5_RECEIPT_PENDING'], receiptError: new Error('V5 receipt failed') },
     { states: ['RECEIPTED_V1', 'V2_RECEIPT_PENDING', 'V2_RECEIPT_PENDING'] },
     { states: ['KNOWN_OLDER_MIGRATABLE', 'CURRENT_UNVERSIONED'] },
+    { states: ['V1_RECEIPT_PENDING'], v1ReceiptError: new Error('V1 receipt failed') },
     { states: ['KNOWN_OLDER_MIGRATABLE', 'V1_RECEIPT_PENDING'], v1ReceiptError: new Error('V1 receipt failed') },
   ]
   for (const scenario of scenarios) {

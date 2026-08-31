@@ -516,6 +516,9 @@ export async function convergePocPostgresOwnedSchema(client, {
             'Known older Product-owned PostgreSQL schema convergence to V1 was incomplete.',
           )
         }
+        current = v1Pending
+      }
+      if (current.state === 'V1_RECEIPT_PENDING') {
         await recordV1Receipt(client)
         current = await inspect(client)
         if (current.state !== 'RECEIPTED_V1') {
