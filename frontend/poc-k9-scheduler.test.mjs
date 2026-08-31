@@ -2,6 +2,7 @@ import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createPocK9RefreshTask,
+  createPocK9SourceCaptureTask,
   createPocK9Scheduler,
   k9SemanticReconciliationGeneration,
   loadPocK9SchedulerConfig,
@@ -100,6 +101,33 @@ function k9RefreshFixture(overrides = {}) {
   }
   return { task: createPocK9RefreshTask(dependencies), dependencies, managedGraphs }
 }
+
+test('K9 V2 source capture fences two canonical candidates and resumes persisted payloads without DataHub', async () => {
+  const calls = { inventory: 0, lineage: 0, metadata: 0, identity: 0 }
+  const capture = createPocK9SourceCaptureTask({
+    resolveAuthContext: async () => ({ authorityPin: { subject_id: 'k9' } }),
+    currentInventory: async () => { calls.inventory += 1; return [{ id: 'dataset-1' }] },
+    inventoryProjection: async () => ({ source_generation: 'a'.repeat(64) }),
+    collectLineage: async () => { calls.lineage += 1; return { nodes: [], edges: [] } },
+    collectMetadata: async () => { calls.metadata += 1; return { terms: [] } },
+    runtimeIdentity: async () => { calls.identity += 1; return { version: '1.6.0rc1' } },
+    buildSourceCapture: () => ({
+      snapshot: { source_snapshot_id: 'b'.repeat(64) },
+      source_payloads: { inventory: {}, lineage: {}, metadata: {}, dangling_state: {} },
+    }),
+    sourceRetryWait: async () => undefined,
+  })
+
+  const first = await capture()
+  assert.equal(first.status, 'READY')
+  assert.equal(first.source_snapshot_id, 'b'.repeat(64))
+  assert.deepEqual(calls, { inventory: 2, lineage: 2, metadata: 2, identity: 2 })
+
+  const resumed = await capture({ currentReceipt: { ...first, status: 'RUNNING' } })
+  assert.equal(resumed.status, 'READY')
+  assert.equal(resumed.source_snapshot_id, first.source_snapshot_id)
+  assert.deepEqual(calls, { inventory: 2, lineage: 2, metadata: 2, identity: 2 })
+})
 
 test('K9 Scheduler Config reads correctly', () => {
   const env = {

@@ -161,6 +161,145 @@ async function defaultSourceRetryWait(delayMs) {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs))
 }
 
+async function collectStableK9Source({
+  resolveAuthContext,
+  currentInventory,
+  inventoryProjection,
+  collectLineage,
+  collectMetadata,
+  runtimeIdentity,
+  sourceIdentity,
+  sourceRetryWait,
+}) {
+  const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
+  const collectCandidate = async () => {
+    const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
+    const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
+    const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+      datahubSourceStage(
+        'LINEAGE_COLLECTION',
+        () => collectLineage(liveAuth.authorityPin, inventory),
+        sourceRetryWait,
+      ),
+      datahubSourceStage(
+        'METADATA_COLLECTION',
+        ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
+        sourceRetryWait,
+      ),
+      datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
+    ])
+    const identity = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceIdentity({
+      inventoryProjection: projection,
+      datahubIdentity,
+      lineageSource,
+      metadataSource,
+    }))
+    const sourceSnapshotId = identity?.snapshot?.source_snapshot_id || identity?.source_fingerprint_id
+    if (typeof sourceSnapshotId !== 'string' || !/^[0-9a-f]{64}$/.test(sourceSnapshotId)) {
+      throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
+        k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
+      })
+    }
+    return {
+      inventory, projection, lineageSource, metadataSource, datahubIdentity,
+      identity, sourceSnapshotId,
+    }
+  }
+
+  let priorCandidate = await collectCandidate()
+  let stableCandidate
+  for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
+    const nextCandidate = await collectCandidate()
+    if (priorCandidate.sourceSnapshotId === nextCandidate.sourceSnapshotId) {
+      stableCandidate = nextCandidate
+      break
+    }
+    priorCandidate = nextCandidate
+    if (comparison < SOURCE_CONSISTENCY_MAX_COMPARISONS) {
+      try {
+        await sourceRetryWait(SOURCE_CONSISTENCY_RETRY_DELAY_MS, {
+          failureStage: 'SOURCE_CONSISTENCY',
+          failureDetailCode: 'SOURCE_DRIFT',
+          attempt: comparison,
+        })
+      } catch {
+        // Retry-clock failures never expose provider details or permit a
+        // mixed candidate to be promoted.
+      }
+    }
+  }
+  if (!stableCandidate) {
+    throw Object.assign(new Error('K9_SOURCE_DRIFT_RETRY_EXHAUSTED'), {
+      k9FailureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+    })
+  }
+  return Object.freeze({ liveAuth, ...stableCandidate })
+}
+
+/**
+ * Captures one source-only immutable V2 snapshot after the existing two-candidate consistency
+ * fence. An interrupted persisted capture is reconstructed from its already-normalized payloads;
+ * no DataHub call is made in that resume path.
+ */
+export function createPocK9SourceCaptureTask({
+  resolveAuthContext,
+  currentInventory,
+  inventoryProjection,
+  collectLineage,
+  collectMetadata,
+  runtimeIdentity,
+  buildSourceCapture,
+  sourceRetryWait = defaultSourceRetryWait,
+} = {}) {
+  const requiredFunctions = [
+    resolveAuthContext, currentInventory, inventoryProjection, collectLineage,
+    collectMetadata, runtimeIdentity, buildSourceCapture, sourceRetryWait,
+  ]
+  if (requiredFunctions.some((value) => typeof value !== 'function')) {
+    throw new Error('The POC K9 source capture dependencies are incomplete.')
+  }
+  return async function captureK9Source({ currentReceipt } = {}) {
+    if (currentReceipt && ['PENDING', 'RUNNING'].includes(currentReceipt.status)
+      && currentReceipt.source_snapshot?.source_snapshot_id === currentReceipt.source_snapshot_id
+      && currentReceipt.source_payloads) {
+      return Object.freeze({ ...currentReceipt, status: 'READY' })
+    }
+    const captured = await collectStableK9Source({
+      resolveAuthContext,
+      currentInventory,
+      inventoryProjection,
+      collectLineage,
+      collectMetadata,
+      runtimeIdentity,
+      sourceIdentity: buildSourceCapture,
+      sourceRetryWait,
+    })
+    const sourceCapture = captured.identity
+    if (!sourceCapture?.snapshot || !sourceCapture?.source_payloads
+      || sourceCapture.snapshot.source_snapshot_id !== captured.sourceSnapshotId) {
+      throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
+        k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
+      })
+    }
+    return Object.freeze({
+      status: 'READY',
+      source_snapshot_id: captured.sourceSnapshotId,
+      source_snapshot: sourceCapture.snapshot,
+      source_payloads: sourceCapture.source_payloads,
+      // This execution-only context is deliberately ignored by the durable receipt port.
+      // It permits the legacy caller to retain its current behavior during additive adoption.
+      capture_context: Object.freeze({
+        liveAuth: captured.liveAuth,
+        inventory: captured.inventory,
+        projection: captured.projection,
+        lineageSource: captured.lineageSource,
+        metadataSource: captured.metadataSource,
+        datahubIdentity: captured.datahubIdentity,
+      }),
+    })
+  }
+}
+
 export function createPocK9RefreshTask({
   resolveAuthContext,
   currentInventory,
@@ -234,67 +373,18 @@ export function createPocK9RefreshTask({
     }
 
     try {
-      const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
-      const collectCandidate = async () => {
-        const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
-        const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
-        const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
-          datahubSourceStage(
-            'LINEAGE_COLLECTION',
-            () => collectLineage(liveAuth.authorityPin, inventory),
-            sourceRetryWait,
-          ),
-          datahubSourceStage(
-            'METADATA_COLLECTION',
-            ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
-            sourceRetryWait,
-          ),
-          datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
-        ])
-        const fingerprint = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceFingerprint({
-          inventoryProjection: projection,
-          datahubIdentity,
-          lineageSource,
-          metadataSource,
-        }))
-        if (!fingerprint || typeof fingerprint.source_fingerprint_id !== 'string'
-          || !/^[0-9a-f]{64}$/.test(fingerprint.source_fingerprint_id)) {
-          throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
-            k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
-          })
-        }
-        return { inventory, projection, lineageSource, metadataSource, datahubIdentity, fingerprint }
-      }
-
-      let priorCandidate = await collectCandidate()
-      let stableCandidate
-      for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
-        const nextCandidate = await collectCandidate()
-        if (priorCandidate.fingerprint.source_fingerprint_id
-          === nextCandidate.fingerprint.source_fingerprint_id) {
-          stableCandidate = nextCandidate
-          break
-        }
-        priorCandidate = nextCandidate
-        if (comparison < SOURCE_CONSISTENCY_MAX_COMPARISONS) {
-          try {
-            await sourceRetryWait(SOURCE_CONSISTENCY_RETRY_DELAY_MS, {
-              failureStage: 'SOURCE_CONSISTENCY',
-              failureDetailCode: 'SOURCE_DRIFT',
-              attempt: comparison,
-            })
-          } catch {
-            // Retry-clock failures never expose provider details or permit a
-            // mixed candidate to be promoted.
-          }
-        }
-      }
-      if (!stableCandidate) {
-        throw Object.assign(new Error('K9_SOURCE_DRIFT_RETRY_EXHAUSTED'), {
-          k9FailureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
-        })
-      }
+      const stableCandidate = await collectStableK9Source({
+        resolveAuthContext,
+        currentInventory,
+        inventoryProjection,
+        collectLineage,
+        collectMetadata,
+        runtimeIdentity,
+        sourceIdentity: sourceFingerprint,
+        sourceRetryWait,
+      })
       const {
+        liveAuth,
         inventory,
         projection,
         lineageSource,
