@@ -1459,7 +1459,6 @@ def sync_release_source(*, root: Path | None = None) -> str:
                     [
                         "git",
                         "switch",
-                        "--track",
                         "-c",
                         PREP_RELEASE_BRANCH,
                         f"origin/{PREP_RELEASE_BRANCH}",

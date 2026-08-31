@@ -7,7 +7,7 @@ The latest PREP-ready source is isolated on `prep39083-release`; ongoing `dev` a
 normal updates use:
 
 ```bash
-git pull --ff-only origin prep39083-release
+./scripts/prep39083 sync
 ./scripts/prep39083 deploy
 ```
 

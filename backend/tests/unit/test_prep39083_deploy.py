@@ -196,7 +196,7 @@ def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(
     ).stdout.strip()
     prep = tmp_path / "prep"
     subprocess.run(
-        ["git", "clone", "--branch", "dev", remote, prep],
+        ["git", "clone", "--single-branch", "--branch", "dev", remote, prep],
         check=True,
         capture_output=True,
     )
