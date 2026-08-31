@@ -1,0 +1,20 @@
+{
+  "contract": "DATARIVER_PREP39083_GIT_ARTIFACT_TRANSPORT_V2",
+  "product_sha": "b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03",
+  "evidence_sha": "a23a03d2f5750f43d7819784245057cfd8a221c8",
+  "handoff_sha": "17da24605451a78d9cdf2eeb1aeba6619e087689",
+  "artifact_branch": "prep39083-artifact-b350b4fb071b",
+  "artifact_commit": "bad94c76be1b0df2796a93323048b0bee36bf07f",
+  "tree_path": "prep39083/b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03",
+  "archive_filename": "datariver-poc-b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03-linux-amd64.tar",
+  "archive_size": 124297216,
+  "archive_sha256": "301edaa08b2d3f123cf721ba0ae239435c59b4ee8e0e0c130c84e8d26b2c0f44",
+  "checksum_filename": "datariver-poc-b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03-linux-amd64.tar.sha256",
+  "chunk_size": 50331648,
+  "chunk_count": 3,
+  "ordered_chunks": [
+    "datariver-poc-b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03-linux-amd64.tar.part-000",
+    "datariver-poc-b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03-linux-amd64.tar.part-001",
+    "datariver-poc-b350b4fb071bc6bf0e3a5f2e5394d10ea3ea7c03-linux-amd64.tar.part-002"
+  ]
+}
