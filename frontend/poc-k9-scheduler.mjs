@@ -575,6 +575,10 @@ export function createPocK9Scheduler({
       && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.diagnostic.code)
       ? value.diagnostic.code
       : null
+    const diagnosticDetail = typeof value.diagnostic?.failure_detail_code === 'string'
+      && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.diagnostic.failure_detail_code)
+      ? value.diagnostic.failure_detail_code
+      : diagnosticCode
     const staleMetadataFields = new Set([
       'stage', 'detail', 'projector_id', 'failure_detail_code', 'direct_resolution_total',
       'batch_size', 'batch_total', 'batch_number', 'batch_requested_count',
@@ -589,7 +593,7 @@ export function createPocK9Scheduler({
       stage,
       detail: projectorId ? `${projectorId}_${status}` : status,
       ...(projectorId ? { projector_id: projectorId } : {}),
-      ...(diagnosticCode ? { failure_detail_code: diagnosticCode } : {}),
+      ...(diagnosticDetail ? { failure_detail_code: diagnosticDetail } : {}),
     })
     return true
   }

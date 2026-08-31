@@ -674,6 +674,26 @@ async function main() {
               projectorFailure.diagnostic,
             )
           }
+          const sourceCaptureFailure = items
+            .map((item) => item?.scheduler_last_attempt)
+            .find((attempt) => attempt?.status === 'FAILURE'
+              && attempt?.reason === 'K9_DATAHUB_SOURCE_FAILED'
+              && safeK9Token(attempt?.failure_stage)
+              && safeK9Token(attempt?.failure_detail_code))
+          if (lifecycle.source?.status === 'NOT_STARTED' && sourceCaptureFailure) {
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
+              'K9 source capture failed before an immutable source snapshot was persisted.',
+              null,
+              {
+                terminal: true,
+                product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+                failure_stage: sourceCaptureFailure.failure_stage,
+                failure_detail_code: sourceCaptureFailure.failure_detail_code,
+              },
+            )
+          }
           if (lifecycle.aggregate?.status === 'FAILED') {
             const reason = safeK9Token(lifecycle.aggregate?.reason)
               ? lifecycle.aggregate.reason : 'K9_V2_LIFECYCLE_FAILED'

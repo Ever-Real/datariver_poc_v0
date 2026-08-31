@@ -9214,6 +9214,14 @@ export function managedK9SchedulerReadModel(
     completed_at: schedulerTimestamp(durableAttempt.completed_at),
     trigger: durableTrigger,
     ...(durableReason ? { reason: durableReason } : {}),
+    ...(durableReason === 'K9_DATAHUB_SOURCE_FAILED'
+      && k9SourceFailureStages.has(durableAttempt.failure_stage)
+      && k9SourceFailureDetails.has(durableAttempt.failure_detail_code)
+      ? {
+          failure_stage: durableAttempt.failure_stage,
+          failure_detail_code: durableAttempt.failure_detail_code,
+        }
+      : {}),
   } : null
   const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
   const nextScheduledRun = schedulerConfig.enabled

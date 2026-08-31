@@ -15,6 +15,9 @@ function boundedDiagnostic(value, fallback = aggregateFailure) {
     code: value.code,
     stage: value.stage,
     retryable: value.retryable === true,
+    ...(TOKEN.test(value.failure_detail_code || '')
+      ? { failure_detail_code: value.failure_detail_code }
+      : {}),
   })
 }
 
@@ -49,6 +52,9 @@ export function createPocK9V2RefreshTask({
         reason: diagnostic.code,
         failureCode: diagnostic.code,
         failureStage: diagnostic.stage,
+        ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.failure_detail_code
+          ? { failureDetailCode: diagnostic.failure_detail_code }
+          : {}),
         diagnostic,
         source_snapshot_id: result.source_snapshot_id,
         ...(result.failed_projector ? { failedProjector: result.failed_projector } : {}),

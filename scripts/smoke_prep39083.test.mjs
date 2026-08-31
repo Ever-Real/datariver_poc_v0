@@ -371,6 +371,47 @@ test('PREP smoke fails immediately with bounded V2 Semantic projector diagnostic
   assert.ok(result.failure.elapsed_ms < 5_000)
 })
 
+test('PREP smoke fails immediately with the durable pre-snapshot source diagnostic', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+        scheduler_last_attempt: {
+          status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+          failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+        },
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+      },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED')
+  assert.deepEqual(result.failure.diagnostic, {
+    terminal: true,
+    product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'METADATA_COLLECTION',
+    failure_detail_code: 'GRAPHQL',
+  })
+  assert.ok(result.failure.elapsed_ms < 5_000)
+  assert.equal(result.report.readiness.MCL.status, 'PASS')
+  assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+})
+
 test('PREP smoke persists actual V2 Semantic progress while aggregate readiness is pending', async () => {
   const result = await fixture('required', {
     readinessTimeoutMs: '1000',

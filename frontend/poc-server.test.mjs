@@ -356,6 +356,31 @@ test('managed K9 scheduler read model separates configured boundaries from durab
   assert.equal(JSON.stringify(readModel).includes('internal_detail'), false)
 })
 
+test('managed K9 scheduler read model preserves only bounded pre-snapshot source diagnostics', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-v2-source-receipt-contract')
+  const config = {
+    requested: true, enabled: true, refreshMode: 'DAILY', schedule: '02:15 Asia/Seoul',
+    timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 15,
+  }
+  const readModel = managedK9SchedulerReadModel(config, { value: {
+    last_attempt: {
+      status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+      failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+      raw_urn: 'urn:li:glossaryTerm:must-not-survive',
+      scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+      trigger: 'scheduled',
+    },
+  } }, null, new Date('2026-08-29T18:00:00.000Z'))
+
+  assert.deepEqual(readModel.scheduler_last_attempt, {
+    status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+    scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+    trigger: 'scheduled',
+  })
+  assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
+})
+
 test('managed K9 scheduler status distinguishes active, on-demand, disabled, and unavailable states', async () => {
   const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-scheduler-state-contract')
   const base = {

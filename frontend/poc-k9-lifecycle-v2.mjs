@@ -4,6 +4,19 @@ export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY'
 const hashPattern = /^[0-9a-f]{64}$/u
 const safeDiagnosticTokenPattern = /^[A-Z][A-Z0-9_]{0,95}$/u
 const receiptStates = new Set(K9_V2_RECEIPT_STATES)
+const sourceCaptureFailureCodes = new Set([
+  'K9_DATAHUB_SOURCE_FAILED',
+  'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+  'K9_SOURCE_SNAPSHOT_FAILED',
+  'K9_SYSTEM_SUBJECT_FAILED',
+])
+const sourceFailureStages = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
 
 const diagnostics = Object.freeze({
   AGGREGATE_NOT_READY: Object.freeze({
@@ -63,6 +76,34 @@ function safeProjectorDiagnostic(error) {
     return frozenDiagnostic(diagnostics.PROJECTOR_FAILED)
   }
   return frozenDiagnostic(candidate)
+}
+
+function safeSourceCaptureDiagnostic(error) {
+  const code = sourceCaptureFailureCodes.has(error?.k9FailureCode)
+    ? error.k9FailureCode
+    : null
+  if (code === 'K9_DATAHUB_SOURCE_FAILED') {
+    const stage = error?.k9SourceDiagnostic?.failureStage
+    const detail = error?.k9SourceDiagnostic?.failureDetailCode
+    if (sourceFailureStages.has(stage) && safeDiagnosticTokenPattern.test(detail || '')) {
+      return Object.freeze({
+        code,
+        stage,
+        failure_detail_code: detail,
+        retryable: true,
+      })
+    }
+  }
+  if (code === 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED') {
+    return Object.freeze({ code, stage: 'SOURCE_CONSISTENCY', retryable: true })
+  }
+  if (code === 'K9_SOURCE_SNAPSHOT_FAILED') {
+    return Object.freeze({ code, stage: 'SOURCE_SNAPSHOT', retryable: false })
+  }
+  if (code === 'K9_SYSTEM_SUBJECT_FAILED') {
+    return Object.freeze({ code, stage: 'AUTHORIZATION', retryable: false })
+  }
+  return frozenDiagnostic(diagnostics.SOURCE_CAPTURE_FAILED)
 }
 
 function exactSnapshotId(value) {
@@ -247,8 +288,8 @@ async function captureOrReuseSource(captureSource, receipts, {
     capturedReceipt = await captureSource(Object.freeze({
       currentReceipt: current.kind === 'INCOMPLETE' ? currentReceipt : null,
     }))
-  } catch {
-    throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_CAPTURE_FAILED))
+  } catch (error) {
+    throw new LifecycleFailure(safeSourceCaptureDiagnostic(error))
   }
   const captured = sourceReceiptState(capturedReceipt)
   if (captured.kind !== 'READY') {
@@ -444,6 +485,7 @@ export function createK9V2LifecycleOrchestrator({
         const diagnostic = error instanceof LifecycleFailure
           ? error.diagnostic
           : frozenDiagnostic(diagnostics.AGGREGATE_NOT_READY)
+        if (!source) transition({ stage: 'SOURCE', status: 'FAILED', diagnostic })
         return failureResult({
           source,
           projectors: projectorOutcomes,

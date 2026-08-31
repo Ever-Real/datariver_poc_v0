@@ -96,3 +96,44 @@ test('aggregate pointer failure remains fail-closed after every projector is REA
   })
   assert.equal(JSON.stringify(result).includes('private database'), false)
 })
+
+test('V2 trigger exposes the exact bounded source diagnostic before snapshot persistence', async () => {
+  const value = fixture()
+  value.trigger = createPocK9V2RefreshTask({
+    captureSource: mock.fn(async () => {
+      throw Object.assign(new Error('private DataHub response'), {
+        k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
+        k9SourceDiagnostic: {
+          failureStage: 'LINEAGE_COLLECTION',
+          failureDetailCode: 'GRAPHQL',
+        },
+      })
+    }),
+    receipts: {
+      ...value.state,
+      async readSourceCaptureReceipt() { return null },
+      async writeSourceCaptureReceipt() { throw new Error('must not persist') },
+      async readProjectorDesiredReceipt() { return null },
+      async readProjectorActiveReceipt() { return null },
+      async promoteAggregate() { throw new Error('must not promote') },
+    },
+    projectors: Object.fromEntries(['LINEAGE', 'METADATA', 'SEMANTIC'].map((id) => [id, {
+      async project() { throw new Error('must not project') },
+    }])),
+  })
+
+  const result = await value.trigger()
+
+  assert.deepEqual({
+    status: result.status,
+    failureCode: result.failureCode,
+    failureStage: result.failureStage,
+    failureDetailCode: result.failureDetailCode,
+  }, {
+    status: 'FAILURE',
+    failureCode: 'K9_DATAHUB_SOURCE_FAILED',
+    failureStage: 'LINEAGE_COLLECTION',
+    failureDetailCode: 'GRAPHQL',
+  })
+  assert.equal(JSON.stringify(result).includes('private DataHub'), false)
+})

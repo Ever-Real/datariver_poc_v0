@@ -300,6 +300,42 @@ test('invalid READY source receipts fail closed without silently recollecting so
   }
 })
 
+test('source capture preserves bounded DataHub stage and detail without leaking provider errors', async () => {
+  const receipts = fakeReceiptPort()
+  const transitions = []
+  const captureSource = mock.fn(async () => {
+    throw Object.assign(new Error('private provider response and token'), {
+      k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
+      k9SourceDiagnostic: {
+        failureStage: 'METADATA_COLLECTION',
+        failureDetailCode: 'GRAPHQL',
+        raw_urn: 'urn:li:glossaryTerm:must-not-survive',
+      },
+    })
+  })
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors, onTransition: (event) => transitions.push(event),
+  }).run()
+
+  assert.equal(result.status, 'FAILED')
+  assert.deepEqual(result.diagnostic, {
+    code: 'K9_DATAHUB_SOURCE_FAILED',
+    stage: 'METADATA_COLLECTION',
+    failure_detail_code: 'GRAPHQL',
+    retryable: true,
+  })
+  assert.deepEqual(transitions, [{
+    stage: 'SOURCE', status: 'FAILED', diagnostic: result.diagnostic,
+  }])
+  assert.equal(JSON.stringify(result).includes('private provider'), false)
+  assert.equal(JSON.stringify(result).includes('urn:li:'), false)
+  for (const projectorId of K9_V2_PROJECTOR_IDS) {
+    assert.equal(projectors[projectorId].project.mock.calls.length, 0)
+  }
+})
+
 test('an interrupted durable source receipt is resumed from its immutable payload without an external recollection', async () => {
   const incomplete = Object.freeze({
     status: 'RUNNING',
