@@ -3463,12 +3463,70 @@ def status(release: ReleaseIdentity) -> None:
     smoke_diagnostic = smoke_failure.get("diagnostic", {}) if smoke_failure else {}
     if not isinstance(smoke_diagnostic, dict):
         smoke_diagnostic = {}
-    k9 = "READY" if ready else ("FAILED" if failed_stage.startswith("K9") else "UNKNOWN")
+    readiness = smoke_report.get("readiness", {}) if smoke_report else {}
+    if not isinstance(readiness, dict):
+        readiness = {}
+    lifecycle = smoke_report.get("k9_lifecycle", {}) if smoke_report else {}
+    if (
+        not isinstance(lifecycle, dict)
+        or lifecycle.get("contract") != "DATARIVER_K9_LIFECYCLE_STATUS_V2"
+    ):
+        lifecycle = {}
+
+    def lane_state(name: str) -> str | None:
+        value = readiness.get(name)
+        if not isinstance(value, dict):
+            return None
+        status_value = value.get("status")
+        return (
+            str(status_value)
+            if status_value in {"PASS", "FAILED", "PENDING", "DEFERRED"}
+            else None
+        )
+
+    k9_lane = lane_state("K9")
+    mcl_lane = lane_state("MCL")
+    general_lane = lane_state("GENERAL")
+    k9 = (
+        "READY" if k9_lane == "PASS"
+        else k9_lane if k9_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else "READY" if ready
+        else "FAILED" if failed_stage.startswith("K9")
+        else "UNKNOWN"
+    )
     if active and isinstance(k9_progress, dict) and k9_progress.get("k9") == "RUNNING":
         k9 = "RUNNING"
-    semantic = "READY" if ready else "UNKNOWN"
-    mcl = "READY" if ready else ("FAILED" if failed_stage.startswith("MCL") else "UNKNOWN")
-    general = "READY" if ready else ("FAILED" if failed_stage == "GENERAL" else "UNKNOWN")
+    lifecycle_projectors = lifecycle.get("projectors", {})
+    if not isinstance(lifecycle_projectors, dict):
+        lifecycle_projectors = {}
+    semantic_projector = lifecycle_projectors.get("SEMANTIC", {})
+    semantic_status = (
+        semantic_projector.get("status")
+        if isinstance(semantic_projector, dict)
+        else None
+    )
+    semantic = (
+        semantic_status
+        if semantic_status in {"NOT_STARTED", "PENDING", "RUNNING", "READY", "FAILED"}
+        else "READY" if ready else "UNKNOWN"
+    )
+    if k9 == "RUNNING" and isinstance(k9_progress, dict) \
+            and k9_progress.get("stage") == "SEMANTIC_PROJECTOR":
+        semantic = "RUNNING"
+    mcl = (
+        "READY" if mcl_lane == "PASS"
+        else mcl_lane if mcl_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else "READY" if ready
+        else "FAILED" if failed_stage.startswith("MCL")
+        else "UNKNOWN"
+    )
+    general = (
+        "READY" if general_lane == "PASS"
+        else general_lane if general_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else "READY" if ready
+        else "FAILED" if failed_stage in {"GENERAL", "GENERAL_PROVIDER", "GENERAL_ROUTE"}
+        else "UNKNOWN"
+    )
     handoff = Runner().output(["git", "rev-parse", "HEAD"])
     print(f"Product: {release.product_sha}")
     print(f"Handoff: {handoff}")
@@ -3480,6 +3538,34 @@ def status(release: ReleaseIdentity) -> None:
     print(f"Code: {code}")
     print(f"Accepted Product: {accepted_product}")
     print(f"Web: {web}")
+    lifecycle_source = lifecycle.get("source", {}) if lifecycle else {}
+    if isinstance(lifecycle_source, dict):
+        source_status = lifecycle_source.get("status", "UNKNOWN")
+        desired_snapshot = lifecycle_source.get("desired_snapshot_id")
+        active_snapshot = lifecycle_source.get("active_snapshot_id")
+        print(f"Source: {source_status}")
+        print(
+            f"Source snapshot: desired={desired_snapshot or 'NONE'}; "
+            f"active={active_snapshot or 'NONE'}"
+        )
+        for projector_name, label in (
+            ("LINEAGE", "Lineage"), ("METADATA", "Metadata"), ("SEMANTIC", "Semantic projector")
+        ):
+            projector_value = lifecycle_projectors.get(projector_name, {})
+            if not isinstance(projector_value, dict):
+                projector_value = {}
+            print(
+                f"{label}: {projector_value.get('status', 'UNKNOWN')}; "
+                f"desired={projector_value.get('desired_snapshot_id') or 'NONE'}; "
+                f"active={projector_value.get('active_snapshot_id') or 'NONE'}"
+            )
+        aggregate = lifecycle.get("aggregate", {})
+        aggregate_status = (
+            aggregate.get("status", "UNKNOWN")
+            if isinstance(aggregate, dict)
+            else "UNKNOWN"
+        )
+        print(f"K9 aggregate: {aggregate_status}")
     print(f"K9: {k9}")
     source_warning = smoke_report.get("k9_source_warning") if smoke_report else None
     if ready and isinstance(source_warning, dict) and (

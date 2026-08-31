@@ -1,3 +1,4 @@
+/* global structuredClone */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
@@ -6,6 +7,7 @@ import {
   buildK9ProjectorReceiptV2,
   createK9V2DurableProjector,
   createK9V2LifecycleReceiptPort,
+  publicK9V2LifecycleStatus,
 } from './poc-k9-lifecycle-runtime.mjs'
 
 const snapshotId = 'a'.repeat(64)
@@ -196,4 +198,82 @@ test('projector receipt identity is deterministic for one exact transition and r
   assert.throws(() => buildK9ProjectorReceiptV2({ ...value, status: 'READY' }), {
     code: 'K9_PROJECTOR_TRANSITION_INVALID',
   })
+})
+
+test('public lifecycle status exposes bounded projector failure/progress and aggregate promotion only', async () => {
+  const lifecycle = fakeLifecycle()
+  const now = clock()
+  const port = createK9V2LifecycleReceiptPort({ lifecycle, clock: now })
+  await port.writeSourceCaptureReceipt(sourceReceipt())
+  for (const projectorId of ['LINEAGE', 'METADATA']) {
+    lifecycle.state.desired_projector_receipts.push(readyReceipt(projectorId, null, now))
+  }
+  let semantic = buildK9ProjectorReceiptV2({
+    sourceSnapshotId: snapshotId, projectorId: 'SEMANTIC', status: 'PENDING', recordedAt: now(),
+  })
+  semantic = buildK9ProjectorReceiptV2({
+    sourceSnapshotId: snapshotId,
+    projectorId: 'SEMANTIC',
+    status: 'RUNNING',
+    previous: semantic,
+    progress: {
+      phase: 'EMBEDDING', completed_units: 32, total_units: 2003,
+      documents_processed: 32, documents_changed: 2003, documents_materialized: 32,
+      batch_number: 1, batch_total: 63,
+    },
+    recordedAt: now(),
+  })
+  semantic = buildK9ProjectorReceiptV2({
+    sourceSnapshotId: snapshotId,
+    projectorId: 'SEMANTIC',
+    status: 'FAILED',
+    previous: semantic,
+    progress: semantic.progress,
+    diagnostic: {
+      code: 'K9_SEMANTIC_PROVIDER_TIMEOUT', stage: 'PROVIDER', detail_hash: null,
+      provider_failure_class: 'TIMEOUT',
+    },
+    recordedAt: now(),
+  })
+  lifecycle.state.desired_projector_receipts.push(semantic)
+  const failed = publicK9V2LifecycleStatus(lifecycle.state)
+  assert.equal(failed.source.status, 'READY')
+  assert.deepEqual(failed.projectors.SEMANTIC, {
+    desired_snapshot_id: snapshotId,
+    active_snapshot_id: null,
+    status: 'FAILED',
+    attempt: 1,
+    progress: semantic.progress,
+    diagnostic: {
+      code: 'K9_SEMANTIC_PROVIDER_TIMEOUT',
+      stage: 'PROVIDER',
+      provider_failure_class: 'TIMEOUT',
+    },
+  })
+  assert.deepEqual(failed.aggregate, {
+    status: 'FAILED', reason: 'K9_SEMANTIC_PROVIDER_TIMEOUT',
+  })
+  assert.equal(JSON.stringify(failed).includes('urn:li:'), false)
+  assert.equal(JSON.stringify(failed).includes('token'), false)
+
+  lifecycle.state.desired_projector_receipts = lifecycle.state.desired_projector_receipts
+    .filter((item) => item.projector !== 'SEMANTIC')
+  lifecycle.state.desired_projector_receipts.push(readyReceipt('SEMANTIC', semantic, now))
+  const unpromoted = publicK9V2LifecycleStatus(lifecycle.state)
+  assert.deepEqual(unpromoted.aggregate, {
+    status: 'NOT_READY', reason: 'K9_V2_AGGREGATE_NOT_PROMOTED',
+  })
+  await port.promoteAggregate(snapshotId)
+  const ready = publicK9V2LifecycleStatus(lifecycle.state)
+  assert.deepEqual(ready.aggregate, { status: 'READY', reason: null })
+  assert.equal(ready.projectors.SEMANTIC.active_snapshot_id, snapshotId)
+})
+
+test('public lifecycle status is explicit before the first V2 source capture', () => {
+  const status = publicK9V2LifecycleStatus(null)
+  assert.equal(status.source.status, 'NOT_STARTED')
+  assert.equal(status.aggregate.status, 'NOT_READY')
+  assert.equal(status.projectors.LINEAGE.status, 'NOT_STARTED')
+  assert.equal(status.projectors.METADATA.status, 'NOT_STARTED')
+  assert.equal(status.projectors.SEMANTIC.status, 'NOT_STARTED')
 })

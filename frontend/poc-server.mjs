@@ -69,7 +69,10 @@ import {
   buildDatahubKnowledgeSourceCapture,
 } from './poc-k9-source-snapshot.mjs'
 import { createK9GraphProjectors } from './poc-k9-graph-projector.mjs'
-import { createK9V2LifecycleReceiptPort } from './poc-k9-lifecycle-runtime.mjs'
+import {
+  createK9V2LifecycleReceiptPort,
+  publicK9V2LifecycleStatus,
+} from './poc-k9-lifecycle-runtime.mjs'
 import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.mjs'
 import { createPocK9V2RefreshTask } from './poc-k9-v2-refresh.mjs'
 import {
@@ -9483,6 +9486,18 @@ async function managedK9Assets(context) {
   })
 }
 
+async function managedK9LifecycleStatus(context) {
+  if (typeof context.stateStore.readK9SnapshotLifecycleV2 !== 'function') {
+    return publicK9V2LifecycleStatus(null)
+  }
+  try {
+    return publicK9V2LifecycleStatus(await context.stateStore.readK9SnapshotLifecycleV2())
+  } catch (error) {
+    if (!context.stateStore.configured?.postgres) return publicK9V2LifecycleStatus(null)
+    throw error
+  }
+}
+
 function managedK9ScopeFromRow(context, row, requestedReleaseId) {
   assertManagedK9AssetGrade(context, row.classification)
   if (!row.active_release_pointer || !row.active_canonical_release
@@ -10948,6 +10963,9 @@ async function knowledgeChatApi(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/knowledge/managed-assets') {
     return json(response, 200, {
       items: await managedK9Assets(context),
+      ...(context.principal.role === 'admin'
+        ? { k9_lifecycle: await managedK9LifecycleStatus(context) }
+        : {}),
       next_cursor: null,
       limit: 100,
     })

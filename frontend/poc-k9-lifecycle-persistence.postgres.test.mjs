@@ -6,6 +6,12 @@ import { URL } from 'node:url'
 import pg from 'pg'
 
 import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import {
+  createK9V2DurableProjector,
+  createK9V2LifecycleReceiptPort,
+} from './poc-k9-lifecycle-runtime.mjs'
+import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.mjs'
+import { createPocK9V2RefreshTask } from './poc-k9-v2-refresh.mjs'
 import { pocPostgresTestSkipReason, withDisposablePocPostgres } from './poc-postgres-test-fixture.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
@@ -106,6 +112,67 @@ function changedVector(document, ordinal) {
   }
 }
 
+function prepShapedSourceReceipt(documentCount = 2_003) {
+  const sourceGeneration = '6'.repeat(64)
+  const source_payloads = {
+    inventory: {
+      projection_version: 1,
+      source_scope: 'authorized-current-tables',
+      source_generation: sourceGeneration,
+      items: Array.from({ length: documentCount }, (_value, index) => ({
+        id: `urn:li:dataset:(urn:li:dataPlatform:postgres,prep.table_${String(index).padStart(5, '0')},PROD)`,
+        name: `table_${String(index).padStart(5, '0')}`,
+      })),
+    },
+    lineage: { nodes: [], edges: [], completeness_metadata: { source_scope: 'K9' } },
+    metadata: {
+      collections: {},
+      completeness_metadata: { source_scope: 'K9' },
+      source_profile: {
+        contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+        glossary_entities_fetched: 1_570,
+        direct_resolution: {
+          total_unique_terms: 1_486,
+          dangling_unique_terms: 1_486,
+          batch_total: 6,
+        },
+        assignments: { dangling_assignment_references: 75_431 },
+      },
+    },
+    dangling_state: {
+      dangling_unique_terms: 1_486,
+      dangling_assignment_references: 75_431,
+    },
+  }
+  const identity = {
+    contract_version: 'DATARIVER_K9_SOURCE_SNAPSHOT_V2',
+    catalog_generation: sourceGeneration,
+    datahub_version: 'v1.6.0rc1',
+    datahub_commit: 'provider-compatible-fixture',
+    authority_pin: {
+      subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
+      projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
+      classification_policy_version: 1, authorization_generation: 7,
+    },
+    inventory_projection_hash: computeSha256(source_payloads.inventory),
+    lineage_hash: computeSha256(source_payloads.lineage),
+    metadata_hash: computeSha256(source_payloads.metadata),
+    dangling_state_hash: computeSha256(source_payloads.dangling_state),
+  }
+  const sourceSnapshotId = computeSha256(identity)
+  return Object.freeze({
+    status: 'READY',
+    source_snapshot_id: sourceSnapshotId,
+    source_snapshot: Object.freeze({
+      ...identity,
+      source_snapshot_id: sourceSnapshotId,
+      source_fingerprint_id: sourceSnapshotId,
+      metadata_source_profile: source_payloads.metadata.source_profile,
+    }),
+    source_payloads: Object.freeze(source_payloads),
+  })
+}
+
 async function appendAttempt(store, snapshotId, projector, attemptNumber, terminalStatus, previousAttempt = null) {
   const pending = receipt({ snapshotId, projector, status: 'PENDING', attemptNumber, sequence: 1, previous: previousAttempt })
   const running = receipt({ snapshotId, projector, status: 'RUNNING', attemptNumber, sequence: 2, previous: pending })
@@ -179,6 +246,142 @@ test('fresh V6 persists replayable source payloads, retries FAILED attempts, and
       assert.equal((await pool.query(
         'SELECT count(*)::integer AS count FROM poc_k9_source_payloads_v2',
       )).rows[0].count, 8)
+    } finally {
+      await store.close()
+    }
+  })
+  await pool.end()
+}))
+
+test('PREP-shaped V2 retry uses persisted PostgreSQL source and reruns only Semantic', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_v2_prep_resume', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 4 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const store = createPocStateStore({ databasePool: pool })
+    try {
+      const source = prepShapedSourceReceipt()
+      const lifecycle = Object.freeze({
+        readLifecycle: (...args) => store.readK9SnapshotLifecycleV2(...args),
+        setDesiredSnapshot: (...args) => store.setK9DesiredSourceSnapshotV2(...args),
+        appendProjectorReceipt: (...args) => store.appendK9ProjectorReceiptV2(...args),
+        promoteActiveSnapshot: (...args) => store.promoteK9ActiveSourceSnapshotV2(...args),
+      })
+      const receipts = createK9V2LifecycleReceiptPort({ lifecycle })
+      const calls = {
+        source_capture: 0,
+        direct_resolution_batches: 0,
+        lineage_projection: 0,
+        metadata_projection: 0,
+        semantic_provider: 0,
+      }
+      const captureSource = async () => {
+        calls.source_capture += 1
+        calls.direct_resolution_batches += 6
+        return source
+      }
+      const graphProjector = (projectorId) => createK9V2DurableProjector({
+        projectorId,
+        lifecycle,
+        progress: (value) => ({
+          phase: value?.stage || `${projectorId}_PROJECTOR`,
+          completed_units: value?.stage === 'READY' ? 1 : 0,
+          total_units: 1,
+        }),
+        output: () => ({
+          output_pointer: `k9://${projectorId.toLowerCase()}/${source.source_snapshot_id}`,
+          output_hash: computeSha256({ projectorId, source: source.source_snapshot_id }),
+        }),
+        async materialize() {
+          calls[`${projectorId.toLowerCase()}_projection`] += 1
+          return { status: 'READY' }
+        },
+      })
+      let failSecondProviderBatch = true
+      const semantic = createK9V2SemanticLifecycleProjector({
+        bindingHash: computeSha256({ binding: 'prep-scale-semantic-v2' }),
+        model: 'embedding-fixture-v1',
+        lifecycle,
+        semanticPersistence: store.k9SemanticPersistenceV2,
+        renderDocument: (item) => `normalized document ${item.name}`,
+        projectMetadata: (item) => ({ id: item.id, name: item.name }),
+        provider: {
+          async embed({ input }) {
+            calls.semantic_provider += 1
+            if (failSecondProviderBatch && calls.semantic_provider === 2) {
+              throw Object.assign(new Error('private provider detail'), { code: 'ECONNRESET' })
+            }
+            return {
+              data: input.map((_item, index) => ({ index, embedding: [index + 0.1, index + 0.2] })),
+            }
+          },
+        },
+      })
+      const trigger = createPocK9V2RefreshTask({
+        captureSource,
+        receipts,
+        projectors: Object.freeze({
+          LINEAGE: graphProjector('LINEAGE'),
+          METADATA: graphProjector('METADATA'),
+          SEMANTIC: semantic,
+        }),
+      })
+
+      const first = await trigger()
+      assert.equal(first.status, 'FAILURE')
+      assert.equal(first.failedProjector, 'SEMANTIC')
+      assert.equal(first.failureCode, 'K9_SEMANTIC_PROVIDER_CONNECTIVITY_FAILED')
+      assert.equal(JSON.stringify(first).includes('private provider detail'), false)
+      assert.deepEqual(calls, {
+        source_capture: 1,
+        direct_resolution_batches: 6,
+        lineage_projection: 1,
+        metadata_projection: 1,
+        semantic_provider: 2,
+      })
+      const failedState = await store.readK9SnapshotLifecycleV2()
+      assert.equal(failedState.active_snapshot_id, null)
+      assert.equal(
+        failedState.desired_projector_receipts.find((item) => item.projector === 'SEMANTIC').status,
+        'FAILED',
+      )
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_semantic_staging_v2',
+      )).rows[0].count, 32)
+
+      failSecondProviderBatch = false
+      const retry = await trigger()
+      assert.equal(retry.status, 'SUCCESS')
+      assert.equal(retry.source_snapshot_id, source.source_snapshot_id)
+      assert.equal(retry.lifecycle.source.outcome, 'REUSED')
+      assert.equal(retry.lifecycle.projectors.LINEAGE.outcome, 'REUSED')
+      assert.equal(retry.lifecycle.projectors.METADATA.outcome, 'REUSED')
+      assert.equal(retry.lifecycle.projectors.SEMANTIC.outcome, 'PROJECTED')
+      assert.equal(calls.source_capture, 1)
+      assert.equal(calls.direct_resolution_batches, 6)
+      assert.equal(calls.lineage_projection, 1)
+      assert.equal(calls.metadata_projection, 1)
+      assert.equal(calls.semantic_provider, 64)
+
+      const ready = await store.readK9SnapshotLifecycleV2()
+      assert.equal(ready.status, 'READY')
+      assert.equal(ready.desired_snapshot_id, source.source_snapshot_id)
+      assert.equal(ready.active_snapshot_id, source.source_snapshot_id)
+      assert.equal(
+        ready.desired_projector_receipts.find((item) => item.projector === 'SEMANTIC').attempt_number,
+        2,
+      )
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_semantic_batches_v2',
+      )).rows[0].count, 63)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_semantic_staging_v2',
+      )).rows[0].count, 2_003)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE source_generation = $1',
+        [source.source_snapshot.catalog_generation],
+      )).rows[0].count, 2_003)
     } finally {
       await store.close()
     }

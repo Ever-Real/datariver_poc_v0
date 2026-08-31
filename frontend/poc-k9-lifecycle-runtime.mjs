@@ -4,6 +4,7 @@ import {
   K9_PROJECTORS_V2,
   normalizeK9ProjectorReceiptV2,
 } from './poc-k9-lifecycle-persistence.mjs'
+import { evaluateK9V2AggregateReadiness } from './poc-k9-lifecycle-v2.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
 const TOKEN = /^[A-Z][A-Z0-9_]{0,79}$/u
@@ -69,6 +70,92 @@ function mappedActiveReceipt(value, projectorId) {
     source_snapshot_id: value.source_snapshot_id,
     status: 'READY',
     receipt: value,
+  })
+}
+
+function publicProjectorState(state, projectorId) {
+  const desiredReceipt = receiptFor(state, projectorId)
+  const activeReceipt = desiredReceipt?.status === 'READY'
+    ? desiredReceipt
+    : activeReceiptFor(state, projectorId)
+  return Object.freeze({
+    desired_snapshot_id: state?.desired_snapshot_id || null,
+    active_snapshot_id: activeReceipt?.source_snapshot_id || null,
+    status: desiredReceipt?.status || 'PENDING',
+    attempt: Number.isSafeInteger(desiredReceipt?.attempt_number)
+      ? desiredReceipt.attempt_number : 0,
+    progress: desiredReceipt?.progress ? Object.freeze({ ...desiredReceipt.progress }) : null,
+    diagnostic: desiredReceipt?.diagnostic ? Object.freeze({
+      code: desiredReceipt.diagnostic.code,
+      stage: desiredReceipt.diagnostic.stage,
+      provider_failure_class: desiredReceipt.diagnostic.provider_failure_class || null,
+    }) : null,
+  })
+}
+
+/**
+ * Produces the only public/operator K9 V2 lifecycle view. Persisted source payloads, identities
+ * other than bounded SHA-256 snapshot IDs, provider messages, document text and vectors are never
+ * returned. Aggregate READY additionally requires the durable head promotion, not merely four
+ * terminal projector receipts.
+ */
+export function publicK9V2LifecycleStatus(state) {
+  if (!state) {
+    return Object.freeze({
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: Object.freeze({ desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' }),
+      projectors: Object.freeze(Object.fromEntries(
+        K9_PROJECTORS_V2.filter((item) => item !== 'SOURCE').map((item) => (
+          [item, Object.freeze({
+            desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED',
+            attempt: 0, progress: null, diagnostic: null,
+          })]
+        )),
+      )),
+      aggregate: Object.freeze({ status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' }),
+    })
+  }
+  const sourceReceipt = sourceEnvelope(state, receiptFor(state, 'SOURCE'))
+  const projectorPairs = Object.fromEntries(K9_PROJECTORS_V2
+    .filter((item) => item !== 'SOURCE')
+    .map((projectorId) => {
+      const desired = receiptFor(state, projectorId)
+      return [projectorId, Object.freeze({
+        desired: mappedDesiredReceipt(desired, projectorId),
+        active: mappedActiveReceipt(
+          desired?.status === 'READY' ? desired : activeReceiptFor(state, projectorId),
+          projectorId,
+        ),
+      })]
+    }))
+  const readiness = evaluateK9V2AggregateReadiness({
+    sourceReceipt,
+    projectorReceipts: projectorPairs,
+    expectedSourceSnapshotId: state.desired_snapshot_id,
+  })
+  const projectors = Object.freeze(Object.fromEntries(K9_PROJECTORS_V2
+    .filter((item) => item !== 'SOURCE')
+    .map((projectorId) => [projectorId, publicProjectorState(state, projectorId)])))
+  const failed = Object.values(projectors).find((item) => item.status === 'FAILED')
+  const running = Object.values(projectors).some((item) => item.status === 'RUNNING')
+  const promoted = readiness.status === 'READY'
+    && state.status === 'READY'
+    && state.active_snapshot_id === state.desired_snapshot_id
+  const aggregateStatus = promoted ? 'READY' : failed ? 'FAILED' : running ? 'RUNNING' : 'NOT_READY'
+  return Object.freeze({
+    contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+    source: Object.freeze({
+      desired_snapshot_id: state.desired_snapshot_id,
+      active_snapshot_id: state.active_snapshot_id || null,
+      status: sourceReceipt?.status || 'PENDING',
+    }),
+    projectors,
+    aggregate: Object.freeze({
+      status: aggregateStatus,
+      reason: promoted
+        ? null
+        : failed?.diagnostic?.code || readiness.reason || 'K9_V2_AGGREGATE_NOT_PROMOTED',
+    }),
   })
 }
 

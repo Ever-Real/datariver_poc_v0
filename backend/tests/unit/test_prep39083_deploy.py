@@ -222,6 +222,85 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     assert "Batch: 2/6" in output
 
 
+def test_status_uses_v2_lifecycle_and_independent_smoke_lane_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshot = "c" * 64
+    attempt = tmp_path / "deploy-attempt.json"
+    last = tmp_path / "last-command.json"
+    failure = tmp_path / "smoke-failure.json"
+    smoke = tmp_path / "smoke.json"
+    attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
+    last.write_text(json.dumps({
+        "result": "FAILED",
+        "step": "K9_INITIAL_REFRESH",
+        "code": "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY",
+        "next_action": "Run ./scripts/prep39083 deploy to resume the Semantic projector.",
+    }), encoding="utf-8")
+    failure.write_text(json.dumps({
+        "stage": "K9_INITIAL_REFRESH",
+        "diagnostic": {
+            "failure_stage": "PROVIDER",
+            "failure_detail_code": "K9_SEMANTIC_PROVIDER_TIMEOUT",
+        },
+    }), encoding="utf-8")
+    projector_ready = {
+        "desired_snapshot_id": snapshot,
+        "active_snapshot_id": snapshot,
+        "status": "READY",
+    }
+    smoke.write_text(json.dumps({
+        "contract": "DATARIVER_PREP39083_SMOKE_V2",
+        "readiness": {
+            "DATAHUB": {"status": "PASS"},
+            "K9": {"status": "FAILED"},
+            "MCL": {"status": "PASS"},
+            "GENERAL": {"status": "PASS"},
+        },
+        "k9_lifecycle": {
+            "contract": "DATARIVER_K9_LIFECYCLE_STATUS_V2",
+            "source": {
+                "desired_snapshot_id": snapshot,
+                "active_snapshot_id": None,
+                "status": "READY",
+            },
+            "projectors": {
+                "LINEAGE": projector_ready,
+                "METADATA": projector_ready,
+                "SEMANTIC": {
+                    "desired_snapshot_id": snapshot,
+                    "active_snapshot_id": None,
+                    "status": "FAILED",
+                },
+            },
+            "aggregate": {"status": "FAILED"},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", failure)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "k9-progress.json")
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Source: READY" in output
+    assert f"Source snapshot: desired={snapshot}; active=NONE" in output
+    assert f"Lineage: READY; desired={snapshot}; active={snapshot}" in output
+    assert f"Metadata: READY; desired={snapshot}; active={snapshot}" in output
+    assert f"Semantic projector: FAILED; desired={snapshot}; active=NONE" in output
+    assert "K9 aggregate: FAILED" in output
+    assert "K9: FAILED" in output
+    assert "Semantic: FAILED" in output
+    assert "MCL: READY" in output
+    assert "GENERAL: READY" in output
+
+
 def test_status_projects_same_scope_assignment_failure_accounting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
