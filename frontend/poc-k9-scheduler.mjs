@@ -121,7 +121,7 @@ async function datahubSourceStage(failureStage, action, sourceRetryWait) {
   if (!supportedSourceFailureStages.has(failureStage)) throw new Error('The K9 source failure stage is invalid.')
   for (let attempt = 1; attempt <= SOURCE_MAX_ATTEMPTS; attempt += 1) {
     try {
-      const value = await action()
+      const value = await action({ attempt })
       const invalidDetail = sourceResultFailureDetail(failureStage, value)
       if (invalidDetail) {
         throw Object.assign(new Error('The K9 DataHub source result is invalid.'), {
@@ -246,7 +246,7 @@ export function createPocK9RefreshTask({
           ),
           datahubSourceStage(
             'METADATA_COLLECTION',
-            () => collectMetadata(liveAuth.authorityPin, inventory),
+            ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
             sourceRetryWait,
           ),
           datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
@@ -442,6 +442,31 @@ export function createPocK9Scheduler({
   let pendingReconciliation
   let pendingReconciliationRun
 
+  const updateProgress = (value) => {
+    if (!activeAttempt || !value || typeof value !== 'object' || Array.isArray(value)) return false
+    const integer = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+    const providerClass = [
+      'CONNECTIVITY', 'TIMEOUT', 'HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER',
+      'GRAPHQL', 'CONTRACT',
+    ].includes(value.provider_failure_class) ? value.provider_failure_class : null
+    activeAttempt = Object.freeze({
+      ...activeAttempt,
+      stage: 'METADATA_COLLECTION',
+      detail: 'DIRECT_GLOSSARY_RESOLUTION',
+      direct_resolution_total: integer(value.total),
+      batch_size: integer(value.batch_size),
+      batch_total: integer(value.batch_total),
+      batch_number: integer(value.batch_number),
+      batch_requested_count: integer(value.batch_requested_count),
+      batch_response_count: integer(value.batch_response_count),
+      batch_elapsed_ms: integer(value.batch_elapsed_ms),
+      completed_resolution_count: integer(value.completed_resolution_count),
+      retry_attempt: integer(value.retry_attempt),
+      provider_failure_class: providerClass,
+    })
+    return true
+  }
+
   const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
@@ -559,6 +584,7 @@ export function createPocK9Scheduler({
 
   return {
     config,
+    updateProgress,
     currentAttempt() {
       return activeAttempt || null
     },

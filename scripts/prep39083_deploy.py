@@ -61,6 +61,7 @@ RUNTIME_ROOT = ROOT / "runtime" / "prep39083"
 ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
 ATTEMPT_RECEIPT = RUNTIME_ROOT / "deploy-attempt.json"
 SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
+K9_PROGRESS = RUNTIME_ROOT / "k9-progress.json"
 DEPLOY_LOCK = RUNTIME_ROOT / "deploy.lock"
 LAST_COMMAND = RUNTIME_ROOT / "last-command.json"
 COMMAND_LOGS = RUNTIME_ROOT / "logs"
@@ -2949,6 +2950,8 @@ def run_smoke(
         output.unlink()
     if SMOKE_FAILURE.exists():
         SMOKE_FAILURE.unlink()
+    if K9_PROGRESS.exists():
+        K9_PROGRESS.unlink()
     with private_password_file(password) as password_path:
         try:
             command: list[str | os.PathLike[str]] = [
@@ -2970,6 +2973,8 @@ def run_smoke(
                 output,
                 "--failure-output",
                 SMOKE_FAILURE,
+                "--progress-output",
+                K9_PROGRESS,
             ]
             if glossary_term_urn.strip():
                 command.extend(["--glossary-term-urn", glossary_term_urn.strip()])
@@ -3409,6 +3414,7 @@ def status(release: ReleaseIdentity) -> None:
     accepted = _optional_json(ACCEPTED_MARKER)
     last = _optional_json(LAST_COMMAND)
     smoke_failure = _optional_json(SMOKE_FAILURE)
+    k9_progress = _optional_json(K9_PROGRESS)
     phase = str(attempt.get("phase", "NONE")) if attempt else "NONE"
     accepted_product = str(accepted.get("product_sha", "NONE")) if accepted else "NONE"
     target_state = str(attempt.get("target_state_before", "UNKNOWN")) if attempt else "UNKNOWN"
@@ -3452,7 +3458,12 @@ def status(release: ReleaseIdentity) -> None:
             web = "ABSENT"
     ready = phase == "ACCEPTED" and accepted_product == release.product_sha
     failed_stage = str(smoke_failure.get("stage", "")) if smoke_failure else ""
+    smoke_diagnostic = smoke_failure.get("diagnostic", {}) if smoke_failure else {}
+    if not isinstance(smoke_diagnostic, dict):
+        smoke_diagnostic = {}
     k9 = "READY" if ready else ("FAILED" if failed_stage.startswith("K9") else "UNKNOWN")
+    if active and isinstance(k9_progress, dict) and k9_progress.get("k9") == "RUNNING":
+        k9 = "RUNNING"
     semantic = "READY" if ready else "UNKNOWN"
     mcl = "READY" if ready else ("FAILED" if failed_stage.startswith("MCL") else "UNKNOWN")
     general = "READY" if ready else ("FAILED" if failed_stage == "GENERAL" else "UNKNOWN")
@@ -3468,6 +3479,41 @@ def status(release: ReleaseIdentity) -> None:
     print(f"Accepted Product: {accepted_product}")
     print(f"Web: {web}")
     print(f"K9: {k9}")
+    if k9 == "RUNNING" and isinstance(k9_progress, dict):
+        print(f"K9 stage: {k9_progress.get('stage', 'UNKNOWN')}")
+        print(f"K9 detail: {k9_progress.get('detail', 'UNKNOWN')}")
+        print(f"Progress: {k9_progress.get('completed', 0)}/{k9_progress.get('total', 0)}")
+        print(f"Batch: {k9_progress.get('batch_number', 0)}/{k9_progress.get('batch_total', 0)}")
+    if k9 == "FAILED":
+        print(f"K9 stage: {smoke_diagnostic.get('failure_stage', failed_stage or 'UNKNOWN')}")
+        print(f"K9 detail: {smoke_diagnostic.get('failure_detail_code', code)}")
+        provider_class = smoke_diagnostic.get("provider_failure_class")
+        if provider_class:
+            print(f"Provider class: {provider_class}")
+        batch_number = smoke_diagnostic.get("batch_number")
+        batch_count = smoke_diagnostic.get("batch_count")
+        if isinstance(batch_number, int) and isinstance(batch_count, int):
+            print(f"Batch: {batch_number}/{batch_count}")
+        requested = smoke_diagnostic.get("batch_requested_count")
+        received = smoke_diagnostic.get("batch_response_count")
+        elapsed = smoke_diagnostic.get("batch_elapsed_ms")
+        if isinstance(requested, int):
+            print(f"Requested: {requested}")
+        if isinstance(received, int):
+            print(f"Received: {received}")
+        if isinstance(elapsed, int):
+            print(f"Elapsed: {elapsed} ms")
+        profile = smoke_diagnostic.get("metadata_profile")
+        if isinstance(profile, dict):
+            direct = profile.get("direct_resolution", {})
+            if isinstance(direct, dict):
+                print(
+                    "Diagnostic profile: "
+                    f"glossary={profile.get('glossary_entities_fetched', 0)}/"
+                    f"{profile.get('glossary_reported_total', 0)}; "
+                    f"direct={direct.get('completed_resolution_count', 0)}/"
+                    f"{direct.get('total', 0)}"
+                )
     print(f"Semantic: {semantic}")
     print(f"MCL: {mcl}")
     print(f"GENERAL: {general}")

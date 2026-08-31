@@ -33,6 +33,10 @@ const k9SourceFailureDetails = new Set([
   'INTERNAL_TRANSFORM',
   ...K9_METADATA_FAILURE_DETAILS,
 ])
+const k9ProviderFailureClasses = new Set([
+  'CONNECTIVITY', 'TIMEOUT', 'HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER',
+  'GRAPHQL', 'CONTRACT',
+])
 const glossaryFailureClassifications = new Set([
   'PREP_SMOKE_GLOSSARY_TERM_INPUT_FAILED',
   'PREP_SMOKE_GLOSSARY_TERM_DISCOVERY_FAILED',
@@ -86,14 +90,55 @@ function mclFailureDiagnostic(body) {
 }
 
 function k9SourceFailureDiagnostic(asset) {
-  return asset?.last_error_code === 'K9_DATAHUB_SOURCE_FAILED'
+  if (!(asset?.last_error_code === 'K9_DATAHUB_SOURCE_FAILED'
     && k9SourceFailureStages.has(asset?.failure_stage)
-    && k9SourceFailureDetails.has(asset?.failure_detail_code)
-    ? {
-        failure_stage: asset.failure_stage,
-        failure_detail_code: asset.failure_detail_code,
-      }
-    : null
+    && k9SourceFailureDetails.has(asset?.failure_detail_code))) return null
+  const profile = asset?.metadata_source_profile
+  const direct = profile?.direct_resolution
+  const boundedDirect = direct && typeof direct === 'object' ? {
+    total: Number.isSafeInteger(direct.total) ? direct.total : 0,
+    batch_size: Number.isSafeInteger(direct.batch_size) ? direct.batch_size : 0,
+    batch_total: Number.isSafeInteger(direct.batch_total) ? direct.batch_total : 0,
+    batch_number: Number.isSafeInteger(direct.batch_number) ? direct.batch_number : 0,
+    batch_requested_count: Number.isSafeInteger(direct.batch_requested_count)
+      ? direct.batch_requested_count : 0,
+    batch_response_count: Number.isSafeInteger(direct.batch_response_count)
+      ? direct.batch_response_count : 0,
+    batch_elapsed_ms: Number.isSafeInteger(direct.batch_elapsed_ms) ? direct.batch_elapsed_ms : 0,
+    completed_resolution_count: Number.isSafeInteger(direct.completed_resolution_count)
+      ? direct.completed_resolution_count : 0,
+    retry_attempt: Number.isSafeInteger(direct.retry_attempt) ? direct.retry_attempt : 0,
+    provider_failure_class: k9ProviderFailureClasses.has(direct.provider_failure_class)
+      ? direct.provider_failure_class : null,
+    graphql_error_class: typeof direct.graphql_error_class === 'string'
+      && /^[A-Z][A-Z0-9_]{0,63}$/.test(direct.graphql_error_class)
+      ? direct.graphql_error_class : null,
+    graphql_error_path: typeof direct.graphql_error_path === 'string'
+      && /^[A-Za-z0-9_.]{1,160}$/.test(direct.graphql_error_path)
+      ? direct.graphql_error_path : null,
+    failing_identity_hash: typeof direct.failing_identity_hash === 'string'
+      && /^[0-9a-f]{64}$/.test(direct.failing_identity_hash)
+      ? direct.failing_identity_hash : null,
+  } : null
+  return {
+    failure_stage: asset.failure_stage,
+    failure_detail_code: asset.failure_detail_code,
+    ...(boundedDirect ? {
+      provider_failure_class: boundedDirect.provider_failure_class,
+      batch_number: boundedDirect.batch_number,
+      batch_count: boundedDirect.batch_total,
+      batch_requested_count: boundedDirect.batch_requested_count,
+      batch_response_count: boundedDirect.batch_response_count,
+      batch_elapsed_ms: boundedDirect.batch_elapsed_ms,
+      metadata_profile: {
+        contract: profile.contract,
+        glossary_reported_total: profile.glossary_scroll?.provider_reported_total || 0,
+        glossary_entities_fetched: profile.glossary_scroll?.entities_fetched || 0,
+        missing_term_reference_count: profile.assignments?.missing_term_reference_count || 0,
+        direct_resolution: boundedDirect,
+      },
+    } : {}),
+  }
 }
 
 async function privateSecret(path) {
@@ -232,6 +277,7 @@ const username = argument('--username')
 const passwordFile = argument('--password-file')
 const output = argument('--output')
 const failureOutput = argument('--failure-output')
+const progressOutput = argument('--progress-output', '')
 const glossaryTermUrn = String(argument('--glossary-term-urn', '') || '').trim()
 const k9Mode = String(argument('--k9-mode', 'required')).trim().toUpperCase()
 const readinessTimeoutMs = boundedMilliseconds(
@@ -396,6 +442,32 @@ async function main() {
         const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
         const refreshFailureAsset = [lineage, metadata]
           .find((item) => typeof item?.last_error_code === 'string' && item.last_error_code.startsWith('K9_'))
+        const runningAttempt = [lineage, metadata]
+          .map((item) => item?.refresh_attempt)
+          .find((attempt) => attempt?.status === 'RUNNING'
+            && attempt?.stage === 'METADATA_COLLECTION'
+            && attempt?.detail === 'DIRECT_GLOSSARY_RESOLUTION')
+        if (runningAttempt) {
+          const progressRecord = {
+            contract: 'DATARIVER_PREP39083_K9_PROGRESS_V1',
+            k9: 'RUNNING',
+            stage: 'METADATA_COLLECTION',
+            detail: 'DIRECT_GLOSSARY_RESOLUTION',
+            completed: Number.isSafeInteger(runningAttempt.completed_resolution_count)
+              ? runningAttempt.completed_resolution_count : 0,
+            total: Number.isSafeInteger(runningAttempt.direct_resolution_total)
+              ? runningAttempt.direct_resolution_total : 0,
+            batch_number: Number.isSafeInteger(runningAttempt.batch_number)
+              ? runningAttempt.batch_number : 0,
+            batch_total: Number.isSafeInteger(runningAttempt.batch_total)
+              ? runningAttempt.batch_total : 0,
+            batch_elapsed_ms: Number.isSafeInteger(runningAttempt.batch_elapsed_ms)
+              ? runningAttempt.batch_elapsed_ms : 0,
+            observed_at: new Date().toISOString(),
+          }
+          if (progressOutput) await atomicJson(progressOutput, progressRecord)
+          progress('4/6', `K9 metadata direct resolution ${progressRecord.completed}/${progressRecord.total}; batch ${progressRecord.batch_number}/${progressRecord.batch_total}`)
+        }
         const refreshFailure = refreshFailureAsset?.last_error_code
         const refreshClassifications = {
           K9_DATAHUB_SOURCE_FAILED: 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
@@ -430,6 +502,7 @@ async function main() {
         report.default_lineage = 'PASS'
         report.metadata_master = 'PASS'
         report.semantic_index = 'PASS'
+        if (progressOutput) await removeIfPresent(progressOutput)
       }, readinessTimeoutMs, '4/6 K9')
       progress('4/6', 'Managed graphs and semantic index PASS')
     } else {

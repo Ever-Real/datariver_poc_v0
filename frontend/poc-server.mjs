@@ -2356,7 +2356,7 @@ query DataRiverPocGlossaryTermByUrn($urn: String!) {
 
 const datahubK9GlossaryTermsByUrnsQuery = `
 query DataRiverK9GlossaryTermsByUrns($urns: [String!]!) {
-  entities(urns: $urns, checkForExistence: true) {
+  entities(urns: $urns, checkForExistence: false) {
     urn type
     ... on GlossaryTerm {
       exists
@@ -2499,6 +2499,21 @@ query DataRiverPocGlossaryAssignments($urn: String!, $input: RelationshipsInput!
   }
 }`
 
+function boundedDatahubGraphqlDiagnostic(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) return null
+  const first = errors.find((value) => value && typeof value === 'object') || {}
+  const rawClass = first.extensions?.code || first.extensions?.type || 'UNCLASSIFIED'
+  const errorClass = String(rawClass).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 64)
+  const path = Array.isArray(first.path)
+    ? first.path.slice(0, 8).map((value) => String(value).replace(/[^A-Za-z0-9_]/g, '_').slice(0, 32)).join('.')
+    : null
+  return Object.freeze({
+    error_class: /^[A-Z][A-Z0-9_]{0,63}$/.test(errorClass) ? errorClass : 'UNCLASSIFIED',
+    path: path && /^[A-Za-z0-9_.]{1,160}$/.test(path) ? path : null,
+    error_count: Math.min(errors.length, 1000),
+  })
+}
+
 async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, signal) {
   if (!datahub) throw Object.assign(new Error('DataHub is not configured.'), { statusCode: 503 })
   let response
@@ -2533,6 +2548,7 @@ async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, s
   if (payload.errors?.length) {
     throw Object.assign(new Error('DataHub rejected the fixed POC GraphQL query.'), {
       providerFailureKind: 'GRAPHQL',
+      providerGraphqlDiagnostic: boundedDatahubGraphqlDiagnostic(payload.errors),
     })
   }
   return payload.data
@@ -2576,6 +2592,7 @@ async function datahubRefreshGraphql(query, variables, signal) {
     try {
       return await datahubGraphql(query, variables, 60_000, signal)
     } catch (error) {
+      if (error && typeof error === 'object') error.providerRetryAttempt = attempt
       if (signal?.aborted || attempt === 2
         || !['TimeoutError', 'AbortError'].includes(error?.name)) throw error
     }
@@ -13790,7 +13807,9 @@ export async function startPocServer({ stateStore } = {}) {
     }
   }
 
-  async function collectGlossaryInventorySeam(authorityPin, inventory) {
+  let reportK9RefreshProgress = () => false
+
+  async function collectGlossaryInventorySeam(authorityPin, inventory, { retryAttempt = 1 } = {}) {
     const collectMetadata = createK9MetadataCollector({
       refreshGraphql: datahubRefreshGraphql,
       glossaryQuery: datahubK9GlossaryQuery,
@@ -13809,6 +13828,8 @@ export async function startPocServer({ stateStore } = {}) {
     })
     return collectMetadata(authorityPin, inventory, {
       sourceGeneration: inventorySnapshot?.projection?.source_generation || null,
+      retryAttempt,
+      reportProgress: (progress) => reportK9RefreshProgress(progress),
     })
   }
 
@@ -13893,6 +13914,7 @@ export async function startPocServer({ stateStore } = {}) {
     resolveReconciliationGeneration: resolveK9SemanticReconciliationGeneration,
     onError: reportK9SchedulerError,
   })
+  reportK9RefreshProgress = (progress) => k9Scheduler.updateProgress(progress)
   reconcileK9SemanticGeneration = (generation) => (
     k9Scheduler.reconcileSemanticGeneration(generation).catch(reportK9SchedulerError)
   )

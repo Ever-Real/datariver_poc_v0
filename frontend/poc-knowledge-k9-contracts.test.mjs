@@ -140,7 +140,7 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(k9QueryMatch[1], /\.\.\. on GlossaryNode/);
   const k9BatchQueryMatch = product.match(/const datahubK9GlossaryTermsByUrnsQuery = `([\s\S]*?)`/);
   assert.ok(k9BatchQueryMatch);
-  assert.match(k9BatchQueryMatch[1], /entities\(urns: \$urns, checkForExistence: true\)/);
+  assert.match(k9BatchQueryMatch[1], /entities\(urns: \$urns, checkForExistence: false\)/);
   assert.match(k9BatchQueryMatch[1], /exists\s*status \{ removed \}/);
   assert.match(k9BatchQueryMatch[1], /tableAssignments/);
   assert.match(k9BatchQueryMatch[1], /columnAssignments/);

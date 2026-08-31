@@ -204,10 +204,39 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     trigger: 'scheduled',
   })
   assert.ok(Number.isFinite(Date.parse(scheduler.currentAttempt().scheduled_for)))
+  assert.equal(scheduler.updateProgress({
+    total: 1_387,
+    batch_size: 250,
+    batch_total: 6,
+    batch_number: 2,
+    batch_requested_count: 250,
+    batch_response_count: 250,
+    batch_elapsed_ms: 412,
+    completed_resolution_count: 500,
+    retry_attempt: 1,
+  }), true)
+  assert.deepEqual(scheduler.currentAttempt(), {
+    status: 'RUNNING',
+    scheduled_for: scheduler.currentAttempt().scheduled_for,
+    trigger: 'scheduled',
+    stage: 'METADATA_COLLECTION',
+    detail: 'DIRECT_GLOSSARY_RESOLUTION',
+    direct_resolution_total: 1_387,
+    batch_size: 250,
+    batch_total: 6,
+    batch_number: 2,
+    batch_requested_count: 250,
+    batch_response_count: 250,
+    batch_elapsed_ms: 412,
+    completed_resolution_count: 500,
+    retry_attempt: 1,
+    provider_failure_class: null,
+  })
 
   releaseRefresh()
   await scheduler.stop()
   assert.equal(scheduler.currentAttempt(), null)
+  assert.equal(scheduler.updateProgress({ total: 2 }), false)
 })
 
 test('K9 semantic reconciliation detects only unaligned canonical managed graph generations', () => {
