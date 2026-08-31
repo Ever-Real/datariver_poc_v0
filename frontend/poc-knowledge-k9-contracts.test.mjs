@@ -124,7 +124,7 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /async function datahubRefreshGraphql[\s\S]*?datahubGraphql\(query, variables, 60_000, signal\)/);
   assert.match(product, /DataRiverPocCatalogEmbeddingInventory[\s\S]*?\.\.\. on Dataset \{\s*exists\s*status \{ removed \}/);
   assert.match(product, /collectLineageInventorySeam[\s\S]*?authorizedByUrn\.has\(k9AssetUrn\(relAsset\)\)[\s\S]*?registerLineageEdge/);
-  assert.match(product, /collectGlossaryInventorySeam[\s\S]*?createK9MetadataCollector[\s\S]*?refreshGraphql: datahubRefreshGraphql,[\s\S]*?glossaryQuery: datahubK9GlossaryQuery/);
+  assert.match(product, /collectGlossaryInventorySeam[\s\S]*?createK9MetadataCollector[\s\S]*?refreshGraphql: datahubRefreshGraphql,[\s\S]*?glossaryQuery: datahubK9GlossaryQuery,[\s\S]*?glossaryTermsQuery: datahubK9GlossaryTermsByUrnsQuery/);
   // Verify UI query is bounded and excludes heavy fields
   const uiQueryMatch = product.match(/const datahubGlossaryQuery = `([\s\S]*?)`/);
   assert.ok(uiQueryMatch);
@@ -138,6 +138,13 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(k9QueryMatch[1], /outgoingRelationships/);
   assert.match(k9QueryMatch[1], /glossaryTermInfo/);
   assert.match(k9QueryMatch[1], /\.\.\. on GlossaryNode/);
+  const k9BatchQueryMatch = product.match(/const datahubK9GlossaryTermsByUrnsQuery = `([\s\S]*?)`/);
+  assert.ok(k9BatchQueryMatch);
+  assert.match(k9BatchQueryMatch[1], /entities\(urns: \$urns, checkForExistence: true\)/);
+  assert.match(k9BatchQueryMatch[1], /exists\s*status \{ removed \}/);
+  assert.match(k9BatchQueryMatch[1], /tableAssignments/);
+  assert.match(k9BatchQueryMatch[1], /columnAssignments/);
+  assert.match(k9BatchQueryMatch[1], /outgoingRelationships/);
   assert.match(product, /currentDatahubInventory[\s\S]*?startDatahubInventoryRefresh\(\{ signal, deferSemanticIndex: true \}\)/);
   assert.match(product, /if \(llm\.embedding && !deferSemanticIndex\)/);
   assert.match(product, /createPocK9RefreshTask\(\{[\s\S]*?currentInventory: currentDatahubInventory,[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?ensureSemanticIndex:[\s\S]*?sourceFingerprint: buildDatahubKnowledgeSourceFingerprint/);

@@ -38,7 +38,7 @@ const supportedMetadataFailureDetails = new Set(K9_METADATA_FAILURE_DETAILS)
 const supportedTagNameSources = new Set(['LEGACY', 'PROPERTIES'])
 const supportedIdentityClassifications = new Set(K9_METADATA_IDENTITY_CLASSIFICATIONS)
 const sha256Pattern = /^[0-9a-f]{64}$/
-const MAX_DIRECT_GLOSSARY_TERM_RESOLUTIONS = 1_000
+const DIRECT_GLOSSARY_TERM_BATCH_SIZE = 250
 
 function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
@@ -459,7 +459,7 @@ function requiredFunction(value, label) {
 export function createK9MetadataCollector({
   refreshGraphql,
   glossaryQuery,
-  glossaryTermQuery,
+  glossaryTermsQuery,
   relationshipsQuery,
   buildScrollVariables,
   schemaFields,
@@ -912,114 +912,119 @@ export function createK9MetadataCollector({
       observations.push(assignment.reference)
       missingTermReferences.set(termUrn, observations)
     }
-    if (missingTermReferences.size > MAX_DIRECT_GLOSSARY_TERM_RESOLUTIONS) {
-      throw metadataFailure('GLOSSARY_DIRECT_RESOLUTION_LIMIT_EXCEEDED', undefined, profile)
-    }
-
-    for (const [termUrn, references] of [...missingTermReferences.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))) {
-      profile.assignments.direct_term_resolution_attempt_count += 1
-      const data = await fetchGraphql(glossaryTermQuery, { urn: termUrn }, signal)
+    const directTermReferences = [...missingTermReferences.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+    for (let offset = 0; offset < directTermReferences.length;
+      offset += DIRECT_GLOSSARY_TERM_BATCH_SIZE) {
+      const batch = directTermReferences.slice(offset, offset + DIRECT_GLOSSARY_TERM_BATCH_SIZE)
+      const urns = batch.map(([termUrn]) => termUrn)
+      const data = await fetchGraphql(glossaryTermsQuery, { urns }, signal)
       if (!data || typeof data !== 'object' || Array.isArray(data)
-        || !Object.hasOwn(data, 'entity')) throw providerContractFailure(profile)
-      const entity = data.entity
-      if (entity === null) {
-        profile.assignments.direct_term_resolution_dangling_count += 1
-        identityFailure(
-          profile,
-          'DANGLING_GLOSSARY_ASSIGNMENT',
-          'CONTRADICTION',
-          termUrn,
-          { resolution: 'ABSENT', assignment_reference_count: references.length },
-          pages,
-          profile.assignments.direct_term_resolution_attempt_count,
-        )
-      }
-      if (!entity || typeof entity !== 'object' || Array.isArray(entity)
-        || typeof entity.urn !== 'string' || typeof entity.type !== 'string') {
+        || !Array.isArray(data.entities) || data.entities.length !== batch.length) {
         throw providerContractFailure(profile)
       }
-      if (entity.urn !== termUrn) throw providerContractFailure(profile)
-      if (entity.type !== 'GLOSSARY_TERM') {
-        profile.assignments.direct_term_resolution_dangling_count += 1
-        identityFailure(
-          profile,
-          'DANGLING_GLOSSARY_ASSIGNMENT',
-          'CONTRADICTION',
-          termUrn,
-          { resolution: 'INCOMPATIBLE_ENTITY_TYPE', entity_type: entity.type },
-          pages,
-          profile.assignments.direct_term_resolution_attempt_count,
-        )
-      }
-      if (typeof entity.exists !== 'boolean') throw providerContractFailure(profile)
-      if (entity.status !== null && entity.status !== undefined
-        && (typeof entity.status !== 'object' || Array.isArray(entity.status)
-          || typeof entity.status.removed !== 'boolean')) throw providerContractFailure(profile)
-      if (entity.exists === false || entity.status?.removed === true) {
-        profile.assignments.direct_term_resolution_dangling_count += 1
-        identityFailure(
-          profile,
-          'DANGLING_GLOSSARY_ASSIGNMENT',
-          'CONTRADICTION',
-          termUrn,
-          {
-            resolution: entity.status?.removed === true ? 'REMOVED' : 'DOES_NOT_EXIST',
-            assignment_reference_count: references.length,
-          },
-          pages,
-          profile.assignments.direct_term_resolution_attempt_count,
-        )
-      }
-      const existingEntityType = glossaryIdentityTypes.get(entity.urn)
-      if (existingEntityType && existingEntityType !== entity.type) {
-        identityFailure(
-          profile,
-          'RELATION_IDENTITY_CONFLICT',
-          'CONTRADICTION',
-          entity.urn,
-          { entity_type: entity.type, existing_entity_type: existingEntityType },
-          pages,
-          profile.assignments.direct_term_resolution_attempt_count,
-        )
-      }
-      glossaryIdentityTypes.set(entity.urn, entity.type)
-      await registerGlossaryTerm(entity, {
-        pageNumber: pages,
-        ordinal: profile.assignments.direct_term_resolution_attempt_count,
-      })
-      let mergedObservation = termObservations.get(termUrn)
-      for (const reference of references) {
-        const sparseObservation = {
-          urn: termUrn,
-          name: typeof reference.name === 'string' ? reference.name : '',
-          description: typeof reference.description === 'string' ? reference.description : '',
-          term_source: null,
-          source_ref: null,
-          source_url: null,
-          custom_properties: [],
-          structured_properties: [],
-          domain_reference: null,
-          entity_type: 'GLOSSARY_TERM',
-        }
-        const merged = mergeCompatibleObservation(mergedObservation, sparseObservation)
-        if (merged.classification === 'CONTRADICTION') {
+      for (const [[termUrn, references], entity] of batch.map((entry, index) => (
+        [entry, data.entities[index]]
+      ))) {
+        profile.assignments.direct_term_resolution_attempt_count += 1
+        if (entity === null) {
+          profile.assignments.direct_term_resolution_dangling_count += 1
           identityFailure(
             profile,
-            'DUPLICATE_TERM_IDENTITY',
-            merged.classification,
+            'DANGLING_GLOSSARY_ASSIGNMENT',
+            'CONTRADICTION',
             termUrn,
-            sparseObservation,
+            { resolution: 'ABSENT', assignment_reference_count: references.length },
             pages,
             profile.assignments.direct_term_resolution_attempt_count,
           )
         }
-        observeIdentityResolution(profile, merged.classification)
-        mergedObservation = merged.value
+        if (!entity || typeof entity !== 'object' || Array.isArray(entity)
+          || typeof entity.urn !== 'string' || typeof entity.type !== 'string') {
+          throw providerContractFailure(profile)
+        }
+        if (entity.urn !== termUrn) throw providerContractFailure(profile)
+        if (entity.type !== 'GLOSSARY_TERM') {
+          profile.assignments.direct_term_resolution_dangling_count += 1
+          identityFailure(
+            profile,
+            'DANGLING_GLOSSARY_ASSIGNMENT',
+            'CONTRADICTION',
+            termUrn,
+            { resolution: 'INCOMPATIBLE_ENTITY_TYPE', entity_type: entity.type },
+            pages,
+            profile.assignments.direct_term_resolution_attempt_count,
+          )
+        }
+        if (typeof entity.exists !== 'boolean') throw providerContractFailure(profile)
+        if (entity.status !== null && entity.status !== undefined
+          && (typeof entity.status !== 'object' || Array.isArray(entity.status)
+            || typeof entity.status.removed !== 'boolean')) throw providerContractFailure(profile)
+        if (entity.exists === false || entity.status?.removed === true) {
+          profile.assignments.direct_term_resolution_dangling_count += 1
+          identityFailure(
+            profile,
+            'DANGLING_GLOSSARY_ASSIGNMENT',
+            'CONTRADICTION',
+            termUrn,
+            {
+              resolution: entity.status?.removed === true ? 'REMOVED' : 'DOES_NOT_EXIST',
+              assignment_reference_count: references.length,
+            },
+            pages,
+            profile.assignments.direct_term_resolution_attempt_count,
+          )
+        }
+        const existingEntityType = glossaryIdentityTypes.get(entity.urn)
+        if (existingEntityType && existingEntityType !== entity.type) {
+          identityFailure(
+            profile,
+            'RELATION_IDENTITY_CONFLICT',
+            'CONTRADICTION',
+            entity.urn,
+            { entity_type: entity.type, existing_entity_type: existingEntityType },
+            pages,
+            profile.assignments.direct_term_resolution_attempt_count,
+          )
+        }
+        glossaryIdentityTypes.set(entity.urn, entity.type)
+        await registerGlossaryTerm(entity, {
+          pageNumber: pages,
+          ordinal: profile.assignments.direct_term_resolution_attempt_count,
+        })
+        let mergedObservation = termObservations.get(termUrn)
+        for (const reference of references) {
+          const sparseObservation = {
+            urn: termUrn,
+            name: typeof reference.name === 'string' ? reference.name : '',
+            description: typeof reference.description === 'string' ? reference.description : '',
+            term_source: null,
+            source_ref: null,
+            source_url: null,
+            custom_properties: [],
+            structured_properties: [],
+            domain_reference: null,
+            entity_type: 'GLOSSARY_TERM',
+          }
+          const merged = mergeCompatibleObservation(mergedObservation, sparseObservation)
+          if (merged.classification === 'CONTRADICTION') {
+            identityFailure(
+              profile,
+              'DUPLICATE_TERM_IDENTITY',
+              merged.classification,
+              termUrn,
+              sparseObservation,
+              pages,
+              profile.assignments.direct_term_resolution_attempt_count,
+            )
+          }
+          observeIdentityResolution(profile, merged.classification)
+          mergedObservation = merged.value
+        }
+        termObservations.set(termUrn, mergedObservation)
+        terms[termIndexes.get(termUrn)] = publicGlossaryObservation(mergedObservation)
+        profile.assignments.direct_term_resolution_recovered_count += 1
       }
-      termObservations.set(termUrn, mergedObservation)
-      terms[termIndexes.get(termUrn)] = publicGlossaryObservation(mergedObservation)
-      profile.assignments.direct_term_resolution_recovered_count += 1
     }
 
     const observedAssignmentTotals = new Map([...termSet].sort()

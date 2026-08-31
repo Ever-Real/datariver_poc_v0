@@ -2354,6 +2354,68 @@ query DataRiverPocGlossaryTermByUrn($urn: String!) {
   }
 }`
 
+const datahubK9GlossaryTermsByUrnsQuery = `
+query DataRiverK9GlossaryTermsByUrns($urns: [String!]!) {
+  entities(urns: $urns, checkForExistence: true) {
+    urn type
+    ... on GlossaryTerm {
+      exists
+      status { removed }
+      hierarchicalName
+      properties { name description }
+      glossaryTermInfo { name description termSource sourceRef sourceUrl customProperties { key value } }
+      domain { domain { urn properties { name description } } }
+      structuredProperties {
+        properties {
+          structuredProperty { urn definition { qualifiedName displayName description cardinality } }
+          values {
+            ... on StringValue { stringValue }
+            ... on NumberValue { numberValue }
+          }
+          associatedUrn
+        }
+      }
+      parentNodes {
+        nodes {
+          urn type
+          ... on GlossaryNode { properties { name description } }
+        }
+      }
+      tableAssignments: relationships(input: {
+        types: ["TermedWith"]
+        direction: INCOMING
+        start: 0
+        count: 0
+        includeSoftDelete: false
+      }) { total }
+      columnAssignments: relationships(input: {
+        types: ["SchemaFieldWithGlossaryTerm"]
+        direction: INCOMING
+        start: 0
+        count: 0
+        includeSoftDelete: false
+      }) { total }
+      outgoingRelationships: relationships(input: {
+        types: []
+        direction: OUTGOING
+        start: 0
+        count: 100
+        includeSoftDelete: false
+      }) {
+        total
+        relationships {
+          type direction
+          entity {
+            urn type
+            ... on GlossaryTerm { properties { name } }
+            ... on GlossaryNode { properties { name } }
+          }
+        }
+      }
+    }
+  }
+}`
+
 const datahubGlossarySmokeDiscoveryQuery = `
 query DataRiverPocGlossarySmokeDiscovery($input: ScrollAcrossEntitiesInput!) {
   scrollAcrossEntities(input: $input) {
@@ -13732,7 +13794,7 @@ export async function startPocServer({ stateStore } = {}) {
     const collectMetadata = createK9MetadataCollector({
       refreshGraphql: datahubRefreshGraphql,
       glossaryQuery: datahubK9GlossaryQuery,
-      glossaryTermQuery: datahubGlossaryTermByUrnQuery,
+      glossaryTermsQuery: datahubK9GlossaryTermsByUrnsQuery,
       relationshipsQuery: datahubEntityRelationshipsQuery,
       buildScrollVariables: buildK9GlossaryScrollVariables,
       schemaFields: datahubSchemaFields,

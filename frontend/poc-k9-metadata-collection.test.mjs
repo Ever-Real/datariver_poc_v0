@@ -65,16 +65,21 @@ function fixture({
   const glossaryPages = [...pages]
   const remainingDirectTerms = [...directTerms]
   const remainingRelationshipPages = [...relationshipPages]
-  const refreshGraphql = mock.fn(async (query) => {
+  const refreshGraphql = mock.fn(async (query, variables) => {
     if (query === 'GLOSSARY') return glossaryPages.shift()
-    if (query === 'TERM') return remainingDirectTerms.shift()
+    if (query === 'TERMS') {
+      const requested = Array.isArray(variables?.urns) ? variables.urns : []
+      const responses = remainingDirectTerms.splice(0, requested.length)
+      if (responses.length !== requested.length) return {}
+      return { entities: responses.map((response) => response?.entity) }
+    }
     if (query === 'RELATIONSHIPS') return remainingRelationshipPages.shift()
     throw new Error('Unexpected query')
   })
   const collector = createK9MetadataCollector({
     refreshGraphql,
     glossaryQuery: 'GLOSSARY',
-    glossaryTermQuery: 'TERM',
+    glossaryTermsQuery: 'TERMS',
     relationshipsQuery: 'RELATIONSHIPS',
     buildScrollVariables: (scrollId) => ({ scrollId }),
     schemaFields: (item) => item.schema_fields,
@@ -414,23 +419,41 @@ test('direct Term provider failures preserve every existing bounded provider fam
   }
 })
 
-test('direct Term response contract and resolution fanout remain bounded', async () => {
+test('direct Term response contract and resolution batches remain bounded', async () => {
   const malformed = fixture({ directTerms: [{}] }).collector
   await assert.rejects(
     () => malformed(authorityPin, [dataset('malformed-direct', { glossary_terms: [{ urn: termUrn }] })]),
     (error) => error?.providerFailureKind === 'CONTRACT',
   )
 
-  const references = Array.from({ length: 1_001 }, (_, index) => ({
-    urn: `urn:li:glossaryTerm:bounded-${index}`,
-  }))
-  const failed = await failureRecord(
-    fixture().collector,
-    [dataset('bounded-direct', { glossary_terms: references })],
-  )
-  assert.equal(failed.detail, 'GLOSSARY_DIRECT_RESOLUTION_LIMIT_EXCEEDED')
-  assert.equal(failed.profile.assignments.missing_term_reference_count, 1_001)
-  assert.equal(failed.profile.assignments.direct_term_resolution_attempt_count, 0)
+  for (const count of [999, 1_000, 1_001, 2_501]) {
+    const references = Array.from({ length: count }, (_, index) => ({
+      urn: `urn:li:glossaryTerm:bounded-${String(index).padStart(5, '0')}`,
+    }))
+    const directTerms = references.map((reference) => ({ entity: glossaryTerm({
+      urn: reference.urn,
+      properties: { name: reference.urn.split(':').at(-1), description: '' },
+      tableAssignments: { total: 1 },
+    }) }))
+    const { collector, refreshGraphql } = fixture({ directTerms })
+    const result = await collector(
+      authorityPin,
+      [dataset(`bounded-direct-${count}`, { glossary_terms: [...references].reverse() })],
+    )
+    assert.equal(result.terms.length, count)
+    assert.equal(result.table_assignments.length, count)
+    assert.equal(new Set(result.terms.map((term) => term.urn)).size, count)
+    assert.deepEqual(result.terms.map((term) => term.urn), references.map((term) => term.urn))
+    assert.equal(result.source_profile.assignments.missing_term_reference_count, count)
+    assert.equal(result.source_profile.assignments.direct_term_resolution_attempt_count, count)
+    assert.equal(result.source_profile.assignments.direct_term_resolution_recovered_count, count)
+    const batches = refreshGraphql.mock.calls
+      .filter((call) => call.arguments[0] === 'TERMS')
+      .map((call) => call.arguments[1].urns)
+    assert.equal(batches.length, Math.ceil(count / 250))
+    assert.equal(batches.every((batch) => batch.length > 0 && batch.length <= 250), true)
+    assert.deepEqual(batches.flat(), references.map((reference) => reference.urn))
+  }
 })
 
 test('staged profiler reports only bounded counts after exact duplicate term dedupe', async () => {
