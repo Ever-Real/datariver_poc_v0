@@ -161,6 +161,18 @@ function normalizedMetadataDocument(metadataSource) {
   }
 }
 
+function normalizedLineageDocument(lineageSource) {
+  return {
+    direction: lineageSource?.direction || null,
+    depth: Number.isSafeInteger(lineageSource?.depth) ? lineageSource.depth : null,
+    truncated: lineageSource?.truncated === true,
+    nodes: normalizeSourceCollection(lineageSource?.nodes),
+    column_nodes: normalizeSourceCollection(lineageSource?.column_nodes),
+    edges: normalizeSourceCollection(lineageSource?.edges),
+    completeness_metadata: normalizeSourceValue(lineageSource?.completeness_metadata),
+  }
+}
+
 function normalizedDanglingState(metadataSource) {
   const profile = sanitizeK9MetadataSourceProfile(metadataSource?.source_profile)
   const assignments = profile?.assignments || {}
@@ -203,7 +215,7 @@ function sourceOnlyMetadataProfile(value) {
   return normalized
 }
 
-export function buildDatahubKnowledgeSourceSnapshot({
+export function buildDatahubKnowledgeSourceCapture({
   inventoryProjection,
   datahubIdentity,
   lineageSource,
@@ -212,6 +224,9 @@ export function buildDatahubKnowledgeSourceSnapshot({
   const inventory = normalizedInventoryProjection(inventoryProjection)
   const runtimeIdentity = normalizedRuntimeIdentity(datahubIdentity)
   const authorityPin = sourceAuthorityPin(lineageSource, metadataSource)
+  const lineage = normalizedLineageDocument(lineageSource)
+  const metadata = normalizedMetadataDocument(metadataSource)
+  const danglingState = normalizedDanglingState(metadataSource)
   const snapshotDocument = {
     contract_version: K9_SOURCE_SNAPSHOT_CONTRACT,
     catalog_generation: inventory.source_generation,
@@ -219,20 +234,12 @@ export function buildDatahubKnowledgeSourceSnapshot({
     datahub_commit: runtimeIdentity.commit,
     authority_pin: authorityPin,
     inventory_projection_hash: canonicalHash(inventory),
-    lineage_hash: canonicalHash({
-      direction: lineageSource?.direction || null,
-      depth: Number.isSafeInteger(lineageSource?.depth) ? lineageSource.depth : null,
-      truncated: lineageSource?.truncated === true,
-      nodes: normalizeSourceCollection(lineageSource?.nodes),
-      column_nodes: normalizeSourceCollection(lineageSource?.column_nodes),
-      edges: normalizeSourceCollection(lineageSource?.edges),
-      completeness_metadata: normalizeSourceValue(lineageSource?.completeness_metadata),
-    }),
-    metadata_hash: canonicalHash(normalizedMetadataDocument(metadataSource)),
-    dangling_state_hash: canonicalHash(normalizedDanglingState(metadataSource)),
+    lineage_hash: canonicalHash(lineage),
+    metadata_hash: canonicalHash(metadata),
+    dangling_state_hash: canonicalHash(danglingState),
   }
   const sourceSnapshotId = canonicalHash(snapshotDocument)
-  return {
+  const snapshot = {
     ...snapshotDocument,
     source_snapshot_id: sourceSnapshotId,
     // Retained as a compatibility alias for the existing bounded
@@ -242,6 +249,19 @@ export function buildDatahubKnowledgeSourceSnapshot({
     // but operational progress/failure fields never enter the identity.
     metadata_source_profile: sourceOnlyMetadataProfile(metadataSource?.source_profile),
   }
+  return {
+    snapshot,
+    source_payloads: {
+      inventory,
+      lineage,
+      metadata,
+      dangling_state: danglingState,
+    },
+  }
+}
+
+export function buildDatahubKnowledgeSourceSnapshot(input) {
+  return buildDatahubKnowledgeSourceCapture(input).snapshot
 }
 
 export function buildDatahubKnowledgeSourceFingerprint(input) {

@@ -1,11 +1,25 @@
 /* global structuredClone */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 
 import {
   K9_SOURCE_SNAPSHOT_CONTRACT,
+  buildDatahubKnowledgeSourceCapture,
   buildDatahubKnowledgeSourceSnapshot,
 } from './poc-k9-source-snapshot.mjs'
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function canonicalHash(value) {
+  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')
+}
 
 function fixture() {
   const authorityPin = {
@@ -109,6 +123,18 @@ test('K9 V2 source snapshot is deterministic and source-only', () => {
   assert.equal(snapshot(structuredClone(input)).source_snapshot_id, first.source_snapshot_id)
   assert.equal(snapshot(reordered).source_snapshot_id, first.source_snapshot_id)
   assert.deepEqual(first.authority_pin, input.lineageSource.authority_pin)
+})
+
+test('K9 V2 capture emits the exact normalized immutable payloads bound by the snapshot', () => {
+  const input = fixture()
+  const capture = buildDatahubKnowledgeSourceCapture(input)
+  assert.deepEqual(capture.snapshot, buildDatahubKnowledgeSourceSnapshot(input))
+  assert.equal(canonicalHash(capture.source_payloads.inventory), capture.snapshot.inventory_projection_hash)
+  assert.equal(canonicalHash(capture.source_payloads.lineage), capture.snapshot.lineage_hash)
+  assert.equal(canonicalHash(capture.source_payloads.metadata), capture.snapshot.metadata_hash)
+  assert.equal(canonicalHash(capture.source_payloads.dangling_state), capture.snapshot.dangling_state_hash)
+  assert.equal(capture.source_payloads.inventory.items.some((item) => 'observed_at' in item), false)
+  assert.equal('batch_elapsed_ms' in capture.source_payloads.dangling_state, false)
 })
 
 test('K9 V2 source snapshot rotates for every source identity input', () => {
