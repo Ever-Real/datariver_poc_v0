@@ -2741,6 +2741,11 @@ export function buildDatahubKnowledgeSourceFingerprint({
       table_container_assignments: metadataSource?.table_container_assignments,
       table_platform_instance_assignments: metadataSource?.table_platform_instance_assignments,
       completeness_metadata: metadataSource?.completeness_metadata,
+      // The sanitized source profile contains deterministic raw-reference
+      // accounting and identity hashes. This keeps stale assignment changes
+      // inside the consistency fence even though non-projectable edges are
+      // intentionally excluded from the graph projection.
+      metadata_source_profile: sanitizeK9MetadataSourceProfile(metadataSource?.source_profile),
     }),
   }
   return {
@@ -9348,6 +9353,15 @@ export function managedK9AssetSummary(
     row.latest_manifest?.failure_diagnostic?.metadata_source_profile,
   )
   const activeMetadataProfile = sanitizeK9MetadataSourceProfile(sourceSnapshot.metadata_source_profile)
+  const activeDirectResolution = activeMetadataProfile?.direct_resolution
+  const sourceWarning = activeDirectResolution?.dangling_unique_terms > 0 ? {
+    code: 'DANGLING_GLOSSARY_ASSIGNMENTS',
+    dangling_unique_terms: activeDirectResolution.dangling_unique_terms,
+    dangling_assignment_references: activeDirectResolution.dangling_assignment_references,
+    absent: activeDirectResolution.dangling_absent_count,
+    does_not_exist: activeDirectResolution.dangling_does_not_exist_count,
+    removed: activeDirectResolution.dangling_removed_count,
+  } : null
   const status = row.active_release_pointer
     ? (latestResult === 'FAILURE' ? 'READY_WITH_REFRESH_FAILURE' : 'READY')
     : (latestResult === 'FAILURE' ? 'FAILED' : 'PENDING')
@@ -9400,6 +9414,7 @@ export function managedK9AssetSummary(
     metadata_source_profile: includeQualityMetrics
       ? latestFailureProfile || activeMetadataProfile
       : null,
+    k9_source_warning: sourceWarning,
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
     semantic_index_contract: semanticIndex?.contract || null,
     semantic_index_generation: semanticIndex?.generation || null,

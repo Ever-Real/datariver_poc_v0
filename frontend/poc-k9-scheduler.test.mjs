@@ -213,6 +213,8 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     batch_response_count: 250,
     batch_elapsed_ms: 412,
     completed_resolution_count: 500,
+    dangling_unique_terms: 0,
+    dangling_assignment_references: 0,
     retry_attempt: 1,
   }), true)
   assert.deepEqual(scheduler.currentAttempt(), {
@@ -229,6 +231,8 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     batch_response_count: 250,
     batch_elapsed_ms: 412,
     completed_resolution_count: 500,
+    dangling_unique_terms: 0,
+    dangling_assignment_references: 0,
     retry_attempt: 1,
     provider_failure_class: null,
   })

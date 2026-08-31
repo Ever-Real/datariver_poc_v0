@@ -67,6 +67,11 @@ test('binds graph and semantic projections to one deterministic DataHub source s
       table_tag_assignments: [], column_tag_assignments: [], table_domain_assignments: [],
       table_container_assignments: [], table_platform_instance_assignments: [],
       completeness_metadata: {},
+      source_profile: {
+        contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+        assignments: { raw_reference_hash: 'a'.repeat(64), dangling_reference_hash: null },
+        direct_resolution: {},
+      },
     },
     semanticIndex: { bindingHash, generation },
   }
@@ -88,6 +93,16 @@ test('binds graph and semantic projections to one deterministic DataHub source s
   assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
     ...input,
     inventoryProjection: { ...input.inventoryProjection, source_generation: '4'.repeat(64) },
+  }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
+  assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
+    ...input,
+    metadataSource: {
+      ...input.metadataSource,
+      source_profile: {
+        ...input.metadataSource.source_profile,
+        assignments: { raw_reference_hash: 'b'.repeat(64), dangling_reference_hash: null },
+      },
+    },
   }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
   assert.notEqual(buildDatahubKnowledgeSourceFingerprint({
     ...input,
@@ -171,6 +186,54 @@ test('managed K9 failure status preserves LKG and never exposes an unbound seman
   assert.equal(withLkg.last_error_code, 'K9_SEMANTIC_INDEX_FAILED')
   assert.equal(withLkg.semantic_index_status, 'READY')
   assert.equal(withLkg.active_release_id, 'k9_stage_existing_lkg')
+})
+
+test('managed K9 success exposes only bounded dangling glossary warning counts', async () => {
+  const { managedK9AssetSummary } = await import('./poc-server.mjs?k9-dangling-warning-contract')
+  const generation = '6'.repeat(64)
+  const summary = managedK9AssetSummary({
+    graph_id: '01a02d2a-f8a0-7658-b5da-890eccdccf44',
+    name: 'CATALOG_MIRROR',
+    classification: 'INTERNAL',
+    studio_release_id: '01a02d2a-f8ad-789f-acb0-7df3ea3d0ef0',
+    publication_version: 7,
+    managed_intent: 'metadata-lineage',
+    latest_result: 'RUN',
+    active_release_pointer: 'k9_stage_dangling_warning',
+    active_manifest: {
+      source_snapshot: {
+        catalog_generation: generation,
+        metadata_source_profile: {
+          contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+          assignments: {},
+          direct_resolution: {
+            dangling_unique_terms: 3,
+            dangling_assignment_references: 11,
+            dangling_absent_count: 1,
+            dangling_does_not_exist_count: 1,
+            dangling_removed_count: 1,
+          },
+        },
+      },
+    },
+    created_at: '2026-08-31T00:00:00.000Z',
+    updated_at: '2026-08-31T00:01:00.000Z',
+  }, {
+    ready: true,
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+    bindingHash: '7'.repeat(64),
+    generation,
+  }, null)
+  assert.equal(summary.status, 'READY')
+  assert.deepEqual(summary.k9_source_warning, {
+    code: 'DANGLING_GLOSSARY_ASSIGNMENTS',
+    dangling_unique_terms: 3,
+    dangling_assignment_references: 11,
+    absent: 1,
+    does_not_exist: 1,
+    removed: 1,
+  })
+  assert.equal(JSON.stringify(summary.k9_source_warning).includes('urn:li:'), false)
 })
 
 test('managed K9 resume reports an active descendant attempt instead of a retained terminal failure', async () => {

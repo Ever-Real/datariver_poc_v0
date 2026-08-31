@@ -161,6 +161,7 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
     monkeypatch.setattr(deploy, "LAST_COMMAND", last)
     monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
     monkeypatch.setattr(deploy, "DEPLOY_LOCK", lock)
 
     deploy.status(_release())
@@ -206,6 +207,7 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
     monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
     monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
     monkeypatch.setattr(deploy, "K9_PROGRESS", progress)
     monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: True)
 
@@ -218,6 +220,49 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     assert "K9 detail: DIRECT_GLOSSARY_RESOLUTION" in output
     assert "Progress: 500/1387" in output
     assert "Batch: 2/6" in output
+
+
+def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    accepted = tmp_path / "accepted.json"
+    smoke = tmp_path / "smoke.json"
+    attempt.write_text(json.dumps({
+        "phase": "ACCEPTED",
+        "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+    }), encoding="utf-8")
+    accepted.write_text(json.dumps({"product_sha": _release().product_sha}), encoding="utf-8")
+    smoke.write_text(json.dumps({
+        "k9_source_warning": {
+            "code": "DANGLING_GLOSSARY_ASSIGNMENTS",
+            "dangling_unique_terms": 1486,
+            "dangling_assignment_references": 75431,
+            "absent": 8,
+            "does_not_exist": 1470,
+            "removed": 8,
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "k9-progress.json")
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "K9: READY" in output
+    assert "K9 source warning: DANGLING_GLOSSARY_ASSIGNMENTS" in output
+    assert "Dangling Terms: 1486" in output
+    assert "Dangling References: 75431" in output
+    assert "Absent: 8" in output
+    assert "Does not exist: 1470" in output
+    assert "Removed: 8" in output
 
 
 def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(

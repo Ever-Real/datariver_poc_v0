@@ -97,6 +97,21 @@ function k9SourceFailureDiagnostic(asset) {
   const direct = profile?.direct_resolution
   const boundedDirect = direct && typeof direct === 'object' ? {
     total: Number.isSafeInteger(direct.total) ? direct.total : 0,
+    total_unique_terms: Number.isSafeInteger(direct.total_unique_terms) ? direct.total_unique_terms : 0,
+    recovered_unique_terms: Number.isSafeInteger(direct.recovered_unique_terms) ? direct.recovered_unique_terms : 0,
+    dangling_unique_terms: Number.isSafeInteger(direct.dangling_unique_terms) ? direct.dangling_unique_terms : 0,
+    recovered_assignment_references: Number.isSafeInteger(direct.recovered_assignment_references)
+      ? direct.recovered_assignment_references : 0,
+    dangling_assignment_references: Number.isSafeInteger(direct.dangling_assignment_references)
+      ? direct.dangling_assignment_references : 0,
+    dangling_absent_count: Number.isSafeInteger(direct.dangling_absent_count)
+      ? direct.dangling_absent_count : 0,
+    dangling_does_not_exist_count: Number.isSafeInteger(direct.dangling_does_not_exist_count)
+      ? direct.dangling_does_not_exist_count : 0,
+    dangling_removed_count: Number.isSafeInteger(direct.dangling_removed_count)
+      ? direct.dangling_removed_count : 0,
+    dangling_incompatible_type_count: Number.isSafeInteger(direct.dangling_incompatible_type_count)
+      ? direct.dangling_incompatible_type_count : 0,
     batch_size: Number.isSafeInteger(direct.batch_size) ? direct.batch_size : 0,
     batch_total: Number.isSafeInteger(direct.batch_total) ? direct.batch_total : 0,
     batch_number: Number.isSafeInteger(direct.batch_number) ? direct.batch_number : 0,
@@ -119,6 +134,9 @@ function k9SourceFailureDiagnostic(asset) {
     failing_identity_hash: typeof direct.failing_identity_hash === 'string'
       && /^[0-9a-f]{64}$/.test(direct.failing_identity_hash)
       ? direct.failing_identity_hash : null,
+    first_dangling_identity_hash: typeof direct.first_dangling_identity_hash === 'string'
+      && /^[0-9a-f]{64}$/.test(direct.first_dangling_identity_hash)
+      ? direct.first_dangling_identity_hash : null,
   } : null
   return {
     failure_stage: asset.failure_stage,
@@ -139,6 +157,21 @@ function k9SourceFailureDiagnostic(asset) {
       },
     } : {}),
   }
+}
+
+function k9SourceWarning(asset) {
+  const warning = asset?.k9_source_warning
+  if (!warning || warning.code !== 'DANGLING_GLOSSARY_ASSIGNMENTS') return null
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const bounded = {
+    code: 'DANGLING_GLOSSARY_ASSIGNMENTS',
+    dangling_unique_terms: count(warning.dangling_unique_terms),
+    dangling_assignment_references: count(warning.dangling_assignment_references),
+    absent: count(warning.absent),
+    does_not_exist: count(warning.does_not_exist),
+    removed: count(warning.removed),
+  }
+  return bounded.dangling_unique_terms > 0 ? bounded : null
 }
 
 async function privateSecret(path) {
@@ -366,6 +399,7 @@ async function main() {
     default_lineage: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     metadata_master: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     semantic_index: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
+    k9_source_warning: null,
     mcl_change_history: 'FAIL',
     llm_general: 'FAIL',
   }
@@ -463,6 +497,10 @@ async function main() {
               ? runningAttempt.batch_total : 0,
             batch_elapsed_ms: Number.isSafeInteger(runningAttempt.batch_elapsed_ms)
               ? runningAttempt.batch_elapsed_ms : 0,
+            dangling_unique_terms: Number.isSafeInteger(runningAttempt.dangling_unique_terms)
+              ? runningAttempt.dangling_unique_terms : 0,
+            dangling_assignment_references: Number.isSafeInteger(runningAttempt.dangling_assignment_references)
+              ? runningAttempt.dangling_assignment_references : 0,
             observed_at: new Date().toISOString(),
           }
           if (progressOutput) await atomicJson(progressOutput, progressRecord)
@@ -502,6 +540,7 @@ async function main() {
         report.default_lineage = 'PASS'
         report.metadata_master = 'PASS'
         report.semantic_index = 'PASS'
+        report.k9_source_warning = k9SourceWarning(metadata)
         if (progressOutput) await removeIfPresent(progressOutput)
       }, readinessTimeoutMs, '4/6 K9')
       progress('4/6', 'Managed graphs and semantic index PASS')

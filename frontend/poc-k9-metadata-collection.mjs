@@ -148,9 +148,24 @@ export function sanitizeK9MetadataSourceProfile(value) {
       table_missing_term_count: boundedCount(assignments.table_missing_term_count),
       column_missing_term_count: boundedCount(assignments.column_missing_term_count),
       source_consistency_conflict_count: boundedCount(assignments.source_consistency_conflict_count),
+      raw_reference_hash: sha256Pattern.test(assignments.raw_reference_hash || '')
+        ? assignments.raw_reference_hash
+        : null,
+      dangling_reference_hash: sha256Pattern.test(assignments.dangling_reference_hash || '')
+        ? assignments.dangling_reference_hash
+        : null,
     },
     direct_resolution: {
       total: boundedCount(directResolution.total),
+      total_unique_terms: boundedCount(directResolution.total_unique_terms),
+      recovered_unique_terms: boundedCount(directResolution.recovered_unique_terms),
+      dangling_unique_terms: boundedCount(directResolution.dangling_unique_terms),
+      recovered_assignment_references: boundedCount(directResolution.recovered_assignment_references),
+      dangling_assignment_references: boundedCount(directResolution.dangling_assignment_references),
+      dangling_absent_count: boundedCount(directResolution.dangling_absent_count),
+      dangling_does_not_exist_count: boundedCount(directResolution.dangling_does_not_exist_count),
+      dangling_removed_count: boundedCount(directResolution.dangling_removed_count),
+      dangling_incompatible_type_count: boundedCount(directResolution.dangling_incompatible_type_count),
       batch_size: boundedCount(directResolution.batch_size),
       batch_total: boundedCount(directResolution.batch_total),
       batch_number: boundedCount(directResolution.batch_number),
@@ -172,6 +187,9 @@ export function sanitizeK9MetadataSourceProfile(value) {
         : null,
       failing_identity_hash: sha256Pattern.test(directResolution.failing_identity_hash || '')
         ? directResolution.failing_identity_hash
+        : null,
+      first_dangling_identity_hash: sha256Pattern.test(directResolution.first_dangling_identity_hash || '')
+        ? directResolution.first_dangling_identity_hash
         : null,
     },
     identity_resolution: {
@@ -361,9 +379,20 @@ function createMetadataSourceProfile(sourceGeneration) {
       table_missing_term_count: 0,
       column_missing_term_count: 0,
       source_consistency_conflict_count: 0,
+      raw_reference_hash: null,
+      dangling_reference_hash: null,
     },
     direct_resolution: {
       total: 0,
+      total_unique_terms: 0,
+      recovered_unique_terms: 0,
+      dangling_unique_terms: 0,
+      recovered_assignment_references: 0,
+      dangling_assignment_references: 0,
+      dangling_absent_count: 0,
+      dangling_does_not_exist_count: 0,
+      dangling_removed_count: 0,
+      dangling_incompatible_type_count: 0,
       batch_size: DIRECT_GLOSSARY_TERM_BATCH_SIZE,
       batch_total: 0,
       batch_number: 0,
@@ -376,6 +405,7 @@ function createMetadataSourceProfile(sourceGeneration) {
       graphql_error_class: null,
       graphql_error_path: null,
       failing_identity_hash: null,
+      first_dangling_identity_hash: null,
     },
     identity_resolution: {
       exact_duplicate_observation_count: 0,
@@ -970,6 +1000,12 @@ export function createK9MetadataCollector({
         }
       }
     }
+    profile.assignments.raw_reference_hash = boundedShapeHash(assignmentReferences.map((assignment) => ({
+      assignment_type: assignment.type,
+      asset_urn: urnFor(assignment.item),
+      field_path: assignment.field?.fieldPath || null,
+      term_urn: assignment.reference.urn,
+    })).sort((left, right) => canonicalProfileJson(left).localeCompare(canonicalProfileJson(right))))
 
     const missingTermReferences = new Map()
     for (const assignment of assignmentReferences) {
@@ -985,7 +1021,9 @@ export function createK9MetadataCollector({
     }
     const directTermReferences = [...missingTermReferences.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
+    const danglingTerms = new Map()
     profile.direct_resolution.total = directTermReferences.length
+    profile.direct_resolution.total_unique_terms = directTermReferences.length
     profile.direct_resolution.batch_total = Math.ceil(
       directTermReferences.length / DIRECT_GLOSSARY_TERM_BATCH_SIZE,
     )
@@ -1031,17 +1069,30 @@ export function createK9MetadataCollector({
         [entry, data.entities[index]]
       ))) {
         profile.assignments.direct_term_resolution_attempt_count += 1
-        if (entity === null) {
+        // DataHub v1.6.0 deletes a Glossary entity before asynchronously
+        // deleting references to it. A current asset can therefore retain a
+        // validly shaped reference whose target is no longer projectable.
+        // Account that source hygiene state without synthesizing a ghost
+        // Term; identity/type/provider contradictions remain terminal below.
+        const recordDangling = (subtype) => {
+          danglingTerms.set(termUrn, subtype)
           profile.assignments.direct_term_resolution_dangling_count += 1
-          identityFailure(
-            profile,
-            'DANGLING_GLOSSARY_ASSIGNMENT',
-            'CONTRADICTION',
-            termUrn,
-            { resolution: 'ABSENT', assignment_reference_count: references.length },
-            pages,
-            profile.assignments.direct_term_resolution_attempt_count,
-          )
+          profile.direct_resolution.dangling_unique_terms += 1
+          profile.direct_resolution.dangling_assignment_references += references.length
+          profile.direct_resolution.completed_resolution_count += 1
+          const countKey = {
+            ABSENT: 'dangling_absent_count',
+            DOES_NOT_EXIST: 'dangling_does_not_exist_count',
+            REMOVED: 'dangling_removed_count',
+          }[subtype]
+          profile.direct_resolution[countKey] += 1
+          if (!profile.direct_resolution.first_dangling_identity_hash) {
+            profile.direct_resolution.first_dangling_identity_hash = boundedIdentityHash(termUrn)
+          }
+        }
+        if (entity === null) {
+          recordDangling('ABSENT')
+          continue
         }
         if (!entity || typeof entity !== 'object' || Array.isArray(entity)
           || typeof entity.urn !== 'string' || typeof entity.type !== 'string') {
@@ -1050,6 +1101,12 @@ export function createK9MetadataCollector({
         if (entity.urn !== termUrn) throw providerContractFailure(profile)
         if (entity.type !== 'GLOSSARY_TERM') {
           profile.assignments.direct_term_resolution_dangling_count += 1
+          profile.direct_resolution.dangling_unique_terms += 1
+          profile.direct_resolution.dangling_assignment_references += references.length
+          profile.direct_resolution.dangling_incompatible_type_count += 1
+          if (!profile.direct_resolution.first_dangling_identity_hash) {
+            profile.direct_resolution.first_dangling_identity_hash = boundedIdentityHash(termUrn)
+          }
           identityFailure(
             profile,
             'DANGLING_GLOSSARY_ASSIGNMENT',
@@ -1065,19 +1122,8 @@ export function createK9MetadataCollector({
           && (typeof entity.status !== 'object' || Array.isArray(entity.status)
             || typeof entity.status.removed !== 'boolean')) throw providerContractFailure(profile)
         if (entity.exists === false || entity.status?.removed === true) {
-          profile.assignments.direct_term_resolution_dangling_count += 1
-          identityFailure(
-            profile,
-            'DANGLING_GLOSSARY_ASSIGNMENT',
-            'CONTRADICTION',
-            termUrn,
-            {
-              resolution: entity.status?.removed === true ? 'REMOVED' : 'DOES_NOT_EXIST',
-              assignment_reference_count: references.length,
-            },
-            pages,
-            profile.assignments.direct_term_resolution_attempt_count,
-          )
+          recordDangling(entity.status?.removed === true ? 'REMOVED' : 'DOES_NOT_EXIST')
+          continue
         }
         const existingEntityType = glossaryIdentityTypes.get(entity.urn)
         if (existingEntityType && existingEntityType !== entity.type) {
@@ -1128,6 +1174,8 @@ export function createK9MetadataCollector({
         termObservations.set(termUrn, mergedObservation)
         terms[termIndexes.get(termUrn)] = publicGlossaryObservation(mergedObservation)
         profile.assignments.direct_term_resolution_recovered_count += 1
+        profile.direct_resolution.recovered_unique_terms += 1
+        profile.direct_resolution.recovered_assignment_references += references.length
         profile.direct_resolution.completed_resolution_count += 1
       }
       profile.direct_resolution.failing_identity_hash = null
@@ -1138,12 +1186,28 @@ export function createK9MetadataCollector({
       profile.direct_resolution.batch_elapsed_ms = 0
     }
     profile.direct_resolution.retry_attempt = 0
+    profile.assignments.dangling_reference_hash = danglingTerms.size > 0 ? boundedShapeHash(
+      [...danglingTerms.entries()].map(([termUrn, subtype]) => ({
+        term_urn: termUrn,
+        subtype,
+        assignment_reference_count: missingTermReferences.get(termUrn)?.length || 0,
+      })),
+    ) : null
+    if (profile.direct_resolution.total_unique_terms
+      !== profile.direct_resolution.recovered_unique_terms
+        + profile.direct_resolution.dangling_unique_terms
+      || profile.assignments.missing_term_reference_count
+      !== profile.direct_resolution.recovered_assignment_references
+        + profile.direct_resolution.dangling_assignment_references) {
+      throw providerContractFailure(profile)
+    }
 
     const observedAssignmentTotals = new Map([...termSet].sort()
       .map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))
     const registerAssignment = (type, termUrn, item, field, classification) => {
       if (type === 'TABLE') profile.assignments.observed_table_assignment_total += 1
       else profile.assignments.observed_column_assignment_total += 1
+      if (danglingTerms.has(termUrn)) return
       if (!termSet.has(termUrn)) {
         throw providerContractFailure(profile)
       }
