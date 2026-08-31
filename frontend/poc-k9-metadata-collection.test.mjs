@@ -414,9 +414,42 @@ test('direct Term provider failures preserve every existing bounded provider fam
     } }).collector
     await assert.rejects(
       () => collector(authorityPin, [dataset('direct-provider', { glossary_terms: [{ urn: termUrn }] })]),
-      (error) => error === providerError,
+      (error) => {
+        assert.equal(error, providerError)
+        assert.equal(error.k9MetadataSourceProfile.direct_resolution.batch_number, 1)
+        assert.equal(error.k9MetadataSourceProfile.direct_resolution.batch_requested_count, 1)
+        assert.equal(error.k9MetadataSourceProfile.direct_resolution.failing_identity_hash.length, 64)
+        assert.equal(JSON.stringify(error.k9MetadataSourceProfile).includes(termUrn), false)
+        return true
+      },
     )
   }
+})
+
+test('direct Term progress is derived from completed provider batches and contains no identities', async () => {
+  const count = 501
+  const references = Array.from({ length: count }, (_, index) => ({
+    urn: `urn:li:glossaryTerm:progress-${String(index).padStart(4, '0')}`,
+  }))
+  const directTerms = references.map((reference) => ({ entity: glossaryTerm({
+    urn: reference.urn,
+    properties: { name: 'bounded', description: '' },
+    tableAssignments: { total: 1 },
+  }) }))
+  const progress = []
+  const { collector } = fixture({ directTerms })
+  await collector(
+    authorityPin,
+    [dataset('progress', { glossary_terms: references })],
+    { retryAttempt: 2, reportProgress: (value) => progress.push(value) },
+  )
+  assert.equal(progress.at(-1).total, count)
+  assert.equal(progress.at(-1).batch_total, 3)
+  assert.equal(progress.at(-1).batch_number, 3)
+  assert.equal(progress.at(-1).completed_resolution_count, count)
+  assert.equal(progress.at(-1).retry_attempt, 2)
+  assert.equal(progress.some((value) => value.completed_resolution_count > count), false)
+  assert.equal(JSON.stringify(progress).includes('urn:li:'), false)
 })
 
 test('direct Term response contract and resolution batches remain bounded', async () => {

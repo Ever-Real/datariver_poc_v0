@@ -139,7 +139,24 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
         ),
         encoding="utf-8",
     )
-    smoke.write_text(json.dumps({"stage": "K9_INITIAL_REFRESH"}), encoding="utf-8")
+    smoke.write_text(json.dumps({
+        "stage": "K9_INITIAL_REFRESH",
+        "diagnostic": {
+            "failure_stage": "METADATA_COLLECTION",
+            "failure_detail_code": "TIMEOUT",
+            "provider_failure_class": "TIMEOUT",
+            "batch_number": 2,
+            "batch_count": 6,
+            "batch_requested_count": 250,
+            "batch_response_count": 0,
+            "batch_elapsed_ms": 60000,
+            "metadata_profile": {
+                "glossary_entities_fetched": 2500,
+                "glossary_reported_total": 2501,
+                "direct_resolution": {"completed_resolution_count": 250, "total": 1387},
+            },
+        },
+    }), encoding="utf-8")
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
     monkeypatch.setattr(deploy, "LAST_COMMAND", last)
@@ -153,7 +170,54 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     assert "Deploy phase: SMOKE_FAILED" in output
     assert "Code: PREP_SMOKE_K9_NOT_READY" in output
     assert "K9: FAILED" in output
+    assert "K9 stage: METADATA_COLLECTION" in output
+    assert "K9 detail: TIMEOUT" in output
+    assert "Provider class: TIMEOUT" in output
+    assert "Batch: 2/6" in output
+    assert "Requested: 250" in output
+    assert "Received: 0" in output
+    assert "Elapsed: 60000 ms" in output
+    assert "Diagnostic profile: glossary=2500/2501; direct=250/1387" in output
     assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
+
+
+def test_status_projects_atomic_k9_progress_for_an_active_deploy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    progress = tmp_path / "k9-progress.json"
+    attempt.write_text(json.dumps({
+        "phase": "SMOKE_RUNNING",
+        "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+    }), encoding="utf-8")
+    progress.write_text(json.dumps({
+        "contract": "DATARIVER_PREP39083_K9_PROGRESS_V1",
+        "k9": "RUNNING",
+        "stage": "METADATA_COLLECTION",
+        "detail": "DIRECT_GLOSSARY_RESOLUTION",
+        "completed": 500,
+        "total": 1387,
+        "batch_number": 2,
+        "batch_total": 6,
+    }), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", progress)
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: True)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Deploy active: YES" in output
+    assert "K9: RUNNING" in output
+    assert "K9 stage: METADATA_COLLECTION" in output
+    assert "K9 detail: DIRECT_GLOSSARY_RESOLUTION" in output
+    assert "Progress: 500/1387" in output
+    assert "Batch: 2/6" in output
 
 
 def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(

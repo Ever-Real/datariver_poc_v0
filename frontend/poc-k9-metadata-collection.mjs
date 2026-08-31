@@ -37,6 +37,10 @@ export const K9_METADATA_IDENTITY_CLASSIFICATIONS = Object.freeze([
 const supportedMetadataFailureDetails = new Set(K9_METADATA_FAILURE_DETAILS)
 const supportedTagNameSources = new Set(['LEGACY', 'PROPERTIES'])
 const supportedIdentityClassifications = new Set(K9_METADATA_IDENTITY_CLASSIFICATIONS)
+const supportedProviderFailureClasses = new Set([
+  'CONNECTIVITY', 'TIMEOUT', 'HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER',
+  'GRAPHQL', 'CONTRACT',
+])
 const sha256Pattern = /^[0-9a-f]{64}$/
 const DIRECT_GLOSSARY_TERM_BATCH_SIZE = 250
 
@@ -88,6 +92,7 @@ export function sanitizeK9MetadataSourceProfile(value) {
   const relationships = value.relationships || {}
   const assignments = value.assignments || {}
   const resolution = value.identity_resolution || {}
+  const directResolution = value.direct_resolution || {}
   const sourceGeneration = sha256Pattern.test(value.source_generation || '')
     ? value.source_generation
     : null
@@ -144,6 +149,31 @@ export function sanitizeK9MetadataSourceProfile(value) {
       column_missing_term_count: boundedCount(assignments.column_missing_term_count),
       source_consistency_conflict_count: boundedCount(assignments.source_consistency_conflict_count),
     },
+    direct_resolution: {
+      total: boundedCount(directResolution.total),
+      batch_size: boundedCount(directResolution.batch_size),
+      batch_total: boundedCount(directResolution.batch_total),
+      batch_number: boundedCount(directResolution.batch_number),
+      batch_requested_count: boundedCount(directResolution.batch_requested_count),
+      batch_response_count: boundedCount(directResolution.batch_response_count),
+      batch_elapsed_ms: boundedCount(directResolution.batch_elapsed_ms),
+      completed_resolution_count: boundedCount(directResolution.completed_resolution_count),
+      retry_attempt: boundedCount(directResolution.retry_attempt),
+      provider_failure_class: supportedProviderFailureClasses.has(directResolution.provider_failure_class)
+        ? directResolution.provider_failure_class
+        : null,
+      graphql_error_class: typeof directResolution.graphql_error_class === 'string'
+        && /^[A-Z][A-Z0-9_]{0,63}$/.test(directResolution.graphql_error_class)
+        ? directResolution.graphql_error_class
+        : null,
+      graphql_error_path: typeof directResolution.graphql_error_path === 'string'
+        && /^[A-Za-z0-9_.]{1,160}$/.test(directResolution.graphql_error_path)
+        ? directResolution.graphql_error_path
+        : null,
+      failing_identity_hash: sha256Pattern.test(directResolution.failing_identity_hash || '')
+        ? directResolution.failing_identity_hash
+        : null,
+    },
     identity_resolution: {
       exact_duplicate_observation_count: boundedCount(resolution.exact_duplicate_observation_count),
       compatible_sparse_rich_observation_count: boundedCount(resolution.compatible_sparse_rich_observation_count),
@@ -185,6 +215,18 @@ function providerFailure(error) {
     || ['TimeoutError', 'AbortError'].includes(error?.name)
     || String(error?.code || '').includes('GRAPHQL')
     || String(error?.code || '').includes('CONTRACT')
+}
+
+function providerFailureClass(error) {
+  if (['TimeoutError', 'AbortError'].includes(error?.name)) return 'TIMEOUT'
+  if (error?.providerFailureKind === 'HTTP') {
+    if (error?.providerHttpClass === '4xx') return 'HTTP_4XX'
+    if (error?.providerHttpClass === '5xx') return 'HTTP_5XX'
+    return 'HTTP_OTHER'
+  }
+  if (error?.providerFailureKind === 'GRAPHQL') return 'GRAPHQL'
+  if (['RESPONSE_JSON', 'CONTRACT'].includes(error?.providerFailureKind)) return 'CONTRACT'
+  return 'CONNECTIVITY'
 }
 
 function nonNegativeSafeInteger(value) {
@@ -319,6 +361,21 @@ function createMetadataSourceProfile(sourceGeneration) {
       table_missing_term_count: 0,
       column_missing_term_count: 0,
       source_consistency_conflict_count: 0,
+    },
+    direct_resolution: {
+      total: 0,
+      batch_size: DIRECT_GLOSSARY_TERM_BATCH_SIZE,
+      batch_total: 0,
+      batch_number: 0,
+      batch_requested_count: 0,
+      batch_response_count: 0,
+      batch_elapsed_ms: 0,
+      completed_resolution_count: 0,
+      retry_attempt: 0,
+      provider_failure_class: null,
+      graphql_error_class: null,
+      graphql_error_path: null,
+      failing_identity_hash: null,
     },
     identity_resolution: {
       exact_duplicate_observation_count: 0,
@@ -483,8 +540,22 @@ export function createK9MetadataCollector({
   const tagNameSourceFor = requiredFunction(tagNameSource, 'tag name source')
   const tailFor = requiredFunction(urnTail, 'URN tail')
 
-  async function collect(authorityPin, inventory, { sourceGeneration = null } = {}) {
+  async function collect(authorityPin, inventory, {
+    sourceGeneration = null,
+    retryAttempt = 1,
+    reportProgress = null,
+  } = {}) {
     const profile = createMetadataSourceProfile(sourceGeneration)
+    profile.direct_resolution.retry_attempt = boundedCount(retryAttempt)
+    const publishProgress = () => {
+      if (typeof reportProgress !== 'function') return
+      try {
+        reportProgress(sanitizeK9MetadataSourceProfile(profile)?.direct_resolution || null)
+      } catch {
+        // Operator progress is a bounded projection. It must never change the
+        // source correctness or fail-open semantics of metadata collection.
+      }
+    }
     try {
       if (!Array.isArray(inventory) || inventory.length === 0) {
         throw metadataFailure('METADATA_NORMALIZATION_FAILED', undefined, profile)
@@ -914,13 +985,46 @@ export function createK9MetadataCollector({
     }
     const directTermReferences = [...missingTermReferences.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
+    profile.direct_resolution.total = directTermReferences.length
+    profile.direct_resolution.batch_total = Math.ceil(
+      directTermReferences.length / DIRECT_GLOSSARY_TERM_BATCH_SIZE,
+    )
+    publishProgress()
     for (let offset = 0; offset < directTermReferences.length;
       offset += DIRECT_GLOSSARY_TERM_BATCH_SIZE) {
       const batch = directTermReferences.slice(offset, offset + DIRECT_GLOSSARY_TERM_BATCH_SIZE)
       const urns = batch.map(([termUrn]) => termUrn)
-      const data = await fetchGraphql(glossaryTermsQuery, { urns }, signal)
+      const batchStartedAt = Date.now()
+      profile.direct_resolution.batch_number = Math.floor(offset / DIRECT_GLOSSARY_TERM_BATCH_SIZE) + 1
+      profile.direct_resolution.batch_requested_count = batch.length
+      profile.direct_resolution.batch_response_count = 0
+      profile.direct_resolution.batch_elapsed_ms = 0
+      profile.direct_resolution.provider_failure_class = null
+      profile.direct_resolution.graphql_error_class = null
+      profile.direct_resolution.graphql_error_path = null
+      profile.direct_resolution.failing_identity_hash = boundedIdentityHash(urns.join('\n'))
+      publishProgress()
+      let data
+      try {
+        data = await fetchGraphql(glossaryTermsQuery, { urns }, signal)
+      } catch (error) {
+        profile.direct_resolution.batch_elapsed_ms = Date.now() - batchStartedAt
+        profile.direct_resolution.retry_attempt = boundedCount(error?.providerRetryAttempt)
+          || profile.direct_resolution.retry_attempt
+        profile.direct_resolution.provider_failure_class = providerFailureClass(error)
+        profile.direct_resolution.graphql_error_class = error?.providerGraphqlDiagnostic?.error_class || null
+        profile.direct_resolution.graphql_error_path = error?.providerGraphqlDiagnostic?.path || null
+        publishProgress()
+        throw profileError(error, profile)
+      }
+      profile.direct_resolution.batch_elapsed_ms = Date.now() - batchStartedAt
+      profile.direct_resolution.batch_response_count = Array.isArray(data?.entities)
+        ? data.entities.length
+        : 0
       if (!data || typeof data !== 'object' || Array.isArray(data)
         || !Array.isArray(data.entities) || data.entities.length !== batch.length) {
+        profile.direct_resolution.provider_failure_class = 'CONTRACT'
+        publishProgress()
         throw providerContractFailure(profile)
       }
       for (const [[termUrn, references], entity] of batch.map((entry, index) => (
@@ -1024,8 +1128,16 @@ export function createK9MetadataCollector({
         termObservations.set(termUrn, mergedObservation)
         terms[termIndexes.get(termUrn)] = publicGlossaryObservation(mergedObservation)
         profile.assignments.direct_term_resolution_recovered_count += 1
+        profile.direct_resolution.completed_resolution_count += 1
       }
+      profile.direct_resolution.failing_identity_hash = null
+      publishProgress()
+      // Runtime latency/retry observations are diagnostic-only. Successful
+      // source profiles participate in deterministic source fencing and must
+      // not vary with wall-clock/provider timing.
+      profile.direct_resolution.batch_elapsed_ms = 0
     }
+    profile.direct_resolution.retry_attempt = 0
 
     const observedAssignmentTotals = new Map([...termSet].sort()
       .map((urn) => [urn, { TABLE: 0, COLUMN: 0 }]))

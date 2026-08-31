@@ -33,6 +33,7 @@ async function fixture(k9Mode, {
   const passwordFile = join(directory, 'password')
   const output = join(directory, 'smoke.json')
   const failureOutput = join(directory, 'smoke-failure.json')
+  const progressOutput = join(directory, 'k9-progress.json')
   await writeFile(passwordFile, `${password}\n`)
   await chmod(passwordFile, 0o600)
   let managedRequests = 0
@@ -121,6 +122,7 @@ async function fixture(k9Mode, {
       '--readiness-timeout-ms', readinessTimeoutMs,
       '--output', output,
       '--failure-output', failureOutput,
+      '--progress-output', progressOutput,
     ]
     if (glossaryTermUrn) argumentsList.push('--glossary-term-urn', glossaryTermUrn)
     const child = spawn(process.execPath, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -133,8 +135,9 @@ async function fixture(k9Mode, {
   server.close()
   const report = await readFile(output, 'utf8').then(JSON.parse).catch(() => null)
   const failure = await readFile(failureOutput, 'utf8').then(JSON.parse).catch(() => null)
+  const k9Progress = await readFile(progressOutput, 'utf8').then(JSON.parse).catch(() => null)
   await rm(directory, { recursive: true, force: true })
-  return { completed, report, failure, managedRequests, observed, transportOrigin }
+  return { completed, report, failure, k9Progress, managedRequests, observed, transportOrigin }
 }
 
 test('PREP smoke separates loopback transport from the canonical intranet request Origin', async () => {
@@ -169,7 +172,7 @@ test('PREP smoke uses an optional exact configured GlossaryTerm URN without muta
 
 test('PREP smoke rejects a malformed configured GlossaryTerm URN before login', async () => {
   const result = await fixture('deferred', { glossaryTermUrn: 'urn:li:dataset:not-a-term' })
-  assert.equal(result.completed.code, 2)
+  assert.equal(result.completed.code, 2, result.completed.stderr)
   assert.equal(result.failure.stage, 'INPUT')
   assert.equal(result.failure.classification, 'PREP_SMOKE_INPUT_INVALID')
   assert.deepEqual(result.observed.loginOrigins, [])
@@ -279,13 +282,25 @@ test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
   assert.ok(result.failure.elapsed_ms < 5_000)
 })
 
-test('PREP smoke preserves bounded K9 source diagnostics without provider detail', async () => {
+test('PREP smoke preserves bounded K9 source and provider diagnostics', async () => {
   const result = await fixture('required', {
     managedItems: [
       {
         graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
         semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
         failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'TAG_IDENTITY_CONFLICT',
+        metadata_source_profile: {
+          contract: 'DATARIVER_K9_METADATA_SOURCE_PROFILE_V1',
+          glossary_scroll: { provider_reported_total: 2501, entities_fetched: 2500 },
+          assignments: { missing_term_reference_count: 1387 },
+          direct_resolution: {
+            total: 1387, batch_size: 250, batch_total: 6, batch_number: 2,
+            batch_requested_count: 250, batch_response_count: 0, batch_elapsed_ms: 60000,
+            completed_resolution_count: 250, retry_attempt: 2,
+            provider_failure_class: 'TIMEOUT', graphql_error_class: null,
+            graphql_error_path: null, failing_identity_hash: 'a'.repeat(64),
+          },
+        },
       },
       {
         graph_type: 'METADATA_MASTER', status: 'FAILED', refresh_mode: 'DAILY',
@@ -296,12 +311,43 @@ test('PREP smoke preserves bounded K9 source diagnostics without provider detail
   })
   assert.equal(result.completed.code, 2)
   assert.equal(result.failure.classification, 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED')
-  assert.deepEqual(result.failure.diagnostic, {
-    terminal: true,
-    product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
-    failure_stage: 'METADATA_COLLECTION',
-    failure_detail_code: 'TAG_IDENTITY_CONFLICT',
+  assert.equal(result.failure.diagnostic.failure_stage, 'METADATA_COLLECTION')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'TAG_IDENTITY_CONFLICT')
+  assert.equal(result.failure.diagnostic.provider_failure_class, 'TIMEOUT')
+  assert.equal(result.failure.diagnostic.batch_number, 2)
+  assert.equal(result.failure.diagnostic.batch_count, 6)
+  assert.equal(result.failure.diagnostic.metadata_profile.direct_resolution.total, 1387)
+  assert.equal(JSON.stringify(result.failure.diagnostic).includes('urn:li:'), false)
+})
+
+test('PREP smoke persists actual K9 direct-resolution progress while readiness is pending', async () => {
+  const runningAttempt = {
+    status: 'RUNNING', stage: 'METADATA_COLLECTION', detail: 'DIRECT_GLOSSARY_RESOLUTION',
+    completed_resolution_count: 500, direct_resolution_total: 1387,
+    batch_number: 2, batch_total: 6, batch_elapsed_ms: 412,
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', refresh_attempt: runningAttempt,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', refresh_attempt: runningAttempt,
+      },
+    ],
   })
+  assert.equal(result.completed.code, 2, result.completed.stderr)
+  assert.deepEqual(result.k9Progress, {
+    contract: 'DATARIVER_PREP39083_K9_PROGRESS_V1',
+    k9: 'RUNNING', stage: 'METADATA_COLLECTION', detail: 'DIRECT_GLOSSARY_RESOLUTION',
+    completed: 500, total: 1387, batch_number: 2, batch_total: 6,
+    batch_elapsed_ms: 412, observed_at: result.k9Progress.observed_at,
+  })
+  assert.ok(Number.isFinite(Date.parse(result.k9Progress.observed_at)))
+  assert.match(result.completed.stdout, /K9 metadata direct resolution 500\/1387; batch 2\/6/)
 })
 
 test('PREP smoke fails immediately on terminal K9 cross-source drift', async () => {
