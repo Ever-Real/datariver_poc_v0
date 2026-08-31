@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global AbortSignal, URL, URLSearchParams, clearInterval, fetch, setInterval, setTimeout */
 
 import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import process from 'node:process'
@@ -44,6 +45,9 @@ const glossaryFailureClassifications = new Set([
   'PREP_SMOKE_GLOSSARY_TERM_NOT_FOUND_FAILED',
   'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
 ])
+const k9V2Projectors = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
+const safeK9Token = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value)
+const safeSnapshotHash = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
@@ -205,6 +209,132 @@ function k9AssignmentScope(asset) {
   }
 }
 
+function k9V2ProjectorFailure(lifecycle) {
+  if (lifecycle?.contract !== 'DATARIVER_K9_LIFECYCLE_STATUS_V2') return null
+  for (const projector of k9V2Projectors) {
+    const state = lifecycle.projectors?.[projector]
+    if (state?.status !== 'FAILED') continue
+    const code = safeK9Token(state.diagnostic?.code)
+      ? state.diagnostic.code : `K9_${projector}_PROJECTOR_FAILED`
+    const stage = safeK9Token(state.diagnostic?.stage)
+      ? state.diagnostic.stage : `${projector}_PROJECTOR`
+    const progressValue = state.progress && typeof state.progress === 'object'
+      ? state.progress : {}
+    const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+    return {
+      projector,
+      classification: projector === 'SEMANTIC'
+        ? 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY'
+        : 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED',
+      diagnostic: {
+        terminal: true,
+        product_error_code: code,
+        failure_stage: stage,
+        failure_detail_code: code,
+        projector,
+        provider_failure_class: safeK9Token(state.diagnostic?.provider_failure_class)
+          ? state.diagnostic.provider_failure_class : null,
+        desired_snapshot_id: safeSnapshotHash(state.desired_snapshot_id)
+          ? state.desired_snapshot_id : null,
+        active_snapshot_id: safeSnapshotHash(state.active_snapshot_id)
+          ? state.active_snapshot_id : null,
+        documents_completed: count(progressValue.documents_processed),
+        documents_total: count(progressValue.total_units),
+        documents_changed: count(progressValue.documents_changed),
+        documents_materialized: count(progressValue.documents_materialized),
+        batch_number: count(progressValue.batch_number),
+        batch_count: count(progressValue.batch_total),
+      },
+    }
+  }
+  return null
+}
+
+function k9V2RunningProjector(lifecycle) {
+  if (lifecycle?.contract !== 'DATARIVER_K9_LIFECYCLE_STATUS_V2') return null
+  const projector = k9V2Projectors.find((item) => lifecycle.projectors?.[item]?.status === 'RUNNING')
+  if (!projector) return null
+  const state = lifecycle.projectors[projector]
+  const value = state.progress && typeof state.progress === 'object' ? state.progress : {}
+  const count = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+  return {
+    contract: 'DATARIVER_PREP39083_K9_PROGRESS_V2',
+    k9: 'RUNNING',
+    stage: `${projector}_PROJECTOR`,
+    detail: safeK9Token(value.phase) ? value.phase : `${projector}_RUNNING`,
+    source_snapshot_id: safeSnapshotHash(state.desired_snapshot_id) ? state.desired_snapshot_id : null,
+    completed: count(value.completed_units),
+    total: count(value.total_units),
+    documents_changed: count(value.documents_changed),
+    documents_materialized: count(value.documents_materialized),
+    batch_number: count(value.batch_number),
+    batch_total: count(value.batch_total),
+    observed_at: new Date().toISOString(),
+  }
+}
+
+function k9V2Ready(lifecycle) {
+  if (lifecycle?.contract !== 'DATARIVER_K9_LIFECYCLE_STATUS_V2'
+    || lifecycle.aggregate?.status !== 'READY'
+    || lifecycle.source?.status !== 'READY'
+    || !safeSnapshotHash(lifecycle.source.desired_snapshot_id)
+    || lifecycle.source.active_snapshot_id !== lifecycle.source.desired_snapshot_id) return false
+  return k9V2Projectors.every((projector) => {
+    const state = lifecycle.projectors?.[projector]
+    return state?.status === 'READY'
+      && state.desired_snapshot_id === lifecycle.source.desired_snapshot_id
+      && state.active_snapshot_id === lifecycle.source.desired_snapshot_id
+  })
+}
+
+function boundedK9V2LifecycleStatus(lifecycle) {
+  if (lifecycle?.contract !== 'DATARIVER_K9_LIFECYCLE_STATUS_V2') return null
+  const snapshot = (value) => safeSnapshotHash(value) ? value : null
+  const projector = (value) => {
+    const progressValue = value?.progress && typeof value.progress === 'object'
+      ? value.progress : null
+    const count = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+    return {
+      desired_snapshot_id: snapshot(value?.desired_snapshot_id),
+      active_snapshot_id: snapshot(value?.active_snapshot_id),
+      status: ['NOT_STARTED', 'PENDING', 'RUNNING', 'READY', 'FAILED'].includes(value?.status)
+        ? value.status : 'FAILED',
+      progress: progressValue ? {
+        phase: safeK9Token(progressValue.phase) ? progressValue.phase : 'UNKNOWN',
+        completed_units: count(progressValue.completed_units),
+        total_units: count(progressValue.total_units),
+        documents_changed: count(progressValue.documents_changed),
+        documents_materialized: count(progressValue.documents_materialized),
+        batch_number: count(progressValue.batch_number),
+        batch_total: count(progressValue.batch_total),
+      } : null,
+      diagnostic: value?.diagnostic ? {
+        code: safeK9Token(value.diagnostic.code) ? value.diagnostic.code : 'K9_V2_DIAGNOSTIC_INVALID',
+        stage: safeK9Token(value.diagnostic.stage) ? value.diagnostic.stage : 'UNKNOWN',
+        provider_failure_class: safeK9Token(value.diagnostic.provider_failure_class)
+          ? value.diagnostic.provider_failure_class : null,
+      } : null,
+    }
+  }
+  return {
+    contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+    source: {
+      desired_snapshot_id: snapshot(lifecycle.source?.desired_snapshot_id),
+      active_snapshot_id: snapshot(lifecycle.source?.active_snapshot_id),
+      status: ['NOT_STARTED', 'PENDING', 'RUNNING', 'READY', 'FAILED'].includes(lifecycle.source?.status)
+        ? lifecycle.source.status : 'FAILED',
+    },
+    projectors: Object.fromEntries(k9V2Projectors.map((item) => (
+      [item, projector(lifecycle.projectors?.[item])]
+    ))),
+    aggregate: {
+      status: ['NOT_READY', 'RUNNING', 'READY', 'FAILED'].includes(lifecycle.aggregate?.status)
+        ? lifecycle.aggregate.status : 'FAILED',
+      reason: safeK9Token(lifecycle.aggregate?.reason) ? lifecycle.aggregate.reason : null,
+    },
+  }
+}
+
 async function privateSecret(path) {
   const metadata = await lstat(path)
   if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0 || metadata.size > 1026) {
@@ -360,8 +490,10 @@ async function main() {
   if (!['REQUIRED', 'DEFERRED'].includes(k9Mode)) {
     throw smokeFailure('INPUT', 'PREP_SMOKE_INPUT_INVALID', '--k9-mode must be required or deferred.')
   }
+  // The input boundary intentionally rejects every ASCII control character.
   if (glossaryTermUrn && (!glossaryTermUrn.startsWith('urn:li:glossaryTerm:')
     || glossaryTermUrn === 'urn:li:glossaryTerm:' || glossaryTermUrn.length > 1000
+    // eslint-disable-next-line no-control-regex
     || /[\u0000-\u001f\u007f]/u.test(glossaryTermUrn))) {
     throw smokeFailure(
       'INPUT',
@@ -411,7 +543,7 @@ async function main() {
   progress('2/6', 'Administrator login PASS')
 
   const report = {
-    contract: 'DATARIVER_PREP39083_SMOKE_V1',
+    contract: 'DATARIVER_PREP39083_SMOKE_V2',
     generated_at: new Date().toISOString(),
     origin: transportOrigin,
     request_origin: requestOrigin,
@@ -432,13 +564,24 @@ async function main() {
     semantic_index: k9Mode === 'REQUIRED' ? 'FAIL' : 'DEFERRED',
     k9_source_warning: null,
     k9_assignment_scope: null,
+    k9_lifecycle: null,
     mcl_change_history: 'FAIL',
     llm_general: 'FAIL',
+    readiness: {
+      DATAHUB: { status: 'PENDING', stage: null, classification: null },
+      K9: {
+        status: k9Mode === 'REQUIRED' ? 'PENDING' : 'DEFERRED',
+        stage: null,
+        classification: null,
+      },
+      MCL: { status: 'PENDING', stage: null, classification: null },
+      GENERAL: { status: 'PENDING', stage: null, classification: null },
+    },
   }
   try {
     await retryReadiness(async () => {
       const currentInventory = await withHeartbeat(responseJson(
-        `${transportOrigin}/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1`,
+        `${transportOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=1`,
         { headers: { Cookie: cookie } },
         'DATAHUB',
         'PREP_SMOKE_DATAHUB_CONNECTIVITY_FAILED',
@@ -496,76 +639,154 @@ async function main() {
       report.glossary_term_mutation_performed = false
       report.datahub = 'PASS'
     }, readinessTimeoutMs, '3/6 DataHub')
+    report.readiness.DATAHUB = { status: 'PASS', stage: null, classification: null }
+    await atomicJson(output, report)
     progress('3/6', 'DataHub bounded read and read-only GlossaryTerm smoke PASS')
 
-    if (k9Mode === 'REQUIRED') {
-      await retryReadiness(async () => {
+    const laneFailures = []
+    try {
+      if (k9Mode === 'REQUIRED') {
+        await retryReadiness(async () => {
         const managed = await responseJson(`${transportOrigin}/poc-api/knowledge/managed-assets`, {
           headers: { Cookie: cookie },
         }, 'K9', 'PREP_SMOKE_K9_NOT_READY')
         const items = Array.isArray(managed.body?.items) ? managed.body.items : []
         const lineage = items.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
         const metadata = items.find((item) => item.graph_type === 'METADATA_MASTER')
-        const refreshFailureAsset = [lineage, metadata]
-          .find((item) => typeof item?.last_error_code === 'string' && item.last_error_code.startsWith('K9_'))
-        const runningAttempt = [lineage, metadata]
-          .map((item) => item?.refresh_attempt)
-          .find((attempt) => attempt?.status === 'RUNNING'
-            && attempt?.stage === 'METADATA_COLLECTION'
-            && attempt?.detail === 'DIRECT_GLOSSARY_RESOLUTION')
-        if (runningAttempt) {
-          const progressRecord = {
-            contract: 'DATARIVER_PREP39083_K9_PROGRESS_V1',
-            k9: 'RUNNING',
-            stage: 'METADATA_COLLECTION',
-            detail: 'DIRECT_GLOSSARY_RESOLUTION',
-            completed: Number.isSafeInteger(runningAttempt.completed_resolution_count)
-              ? runningAttempt.completed_resolution_count : 0,
-            total: Number.isSafeInteger(runningAttempt.direct_resolution_total)
-              ? runningAttempt.direct_resolution_total : 0,
-            batch_number: Number.isSafeInteger(runningAttempt.batch_number)
-              ? runningAttempt.batch_number : 0,
-            batch_total: Number.isSafeInteger(runningAttempt.batch_total)
-              ? runningAttempt.batch_total : 0,
-            batch_elapsed_ms: Number.isSafeInteger(runningAttempt.batch_elapsed_ms)
-              ? runningAttempt.batch_elapsed_ms : 0,
-            dangling_unique_terms: Number.isSafeInteger(runningAttempt.dangling_unique_terms)
-              ? runningAttempt.dangling_unique_terms : 0,
-            dangling_assignment_references: Number.isSafeInteger(runningAttempt.dangling_assignment_references)
-              ? runningAttempt.dangling_assignment_references : 0,
-            observed_at: new Date().toISOString(),
+        const lifecycle = managed.body?.k9_lifecycle
+        if (lifecycle?.contract === 'DATARIVER_K9_LIFECYCLE_STATUS_V2') {
+          report.k9_lifecycle = boundedK9V2LifecycleStatus(lifecycle)
+          const runningProjector = k9V2RunningProjector(lifecycle)
+          if (runningProjector) {
+            if (progressOutput) await atomicJson(progressOutput, runningProjector)
+            progress(
+              '4/6',
+              `K9 ${runningProjector.stage} ${runningProjector.completed}/${runningProjector.total}; batch ${runningProjector.batch_number}/${runningProjector.batch_total}`,
+            )
           }
-          if (progressOutput) await atomicJson(progressOutput, progressRecord)
-          progress('4/6', `K9 metadata direct resolution ${progressRecord.completed}/${progressRecord.total}; batch ${progressRecord.batch_number}/${progressRecord.batch_total}`)
-        }
-        const refreshFailure = refreshFailureAsset?.last_error_code
-        const refreshClassifications = {
-          K9_DATAHUB_SOURCE_FAILED: 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
-          K9_POLICY_PIN_DRIFT_FAILED: 'PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED',
-          K9_NEO4J_PROJECTION_FAILED: 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED',
-          K9_PROMOTION_FAILED: 'PREP_SMOKE_K9_PROMOTION_FAILED',
-          K9_SEMANTIC_INDEX_FAILED: 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY',
-          K9_SOURCE_DRIFT_RETRY_EXHAUSTED: 'PREP_SMOKE_K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
-        }
-        if (refreshFailure) {
-          throw smokeFailure(
-            'K9_INITIAL_REFRESH',
-            refreshClassifications[refreshFailure] || 'PREP_SMOKE_K9_REFRESH_FAILED',
-            'The initial managed-graph refresh failed at a classified stage.',
-            null,
-            {
-              terminal: true,
-              product_error_code: refreshFailure,
-              ...(k9SourceFailureDiagnostic(refreshFailureAsset) || {}),
-            },
-          )
+          const projectorFailure = k9V2ProjectorFailure(lifecycle)
+          if (projectorFailure) {
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              projectorFailure.classification,
+              'A persisted K9 V2 projector failed.',
+              null,
+              projectorFailure.diagnostic,
+            )
+          }
+          const sourceCaptureFailure = items
+            .map((item) => item?.scheduler_last_attempt)
+            .find((attempt) => attempt?.status === 'FAILURE'
+              && attempt?.reason === 'K9_DATAHUB_SOURCE_FAILED'
+              && safeK9Token(attempt?.failure_stage)
+              && safeK9Token(attempt?.failure_detail_code))
+          if (lifecycle.source?.status === 'NOT_STARTED' && sourceCaptureFailure) {
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
+              'K9 source capture failed before an immutable source snapshot was persisted.',
+              null,
+              {
+                terminal: true,
+                product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+                failure_stage: sourceCaptureFailure.failure_stage,
+                failure_detail_code: sourceCaptureFailure.failure_detail_code,
+              },
+            )
+          }
+          if (lifecycle.aggregate?.status === 'FAILED') {
+            const reason = safeK9Token(lifecycle.aggregate?.reason)
+              ? lifecycle.aggregate.reason : 'K9_V2_LIFECYCLE_FAILED'
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              'PREP_SMOKE_K9_REFRESH_FAILED',
+              'The persisted K9 V2 lifecycle failed before aggregate readiness.',
+              null,
+              {
+                terminal: true,
+                product_error_code: reason,
+                failure_stage: 'K9_V2_LIFECYCLE',
+                failure_detail_code: reason,
+              },
+            )
+          }
+          if (!k9V2Ready(lifecycle)) {
+            throw smokeFailure(
+              'K9',
+              'PREP_SMOKE_K9_NOT_READY',
+              'The persisted K9 V2 lifecycle is not aggregate READY.',
+              null,
+              {
+                terminal: false,
+                failure_stage: 'AGGREGATE_READINESS',
+                failure_detail_code: safeK9Token(lifecycle.aggregate?.reason)
+                  ? lifecycle.aggregate.reason : 'K9_V2_AGGREGATE_NOT_READY',
+              },
+            )
+          }
+        } else {
+          const refreshFailureAsset = [lineage, metadata]
+            .find((item) => typeof item?.last_error_code === 'string' && item.last_error_code.startsWith('K9_'))
+          const runningAttempt = [lineage, metadata]
+            .map((item) => item?.refresh_attempt)
+            .find((attempt) => attempt?.status === 'RUNNING'
+              && attempt?.stage === 'METADATA_COLLECTION'
+              && attempt?.detail === 'DIRECT_GLOSSARY_RESOLUTION')
+          if (runningAttempt) {
+            const progressRecord = {
+              contract: 'DATARIVER_PREP39083_K9_PROGRESS_V1',
+              k9: 'RUNNING',
+              stage: 'METADATA_COLLECTION',
+              detail: 'DIRECT_GLOSSARY_RESOLUTION',
+              completed: Number.isSafeInteger(runningAttempt.completed_resolution_count)
+                ? runningAttempt.completed_resolution_count : 0,
+              total: Number.isSafeInteger(runningAttempt.direct_resolution_total)
+                ? runningAttempt.direct_resolution_total : 0,
+              batch_number: Number.isSafeInteger(runningAttempt.batch_number)
+                ? runningAttempt.batch_number : 0,
+              batch_total: Number.isSafeInteger(runningAttempt.batch_total)
+                ? runningAttempt.batch_total : 0,
+              batch_elapsed_ms: Number.isSafeInteger(runningAttempt.batch_elapsed_ms)
+                ? runningAttempt.batch_elapsed_ms : 0,
+              dangling_unique_terms: Number.isSafeInteger(runningAttempt.dangling_unique_terms)
+                ? runningAttempt.dangling_unique_terms : 0,
+              dangling_assignment_references: Number.isSafeInteger(runningAttempt.dangling_assignment_references)
+                ? runningAttempt.dangling_assignment_references : 0,
+              observed_at: new Date().toISOString(),
+            }
+            if (progressOutput) await atomicJson(progressOutput, progressRecord)
+            progress('4/6', `K9 metadata direct resolution ${progressRecord.completed}/${progressRecord.total}; batch ${progressRecord.batch_number}/${progressRecord.batch_total}`)
+          }
+          const refreshFailure = refreshFailureAsset?.last_error_code
+          const refreshClassifications = {
+            K9_DATAHUB_SOURCE_FAILED: 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED',
+            K9_POLICY_PIN_DRIFT_FAILED: 'PREP_SMOKE_K9_POLICY_PIN_DRIFT_FAILED',
+            K9_NEO4J_PROJECTION_FAILED: 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED',
+            K9_PROMOTION_FAILED: 'PREP_SMOKE_K9_PROMOTION_FAILED',
+            K9_SEMANTIC_INDEX_FAILED: 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY',
+            K9_SOURCE_DRIFT_RETRY_EXHAUSTED: 'PREP_SMOKE_K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+          }
+          if (refreshFailure) {
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              refreshClassifications[refreshFailure] || 'PREP_SMOKE_K9_REFRESH_FAILED',
+              'The initial managed-graph refresh failed at a classified stage.',
+              null,
+              {
+                terminal: true,
+                product_error_code: refreshFailure,
+                ...(k9SourceFailureDiagnostic(refreshFailureAsset) || {}),
+              },
+            )
+          }
         }
         if (!lineage || !metadata || !String(lineage.status).startsWith('READY')
           || !String(metadata.status).startsWith('READY')
           || lineage.refresh_mode !== 'DAILY' || metadata.refresh_mode !== 'DAILY') {
           throw smokeFailure('K9', 'PREP_SMOKE_K9_NOT_READY', 'Canonical managed graphs are not DAILY and READY.')
         }
-        if (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY') {
+        if (lifecycle?.contract !== 'DATARIVER_K9_LIFECYCLE_STATUS_V2'
+          && (lineage.semantic_index_status !== 'READY' || metadata.semantic_index_status !== 'READY')) {
           throw smokeFailure('K9', 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY', 'The shared semantic index is not READY.')
         }
         report.managed_assets = 'PASS'
@@ -575,18 +796,31 @@ async function main() {
         report.k9_source_warning = k9SourceWarning(metadata)
         report.k9_assignment_scope = k9AssignmentScope(metadata)
         if (progressOutput) await removeIfPresent(progressOutput)
-      }, readinessTimeoutMs, '4/6 K9')
-      progress('4/6', 'Managed graphs and semantic index PASS')
-    } else {
-      progress('4/6', 'K9 DEFERRED')
+        }, readinessTimeoutMs, '4/6 K9')
+        report.readiness.K9 = { status: 'PASS', stage: null, classification: null }
+        progress('4/6', 'Managed graphs and semantic index PASS')
+      } else {
+        progress('4/6', 'K9 DEFERRED')
+      }
+    } catch (error) {
+      laneFailures.push(error)
+      report.readiness.K9 = {
+        status: 'FAILED',
+        stage: safeK9Token(error?.stage) ? error.stage : 'K9',
+        classification: safeK9Token(error?.classification)
+          ? error.classification : 'PREP_SMOKE_K9_REFRESH_FAILED',
+      }
+      progress('4/6', `${report.readiness.K9.classification}; continuing read-only diagnostics`)
     }
+    await atomicJson(output, report)
 
     const week = new Date()
     const day = (week.getUTCDay() + 6) % 7
     week.setUTCDate(week.getUTCDate() - day)
     const weekStart = week.toISOString().slice(0, 10)
-    await retryReadiness(async () => {
-      const changeHistory = await responseJson(
+    try {
+      await retryReadiness(async () => {
+        const changeHistory = await responseJson(
         `${transportOrigin}/api/v1/change-history/summary?week_start=${weekStart}`,
         { headers: { Cookie: cookie } },
         'MCL_CHANGE_HISTORY',
@@ -622,20 +856,50 @@ async function main() {
       ].includes(changeHistory.body?.capture_state)) {
         throw smokeFailure('MCL_CHANGE_HISTORY', 'PREP_SMOKE_MCL_SOURCE_FAILED', 'MCL source/checkpoint contract is not ready.')
       }
-      report.mcl_change_history = 'PASS'
-    }, readinessTimeoutMs, '5/6 MCL')
-    progress('5/6', 'MCL source and durable checkpoint contract PASS')
-
-    const chat = await withHeartbeat(responseJson(`${transportOrigin}/poc-api/llm/chat`, {
-      method: 'POST',
-      headers: { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
-    }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '6/6 GENERAL provider')
-    if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0) {
-      throw smokeFailure('GENERAL_ROUTE', 'PREP_SMOKE_GENERAL_ROUTE_FAILED', 'Representative GENERAL route used internal retrieval or selected another route.')
+        report.mcl_change_history = 'PASS'
+      }, readinessTimeoutMs, '5/6 MCL')
+      report.readiness.MCL = { status: 'PASS', stage: null, classification: null }
+      progress('5/6', 'MCL source and durable checkpoint contract PASS')
+    } catch (error) {
+      laneFailures.push(error)
+      report.readiness.MCL = {
+        status: 'FAILED',
+        stage: safeK9Token(error?.stage) ? error.stage : 'MCL',
+        classification: safeK9Token(error?.classification)
+          ? error.classification : 'PREP_SMOKE_MCL_SOURCE_FAILED',
+      }
+      progress('5/6', `${report.readiness.MCL.classification}; continuing read-only diagnostics`)
     }
-    report.llm_general = 'PASS'
-    progress('6/6', 'GENERAL provider and route PASS')
+    await atomicJson(output, report)
+
+    try {
+      const chat = await withHeartbeat(responseJson(`${transportOrigin}/poc-api/llm/chat`, {
+        method: 'POST',
+        headers: { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
+      }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '6/6 GENERAL provider')
+      if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0) {
+        throw smokeFailure('GENERAL_ROUTE', 'PREP_SMOKE_GENERAL_ROUTE_FAILED', 'Representative GENERAL route used internal retrieval or selected another route.')
+      }
+      report.llm_general = 'PASS'
+      report.readiness.GENERAL = { status: 'PASS', stage: null, classification: null }
+      progress('6/6', 'GENERAL provider and route PASS')
+    } catch (error) {
+      laneFailures.push(error)
+      report.readiness.GENERAL = {
+        status: 'FAILED',
+        stage: safeK9Token(error?.stage) ? error.stage : 'GENERAL',
+        classification: safeK9Token(error?.classification)
+          ? error.classification : 'PREP_SMOKE_GENERAL_PROVIDER_FAILED',
+      }
+      progress('6/6', report.readiness.GENERAL.classification)
+    }
+    await atomicJson(output, report)
+    if (laneFailures.length) {
+      const primary = laneFailures[0]
+      primary.readiness = report.readiness
+      throw primary
+    }
   } finally {
     await fetch(`${transportOrigin}/auth/logout`, {
       method: 'POST',
@@ -653,7 +917,7 @@ async function main() {
 
 main().catch(async (error) => {
   const failure = {
-    contract: 'DATARIVER_PREP39083_SMOKE_FAILURE_V1',
+    contract: 'DATARIVER_PREP39083_SMOKE_FAILURE_V2',
     stage: error?.stage || 'UNKNOWN',
     classification: error?.classification || 'PREP_SMOKE_UNKNOWN_FAILED',
     status_class: Number.isInteger(error?.status) ? `${Math.floor(error.status / 100)}xx` : null,
@@ -661,6 +925,7 @@ main().catch(async (error) => {
     k9_mode: k9Mode,
     failed_at: new Date().toISOString(),
     ...(error?.diagnostic ? { diagnostic: error.diagnostic } : {}),
+    ...(error?.readiness ? { readiness: error.readiness } : {}),
   }
   if (failureOutput) await atomicJson(failureOutput, failure).catch(() => undefined)
   process.stderr.write(`${JSON.stringify(failure)}\n`)

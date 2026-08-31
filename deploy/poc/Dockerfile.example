@@ -70,6 +70,15 @@ COPY frontend/poc-mcl-runtime-failure.mjs ./poc-mcl-runtime-failure.mjs
 COPY frontend/poc-k9-managed-graphs.mjs ./poc-k9-managed-graphs.mjs
 COPY frontend/poc-k9-scheduler.mjs ./poc-k9-scheduler.mjs
 COPY frontend/poc-k9-metadata-collection.mjs ./poc-k9-metadata-collection.mjs
+COPY frontend/poc-k9-source-snapshot.mjs ./poc-k9-source-snapshot.mjs
+COPY frontend/poc-k9-lifecycle-persistence.mjs ./poc-k9-lifecycle-persistence.mjs
+COPY frontend/poc-k9-lifecycle-v2.mjs ./poc-k9-lifecycle-v2.mjs
+COPY frontend/poc-k9-lifecycle-runtime.mjs ./poc-k9-lifecycle-runtime.mjs
+COPY frontend/poc-k9-graph-projector.mjs ./poc-k9-graph-projector.mjs
+COPY frontend/poc-k9-semantic-persistence.mjs ./poc-k9-semantic-persistence.mjs
+COPY frontend/poc-k9-semantic-projector.mjs ./poc-k9-semantic-projector.mjs
+COPY frontend/poc-k9-semantic-runtime.mjs ./poc-k9-semantic-runtime.mjs
+COPY frontend/poc-k9-v2-refresh.mjs ./poc-k9-v2-refresh.mjs
 COPY frontend/poc-knowledge-k9-contracts.mjs ./poc-knowledge-k9-contracts.mjs
 COPY frontend/poc-assets/ ./poc-assets/
 

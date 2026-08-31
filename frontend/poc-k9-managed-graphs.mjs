@@ -598,7 +598,17 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       const lastRun = await stateStore.getLastK9Run(expectedPolicy.graph_id)
       if (lastRun && lastRun.input_snapshot_hash === inputSnapshotHash && lastRun.policy_hash === expectedPolicy.policy_hash) {
         await stateStore.finalizeK9RunNoOp(runId, lastRun.active_release_pointer)
-        return { runId: runId, status: 'NO_OP', inputSnapshotHash: inputSnapshotHash, policy: expectedPolicy.name }
+        return {
+          runId: runId,
+          status: 'NO_OP',
+          inputSnapshotHash: inputSnapshotHash,
+          manifestHash: lastRun.manifest ? computeSha256(lastRun.manifest) : null,
+          sourceSnapshotId: lastRun.canonical_release?.source_snapshot?.source_snapshot_id
+            || lastRun.manifest?.source_snapshot?.source_snapshot_id
+            || null,
+          outputPointer: lastRun.active_release_pointer || null,
+          policy: expectedPolicy.name,
+        }
       }
       qualityMetrics.reconciliation = projectionDiffMetrics(
         lastRun?.canonical_release,
@@ -738,6 +748,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       inputSnapshotHash: inputSnapshotHash,
       sourceSnapshotId: canonicalRelease?.source_snapshot?.source_snapshot_id || null,
       stagingNamespace: stagingNamespace,
+      outputPointer: stagingNamespace,
       policy: expectedPolicy.name,
     }
   }
@@ -1181,6 +1192,52 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     return collectAndPublish(authCtx, K9_POLICIES.DATA_GLOSSARY, collectGlossaryInventorySeam, mapGlossary)
   }
 
+  async function publishPersistedProjection(authCtx, {
+    projector_id: projectorId,
+    source_snapshot: sourceSnapshot,
+    source_payload: sourcePayload,
+  } = {}) {
+    if (!['LINEAGE', 'METADATA'].includes(projectorId)
+      || !sourceSnapshot || typeof sourceSnapshot !== 'object' || Array.isArray(sourceSnapshot)
+      || !sourcePayload || typeof sourcePayload !== 'object' || Array.isArray(sourcePayload)
+      || !/^[0-9a-f]{64}$/.test(sourceSnapshot.source_snapshot_id || '')) {
+      throw new Error('The persisted K9 graph projection input is invalid.')
+    }
+    const expectedHash = projectorId === 'LINEAGE'
+      ? sourceSnapshot.lineage_hash
+      : sourceSnapshot.metadata_hash
+    if (!/^[0-9a-f]{64}$/.test(expectedHash || '') || computeSha256(sourcePayload) !== expectedHash) {
+      throw new Error('The persisted K9 graph projection payload does not match its source snapshot.')
+    }
+    const shared = {
+      authority_pin: structuredClone(sourceSnapshot.authority_pin),
+      source_snapshot: structuredClone(sourceSnapshot),
+    }
+    if (projectorId === 'LINEAGE') {
+      return collectAndPublish(
+        authCtx,
+        K9_POLICIES.METADATA_LINEAGE,
+        async () => ({ ...structuredClone(sourcePayload), ...shared }),
+        mapLineage,
+      )
+    }
+    if (!sourcePayload.collections || typeof sourcePayload.collections !== 'object'
+      || Array.isArray(sourcePayload.collections)) {
+      throw new Error('The persisted K9 Metadata projection collections are invalid.')
+    }
+    return collectAndPublish(
+      authCtx,
+      K9_POLICIES.DATA_GLOSSARY,
+      async () => ({
+        ...structuredClone(sourcePayload.collections),
+        completeness_metadata: structuredClone(sourcePayload.completeness_metadata),
+        raw_assignment_reference_hash: sourcePayload.raw_assignment_reference_hash ?? null,
+        ...shared,
+      }),
+      mapGlossary,
+    )
+  }
+
   async function recordRefreshFailure(
     failureCode,
     managedIntents = ['metadata-lineage', 'data-glossary'],
@@ -1209,6 +1266,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     bootstrapK9Policies: bootstrapK9Policies,
     triggerLineagePublish: triggerLineagePublish,
     triggerGlossaryPublish: triggerGlossaryPublish,
+    publishPersistedProjection: publishPersistedProjection,
     recordRefreshFailure: recordRefreshFailure,
     performRestartRecovery: performRestartRecovery,
     mapLineage: mapLineage,

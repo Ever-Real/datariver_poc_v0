@@ -161,6 +161,153 @@ async function defaultSourceRetryWait(delayMs) {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs))
 }
 
+async function collectStableK9Source({
+  resolveAuthContext,
+  currentInventory,
+  inventoryProjection,
+  collectLineage,
+  collectMetadata,
+  runtimeIdentity,
+  sourceIdentity,
+  sourceRetryWait,
+}) {
+  const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
+  const collectCandidate = async () => {
+    const inventory = await datahubSourceStage(
+      'INVENTORY',
+      () => currentInventory(liveAuth),
+      sourceRetryWait,
+    )
+    const projection = await datahubSourceStage(
+      'INVENTORY_PROJECTION',
+      () => inventoryProjection(liveAuth, inventory),
+      sourceRetryWait,
+    )
+    const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
+      datahubSourceStage(
+        'LINEAGE_COLLECTION',
+        () => collectLineage(liveAuth.authorityPin, inventory),
+        sourceRetryWait,
+      ),
+      datahubSourceStage(
+        'METADATA_COLLECTION',
+        ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
+        sourceRetryWait,
+      ),
+      datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
+    ])
+    const identity = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceIdentity({
+      inventoryProjection: projection,
+      datahubIdentity,
+      lineageSource,
+      metadataSource,
+    }))
+    const sourceSnapshotId = identity?.snapshot?.source_snapshot_id || identity?.source_fingerprint_id
+    if (typeof sourceSnapshotId !== 'string' || !/^[0-9a-f]{64}$/.test(sourceSnapshotId)) {
+      throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
+        k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
+      })
+    }
+    return {
+      inventory, projection, lineageSource, metadataSource, datahubIdentity,
+      identity, sourceSnapshotId,
+    }
+  }
+
+  let priorCandidate = await collectCandidate()
+  let stableCandidate
+  for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
+    const nextCandidate = await collectCandidate()
+    if (priorCandidate.sourceSnapshotId === nextCandidate.sourceSnapshotId) {
+      stableCandidate = nextCandidate
+      break
+    }
+    priorCandidate = nextCandidate
+    if (comparison < SOURCE_CONSISTENCY_MAX_COMPARISONS) {
+      try {
+        await sourceRetryWait(SOURCE_CONSISTENCY_RETRY_DELAY_MS, {
+          failureStage: 'SOURCE_CONSISTENCY',
+          failureDetailCode: 'SOURCE_DRIFT',
+          attempt: comparison,
+        })
+      } catch {
+        // Retry-clock failures never expose provider details or permit a
+        // mixed candidate to be promoted.
+      }
+    }
+  }
+  if (!stableCandidate) {
+    throw Object.assign(new Error('K9_SOURCE_DRIFT_RETRY_EXHAUSTED'), {
+      k9FailureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+    })
+  }
+  return Object.freeze({ liveAuth, ...stableCandidate })
+}
+
+/**
+ * Captures one source-only immutable V2 snapshot after the existing two-candidate consistency
+ * fence. An interrupted persisted capture is reconstructed from its already-normalized payloads;
+ * no DataHub call is made in that resume path.
+ */
+export function createPocK9SourceCaptureTask({
+  resolveAuthContext,
+  currentInventory,
+  inventoryProjection,
+  collectLineage,
+  collectMetadata,
+  runtimeIdentity,
+  buildSourceCapture,
+  sourceRetryWait = defaultSourceRetryWait,
+} = {}) {
+  const requiredFunctions = [
+    resolveAuthContext, currentInventory, inventoryProjection, collectLineage,
+    collectMetadata, runtimeIdentity, buildSourceCapture, sourceRetryWait,
+  ]
+  if (requiredFunctions.some((value) => typeof value !== 'function')) {
+    throw new Error('The POC K9 source capture dependencies are incomplete.')
+  }
+  return async function captureK9Source({ currentReceipt } = {}) {
+    if (currentReceipt && ['PENDING', 'RUNNING'].includes(currentReceipt.status)
+      && currentReceipt.source_snapshot?.source_snapshot_id === currentReceipt.source_snapshot_id
+      && currentReceipt.source_payloads) {
+      return Object.freeze({ ...currentReceipt, status: 'READY' })
+    }
+    const captured = await collectStableK9Source({
+      resolveAuthContext,
+      currentInventory,
+      inventoryProjection,
+      collectLineage,
+      collectMetadata,
+      runtimeIdentity,
+      sourceIdentity: buildSourceCapture,
+      sourceRetryWait,
+    })
+    const sourceCapture = captured.identity
+    if (!sourceCapture?.snapshot || !sourceCapture?.source_payloads
+      || sourceCapture.snapshot.source_snapshot_id !== captured.sourceSnapshotId) {
+      throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
+        k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
+      })
+    }
+    return Object.freeze({
+      status: 'READY',
+      source_snapshot_id: captured.sourceSnapshotId,
+      source_snapshot: sourceCapture.snapshot,
+      source_payloads: sourceCapture.source_payloads,
+      // This execution-only context is deliberately ignored by the durable receipt port.
+      // It permits the legacy caller to retain its current behavior during additive adoption.
+      capture_context: Object.freeze({
+        liveAuth: captured.liveAuth,
+        inventory: captured.inventory,
+        projection: captured.projection,
+        lineageSource: captured.lineageSource,
+        metadataSource: captured.metadataSource,
+        datahubIdentity: captured.datahubIdentity,
+      }),
+    })
+  }
+}
+
 export function createPocK9RefreshTask({
   resolveAuthContext,
   currentInventory,
@@ -234,67 +381,18 @@ export function createPocK9RefreshTask({
     }
 
     try {
-      const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
-      const collectCandidate = async () => {
-        const inventory = await datahubSourceStage('INVENTORY', currentInventory, sourceRetryWait)
-        const projection = await datahubSourceStage('INVENTORY_PROJECTION', inventoryProjection, sourceRetryWait)
-        const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
-          datahubSourceStage(
-            'LINEAGE_COLLECTION',
-            () => collectLineage(liveAuth.authorityPin, inventory),
-            sourceRetryWait,
-          ),
-          datahubSourceStage(
-            'METADATA_COLLECTION',
-            ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
-            sourceRetryWait,
-          ),
-          datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
-        ])
-        const fingerprint = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceFingerprint({
-          inventoryProjection: projection,
-          datahubIdentity,
-          lineageSource,
-          metadataSource,
-        }))
-        if (!fingerprint || typeof fingerprint.source_fingerprint_id !== 'string'
-          || !/^[0-9a-f]{64}$/.test(fingerprint.source_fingerprint_id)) {
-          throw Object.assign(new Error('K9_SOURCE_SNAPSHOT_FAILED'), {
-            k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
-          })
-        }
-        return { inventory, projection, lineageSource, metadataSource, datahubIdentity, fingerprint }
-      }
-
-      let priorCandidate = await collectCandidate()
-      let stableCandidate
-      for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
-        const nextCandidate = await collectCandidate()
-        if (priorCandidate.fingerprint.source_fingerprint_id
-          === nextCandidate.fingerprint.source_fingerprint_id) {
-          stableCandidate = nextCandidate
-          break
-        }
-        priorCandidate = nextCandidate
-        if (comparison < SOURCE_CONSISTENCY_MAX_COMPARISONS) {
-          try {
-            await sourceRetryWait(SOURCE_CONSISTENCY_RETRY_DELAY_MS, {
-              failureStage: 'SOURCE_CONSISTENCY',
-              failureDetailCode: 'SOURCE_DRIFT',
-              attempt: comparison,
-            })
-          } catch {
-            // Retry-clock failures never expose provider details or permit a
-            // mixed candidate to be promoted.
-          }
-        }
-      }
-      if (!stableCandidate) {
-        throw Object.assign(new Error('K9_SOURCE_DRIFT_RETRY_EXHAUSTED'), {
-          k9FailureCode: 'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
-        })
-      }
+      const stableCandidate = await collectStableK9Source({
+        resolveAuthContext,
+        currentInventory,
+        inventoryProjection,
+        collectLineage,
+        collectMetadata,
+        runtimeIdentity,
+        sourceIdentity: sourceFingerprint,
+        sourceRetryWait,
+      })
       const {
+        liveAuth,
         inventory,
         projection,
         lineageSource,
@@ -469,7 +567,51 @@ export function createPocK9Scheduler({
     return true
   }
 
-  const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
+  const updateLifecycleProgress = (value) => {
+    if (!activeAttempt || !value || typeof value !== 'object' || Array.isArray(value)) return false
+    const projectorId = ['LINEAGE', 'METADATA', 'SEMANTIC'].includes(value.projector_id)
+      ? value.projector_id
+      : null
+    const status = ['RUNNING', 'READY', 'FAILED'].includes(value.status) ? value.status : null
+    const stage = value.stage === 'SOURCE'
+      ? 'SOURCE_CAPTURE'
+      : value.stage === 'PROJECTOR' && projectorId
+        ? `${projectorId}_PROJECTOR`
+        : value.stage === 'READINESS' ? 'AGGREGATE_READINESS' : null
+    if (!stage || !status) return false
+    const diagnosticCode = typeof value.diagnostic?.code === 'string'
+      && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.diagnostic.code)
+      ? value.diagnostic.code
+      : null
+    const diagnosticDetail = typeof value.diagnostic?.failure_detail_code === 'string'
+      && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.diagnostic.failure_detail_code)
+      ? value.diagnostic.failure_detail_code
+      : diagnosticCode
+    const staleMetadataFields = new Set([
+      'stage', 'detail', 'projector_id', 'failure_detail_code', 'direct_resolution_total',
+      'batch_size', 'batch_total', 'batch_number', 'batch_requested_count',
+      'batch_response_count', 'batch_elapsed_ms', 'completed_resolution_count',
+      'dangling_unique_terms', 'dangling_assignment_references', 'retry_attempt',
+      'provider_failure_class',
+    ])
+    const baseAttempt = Object.fromEntries(Object.entries(activeAttempt)
+      .filter(([key]) => !staleMetadataFields.has(key)))
+    activeAttempt = Object.freeze({
+      ...baseAttempt,
+      stage,
+      detail: projectorId ? `${projectorId}_${status}` : status,
+      ...(projectorId ? { projector_id: projectorId } : {}),
+      ...(diagnosticDetail ? { failure_detail_code: diagnosticDetail } : {}),
+    })
+    return true
+  }
+
+  const execute = async (
+    scheduledFor,
+    trigger,
+    reconciliationGeneration,
+    lifecycleMode,
+  ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
@@ -478,6 +620,7 @@ export function createPocK9Scheduler({
     return await triggerK9Refresh({
       systemSubjectId: config.systemSubjectId,
       workspaceId: config.workspaceId,
+      lifecycleMode,
     })
   })
 
@@ -487,6 +630,7 @@ export function createPocK9Scheduler({
       ? currentScheduleBoundary(clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode)
       : validScheduleBoundary(options.scheduledFor, config)
     const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
+    const lifecycleMode = options.lifecycleMode === 'RESUME' ? 'RESUME' : 'REFRESH'
     const reconciliationGeneration = options.reconciliationGeneration == null
       ? null
       : options.reconciliationGeneration
@@ -502,7 +646,9 @@ export function createPocK9Scheduler({
         scheduled_for: scheduledFor.toISOString(),
         trigger: triggerType,
       })
-      activeRun = execute(scheduledFor, triggerType, reconciliationGeneration).finally(() => {
+      activeRun = execute(
+        scheduledFor, triggerType, reconciliationGeneration, lifecycleMode,
+      ).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
         activeReconciliationGeneration = null
@@ -587,19 +733,38 @@ export function createPocK9Scheduler({
   return {
     config,
     updateProgress,
+    updateLifecycleProgress,
     currentAttempt() {
       return activeAttempt || null
     },
     async start() {
       if (stopped || !config.requested) return { status: 'disabled', reason: config.disabledReason }
       if (!config.enabled) return { status: 'idle', mode: config.refreshMode }
+      const scheduledFor = currentScheduleBoundary(
+        clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode,
+      )
+      let lifecycleMode = 'REFRESH'
+      if (typeof stateStore.readK9SchedulerReceipt === 'function') {
+        const receipt = await stateStore.readK9SchedulerReceipt(config.lockName)
+        const lastAttempt = receipt?.value?.last_attempt
+        if (lastAttempt?.status === 'FAILURE' && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
+          lifecycleMode = 'RESUME'
+        }
+      }
       let reconciliationGeneration = null
       try {
         reconciliationGeneration = await resolveReconciliationGeneration()
       } catch (error) {
         onError(error)
       }
-      void trigger({ trigger: 'scheduled', reconciliationGeneration }).catch(onError)
+      void trigger({
+        scheduledFor,
+        trigger: 'scheduled',
+        // A failed attempt at this exact boundary resumes persisted V2 work.
+        // A new boundary remains an explicit REFRESH so DataHub drift is found.
+        lifecycleMode,
+        reconciliationGeneration,
+      }).catch(onError)
       scheduleNext()
       return { status: 'started' }
     },

@@ -55,11 +55,22 @@ test('binds graph and semantic projections to one deterministic DataHub source s
   } = await import('./poc-server.mjs?kg2-source-snapshot-contract')
   const generation = '1'.repeat(64)
   const bindingHash = '2'.repeat(64)
+  const authorityPin = {
+    subject_id: 'k9-system',
+    workspace_id: 'workspace-1',
+    classification_ceiling: 'INTERNAL',
+    projection_version: 2,
+    policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
+    classification_policy_version: 1,
+    authorization_generation: 1,
+    authorization_fingerprint: 'f'.repeat(64),
+  }
   const input = {
     inventoryProjection: { source_generation: generation, observed_at: '2026-08-24T00:00:00.000Z' },
     datahubIdentity: { version: 'v1.6.0', commit: 'source-commit' },
-    lineageSource: { nodes: [{ id: 'table-a' }], edges: [], completeness_metadata: {} },
+    lineageSource: { authority_pin: authorityPin, nodes: [{ id: 'table-a' }], edges: [], completeness_metadata: {} },
     metadataSource: {
+      authority_pin: authorityPin,
       table_nodes: [{ id: 'table-a' }], column_nodes: [], table_column_edges: [],
       terms: [], parent_nodes: [], term_parent_edges: [], node_parent_edges: [],
       glossary_relationships: [], table_assignments: [], column_assignments: [],
@@ -105,9 +116,12 @@ test('binds graph and semantic projections to one deterministic DataHub source s
   })
   assert.equal(first.source_snapshot_id, observedLater.source_snapshot_id)
   assert.equal(first.source_fingerprint_id, firstFingerprint.source_fingerprint_id)
-  assert.notEqual(first.observed_at, observedLater.observed_at)
-  assert.equal(first.semantic_index_generation, generation)
-  assert.equal(first.semantic_index_binding_hash, bindingHash)
+  assert.equal(first.contract_version, 'DATARIVER_K9_SOURCE_SNAPSHOT_V2')
+  assert.equal(Object.hasOwn(first, 'observed_at'), false)
+  assert.equal(Object.hasOwn(first, 'semantic_index_generation'), false)
+  assert.equal(Object.hasOwn(first, 'semantic_index_binding_hash'), false)
+  assert.equal(JSON.stringify(first).includes('batch_elapsed_ms'), false)
+  assert.equal(JSON.stringify(first).includes('retry_attempt'), false)
   assert.notEqual(buildDatahubKnowledgeSourceSnapshot({
     ...input,
     metadataSource: { ...input.metadataSource, tags: [{ urn: 'urn:li:tag:new' }] },
@@ -134,10 +148,10 @@ test('binds graph and semantic projections to one deterministic DataHub source s
     ...input,
     metadataSource: { ...input.metadataSource, tags: [{ urn: 'urn:li:tag:generic' }] },
   }).source_fingerprint_id, firstFingerprint.source_fingerprint_id)
-  assert.throws(() => buildDatahubKnowledgeSourceSnapshot({
+  assert.equal(buildDatahubKnowledgeSourceSnapshot({
     ...input,
     semanticIndex: { bindingHash, generation: '3'.repeat(64) },
-  }), /semantic index is not bound/)
+  }).source_snapshot_id, first.source_snapshot_id)
 })
 
 test('fingerprints a stable large generic source without fixed cardinality assumptions', async () => {
@@ -150,8 +164,22 @@ test('fingerprints a stable large generic source without fixed cardinality assum
   const input = {
     inventoryProjection: { source_generation: '5'.repeat(64) },
     datahubIdentity: { version: 'v1.6.0', commit: null },
-    lineageSource: { nodes, edges, completeness_metadata: { stable: true } },
+    lineageSource: {
+      authority_pin: {
+        subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
+        projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
+        classification_policy_version: 1, authorization_generation: 1,
+        authorization_fingerprint: 'f'.repeat(64),
+      },
+      nodes, edges, completeness_metadata: { stable: true },
+    },
     metadataSource: {
+      authority_pin: {
+        subject_id: 'k9-system', workspace_id: 'workspace-1', classification_ceiling: 'INTERNAL',
+        projection_version: 2, policy_version: 'POC_DATAHUB_SEMANTIC_MODEL_V2',
+        classification_policy_version: 1, authorization_generation: 1,
+        authorization_fingerprint: 'f'.repeat(64),
+      },
       table_nodes: nodes, column_nodes: [], table_column_edges: [], terms: [], parent_nodes: [],
       term_parent_edges: [], node_parent_edges: [], glossary_relationships: [],
       table_assignments: [], column_assignments: [], tags: [], domains: [], containers: [],
@@ -329,6 +357,31 @@ test('managed K9 scheduler read model separates configured boundaries from durab
     },
   })
   assert.equal(JSON.stringify(readModel).includes('internal_detail'), false)
+})
+
+test('managed K9 scheduler read model preserves only bounded pre-snapshot source diagnostics', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-v2-source-receipt-contract')
+  const config = {
+    requested: true, enabled: true, refreshMode: 'DAILY', schedule: '02:15 Asia/Seoul',
+    timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 15,
+  }
+  const readModel = managedK9SchedulerReadModel(config, { value: {
+    last_attempt: {
+      status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+      failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+      raw_urn: 'urn:li:glossaryTerm:must-not-survive',
+      scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+      trigger: 'scheduled',
+    },
+  } }, null, new Date('2026-08-29T18:00:00.000Z'))
+
+  assert.deepEqual(readModel.scheduler_last_attempt, {
+    status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+    scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+    trigger: 'scheduled',
+  })
+  assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
 })
 
 test('managed K9 scheduler status distinguishes active, on-demand, disabled, and unavailable states', async () => {

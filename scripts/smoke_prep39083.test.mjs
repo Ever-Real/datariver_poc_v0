@@ -1,3 +1,4 @@
+/* global Buffer, URL, process */
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -8,6 +9,30 @@ import test from 'node:test'
 
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 const canonicalIntranetOrigin = 'http://17.20.30.40:39083'
+const sourceSnapshotId = 'a'.repeat(64)
+
+function readyK9Lifecycle(overrides = {}) {
+  const projector = (value = {}) => ({
+    desired_snapshot_id: sourceSnapshotId,
+    active_snapshot_id: sourceSnapshotId,
+    status: 'READY',
+    attempt: 1,
+    progress: { phase: 'READY', completed_units: 1, total_units: 1 },
+    diagnostic: null,
+    ...value,
+  })
+  return {
+    contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+    source: { desired_snapshot_id: sourceSnapshotId, active_snapshot_id: sourceSnapshotId, status: 'READY' },
+    projectors: {
+      LINEAGE: projector(overrides.LINEAGE),
+      METADATA: projector(overrides.METADATA),
+      SEMANTIC: projector(overrides.SEMANTIC),
+    },
+    aggregate: { status: 'READY', reason: null },
+    ...overrides.lifecycle,
+  }
+}
 
 async function requestJson(request) {
   const chunks = []
@@ -24,6 +49,7 @@ async function fixture(k9Mode, {
   glossaryTermUrn = '',
   readinessTimeoutMs = '5000',
   managedItems = null,
+  k9Lifecycle = undefined,
   changeHistory = null,
   canonicalOrigin = canonicalIntranetOrigin,
   requestOrigin = canonicalIntranetOrigin,
@@ -63,7 +89,7 @@ async function fixture(k9Mode, {
       observed.logoutOrigins.push(request.headers.origin)
       if (request.headers.origin !== canonicalOrigin) json(403, { code: 'ORIGIN_FORBIDDEN' })
       else json(200, { status: 'PASS' })
-    } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&refresh=true&limit=1'
+    } else if (request.url === '/poc-api/datahub/tree?parent_kind=ROOT&limit=1'
       || request.url === '/poc-api/datahub/catalog?limit=1') {
       if (catalogFailure) json(catalogFailure.status, catalogFailure.body)
       else json(200, { items: [], meta: { refresh_state: 'CURRENT_OR_REFRESHING' } })
@@ -87,10 +113,17 @@ async function fixture(k9Mode, {
       }
     } else if (request.url === '/poc-api/knowledge/managed-assets') {
       managedRequests += 1
-      json(200, { items: managedItems || [
+      const items = managedItems || [
         { graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
         { graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY', semantic_index_status: 'READY' },
-      ] })
+      ]
+      const defaultLifecycle = items.every((item) => String(item.status).startsWith('READY'))
+        ? readyK9Lifecycle() : null
+      const lifecycle = k9Lifecycle === undefined ? defaultLifecycle : k9Lifecycle
+      json(200, {
+        items,
+        ...(lifecycle === null ? {} : { k9_lifecycle: lifecycle }),
+      })
     } else if (request.url?.startsWith('/api/v1/change-history/summary?')) {
       json(200, changeHistory || { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
     } else if (request.url === '/poc-api/llm/chat') {
@@ -263,6 +296,154 @@ test('PREP smoke retains strict managed graph gates when K9 is configured', asyn
   assert.equal(result.report.k9_mode, 'REQUIRED')
   assert.equal(result.report.managed_assets, 'PASS')
   assert.equal(result.report.semantic_index, 'PASS')
+})
+
+test('PREP smoke uses exact persisted V2 aggregate readiness instead of legacy semantic fields', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle(),
+  })
+  assert.equal(result.completed.code, 0, result.completed.stderr)
+  assert.equal(result.report.semantic_index, 'PASS')
+})
+
+test('PREP smoke fails immediately with bounded V2 Semantic projector diagnostics', async () => {
+  const semantic = {
+    desired_snapshot_id: sourceSnapshotId,
+    active_snapshot_id: null,
+    status: 'FAILED',
+    attempt: 1,
+    progress: {
+      phase: 'EMBEDDING', completed_units: 32, total_units: 2003,
+      documents_processed: 32, documents_changed: 2003, documents_materialized: 32,
+      batch_number: 1, batch_total: 63,
+    },
+    diagnostic: {
+      code: 'K9_SEMANTIC_PROVIDER_TIMEOUT', stage: 'PROVIDER',
+      provider_failure_class: 'TIMEOUT', provider_message: 'secret must not survive',
+    },
+  }
+  const result = await fixture('required', {
+    k9Lifecycle: readyK9Lifecycle({
+      SEMANTIC: semantic,
+      lifecycle: {
+        source: { desired_snapshot_id: sourceSnapshotId, active_snapshot_id: null, status: 'READY' },
+        aggregate: { status: 'FAILED', reason: 'K9_SEMANTIC_PROVIDER_TIMEOUT' },
+      },
+    }),
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_SEMANTIC_INDEX_NOT_READY')
+  assert.deepEqual(result.failure.diagnostic, {
+    terminal: true,
+    product_error_code: 'K9_SEMANTIC_PROVIDER_TIMEOUT',
+    failure_stage: 'PROVIDER',
+    failure_detail_code: 'K9_SEMANTIC_PROVIDER_TIMEOUT',
+    projector: 'SEMANTIC',
+    provider_failure_class: 'TIMEOUT',
+    desired_snapshot_id: sourceSnapshotId,
+    active_snapshot_id: null,
+    documents_completed: 32,
+    documents_total: 2003,
+    documents_changed: 2003,
+    documents_materialized: 32,
+    batch_number: 1,
+    batch_count: 63,
+  })
+  assert.equal(JSON.stringify(result.failure).includes('secret'), false)
+  assert.equal(result.report.readiness.K9.status, 'FAILED')
+  assert.equal(result.report.readiness.MCL.status, 'PASS')
+  assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+  assert.equal(result.report.k9_lifecycle.projectors.LINEAGE.status, 'READY')
+  assert.equal(result.report.k9_lifecycle.projectors.METADATA.status, 'READY')
+  assert.equal(result.report.k9_lifecycle.projectors.SEMANTIC.status, 'FAILED')
+  assert.deepEqual(result.observed.chatOrigins, [canonicalIntranetOrigin])
+  assert.deepEqual(result.observed.logoutOrigins, [canonicalIntranetOrigin])
+  assert.ok(result.failure.elapsed_ms < 5_000)
+})
+
+test('PREP smoke fails immediately with the durable pre-snapshot source diagnostic', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+        scheduler_last_attempt: {
+          status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+          failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+        },
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+      },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED')
+  assert.deepEqual(result.failure.diagnostic, {
+    terminal: true,
+    product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'METADATA_COLLECTION',
+    failure_detail_code: 'GRAPHQL',
+  })
+  assert.ok(result.failure.elapsed_ms < 5_000)
+  assert.equal(result.report.readiness.MCL.status, 'PASS')
+  assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+})
+
+test('PREP smoke persists actual V2 Semantic progress while aggregate readiness is pending', async () => {
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    k9Lifecycle: readyK9Lifecycle({
+      SEMANTIC: {
+        desired_snapshot_id: sourceSnapshotId,
+        active_snapshot_id: null,
+        status: 'RUNNING',
+        attempt: 1,
+        progress: {
+          phase: 'EMBEDDING', completed_units: 640, total_units: 2003,
+          documents_processed: 640, documents_changed: 2003, documents_materialized: 640,
+          batch_number: 20, batch_total: 63,
+        },
+        diagnostic: null,
+      },
+      lifecycle: {
+        source: { desired_snapshot_id: sourceSnapshotId, active_snapshot_id: null, status: 'READY' },
+        aggregate: { status: 'RUNNING', reason: 'K9_V2_AGGREGATE_NOT_READY' },
+      },
+    }),
+  })
+  assert.equal(result.completed.code, 2)
+  assert.deepEqual(result.k9Progress, {
+    contract: 'DATARIVER_PREP39083_K9_PROGRESS_V2',
+    k9: 'RUNNING', stage: 'SEMANTIC_PROJECTOR', detail: 'EMBEDDING',
+    source_snapshot_id: sourceSnapshotId,
+    completed: 640, total: 2003, documents_changed: 2003,
+    documents_materialized: 640, batch_number: 20, batch_total: 63,
+    observed_at: result.k9Progress.observed_at,
+  })
+  assert.match(result.completed.stdout, /K9 SEMANTIC_PROJECTOR 640\/2003; batch 20\/63/)
 })
 
 test('PREP smoke preserves bounded nonfatal dangling glossary warnings on success', async () => {

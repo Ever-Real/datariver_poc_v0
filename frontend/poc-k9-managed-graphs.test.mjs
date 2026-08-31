@@ -8,6 +8,7 @@ import {
   K9_POLICIES,
   projectionDiffMetrics,
 } from './poc-k9-managed-graphs.mjs'
+import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
 
 const authCtx = {
   principal: { subjectId: 'test-k9-id' },
@@ -422,4 +423,57 @@ test('K9 Managed Graphs - PREPARING->FAILURE cleanup on Neo4j mismatch', async (
 
   const neo4jDeletes = neo4j.run.mock.calls.filter(c => c.arguments[0].includes('DETACH DELETE'))
   assert.ok(neo4jDeletes.length > 0)
+})
+
+test('persisted graph projection keeps the legacy manifest/LKG readable when a candidate fails', async () => {
+  const stateStore = createBaseStateStore()
+  const priorPointer = 'k9_stage_legacy_lkg'
+  let observedFailurePointer
+  stateStore.finalizeK9RunFailure.mock.mockImplementation(async () => {
+    observedFailurePointer = priorPointer
+  })
+  const neo4j = createBaseNeo4j()
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j })
+  await k9.bootstrapK9Policies(authCtx)
+  const policy = stateStore.ensureK9Policies.mock.calls[0].arguments[0]
+    .find((item) => item.managed_intent === 'metadata-lineage')
+  stateStore.getK9Policy.mock.mockImplementation(async () => ({
+    ...policy,
+    active_release_pointer: priorPointer,
+  }))
+  stateStore.getLastK9Run.mock.mockImplementation(async () => ({
+    active_release_pointer: priorPointer,
+    canonical_release: { nodes: [], edges: [] },
+    manifest: { graph_id: policy.graph_id, model_version: 2 },
+  }))
+  neo4j.run.mock.mockImplementation(async (query) => {
+    if (query.includes('RETURN n.id AS id')) return [['unexpected-node', 'class.table', 'INTERNAL', '{}']]
+    return []
+  })
+  const sourcePayload = {
+    direction: 'BOTH', depth: 1, truncated: false,
+    nodes: [], column_nodes: [], edges: [], completeness_metadata: null,
+  }
+  const sourceSnapshot = {
+    source_snapshot_id: '3'.repeat(64),
+    lineage_hash: computeSha256(sourcePayload),
+    metadata_hash: '4'.repeat(64),
+    authority_pin: validAuthorityPin,
+  }
+
+  const result = await k9.publishPersistedProjection(authCtx, {
+    projector_id: 'LINEAGE',
+    source_snapshot: sourceSnapshot,
+    source_payload: sourcePayload,
+  })
+
+  assert.equal(result.status, 'FAILURE')
+  assert.equal(observedFailurePointer, priorPointer)
+  assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
+  const candidateDeletes = neo4j.run.mock.calls.filter((call) => (
+    call.arguments[0].includes('DETACH DELETE')
+    && call.arguments[1].namespace !== priorPointer
+  ))
+  assert.ok(candidateDeletes.length >= 2)
+  assert.ok(candidateDeletes.every((call) => call.arguments[1].namespace.startsWith('k9_stage_')))
 })

@@ -15,6 +15,13 @@ import {
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
 import {
+  adoptExactLegacyK9LifecycleV2,
+  applyK9LifecycleSchemaV6,
+  createK9LifecyclePersistenceV2,
+  K9_LEGACY_ADOPTION_SCOPE_V2,
+} from './poc-k9-lifecycle-persistence.mjs'
+import { createK9SemanticPersistenceV2 } from './poc-k9-semantic-persistence.mjs'
+import {
   POC_POSTGRES_SCHEMA_INTEGRITY_FLAG,
   convergePocPostgresOwnedSchema,
 } from './poc-postgres-schema-integrity.mjs'
@@ -564,6 +571,13 @@ const CHAT_DISCOVERY_SCHEMA_V5 = [
   `,
 ]
 
+const CHAT_HISTORY_SCHEMA_V4 = CHAT_HISTORY_SCHEMA.map((statement) => statement
+  .replace('\n      discovery_json jsonb,', '')
+  .replace(`
+      CONSTRAINT ck_poc_chat_message_discovery CHECK (
+        discovery_json IS NULL OR (jsonb_typeof(discovery_json) = 'object' AND octet_length(discovery_json::text) <= 1048576)
+      ),`, ''))
+
 const USER_TABLE_GRANT_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS poc_user_table_grants (
@@ -724,7 +738,7 @@ const K9_MANAGED_GRAPH_SCHEMA = [
   `
 ]
 
-async function applyPocPostgresV1Schema(client) {
+async function applyPocPostgresV1SchemaWithChatContract(client, chatHistorySchema) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS poc_state (
       scope text PRIMARY KEY,
@@ -750,10 +764,18 @@ async function applyPocPostgresV1Schema(client) {
   `)
   for (const statement of CHANGE_HISTORY_SCHEMA) await client.query(statement)
   for (const statement of LOCAL_AUTH_SCHEMA) await client.query(statement)
-  for (const statement of CHAT_HISTORY_SCHEMA) await client.query(statement)
+  for (const statement of chatHistorySchema) await client.query(statement)
   for (const statement of USER_TABLE_GRANT_SCHEMA) await client.query(statement)
   for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await client.query(statement)
   for (const statement of K9_MANAGED_GRAPH_SCHEMA) await client.query(statement)
+}
+
+async function applyPocPostgresV1Schema(client) {
+  await applyPocPostgresV1SchemaWithChatContract(client, CHAT_HISTORY_SCHEMA)
+}
+
+async function applyPocPostgresFreshV1Schema(client) {
+  await applyPocPostgresV1SchemaWithChatContract(client, CHAT_HISTORY_SCHEMA_V4)
 }
 
 async function applyPocPostgresSchema(client) {
@@ -761,6 +783,16 @@ async function applyPocPostgresSchema(client) {
   for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await client.query(statement)
   for (const statement of MCP_READ_RECEIPT_SCHEMA) await client.query(statement)
   for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
+  await applyK9LifecycleSchemaV6(client)
+}
+
+async function applyPocPostgresFreshSchema(client) {
+  await applyPocPostgresFreshV1Schema(client)
+  for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await client.query(statement)
+  for (const statement of MCP_READ_RECEIPT_SCHEMA) await client.query(statement)
+  for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
+  for (const statement of CHAT_DISCOVERY_SCHEMA_V5) await client.query(statement)
+  await applyK9LifecycleSchemaV6(client)
 }
 
 async function initializePocPostgresSchema(pool, integrityRequired) {
@@ -771,7 +803,10 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
   const client = await pool.connect()
   try {
     await convergePocPostgresOwnedSchema(client, {
-      applyFreshSchema: applyPocPostgresSchema,
+      applyFreshSchema: async (migrationClient) => {
+        await applyPocPostgresFreshSchema(migrationClient)
+        await adoptExactLegacyK9LifecycleV2(migrationClient)
+      },
       applyKnownOlderSchema: applyPocPostgresV1Schema,
       applyV2Schema: async (migrationClient) => {
         for (const statement of LOCAL_SECURITY_EVENT_SCHEMA) await migrationClient.query(statement)
@@ -784,6 +819,10 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
       },
       applyV5Schema: async (migrationClient) => {
         for (const statement of CHAT_DISCOVERY_SCHEMA_V5) await migrationClient.query(statement)
+      },
+      applyV6Schema: async (migrationClient) => {
+        await applyK9LifecycleSchemaV6(migrationClient)
+        await adoptExactLegacyK9LifecycleV2(migrationClient)
       },
     })
   } finally {
@@ -852,6 +891,22 @@ export function createPocStateStore({ databasePool } = {}) {
     }
   }
 
+  const k9LifecyclePersistence = createK9LifecyclePersistenceV2({
+    requireDatabase: async () => {
+      await startDatabase()
+      if (!pool) throw new Error('K9 lifecycle persistence requires PostgreSQL.')
+      return pool
+    },
+  })
+  const k9SemanticPersistence = createK9SemanticPersistenceV2({
+    lifecycle: k9LifecyclePersistence,
+    requireDatabase: async () => {
+      await startDatabase()
+      if (!pool) throw new Error('K9 semantic persistence requires PostgreSQL.')
+      return pool
+    },
+  })
+
   async function startRedis() {
     if (!redisUrl || redis) return
     if (startingRedis) return startingRedis
@@ -893,6 +948,11 @@ export function createPocStateStore({ databasePool } = {}) {
     if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
       throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
     }
+    if (scope === K9_LEGACY_ADOPTION_SCOPE_V2) {
+      throw Object.assign(new Error('The K9 lifecycle adoption receipt is append-only.'), {
+        code: 'K9_LIFECYCLE_ADOPTION_IMMUTABLE',
+      })
+    }
     if (scope === 'core') return writeCoreWithAccessFence(value)
     if (pool) {
       const result = await pool.query(`
@@ -913,6 +973,11 @@ export function createPocStateStore({ databasePool } = {}) {
     await startDatabase()
     if (String(scope).startsWith(MCP_READ_RECEIPT_SCOPE_PREFIX)) {
       throw Object.assign(new Error('MCP read receipts are append-only.'), { code: 'MCP_READ_RECEIPT_IMMUTABLE' })
+    }
+    if (scope === K9_LEGACY_ADOPTION_SCOPE_V2) {
+      throw Object.assign(new Error('The K9 lifecycle adoption receipt is append-only.'), {
+        code: 'K9_LIFECYCLE_ADOPTION_IMMUTABLE',
+      })
     }
     if (scope === 'core') return writeCoreWithAccessFence(value, expectedVersion)
     if (pool) {
@@ -3659,6 +3724,14 @@ export function createPocStateStore({ databasePool } = {}) {
     recordK9ManagedRefreshFailure,
     executeK9Transaction,
     runK9Scheduler,
+    setK9DesiredSourceSnapshotV2: k9LifecyclePersistence.setDesiredSnapshot,
+    appendK9ProjectorReceiptV2: k9LifecyclePersistence.appendProjectorReceipt,
+    promoteK9ActiveSourceSnapshotV2: k9LifecyclePersistence.promoteActiveSnapshot,
+    persistK9SemanticDesiredManifestV2: k9LifecyclePersistence.persistSemanticDesiredManifest,
+    stageK9SemanticBatchV2: k9LifecyclePersistence.stageSemanticBatch,
+    activateK9SemanticSnapshotV2: k9LifecyclePersistence.activateSemanticSnapshot,
+    readK9SnapshotLifecycleV2: k9LifecyclePersistence.readLifecycle,
+    k9SemanticPersistenceV2: k9SemanticPersistence,
     listChatSessions,
     listChatMessages,
     appendChatTurn,
