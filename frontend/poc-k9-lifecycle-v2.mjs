@@ -1,9 +1,11 @@
 export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
+export const K9_V2_SOURCE_RUN_MODES = Object.freeze(['RESUME', 'REFRESH'])
 
 const hashPattern = /^[0-9a-f]{64}$/u
 const safeDiagnosticTokenPattern = /^[A-Z][A-Z0-9_]{0,95}$/u
 const receiptStates = new Set(K9_V2_RECEIPT_STATES)
+const sourceRunModes = new Set(K9_V2_SOURCE_RUN_MODES)
 const sourceCaptureFailureCodes = new Set([
   'K9_DATAHUB_SOURCE_FAILED',
   'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
@@ -310,20 +312,29 @@ async function captureOrReuseSource(captureSource, receipts, {
   })
 }
 
-async function sourceRunDisposition(receipts) {
+async function sourceRunDisposition(receipts, sourceRunMode) {
+  if (!sourceRunModes.has(sourceRunMode)) {
+    throw new TypeError('The K9 V2 source run mode is invalid.')
+  }
   const currentReceipt = await readSource(receipts)
   const current = sourceReceiptState(currentReceipt)
   if (current.kind !== 'READY') return Object.freeze({ currentReceipt, reuseCurrent: false })
+  // Startup/deploy recovery is receipt-driven. Once Source and every projector are
+  // already READY for X, RESUME must be a zero-provider, zero-projector operation.
+  // Scheduled/manual refreshes explicitly use REFRESH so DataHub drift can still
+  // produce a successor snapshot.
+  if (sourceRunMode === 'RESUME') {
+    return Object.freeze({ currentReceipt, reuseCurrent: true })
+  }
   const currentProjectors = await readAllProjectorPairs(receipts)
   const readiness = evaluateK9V2AggregateReadiness({
     sourceReceipt: currentReceipt,
     projectorReceipts: currentProjectors,
     expectedSourceSnapshotId: current.sourceSnapshotId,
   })
-  // An incomplete lifecycle resumes its immutable source. Once every
-  // projector is READY, the next scheduled/manual run captures again so
-  // DataHub drift can produce a successor snapshot. A same-source capture
-  // deterministically returns the same identity and all projectors are reused.
+  // An incomplete lifecycle always resumes its immutable source. A deliberate
+  // REFRESH after aggregate readiness captures again so DataHub drift can
+  // produce a successor snapshot; same-source projectors remain reusable.
   return Object.freeze({
     currentReceipt,
     reuseCurrent: readiness.status !== 'READY',
@@ -383,12 +394,12 @@ export function createK9V2LifecycleOrchestrator({
   }
 
   return Object.freeze({
-    async run() {
+    async run({ sourceRunMode = 'REFRESH' } = {}) {
       let source
       const projectorOutcomes = {}
       const failures = []
       try {
-        const disposition = await sourceRunDisposition(receipts)
+        const disposition = await sourceRunDisposition(receipts, sourceRunMode)
         source = await captureOrReuseSource(captureSource, receipts, disposition)
         transition({ stage: 'SOURCE', status: 'READY', outcome: source.outcome })
 

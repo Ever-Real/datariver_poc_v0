@@ -598,7 +598,12 @@ export function createPocK9Scheduler({
     return true
   }
 
-  const execute = async (scheduledFor, trigger, reconciliationGeneration) => stateStore.runK9Scheduler({
+  const execute = async (
+    scheduledFor,
+    trigger,
+    reconciliationGeneration,
+    lifecycleMode,
+  ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
@@ -607,6 +612,7 @@ export function createPocK9Scheduler({
     return await triggerK9Refresh({
       systemSubjectId: config.systemSubjectId,
       workspaceId: config.workspaceId,
+      lifecycleMode,
     })
   })
 
@@ -616,6 +622,7 @@ export function createPocK9Scheduler({
       ? currentScheduleBoundary(clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode)
       : validScheduleBoundary(options.scheduledFor, config)
     const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
+    const lifecycleMode = options.lifecycleMode === 'RESUME' ? 'RESUME' : 'REFRESH'
     const reconciliationGeneration = options.reconciliationGeneration == null
       ? null
       : options.reconciliationGeneration
@@ -631,7 +638,9 @@ export function createPocK9Scheduler({
         scheduled_for: scheduledFor.toISOString(),
         trigger: triggerType,
       })
-      activeRun = execute(scheduledFor, triggerType, reconciliationGeneration).finally(() => {
+      activeRun = execute(
+        scheduledFor, triggerType, reconciliationGeneration, lifecycleMode,
+      ).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
         activeReconciliationGeneration = null
@@ -729,7 +738,15 @@ export function createPocK9Scheduler({
       } catch (error) {
         onError(error)
       }
-      void trigger({ trigger: 'scheduled', reconciliationGeneration }).catch(onError)
+      void trigger({
+        trigger: 'scheduled',
+        // The scheduler receipt suppresses a same-boundary deploy replay before
+        // this callback runs. When a new schedule boundary is genuinely due,
+        // retain REFRESH so source drift is still discovered. Incomplete V2
+        // lifecycles independently reuse their immutable source receipt.
+        lifecycleMode: 'REFRESH',
+        reconciliationGeneration,
+      }).catch(onError)
       scheduleNext()
       return { status: 'started' }
     },

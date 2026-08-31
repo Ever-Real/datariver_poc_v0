@@ -83,7 +83,7 @@ function projectorPorts(receipts, implementations = {}) {
   ]))
 }
 
-test('K9 V2 recaptures after aggregate READY and reuses every same-source projector', async () => {
+test('K9 V2 RESUME reuses aggregate READY without source recapture or projector work', async () => {
   const pairs = readyProjectorReceipts()
   const receipts = fakeReceiptPort({
     sourceReceipt: readySourceReceipt(),
@@ -95,12 +95,12 @@ test('K9 V2 recaptures after aggregate READY and reuses every same-source projec
 
   const result = await createK9V2LifecycleOrchestrator({
     captureSource, receipts, projectors,
-  }).run()
+  }).run({ sourceRunMode: 'RESUME' })
 
   assert.equal(result.status, 'READY')
-  assert.equal(result.source.outcome, 'CAPTURED')
+  assert.equal(result.source.outcome, 'REUSED')
   assert.equal(result.readiness.status, 'READY')
-  assert.equal(captureSource.mock.calls.length, 1)
+  assert.equal(captureSource.mock.calls.length, 0)
   for (const projectorId of K9_V2_PROJECTOR_IDS) {
     assert.deepEqual(result.projectors[projectorId], { status: 'READY', outcome: 'REUSED' })
     assert.equal(projectors[projectorId].project.mock.calls.length, 0)

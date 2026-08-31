@@ -197,7 +197,8 @@ test('K9 Scheduler manual trigger runs triggerK9Refresh and fails if no-publish'
   assert.equal(triggerK9Refresh.mock.calls.length, 1)
   assert.deepEqual(triggerK9Refresh.mock.calls[0].arguments[0], {
     systemSubjectId: 'hash123',
-    workspaceId: 'ws123'
+    workspaceId: 'ws123',
+    lifecycleMode: 'REFRESH',
   })
   assert.equal(result.status, 'FAILURE')
 })
@@ -215,17 +216,24 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     configured: { postgres: true },
     runK9Scheduler: mock.fn(async (_command, task) => task()),
   }
+  const triggerK9Refresh = mock.fn(async () => {
+    await refreshGate
+    return { status: 'SUCCESS' }
+  })
   const scheduler = createPocK9Scheduler({
     config,
     stateStore,
-    triggerK9Refresh: async () => {
-      await refreshGate
-      return { status: 'SUCCESS' }
-    },
+    triggerK9Refresh,
     setTimer: () => 1,
   })
 
   await scheduler.start()
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.deepEqual(triggerK9Refresh.mock.calls[0].arguments[0], {
+    systemSubjectId: 'hash123',
+    workspaceId: 'ws123',
+    lifecycleMode: 'REFRESH',
+  })
   assert.deepEqual(scheduler.currentAttempt(), {
     status: 'RUNNING',
     scheduled_for: scheduler.currentAttempt().scheduled_for,
@@ -372,6 +380,54 @@ test('K9 startup performs no graph rebuild when semantic and graph generations a
 
   assert.equal(triggerK9Refresh.mock.calls.length, 0)
   assert.equal(database.readValue().last_successful_schedule, scheduledFor)
+})
+
+test('K9 same-command READY startup skips every expensive lifecycle invocation', async () => {
+  const scheduledFor = '2026-08-30T02:00:00.000Z'
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: scheduledFor,
+    completed_at: '2026-08-30T02:01:00.000Z',
+    trigger: 'scheduled',
+  })
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+  })
+  const invocations = {
+    source_capture: 0,
+    direct_resolution: 0,
+    lineage_projection: 0,
+    metadata_projection: 0,
+    semantic_materialization: 0,
+  }
+  const triggerK9Refresh = mock.fn(async () => {
+    for (const key of Object.keys(invocations)) invocations[key] += 1
+    return { status: 'SUCCESS' }
+  })
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore: createPocStateStore({ databasePool: database.pool }),
+    triggerK9Refresh,
+    resolveReconciliationGeneration: async () => null,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  await scheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 0)
+  assert.deepEqual(invocations, {
+    source_capture: 0,
+    direct_resolution: 0,
+    lineage_projection: 0,
+    metadata_projection: 0,
+    semantic_materialization: 0,
+  })
 })
 
 test('K9 same-generation concurrent reconciliation coalesces and the next daily boundary still runs', async () => {

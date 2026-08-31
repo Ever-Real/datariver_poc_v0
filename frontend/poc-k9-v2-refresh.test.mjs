@@ -24,6 +24,7 @@ function active(projectorId) {
 function fixture({ failSemanticOnce = false, promotionFailure = false } = {}) {
   const state = { source: null, desired: {}, active: {}, promoted: 0 }
   let semanticAttempts = 0
+  const projectorAttempts = { LINEAGE: 0, METADATA: 0, SEMANTIC: 0 }
   const receipts = {
     state,
     async readSourceCaptureReceipt() { return state.source },
@@ -38,6 +39,7 @@ function fixture({ failSemanticOnce = false, promotionFailure = false } = {}) {
   }
   const projectors = Object.fromEntries(['LINEAGE', 'METADATA', 'SEMANTIC'].map((id) => [id, {
     async project(receipt) {
+      projectorAttempts[id] += 1
       assert.equal(receipt.source_snapshot_id, snapshotId)
       if (id === 'SEMANTIC') {
         semanticAttempts += 1
@@ -53,16 +55,30 @@ function fixture({ failSemanticOnce = false, promotionFailure = false } = {}) {
       return { status: 'READY', source_snapshot_id: snapshotId }
     },
   }]))
+  const captureSource = mock.fn(async () => source())
   return {
     state,
     semanticAttempts: () => semanticAttempts,
+    projectorAttempts,
+    captureSource,
     trigger: createPocK9V2RefreshTask({
-      captureSource: mock.fn(async () => source()),
+      captureSource,
       receipts,
       projectors,
     }),
   }
 }
+
+test('V2 RESUME reuses an aggregate READY snapshot without source or projector work', async () => {
+  const value = fixture()
+
+  assert.equal((await value.trigger()).status, 'SUCCESS')
+  assert.equal((await value.trigger({ lifecycleMode: 'RESUME' })).status, 'SUCCESS')
+
+  assert.equal(value.captureSource.mock.calls.length, 1)
+  assert.deepEqual(value.projectorAttempts, { LINEAGE: 1, METADATA: 1, SEMANTIC: 1 })
+  assert.equal(value.state.promoted, 2)
+})
 
 test('V2 scheduler trigger promotes aggregate only after a Semantic-only retry reaches exact READY', async () => {
   const value = fixture({ failSemanticOnce: true })

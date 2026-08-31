@@ -41,8 +41,8 @@ export function createPocK9V2RefreshTask({
     projectors,
     onTransition,
   })
-  return async function triggerK9V2Refresh() {
-    const result = await orchestrator.run()
+  return async function triggerK9V2Refresh({ lifecycleMode = 'REFRESH' } = {}) {
+    const result = await orchestrator.run({ sourceRunMode: lifecycleMode })
     if (result.status !== 'READY') {
       const diagnostic = boundedDiagnostic(result.diagnostic, Object.freeze({
         code: 'K9_V2_LIFECYCLE_FAILED', stage: 'K9_V2_LIFECYCLE', retryable: true,
