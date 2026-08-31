@@ -461,6 +461,8 @@ export function createPocK9Scheduler({
       batch_response_count: integer(value.batch_response_count),
       batch_elapsed_ms: integer(value.batch_elapsed_ms),
       completed_resolution_count: integer(value.completed_resolution_count),
+      dangling_unique_terms: integer(value.dangling_unique_terms),
+      dangling_assignment_references: integer(value.dangling_assignment_references),
       retry_attempt: integer(value.retry_attempt),
       provider_failure_class: providerClass,
     })

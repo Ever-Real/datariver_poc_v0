@@ -265,6 +265,31 @@ test('PREP smoke retains strict managed graph gates when K9 is configured', asyn
   assert.equal(result.report.semantic_index, 'PASS')
 })
 
+test('PREP smoke preserves bounded nonfatal dangling glossary warnings on success', async () => {
+  const warning = {
+    code: 'DANGLING_GLOSSARY_ASSIGNMENTS',
+    dangling_unique_terms: 1_486,
+    dangling_assignment_references: 75_431,
+    absent: 8,
+    does_not_exist: 1_470,
+    removed: 8,
+  }
+  const result = await fixture('required', { managedItems: [
+    {
+      graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY',
+      semantic_index_status: 'READY',
+    },
+    {
+      graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY',
+      semantic_index_status: 'READY', k9_source_warning: warning,
+    },
+  ] })
+  assert.equal(result.completed.code, 0, result.completed.stderr)
+  assert.deepEqual(result.report.k9_source_warning, warning)
+  assert.equal(JSON.stringify(result.report).includes('urn:li:'), true)
+  assert.equal(JSON.stringify(result.report.k9_source_warning).includes('urn:li:'), false)
+})
+
 test('PREP smoke fails fast at classified K9 refresh boundaries', async () => {
   const result = await fixture('required', {
     managedItems: [
@@ -344,7 +369,8 @@ test('PREP smoke persists actual K9 direct-resolution progress while readiness i
     contract: 'DATARIVER_PREP39083_K9_PROGRESS_V1',
     k9: 'RUNNING', stage: 'METADATA_COLLECTION', detail: 'DIRECT_GLOSSARY_RESOLUTION',
     completed: 500, total: 1387, batch_number: 2, batch_total: 6,
-    batch_elapsed_ms: 412, observed_at: result.k9Progress.observed_at,
+    batch_elapsed_ms: 412, dangling_unique_terms: 0, dangling_assignment_references: 0,
+    observed_at: result.k9Progress.observed_at,
   })
   assert.ok(Number.isFinite(Date.parse(result.k9Progress.observed_at)))
   assert.match(result.completed.stdout, /K9 metadata direct resolution 500\/1387; batch 2\/6/)

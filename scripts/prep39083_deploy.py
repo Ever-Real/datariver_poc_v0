@@ -61,6 +61,7 @@ RUNTIME_ROOT = ROOT / "runtime" / "prep39083"
 ACCEPTED_MARKER = RUNTIME_ROOT / "accepted.json"
 ATTEMPT_RECEIPT = RUNTIME_ROOT / "deploy-attempt.json"
 SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
+SMOKE_REPORT = RUNTIME_ROOT / "smoke.json"
 K9_PROGRESS = RUNTIME_ROOT / "k9-progress.json"
 DEPLOY_LOCK = RUNTIME_ROOT / "deploy.lock"
 LAST_COMMAND = RUNTIME_ROOT / "last-command.json"
@@ -3414,6 +3415,7 @@ def status(release: ReleaseIdentity) -> None:
     accepted = _optional_json(ACCEPTED_MARKER)
     last = _optional_json(LAST_COMMAND)
     smoke_failure = _optional_json(SMOKE_FAILURE)
+    smoke_report = _optional_json(SMOKE_REPORT)
     k9_progress = _optional_json(K9_PROGRESS)
     phase = str(attempt.get("phase", "NONE")) if attempt else "NONE"
     accepted_product = str(accepted.get("product_sha", "NONE")) if accepted else "NONE"
@@ -3479,6 +3481,21 @@ def status(release: ReleaseIdentity) -> None:
     print(f"Accepted Product: {accepted_product}")
     print(f"Web: {web}")
     print(f"K9: {k9}")
+    source_warning = smoke_report.get("k9_source_warning") if smoke_report else None
+    if ready and isinstance(source_warning, dict) and (
+        source_warning.get("code") == "DANGLING_GLOSSARY_ASSIGNMENTS"
+    ):
+        def warning_count(key: str) -> int:
+            value = source_warning.get(key, 0)
+            valid = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            return value if valid else 0
+
+        print("K9 source warning: DANGLING_GLOSSARY_ASSIGNMENTS")
+        print(f"Dangling Terms: {warning_count('dangling_unique_terms')}")
+        print(f"Dangling References: {warning_count('dangling_assignment_references')}")
+        print(f"Absent: {warning_count('absent')}")
+        print(f"Does not exist: {warning_count('does_not_exist')}")
+        print(f"Removed: {warning_count('removed')}")
     if k9 == "RUNNING" and isinstance(k9_progress, dict):
         print(f"K9 stage: {k9_progress.get('stage', 'UNKNOWN')}")
         print(f"K9 detail: {k9_progress.get('detail', 'UNKNOWN')}")
@@ -3514,6 +3531,18 @@ def status(release: ReleaseIdentity) -> None:
                     f"direct={direct.get('completed_resolution_count', 0)}/"
                     f"{direct.get('total', 0)}"
                 )
+                dangling_terms = direct.get("dangling_unique_terms", 0)
+                dangling_references = direct.get("dangling_assignment_references", 0)
+                if isinstance(dangling_terms, int) and dangling_terms > 0:
+                    print(f"Dangling Terms: {dangling_terms}")
+                    print(
+                        "Dangling References: "
+                        f"{dangling_references if isinstance(dangling_references, int) else 0}"
+                    )
+                    print(f"Absent: {direct.get('dangling_absent_count', 0)}")
+                    print(f"Does not exist: {direct.get('dangling_does_not_exist_count', 0)}")
+                    print(f"Removed: {direct.get('dangling_removed_count', 0)}")
+                    print(f"Incompatible type: {direct.get('dangling_incompatible_type_count', 0)}")
     print(f"Semantic: {semantic}")
     print(f"MCL: {mcl}")
     print(f"GENERAL: {general}")

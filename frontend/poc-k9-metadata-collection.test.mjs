@@ -339,7 +339,11 @@ test('search snapshot omission resolves the exact Term and preserves its assignm
   assert.equal(result.table_assignments.length, 1)
   assert.equal(result.table_assignments[0].term_urn, termUrn)
   assert.equal(result.terms.length, 1)
-  assert.deepEqual(result.source_profile.assignments, {
+  const { raw_reference_hash: rawReferenceHash, dangling_reference_hash: danglingHash,
+    ...assignmentProfile } = result.source_profile.assignments
+  assert.match(rawReferenceHash, /^[0-9a-f]{64}$/)
+  assert.equal(danglingHash, null)
+  assert.deepEqual(assignmentProfile, {
     declared_table_assignment_total: 1,
     observed_table_assignment_total: 1,
     declared_column_assignment_total: 0,
@@ -375,14 +379,83 @@ test('direct Term hydration merges sparse and rich assignment observations deter
   assert.equal(forward.source_profile.assignments.direct_term_resolution_attempt_count, 1)
 })
 
-test('confirmed absent or removed direct Term fails as DANGLING_GLOSSARY_ASSIGNMENT', async () => {
-  const inventory = [dataset('dangling', { glossary_terms: [{ urn: termUrn }] })]
-  for (const entity of [null, glossaryTerm({ exists: true, status: { removed: true } })]) {
-    const failed = await failureRecord(fixture({ directTerms: [{ entity }] }).collector, inventory)
-    assert.equal(failed.detail, 'DANGLING_GLOSSARY_ASSIGNMENT')
-    assert.equal(failed.profile.assignments.direct_term_resolution_dangling_count, 1)
-    assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+test('absent, nonexistent, and removed direct Terms are accounted and excluded without ghost nodes', async () => {
+  const urns = {
+    absent: 'urn:li:glossaryTerm:a-absent',
+    active: 'urn:li:glossaryTerm:b-active',
+    nonexistent: 'urn:li:glossaryTerm:c-nonexistent',
+    removed: 'urn:li:glossaryTerm:d-removed',
   }
+  const inventory = [dataset('dangling-mixed', {
+    glossary_terms: [
+      { urn: urns.absent },
+      { urn: urns.active },
+      { urn: urns.active },
+      { urn: urns.nonexistent },
+      { urn: urns.nonexistent },
+    ],
+    schema_fields: [{
+      fieldPath: 'field',
+      glossaryTerms: { terms: [
+        { term: { urn: urns.active } },
+        { term: { urn: urns.removed } },
+      ] },
+    }],
+  })]
+  const result = await fixture({ directTerms: [
+    { entity: null },
+    { entity: glossaryTerm({
+      urn: urns.active,
+      tableAssignments: { total: 1 },
+      columnAssignments: { total: 1 },
+    }) },
+    { entity: glossaryTerm({ urn: urns.nonexistent, exists: false }) },
+    { entity: glossaryTerm({ urn: urns.removed, status: { removed: true } }) },
+  ] }).collector(authorityPin, inventory)
+  assert.deepEqual(result.terms.map((term) => term.urn), [urns.active])
+  assert.equal(result.table_assignments.length, 1)
+  assert.equal(result.column_assignments.length, 1)
+  assert.equal(JSON.stringify(result).includes(urns.absent), false)
+  assert.equal(JSON.stringify(result).includes(urns.nonexistent), false)
+  assert.equal(JSON.stringify(result).includes(urns.removed), false)
+  assert.deepEqual(result.source_profile.direct_resolution, {
+    total: 4,
+    total_unique_terms: 4,
+    recovered_unique_terms: 1,
+    dangling_unique_terms: 3,
+    recovered_assignment_references: 3,
+    dangling_assignment_references: 4,
+    dangling_absent_count: 1,
+    dangling_does_not_exist_count: 1,
+    dangling_removed_count: 1,
+    dangling_incompatible_type_count: 0,
+    batch_size: 250,
+    batch_total: 1,
+    batch_number: 1,
+    batch_requested_count: 4,
+    batch_response_count: 4,
+    batch_elapsed_ms: 0,
+    completed_resolution_count: 4,
+    retry_attempt: 0,
+    provider_failure_class: null,
+    graphql_error_class: null,
+    graphql_error_path: null,
+    failing_identity_hash: null,
+    first_dangling_identity_hash: result.source_profile.direct_resolution.first_dangling_identity_hash,
+  })
+  assert.match(result.source_profile.direct_resolution.first_dangling_identity_hash, /^[0-9a-f]{64}$/)
+  assert.match(result.source_profile.assignments.dangling_reference_hash, /^[0-9a-f]{64}$/)
+  const rerun = await fixture({ directTerms: [
+    { entity: null },
+    { entity: glossaryTerm({
+      urn: urns.active,
+      tableAssignments: { total: 1 },
+      columnAssignments: { total: 1 },
+    }) },
+    { entity: glossaryTerm({ urn: urns.nonexistent, exists: false }) },
+    { entity: glossaryTerm({ urn: urns.removed, status: { removed: true } }) },
+  ] }).collector(authorityPin, inventory)
+  assert.deepEqual(rerun, result)
 })
 
 test('wrong direct entity type fails closed without exposing its identity', async () => {
@@ -393,6 +466,10 @@ test('wrong direct entity type fails closed without exposing its identity', asyn
   } }] }).collector, inventory)
   assert.equal(failed.detail, 'DANGLING_GLOSSARY_ASSIGNMENT')
   assert.equal(failed.profile.identity_resolution.failure.classification, 'CONTRADICTION')
+  assert.equal(failed.profile.direct_resolution.dangling_incompatible_type_count, 1)
+  assert.equal(failed.profile.direct_resolution.dangling_unique_terms, 1)
+  assert.equal(failed.profile.direct_resolution.dangling_assignment_references, 1)
+  assert.match(failed.profile.direct_resolution.first_dangling_identity_hash, /^[0-9a-f]{64}$/)
   assert.equal(JSON.stringify(failed.profile).includes(termUrn), false)
 })
 
@@ -487,6 +564,31 @@ test('direct Term response contract and resolution batches remain bounded', asyn
     assert.equal(batches.every((batch) => batch.length > 0 && batch.length <= 250), true)
     assert.deepEqual(batches.flat(), references.map((reference) => reference.urn))
   }
+})
+
+test('Actual-PREP-scale dangling references complete all batches with exact unique/reference accounting', async () => {
+  const uniqueCount = 1_486
+  const referenceCount = 75_431
+  const urns = Array.from({ length: uniqueCount }, (_, index) => (
+    `urn:li:glossaryTerm:prep-scale-${String(index).padStart(4, '0')}`
+  ))
+  const references = Array.from({ length: referenceCount }, (_, index) => ({
+    urn: urns[index % uniqueCount],
+  }))
+  const directTerms = urns.map((urn) => ({ entity: glossaryTerm({ urn, exists: false }) }))
+  const { collector, refreshGraphql } = fixture({ directTerms })
+  const result = await collector(authorityPin, [dataset('prep-scale', { glossary_terms: references })])
+  assert.equal(result.terms.length, 0)
+  assert.equal(result.table_assignments.length, 0)
+  assert.equal(result.source_profile.direct_resolution.total_unique_terms, uniqueCount)
+  assert.equal(result.source_profile.direct_resolution.recovered_unique_terms, 0)
+  assert.equal(result.source_profile.direct_resolution.dangling_unique_terms, uniqueCount)
+  assert.equal(result.source_profile.direct_resolution.recovered_assignment_references, 0)
+  assert.equal(result.source_profile.direct_resolution.dangling_assignment_references, referenceCount)
+  assert.equal(result.source_profile.direct_resolution.dangling_does_not_exist_count, uniqueCount)
+  assert.equal(result.source_profile.direct_resolution.completed_resolution_count, uniqueCount)
+  assert.equal(refreshGraphql.mock.calls.filter((call) => call.arguments[0] === 'TERMS').length, 6)
+  assert.equal(JSON.stringify(result.source_profile).includes('urn:li:'), false)
 })
 
 test('staged profiler reports only bounded counts after exact duplicate term dedupe', async () => {
