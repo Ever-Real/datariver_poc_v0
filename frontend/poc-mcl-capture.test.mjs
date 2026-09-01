@@ -133,9 +133,11 @@ function captureConfig(overrides = {}) {
 function stateStoreDouble(initial = {}, { failOffset, failBoundary = false } = {}) {
   const checkpoints = new Map(Object.entries(initial).map(([partition, offset]) => [Number(partition), offset]))
   const captures = []
+  const gapReceipts = []
   return {
     checkpoints,
     captures,
+    gapReceipts,
     async initializeChangeHistoryCaptureBoundaries({ partitions }) {
       if (failBoundary) throw new Error('simulated durable boundary failure')
       const requested = partitions.map(({ partition }) => partition).sort((left, right) => left - right)
@@ -146,7 +148,39 @@ function stateStoreDouble(initial = {}, { failOffset, failBoundary = false } = {
           .some((partition, index) => partition !== requested[index])) {
         throw new Error('simulated partition topology change')
       }
-      return requested.map((partition) => ({ partition, nextOffset: checkpoints.get(partition) }))
+      return requested.map((partition) => {
+        const gaps = gapReceipts.filter((item) => item.partition === partition)
+        return {
+          partition,
+          nextOffset: checkpoints.get(partition),
+          ...(gaps.length ? {
+            gapReceiptCount: gaps.length,
+            currentSegmentStart: gaps.at(-1).newSegmentStart,
+          } : {}),
+        }
+      })
+    },
+    async recordChangeHistoryRetentionGapAndAdvanceBoundary(command) {
+      const existing = gapReceipts.find((item) => item.partition === command.partition
+        && item.previousNextOffset === command.previousNextOffset
+        && item.lowWatermark === command.lowWatermark)
+      if (existing) return { ...existing, replayed: true }
+      if (checkpoints.get(command.partition) !== command.previousNextOffset) {
+        throw new Error('simulated gap receipt checkpoint fence failure')
+      }
+      const receipt = {
+        receiptId: String(gapReceipts.length + 1).padStart(64, '0'),
+        reason: 'RETENTION_EXPIRED',
+        partition: command.partition,
+        previousNextOffset: command.previousNextOffset,
+        lowWatermark: command.lowWatermark,
+        highWatermark: command.highWatermark,
+        newSegmentStart: command.lowWatermark,
+        replayed: false,
+      }
+      gapReceipts.push(receipt)
+      checkpoints.set(command.partition, command.lowWatermark)
+      return receipt
     },
     async readChangeHistoryCheckpoint({ partition }) {
       return checkpoints.get(partition) ?? null
@@ -481,16 +515,32 @@ test('persists earliest retained fresh boundaries before consume and fails close
     [{ partition: 0, low: '150', high: '150', offset: '150' }],
     new Map(),
   )
-  await assert.rejects(createPocMclCapture({
+  const retainedResult = await createPocMclCapture({
     config: captureConfig(),
     stateStore: store,
     kafka: retainedKafka,
     schemaRegistry: schemaRegistry(),
-  }).run(), (error) => error.code === 'PREP_MCL_CAPTURE_HISTORY_GAP_BLOCKED'
-    && error.mclStage === 'RETENTION_CHECK'
-    && error.mclDetailCode === 'CHECKPOINT_BEHIND_LOW_WATERMARK')
-  assert.equal(store.checkpoints.get(0), 100)
+  }).run()
+  assert.equal(retainedResult.historyCompleteness, 'DEGRADED_GAP')
+  assert.equal(retainedResult.partitions[0].historyCompleteness, 'DEGRADED_GAP')
+  assert.equal(retainedResult.partitions[0].exactCurrentSegmentStart, 150)
+  assert.equal(store.checkpoints.get(0), 150)
+  assert.equal(store.gapReceipts.length, 1)
   assert.equal(retainedKafka.state.consumerCreates, 0)
+
+  const retainedRerun = await createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: kafkaDouble(
+      [{ partition: 0, low: '150', high: '150', offset: '150' }],
+      new Map(),
+    ),
+    schemaRegistry: schemaRegistry(),
+  }).run()
+  assert.equal(retainedRerun.historyCompleteness, 'DEGRADED_GAP')
+  assert.equal(retainedRerun.partitions[0].exactCurrentSegmentStart, 150)
+  assert.equal(store.gapReceipts.length, 1)
+  assert.equal(store.checkpoints.get(0), 150)
 
   const changedKafka = kafkaDouble([
     { partition: 0, low: '100', high: '100', offset: '100' },

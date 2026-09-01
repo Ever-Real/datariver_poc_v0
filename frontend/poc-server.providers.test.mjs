@@ -984,10 +984,10 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
     ['CLASSIFICATION:UNSUPPORTED'],
   ]) {
     currentTableClassificationTags = invalidClassificationTags
-    const excludedAssignments = await (await fetch(
+    const taxonomyIndependentAssignments = await (await fetch(
       `${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${termUrn}&target_type=TABLE&limit=25`,
     )).json()
-    assert.equal(excludedAssignments.total, 0)
+    assert.equal(taxonomyIndependentAssignments.total, 1)
   }
   currentTableClassificationTags = ['CLASSIFICATION:INTERNAL']
   const removedAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${encodeURIComponent('urn:li:glossaryTerm:removed-assignment-fixture')}&target_type=TABLE&limit=25`)).json()
@@ -2559,7 +2559,7 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     })
     const hiddenGraphs = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
     assert.equal(hiddenGraphs.status, 200)
-    assert.deepEqual((await hiddenGraphs.json()).map((item) => item.id), [managedLineageGraphId])
+    assert.deepEqual((await hiddenGraphs.json()).map((item) => item.id), [])
     const hiddenSnapshot = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
     assert.equal(hiddenSnapshot.status, 404)
     const hiddenMainChatResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
@@ -2726,7 +2726,7 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     const dashboard = await getJson('/poc-api/datahub/dashboard')
     assert.equal(dashboard.catalog_asset_count, 1)
     const coverage = await getJson('/poc-api/datahub/profile-coverage')
-    assert.equal(coverage.asset_count, 0)
+    assert.equal(coverage.asset_count, 1)
     const vectorStatus = await getJson('/poc-api/datahub/vector-index')
     assert.equal(vectorStatus.indexed, null)
     assert.equal(vectorStatus.refreshed, null)
@@ -2793,15 +2793,15 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
       cell.feature === 'catalog' && cell.role === 'developer' && cell.grade === 'credential'
     )).allow = false
     await stateStore.write('feature-security-policy-v1', deniedPolicy)
-    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
     const reauthorizedHistory = await getJson(
       `/poc-api/chat/sessions/${persistedChat.session_id}/messages?limit=200`,
     )
     const reauthorizedAssistant = reauthorizedHistory.find(
       (message) => message.id === persistedChat.response_message_id,
     )
-    assert.equal(reauthorizedAssistant.discovery_json.total, 0)
-    assert.deepEqual(reauthorizedAssistant.discovery_json.items, [])
+    assert.equal(reauthorizedAssistant.discovery_json.total, 1)
+    assert.equal(reauthorizedAssistant.discovery_json.items.length, 1)
     forcedClassifierResponse = JSON.stringify({
       mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
       entity_resolution_required: false, graph_traversal_required: false,
@@ -2817,14 +2817,14 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     forcedClassifierResponse = undefined
     assert.equal(catalogDeniedChat.status, 200, await catalogDeniedChat.clone().text())
     const catalogDeniedChatPayload = await catalogDeniedChat.json()
-    assert.equal(catalogDeniedChatPayload.discovery.total, 0)
-    assert.deepEqual(catalogDeniedChatPayload.discovery.items, [])
+    assert.equal(catalogDeniedChatPayload.discovery.total, 1)
+    assert.equal(catalogDeniedChatPayload.discovery.items.length, 1)
     await stateStore.write('feature-security-policy-v1', allowedPolicy)
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
 
     await writeAccess('normal')
-    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
-    assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 0)
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
+    assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 1)
     await writeAccess('credential')
     assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
     assert.equal((await getJson(`/poc-api/datahub/glossary/assignments?urn=${glossaryTerm}&target_type=TABLE&limit=25`)).total, 1)

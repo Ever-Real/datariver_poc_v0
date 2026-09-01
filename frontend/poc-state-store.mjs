@@ -14,6 +14,7 @@ import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 import {
   adoptExactLegacyK9LifecycleV2,
   applyK9LifecycleSchemaV6,
@@ -301,6 +302,70 @@ const CHANGE_HISTORY_SCHEMA = [
       ) THEN
         CREATE TRIGGER trg_poc_change_history_cr_link_append_only
           BEFORE UPDATE OR DELETE ON poc_change_history_cr_link_events
+          FOR EACH ROW EXECUTE FUNCTION poc_reject_change_history_mutation();
+      END IF;
+    END
+    $block$
+  `,
+]
+
+const CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7 = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_change_history_gap_receipts (
+      receipt_id char(64) PRIMARY KEY,
+      source_identity_hash char(64) NOT NULL REFERENCES poc_change_history_sources(source_identity_hash),
+      topic_contract text NOT NULL,
+      source_partition integer NOT NULL,
+      previous_next_offset bigint NOT NULL,
+      observed_low_watermark bigint NOT NULL,
+      observed_high_watermark bigint NOT NULL,
+      missing_interval_start bigint NOT NULL,
+      missing_interval_end bigint NOT NULL,
+      reason text NOT NULL,
+      prior_exact_segment_identity char(64) NOT NULL,
+      new_segment_start bigint NOT NULL,
+      observed_at timestamptz NOT NULL,
+      receipt_version integer NOT NULL,
+      UNIQUE (
+        source_identity_hash, topic_contract, source_partition,
+        previous_next_offset, observed_low_watermark
+      ),
+      CONSTRAINT ck_poc_change_history_gap_receipt_hashes CHECK (
+        receipt_id ~ '^[0-9a-f]{64}$'
+        AND prior_exact_segment_identity ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT ck_poc_change_history_gap_receipt_position CHECK (
+        source_partition >= 0
+        AND previous_next_offset >= 0
+        AND observed_low_watermark > previous_next_offset
+        AND observed_high_watermark >= observed_low_watermark
+        AND missing_interval_start = previous_next_offset
+        AND missing_interval_end = observed_low_watermark
+        AND new_segment_start = observed_low_watermark
+      ),
+      CONSTRAINT ck_poc_change_history_gap_receipt_contract CHECK (
+        reason = 'RETENTION_EXPIRED'
+        AND receipt_version = 1
+        AND char_length(topic_contract) BETWEEN 1 AND 255
+      )
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_change_history_gap_receipt_source
+      ON poc_change_history_gap_receipts (
+        source_identity_hash, topic_contract, source_partition, observed_at, receipt_id
+      )
+  `,
+  `
+    DO $block$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trg_poc_change_history_gap_receipt_append_only'
+          AND tgrelid = 'poc_change_history_gap_receipts'::regclass
+      ) THEN
+        CREATE TRIGGER trg_poc_change_history_gap_receipt_append_only
+          BEFORE UPDATE OR DELETE ON poc_change_history_gap_receipts
           FOR EACH ROW EXECUTE FUNCTION poc_reject_change_history_mutation();
       END IF;
     END
@@ -785,6 +850,7 @@ async function applyPocPostgresSchema(client) {
   for (const statement of MCP_READ_RECEIPT_SCHEMA) await client.query(statement)
   for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
   await applyK9LifecycleSchemaV6(client)
+  for (const statement of CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7) await client.query(statement)
 }
 
 async function applyPocPostgresFreshSchema(client) {
@@ -794,6 +860,7 @@ async function applyPocPostgresFreshSchema(client) {
   for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
   for (const statement of CHAT_DISCOVERY_SCHEMA_V5) await client.query(statement)
   await applyK9LifecycleSchemaV6(client)
+  for (const statement of CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7) await client.query(statement)
 }
 
 async function initializePocPostgresSchema(pool, integrityRequired) {
@@ -824,6 +891,11 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
       applyV6Schema: async (migrationClient) => {
         await applyK9LifecycleSchemaV6(migrationClient)
         await adoptExactLegacyK9LifecycleV2(migrationClient)
+      },
+      applyV7Schema: async (migrationClient) => {
+        for (const statement of CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7) {
+          await migrationClient.query(statement)
+        }
       },
     })
   } finally {
@@ -2377,6 +2449,14 @@ export function createPocStateStore({ databasePool } = {}) {
         FROM poc_change_history_checkpoints
         ORDER BY source_identity_hash, topic_contract, source_partition
       `)
+      const gapResult = await client.query(`
+        SELECT receipt_id, source_identity_hash, topic_contract, source_partition,
+          previous_next_offset, observed_low_watermark, observed_high_watermark,
+          missing_interval_start, missing_interval_end, reason,
+          prior_exact_segment_identity, new_segment_start, observed_at, receipt_version
+        FROM poc_change_history_gap_receipts
+        ORDER BY source_identity_hash, topic_contract, source_partition, observed_at, receipt_id
+      `)
       await client.query('COMMIT')
       const catalog = stateResult.rows.find((row) => row.scope === normalizedCatalogScope)
       const captureStatus = stateResult.rows.find((row) => row.scope === CHANGE_HISTORY_CAPTURE_STATUS_SCOPE)
@@ -2394,6 +2474,7 @@ export function createPocStateStore({ databasePool } = {}) {
         links: linkResult.rows,
         sources: sourceResult.rows,
         checkpoints: checkpointResult.rows,
+        gapReceipts: gapResult.rows,
       }
     } catch (error) {
       await client.query('ROLLBACK')
@@ -2542,8 +2623,156 @@ export function createPocStateStore({ databasePool } = {}) {
           return { partition: Number(row.source_partition), nextOffset }
         })
       }
+      const gapSummaryResult = await client.query(`
+        SELECT source_partition, count(*)::integer AS gap_receipt_count,
+          max(new_segment_start) AS current_segment_start
+        FROM poc_change_history_gap_receipts
+        WHERE source_identity_hash = $1 AND topic_contract = $2
+        GROUP BY source_partition
+        ORDER BY source_partition
+      `, [normalized.sourceIdentityHash, normalized.topicContract])
+      const gapByPartition = new Map(gapSummaryResult.rows.map((row) => [
+        Number(row.source_partition),
+        {
+          gapReceiptCount: Number(row.gap_receipt_count),
+          currentSegmentStart: Number(row.current_segment_start),
+        },
+      ]))
+      if ([...gapByPartition.keys()].some((partition) => (
+        !checkpoints.some((checkpoint) => checkpoint.partition === partition)
+      ))) {
+        throw new Error('The MCL retention-gap receipt references an unknown partition.')
+      }
       await client.query('COMMIT')
-      return checkpoints
+      return checkpoints.map((checkpoint) => {
+        const gap = gapByPartition.get(checkpoint.partition)
+        return gap ? { ...checkpoint, ...gap } : checkpoint
+      })
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async function recordChangeHistoryRetentionGapAndAdvanceBoundary(command) {
+    const normalized = normalizeChangeHistoryRetentionGap(command)
+    await startDatabase()
+    if (!pool) throw new Error('PostgreSQL is required for durable POC change history.')
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const checkpointResult = await client.query(`
+        SELECT first_exact_offset, next_offset
+        FROM poc_change_history_checkpoints
+        WHERE source_identity_hash = $1 AND topic_contract = $2 AND source_partition = $3
+        FOR UPDATE
+      `, [normalized.sourceIdentityHash, normalized.topicContract, normalized.partition])
+      const checkpoint = checkpointResult.rows[0]
+      if (!checkpoint) throw new Error('The MCL retention-gap checkpoint is unavailable.')
+      const storedNextOffset = Number(checkpoint.next_offset)
+      const firstExactOffset = Number(checkpoint.first_exact_offset)
+      if (!Number.isSafeInteger(storedNextOffset) || !Number.isSafeInteger(firstExactOffset)) {
+        throw new Error('The MCL retention-gap checkpoint is malformed.')
+      }
+      const existingResult = await client.query(`
+        SELECT receipt_id, previous_next_offset, observed_low_watermark,
+          observed_high_watermark, prior_exact_segment_identity, new_segment_start,
+          reason, receipt_version, observed_at
+        FROM poc_change_history_gap_receipts
+        WHERE source_identity_hash = $1 AND topic_contract = $2 AND source_partition = $3
+          AND previous_next_offset = $4 AND observed_low_watermark = $5
+        FOR SHARE
+      `, [
+        normalized.sourceIdentityHash, normalized.topicContract, normalized.partition,
+        normalized.previousNextOffset, normalized.lowWatermark,
+      ])
+      if (storedNextOffset === normalized.lowWatermark) {
+        if (existingResult.rows.length !== 1) {
+          throw new Error('The advanced MCL checkpoint has no exact retention-gap receipt.')
+        }
+        await client.query('COMMIT')
+        return retentionGapResult(existingResult.rows[0], true)
+      }
+      if (storedNextOffset !== normalized.previousNextOffset) {
+        throw new Error('The MCL retention-gap command lost its checkpoint fence.')
+      }
+      const priorGapResult = await client.query(`
+        SELECT new_segment_start
+        FROM poc_change_history_gap_receipts
+        WHERE source_identity_hash = $1 AND topic_contract = $2 AND source_partition = $3
+        ORDER BY observed_at DESC, receipt_id DESC
+        LIMIT 1
+      `, [normalized.sourceIdentityHash, normalized.topicContract, normalized.partition])
+      const priorSegmentStart = Number(priorGapResult.rows[0]?.new_segment_start ?? firstExactOffset)
+      if (!Number.isSafeInteger(priorSegmentStart) || priorSegmentStart > storedNextOffset) {
+        throw new Error('The prior MCL exact segment identity cannot be reconstructed.')
+      }
+      const priorExactSegmentIdentity = sha256(stableJson({
+        contract: 'DATARIVER_MCL_EXACT_SEGMENT_V1',
+        source_identity_hash: normalized.sourceIdentityHash,
+        topic_contract: normalized.topicContract,
+        partition: normalized.partition,
+        start_offset: priorSegmentStart,
+        next_offset: storedNextOffset,
+      }))
+      const identityDocument = {
+        contract: 'DATARIVER_MCL_RETENTION_GAP_RECEIPT_V1',
+        source_identity_hash: normalized.sourceIdentityHash,
+        topic_contract: normalized.topicContract,
+        partition: normalized.partition,
+        previous_next_offset: storedNextOffset,
+        observed_low_watermark: normalized.lowWatermark,
+        observed_high_watermark: normalized.highWatermark,
+        missing_interval_start: storedNextOffset,
+        missing_interval_end: normalized.lowWatermark,
+        reason: 'RETENTION_EXPIRED',
+        prior_exact_segment_identity: priorExactSegmentIdentity,
+        new_segment_start: normalized.lowWatermark,
+        receipt_version: 1,
+      }
+      const receiptId = sha256(stableJson(identityDocument))
+      await client.query(`
+        INSERT INTO poc_change_history_gap_receipts (
+          receipt_id, source_identity_hash, topic_contract, source_partition,
+          previous_next_offset, observed_low_watermark, observed_high_watermark,
+          missing_interval_start, missing_interval_end, reason,
+          prior_exact_segment_identity, new_segment_start, observed_at, receipt_version
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $5, $6,
+          'RETENTION_EXPIRED', $8, $6, $9, 1
+        )
+      `, [
+        receiptId, normalized.sourceIdentityHash, normalized.topicContract,
+        normalized.partition, storedNextOffset, normalized.lowWatermark,
+        normalized.highWatermark, priorExactSegmentIdentity, normalized.observedAt,
+      ])
+      const advanced = await client.query(`
+        UPDATE poc_change_history_checkpoints
+        SET next_offset = $4, version = version + 1
+        WHERE source_identity_hash = $1 AND topic_contract = $2
+          AND source_partition = $3 AND next_offset = $5
+        RETURNING next_offset
+      `, [
+        normalized.sourceIdentityHash, normalized.topicContract, normalized.partition,
+        normalized.lowWatermark, storedNextOffset,
+      ])
+      if (Number(advanced.rows[0]?.next_offset) !== normalized.lowWatermark) {
+        throw new Error('The MCL retention-gap checkpoint advance lost its fence.')
+      }
+      const receiptResult = await client.query(`
+        SELECT receipt_id, previous_next_offset, observed_low_watermark,
+          observed_high_watermark, prior_exact_segment_identity, new_segment_start,
+          reason, receipt_version, observed_at
+        FROM poc_change_history_gap_receipts
+        WHERE receipt_id = $1
+      `, [receiptId])
+      if (receiptResult.rows.length !== 1) {
+        throw new Error('The MCL retention-gap receipt was not durably verified.')
+      }
+      await client.query('COMMIT')
+      return retentionGapResult(receiptResult.rows[0], false)
     } catch (error) {
       await client.query('ROLLBACK')
       throw error
@@ -3231,6 +3460,10 @@ export function createPocStateStore({ databasePool } = {}) {
             && sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile)
             ? { metadataProfile: sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile) }
             : {}),
+          ...(sourceDiagnosticValue.failureStage === 'INVENTORY'
+            && sanitizeK9SourceEligibilityTelemetry(sourceDiagnosticValue.sourceEligibility)
+            ? { sourceEligibility: sanitizeK9SourceEligibilityTelemetry(sourceDiagnosticValue.sourceEligibility) }
+            : {}),
         }
       : null
     if (failureCode === 'K9_DATAHUB_SOURCE_FAILED' && !sourceDiagnostic) {
@@ -3242,8 +3475,13 @@ export function createPocStateStore({ databasePool } = {}) {
     const errorMessage = sourceDiagnostic
       ? `${failureCode}: failure_stage=${sourceDiagnostic.failureStage}; failure_detail_code=${sourceDiagnostic.failureDetailCode}.`
       : `${failureCode}: Shared managed refresh failed at a classified stage.`
-    const failureManifest = sourceDiagnostic?.metadataProfile
-      ? { failure_diagnostic: { metadata_source_profile: sourceDiagnostic.metadataProfile } }
+    const failureManifest = sourceDiagnostic?.metadataProfile || sourceDiagnostic?.sourceEligibility
+      ? { failure_diagnostic: {
+          ...(sourceDiagnostic.metadataProfile
+            ? { metadata_source_profile: sourceDiagnostic.metadataProfile } : {}),
+          ...(sourceDiagnostic.sourceEligibility
+            ? { source_eligibility: sourceDiagnostic.sourceEligibility } : {}),
+        } }
       : null
     await startDatabase()
     if (!pool) throw new Error('K9 managed refresh failures require PostgreSQL')
@@ -3391,6 +3629,10 @@ export function createPocStateStore({ databasePool } = {}) {
               ...(result.failureStage === 'METADATA_COLLECTION'
                 && sanitizeK9MetadataSourceProfile(result.metadataProfile)
                 ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }
+                : {}),
+              ...(result.failureStage === 'INVENTORY'
+                && sanitizeK9SourceEligibilityTelemetry(result.sourceEligibility)
+                ? { source_eligibility: sanitizeK9SourceEligibilityTelemetry(result.sourceEligibility) }
                 : {}),
             }
           : null
@@ -3722,6 +3964,7 @@ export function createPocStateStore({ databasePool } = {}) {
     listUserTableGrants,
     applyUserTableGrantCommand,
     initializeChangeHistoryCaptureBoundaries,
+    recordChangeHistoryRetentionGapAndAdvanceBoundary,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
     readChangeHistoryCrLinkReplay,
@@ -4096,6 +4339,65 @@ function normalizeChangeHistoryBoundaries(command) {
     topicContract: requireBoundedString(command.topicContract, 'topicContract', 255),
     partitions,
   }
+}
+
+function normalizeChangeHistoryRetentionGap(command) {
+  if (!command || typeof command !== 'object') {
+    throw new Error('The MCL retention-gap command is invalid.')
+  }
+  const previousNextOffset = requireNonnegativeInteger(
+    command.previousNextOffset,
+    'previousNextOffset',
+  )
+  const lowWatermark = requireNonnegativeInteger(command.lowWatermark, 'lowWatermark')
+  const highWatermark = requireNonnegativeInteger(command.highWatermark, 'highWatermark')
+  if (previousNextOffset >= lowWatermark || lowWatermark > highWatermark) {
+    throw new Error('The MCL retention-gap interval is invalid.')
+  }
+  return {
+    sourceIdentityHash: requireSha256(command.sourceIdentityHash, 'sourceIdentityHash'),
+    topicContract: requireBoundedString(command.topicContract, 'topicContract', 255),
+    partition: requireNonnegativeInteger(command.partition, 'partition'),
+    previousNextOffset,
+    lowWatermark,
+    highWatermark,
+    observedAt: explicitSchedulerTimestamp(command.observedAt, 'observedAt'),
+  }
+}
+
+function retentionGapResult(row, replayed) {
+  const receiptId = requireSha256(row?.receipt_id, 'receiptId')
+  const priorExactSegmentIdentity = requireSha256(
+    row?.prior_exact_segment_identity,
+    'priorExactSegmentIdentity',
+  )
+  const previousNextOffset = Number(row.previous_next_offset)
+  const lowWatermark = Number(row.observed_low_watermark)
+  const highWatermark = Number(row.observed_high_watermark)
+  const newSegmentStart = Number(row.new_segment_start)
+  if (![previousNextOffset, lowWatermark, highWatermark, newSegmentStart]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)
+    || previousNextOffset >= lowWatermark
+    || lowWatermark > highWatermark
+    || newSegmentStart !== lowWatermark
+    || row.reason !== 'RETENTION_EXPIRED'
+    || Number(row.receipt_version) !== 1) {
+    throw new Error('The durable MCL retention-gap receipt is malformed.')
+  }
+  return Object.freeze({
+    receiptId,
+    priorExactSegmentIdentity,
+    previousNextOffset,
+    lowWatermark,
+    highWatermark,
+    newSegmentStart,
+    reason: 'RETENTION_EXPIRED',
+    observedAt: explicitSchedulerTimestamp(
+      row.observed_at instanceof Date ? row.observed_at.toISOString() : row.observed_at,
+      'observedAt',
+    ),
+    replayed: replayed === true,
+  })
 }
 
 function vectorLiteral(values) {

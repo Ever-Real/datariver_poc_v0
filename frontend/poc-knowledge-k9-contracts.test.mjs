@@ -108,8 +108,9 @@ test('source contracts declare exact Product routes and future private server-ow
   assert.match(glossaryBoundary.required_product_seam, /module-private in poc-server\.mjs/);
   assert.match(glossaryBoundary.required_product_seam, /server-owned exhaustive current-inventory trace/);
   assert.match(glossaryBoundary.required_product_seam, /reconcile provider assignment totals/);
-  assert.match(glossaryBoundary.required_product_seam, /same canonical inventory/);
-  assert.match(glossaryBoundary.required_product_seam, /absent\/unknown\/above-ceiling/);
+  assert.match(glossaryBoundary.required_product_seam, /canonical current Dataset inventory/);
+  assert.match(glossaryBoundary.required_product_seam, /TAG classification is retained only as metadata-quality telemetry/);
+  assert.match(glossaryBoundary.required_product_seam, /exact Product-owned Table grants and feature capability/);
 });
 
 test('declared route and provider boundaries match the pinned Product source', () => {
@@ -147,7 +148,8 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(k9BatchQueryMatch[1], /outgoingRelationships/);
   assert.match(product, /currentDatahubInventory[\s\S]*?startDatahubInventoryRefresh\(\{ signal, deferSemanticIndex: true \}\)/);
   assert.match(product, /if \(llm\.embedding && !deferSemanticIndex\)/);
-  assert.match(product, /createPocK9SourceCaptureTask\(\{[\s\S]*?currentInventory: async \(liveAuth\) => \(await currentDatahubInventory\(\)\)[\s\S]*?\.filter\(\(item\) => k9SourceClassification\([\s\S]*?liveAuth\.authorityPin\.classification_ceiling,[\s\S]*?inventoryProjection: \(_liveAuth, inventory\) => buildK9SourceInventoryProjection\(\{[\s\S]*?items: inventory,[\s\S]*?sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?buildSourceCapture: buildDatahubKnowledgeSourceCapture/);
+  assert.match(product, /createPocK9SourceCaptureTask\(\{[\s\S]*?currentInventory: async \(liveAuth\) => \{[\s\S]*?selectCanonicalK9SourceInventory\(await currentDatahubInventory\(\), \{[\s\S]*?classificationCeiling: liveAuth\.authorityPin\.classification_ceiling,[\s\S]*?latestK9SourceEligibility = selection\.telemetry[\s\S]*?return selection\.items[\s\S]*?inventoryProjection: \(_liveAuth, inventory\) => buildK9SourceInventoryProjection\(\{[\s\S]*?items: inventory,[\s\S]*?sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',[\s\S]*?collectLineage: collectLineageInventorySeam,[\s\S]*?collectMetadata: collectGlossaryInventorySeam,[\s\S]*?buildSourceCapture: buildDatahubKnowledgeSourceCapture/);
+  assert.doesNotMatch(product, /function k9SourceClassification|k9SourceClassification\(/);
   assert.match(product, /createK9GraphProjectors\(\{[\s\S]*?managedGraphs: k9,[\s\S]*?resolveAuthContext: resolveLiveK9AuthCtx/);
   assert.match(product, /createK9V2SemanticLifecycleProjector\(\{[\s\S]*?semanticPersistence: pocStateStore\.k9SemanticPersistenceV2/);
   assert.match(product, /createPocK9V2RefreshTask\(\{[\s\S]*?captureSource,[\s\S]*?projectors: Object\.freeze\(\{ \.\.\.graphProjectors, SEMANTIC: semanticProjector \}\)/);
@@ -159,7 +161,7 @@ test('POC runtime image copies the bounded K9 metadata collector module', () => 
   const dockerfile = readFileSync(new URL('../deploy/poc/Dockerfile.example', import.meta.url), 'utf8');
   assert.match(
     dockerfile,
-    /COPY frontend\/poc-k9-scheduler\.mjs \.\/poc-k9-scheduler\.mjs\nCOPY frontend\/poc-k9-metadata-collection\.mjs \.\/poc-k9-metadata-collection\.mjs\nCOPY frontend\/poc-k9-source-snapshot\.mjs \.\/poc-k9-source-snapshot\.mjs\nCOPY frontend\/poc-k9-lifecycle-persistence\.mjs \.\/poc-k9-lifecycle-persistence\.mjs\nCOPY frontend\/poc-k9-lifecycle-v2\.mjs \.\/poc-k9-lifecycle-v2\.mjs\nCOPY frontend\/poc-k9-lifecycle-runtime\.mjs \.\/poc-k9-lifecycle-runtime\.mjs\nCOPY frontend\/poc-k9-graph-projector\.mjs \.\/poc-k9-graph-projector\.mjs\nCOPY frontend\/poc-k9-semantic-persistence\.mjs \.\/poc-k9-semantic-persistence\.mjs\nCOPY frontend\/poc-k9-semantic-projector\.mjs \.\/poc-k9-semantic-projector\.mjs\nCOPY frontend\/poc-k9-semantic-runtime\.mjs \.\/poc-k9-semantic-runtime\.mjs\nCOPY frontend\/poc-k9-v2-refresh\.mjs \.\/poc-k9-v2-refresh\.mjs\n/,
+    /COPY frontend\/poc-k9-scheduler\.mjs \.\/poc-k9-scheduler\.mjs\nCOPY frontend\/poc-k9-metadata-collection\.mjs \.\/poc-k9-metadata-collection\.mjs\nCOPY frontend\/poc-k9-source-snapshot\.mjs \.\/poc-k9-source-snapshot\.mjs\nCOPY frontend\/poc-k9-source-eligibility\.mjs \.\/poc-k9-source-eligibility\.mjs\nCOPY frontend\/poc-k9-lifecycle-persistence\.mjs \.\/poc-k9-lifecycle-persistence\.mjs\nCOPY frontend\/poc-k9-lifecycle-v2\.mjs \.\/poc-k9-lifecycle-v2\.mjs\nCOPY frontend\/poc-k9-lifecycle-runtime\.mjs \.\/poc-k9-lifecycle-runtime\.mjs\nCOPY frontend\/poc-k9-graph-projector\.mjs \.\/poc-k9-graph-projector\.mjs\nCOPY frontend\/poc-k9-semantic-persistence\.mjs \.\/poc-k9-semantic-persistence\.mjs\nCOPY frontend\/poc-k9-semantic-projector\.mjs \.\/poc-k9-semantic-projector\.mjs\nCOPY frontend\/poc-k9-semantic-runtime\.mjs \.\/poc-k9-semantic-runtime\.mjs\nCOPY frontend\/poc-k9-v2-refresh\.mjs \.\/poc-k9-v2-refresh\.mjs\n/,
   );
 });
 

@@ -125,7 +125,14 @@ async function fixture(k9Mode, {
         ...(lifecycle === null ? {} : { k9_lifecycle: lifecycle }),
       })
     } else if (request.url?.startsWith('/api/v1/change-history/summary?')) {
-      json(200, changeHistory || { capture_state: 'CAPTURE_PENDING', sync_status: 'CAPTURE_PENDING' })
+      json(200, changeHistory || {
+        capture_state: 'CAPTURE_CAUGHT_UP',
+        sync_status: 'CAPTURE_CAUGHT_UP',
+        history_completeness: 'EXACT',
+        history_gap_reason: null,
+        history_gap_count: 0,
+        exact_current_segments: [],
+      })
     } else if (request.url === '/poc-api/llm/chat') {
       observed.chatOrigins.push(request.headers.origin)
       if (request.headers.origin !== canonicalOrigin) {
@@ -676,6 +683,48 @@ test('PREP smoke distinguishes MCL runtime discovery, capture, and retention fai
         failure_detail_code: failureDetailCode,
       })
       assert.ok(result.failure.elapsed_ms < 5_000)
+    })
+  }
+})
+
+test('PREP smoke accepts current MCL capture while truthfully preserving DEGRADED_GAP', async () => {
+  const result = await fixture('deferred', {
+    changeHistory: {
+      capture_state: 'CAPTURE_CAUGHT_UP',
+      sync_status: 'CAPTURE_CAUGHT_UP',
+      history_completeness: 'DEGRADED_GAP',
+      history_gap_reason: 'RETENTION_EXPIRED',
+      history_gap_count: 1,
+      exact_current_segments: [{ partition: 0, start_offset: 400, next_offset: 500 }],
+    },
+  })
+  assert.equal(result.completed.code, 0, result.completed.stderr)
+  assert.equal(result.report.mcl_current_capture, 'READY')
+  assert.equal(result.report.mcl_history_completeness, 'DEGRADED_GAP')
+  assert.equal(result.report.mcl_history_gap_reason, 'RETENTION_EXPIRED')
+  assert.equal(result.report.mcl_history_gap_count, 1)
+  assert.equal(result.report.readiness.MCL.status, 'DEGRADED_GAP')
+  assert.match(result.completed.stdout, /history DEGRADED_GAP \(RETENTION_EXPIRED\)/)
+})
+
+test('PREP smoke rejects incomplete MCL retained capture even when its ledger is contiguous', async (context) => {
+  for (const captureState of ['CONTIGUOUS_CAPTURE_RECORDED', 'CAPTURE_CATCHING_UP']) {
+    await context.test(captureState, async () => {
+      const result = await fixture('deferred', {
+        changeHistory: {
+          capture_state: captureState,
+          sync_status: captureState,
+          history_completeness: 'DEGRADED_GAP',
+          history_gap_reason: 'RETENTION_EXPIRED',
+          history_gap_count: 1,
+          exact_current_segments: [{ partition: 0, start_offset: 400, next_offset: 450 }],
+        },
+      })
+      assert.equal(result.completed.code, 2)
+      assert.equal(result.failure.stage, 'MCL_CHANGE_HISTORY')
+      assert.equal(result.failure.classification, 'PREP_SMOKE_MCL_CURRENT_CAPTURE_NOT_READY')
+      assert.equal(result.report.readiness.MCL.status, 'FAILED')
+      assert.notEqual(result.report.mcl_current_capture, 'READY')
     })
   }
 })

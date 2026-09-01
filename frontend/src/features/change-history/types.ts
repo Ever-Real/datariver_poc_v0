@@ -128,7 +128,15 @@ export interface ChangeHistoryWeeklySummary {
 
 export type ChangeHistorySyncStatus = 'SOURCE_NOT_CONFIGURED' | 'SOURCE_AMBIGUOUS'
   | 'CHECKPOINT_NOT_AVAILABLE' | 'CHECKPOINT_INVALID' | 'CAPTURE_PENDING'
-  | 'CONTIGUOUS_CAPTURE_RECORDED' | 'DISCOVERY_FAILED' | 'CAPTURE_FAILED'
+  | 'CONTIGUOUS_CAPTURE_RECORDED' | 'CAPTURE_CATCHING_UP' | 'CAPTURE_CAUGHT_UP'
+  | 'DISCOVERY_FAILED' | 'CAPTURE_FAILED'
+
+export interface ChangeHistoryExactSegment {
+  partition: number
+  start_offset: number
+  next_offset: number
+  status: 'EXACT' | 'EXACT_AFTER_GAP'
+}
 
 export interface MclRejectedRecordShape {
   contract: 'DATARIVER_MCL_REJECTED_RECORD_SHAPE_V1'
@@ -178,6 +186,10 @@ export interface ChangeHistorySummary extends ChangeHistoryWeeklySummary {
   first_timeline_checkpoint: string | null
   first_mcl_offsets: Array<{ partition: number; offset: number }> | null
   last_successful_capture_at: string | null
+  history_completeness: 'EXACT' | 'DEGRADED_GAP' | 'UNKNOWN'
+  history_gap_reason: 'RETENTION_EXPIRED' | null
+  history_gap_count: number
+  exact_current_segments: ChangeHistoryExactSegment[]
 }
 
 export interface ChangeHistoryLinkHistoryEvent {

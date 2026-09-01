@@ -819,6 +819,7 @@ test('managed graph snapshots retain request-time Table authorization boundaries
   }
   const principal = {
     role: 'data_steward',
+    capabilitySet: new Set(['knowledge.read']),
     maxSecurityGrade: 'credential',
     activeTableGrantUrns: new Set([tableA]),
     allowedFeatureSecurityCells: new Set(['knowledge\u0000data_steward\u0000credential']),
@@ -843,8 +844,11 @@ test('managed graph snapshots retain request-time Table authorization boundaries
     ...servicePrincipal,
     maxSecurityGrade: 'normal',
   }, release, { knowledgeAdapter: 'MCP' })
-  assert.deepEqual(insufficientClearance.nodes, [])
-  assert.deepEqual(insufficientClearance.edges, [])
+  assert.deepEqual(insufficientClearance.nodes.map((node) => node.id), ['table-a', 'column-a', 'term-shared'])
+  assert.deepEqual(insufficientClearance.edges.map((edge) => `${edge.source}->${edge.target}`), [
+    'table-a->column-a',
+    'table-a->term-shared',
+  ])
   assert.equal(authorizeManagedK9Release({ role: 'admin' }, release), release)
 })
 
@@ -871,6 +875,7 @@ test('managed visualization resolves and bounds only the authorization-filtered 
   }
   const authorized = authorizeManagedK9Release({
     role: 'data_steward',
+    capabilitySet: new Set(['knowledge.read']),
     maxSecurityGrade: 'credential',
     activeTableGrantUrns: new Set([tableA]),
     allowedFeatureSecurityCells: new Set(['knowledge\u0000data_steward\u0000credential']),
@@ -2398,15 +2403,13 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   const catalogOnlyLinks = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-links`))
   const catalogOnlySummary = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-requests/summaries?limit=25`))
   const catalogOnlyCrDetail = await run(catalogOnly, (origin) => fetch(`${origin}/api/v1/change-requests/cr-1`))
-  assert.equal((await catalogOnlyList.result.json()).total, 0)
-  assert.equal((await catalogOnlyDrawer.result.json()).total, 0)
-  assert.equal((await catalogOnlyWeekly.result.json()).total_count, 0)
-  assert.equal(catalogOnlyDetail.result.status, 404)
-  assert.equal(catalogOnlyLinks.result.status, 404)
-  assert.equal(catalogOnlyCrDetail.result.status, 404)
-  assert.deepEqual((await catalogOnlySummary.result.json()), {
-    items: [], overview: [], overview_truncated: false, page: { next_cursor: null, limit: 25 },
-  })
+  assert.equal((await catalogOnlyList.result.json()).total, 1)
+  assert.equal((await catalogOnlyDrawer.result.json()).total, 1)
+  assert.equal((await catalogOnlyWeekly.result.json()).total_count, 1)
+  assert.equal(catalogOnlyDetail.result.status, 200)
+  assert.equal(catalogOnlyLinks.result.status, 200)
+  assert.equal(catalogOnlyCrDetail.result.status, 200)
+  assert.equal((await catalogOnlySummary.result.json()).items.length, 1)
   const changeOnly = structuredClone(grantedViewer)
   changeOnly.featurePolicy = opposingPolicy(false, true)
   const changeOnlyList = await run(changeOnly, (origin) => fetch(`${origin}/api/v1/change-history/events`))
@@ -2858,6 +2861,7 @@ function makeChangeHistoryProjection({ sourceHashes, configuredCheckpointHash })
     links: [],
     sources,
     checkpoints,
+    gapReceipts: [],
   }
 }
 
@@ -2990,6 +2994,160 @@ test('change-history summary exposes only bounded durable MCL failure diagnostic
       assert.equal(sanitized.capture_failure_stage, null)
       assert.equal(sanitized.capture_failure_detail_code, null)
       assert.equal(JSON.stringify(sanitized).includes('private.invalid'), false)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((error) => error ? reject(error) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
+
+test('change-history summary separates retained capture readiness from durable history gaps', async () => {
+  const sourceHash = '9'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-retention-gap-summary')
+  const projection = makeChangeHistoryProjection({
+    sourceHashes: [sourceHash], configuredCheckpointHash: sourceHash,
+  })
+  projection.checkpoints[0] = {
+    ...projection.checkpoints[0],
+    first_exact_offset: 0,
+    next_offset: 500,
+    last_captured_at: '2026-09-01T02:00:00.000Z',
+  }
+  projection.captureStatus = { version: 2, value: {
+    contract: 'DATARIVER_CHANGE_HISTORY_CAPTURE_STATUS_V1',
+    state: 'CAPTURE_CAUGHT_UP',
+    batch_processed_records: 100,
+    caught_up: true,
+    source_identity_hash: sourceHash,
+    observed_at: '2026-09-01T02:00:00.000Z',
+  } }
+  projection.gapReceipts = [{
+    receipt_id: 'a'.repeat(64),
+    source_identity_hash: sourceHash,
+    topic_contract: 'MetadataChangeLog_Versioned_v1',
+    source_partition: 0,
+    previous_next_offset: 357,
+    observed_low_watermark: 400,
+    observed_high_watermark: 500,
+    missing_interval_start: 357,
+    missing_interval_end: 400,
+    reason: 'RETENTION_EXPIRED',
+    prior_exact_segment_identity: 'b'.repeat(64),
+    new_segment_start: 400,
+    observed_at: '2026-09-01T01:00:00.000Z',
+    receipt_version: 1,
+  }]
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() {
+      return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
+    },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) {
+      assert.equal(scope, 'table-system-mappings-v1')
+      return { value: structuredClone(projection.mapping), version: 1 }
+    },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    process.env.POC_MCL_SOURCE_IDENTITY_HASH = sourceHash
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      const summary = await (await fetch(
+        `${base}/api/v1/change-history/summary?week_start=2026-08-10`,
+      )).json()
+      assert.equal(summary.capture_state, 'CAPTURE_CAUGHT_UP')
+      assert.equal(summary.history_completeness, 'DEGRADED_GAP')
+      assert.equal(summary.history_gap_reason, 'RETENTION_EXPIRED')
+      assert.equal(summary.history_gap_count, 1)
+      assert.equal(summary.ledger_guarantee_from, null)
+      assert.equal(summary.first_exact_capture_at, null)
+      assert.deepEqual(summary.exact_current_segments, [{
+        partition: 0,
+        start_offset: 400,
+        next_offset: 500,
+        status: 'EXACT_AFTER_GAP',
+      }])
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((error) => error ? reject(error) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
+
+test('change-history summary does not reuse a stale READY status before retained gap catch-up', async () => {
+  const sourceHash = '7'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-retention-gap-catching-up')
+  const projection = makeChangeHistoryProjection({
+    sourceHashes: [sourceHash], configuredCheckpointHash: sourceHash,
+  })
+  projection.checkpoints[0] = {
+    ...projection.checkpoints[0],
+    first_exact_offset: 0,
+    next_offset: 400,
+    last_captured_at: '2026-09-01T01:00:00.000Z',
+  }
+  projection.captureStatus = { version: 2, value: {
+    contract: 'DATARIVER_CHANGE_HISTORY_CAPTURE_STATUS_V1',
+    state: 'CAPTURE_CAUGHT_UP',
+    batch_processed_records: 100,
+    caught_up: true,
+    source_identity_hash: sourceHash,
+    observed_at: '2026-09-01T00:30:00.000Z',
+  } }
+  projection.gapReceipts = [{
+    receipt_id: 'c'.repeat(64),
+    source_identity_hash: sourceHash,
+    topic_contract: 'MetadataChangeLog_Versioned_v1',
+    source_partition: 0,
+    previous_next_offset: 357,
+    observed_low_watermark: 400,
+    observed_high_watermark: 500,
+    missing_interval_start: 357,
+    missing_interval_end: 400,
+    reason: 'RETENTION_EXPIRED',
+    prior_exact_segment_identity: 'd'.repeat(64),
+    new_segment_start: 400,
+    observed_at: '2026-09-01T01:00:00.000Z',
+    receipt_version: 1,
+  }]
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() {
+      return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
+    },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+    async read(scope) {
+      assert.equal(scope, 'table-system-mappings-v1')
+      return { value: structuredClone(projection.mapping), version: 1 }
+    },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    process.env.POC_MCL_SOURCE_IDENTITY_HASH = sourceHash
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      const summary = await (await fetch(
+        `${base}/api/v1/change-history/summary?week_start=2026-08-10`,
+      )).json()
+      assert.equal(summary.capture_state, 'CAPTURE_CATCHING_UP')
+      assert.equal(summary.history_completeness, 'DEGRADED_GAP')
+      assert.deepEqual(summary.exact_current_segments, [{
+        partition: 0,
+        start_offset: 400,
+        next_offset: 400,
+        status: 'EXACT_AFTER_GAP',
+      }])
     } finally {
       srv.closeAllConnections()
       await new Promise((resolve, reject) => srv.close((error) => error ? reject(error) : resolve()))

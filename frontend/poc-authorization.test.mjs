@@ -182,7 +182,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   assert.throws(() => assertPocRouteAuthorization(null, principal('admin', 'admin')), { code: 'NOT_FOUND' })
 })
 
-test('enforces capability plus current Table grant, grade and policy without using Responsible System for general reads', () => {
+test('enforces capability plus current Table grant without using TAG grade or Responsible System for general reads', () => {
   const tableA = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.a.table_a,PROD)'
   const tableB = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.b.table_b,PROD)'
   const unknown = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.unknown.table_c,PROD)'
@@ -340,20 +340,20 @@ test('enforces Registration-only asset mutation seam', () => {
   assert.ok(canReadRegistrationAsset(stewardSysTable, validAsset, stewardSystems))
   assert.doesNotThrow(() => assertRegistrationAssetMutation(stewardSysTable, validAsset, stewardSystems))
 
-  assert.ok(!canReadRegistrationAsset(stewardSysTable, restrictedAsset, stewardSystems))
+  assert.ok(canReadRegistrationAsset(stewardSysTable, restrictedAsset, stewardSystems))
   const deniedPolicy = structuredClone(approvedDefaultFeatureSecurityPolicy())
   deniedPolicy.cells.find((cell) => (
     cell.feature === 'registration' && cell.role === 'data_steward' && cell.grade === 'normal'
   )).allow = false
   const stewardPolicyDenied = principal('steward', 'data_steward', { grants: [tableUrn], policy: deniedPolicy })
-  assert.ok(!canReadRegistrationAsset(stewardPolicyDenied, validAsset, stewardSystems))
+  assert.ok(canReadRegistrationAsset(stewardPolicyDenied, validAsset, stewardSystems))
 
   const admin = principal('admin', 'admin')
   assert.ok(canReadRegistrationAsset(admin, validAsset, activeSystems))
   assert.doesNotThrow(() => assertRegistrationAssetMutation(admin, validAsset, activeSystems))
 
-  assert.ok(!canReadRegistrationAsset(admin, malformedAsset, activeSystems))
-  assert.throws(() => assertRegistrationAssetMutation(admin, malformedAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+  assert.ok(canReadRegistrationAsset(admin, malformedAsset, activeSystems))
+  assert.doesNotThrow(() => assertRegistrationAssetMutation(admin, malformedAsset, activeSystems))
 
   assert.ok(!canReadRegistrationAsset(managerSysTable, validAsset, emptySystems))
   assert.throws(() => assertRegistrationAssetMutation(managerSysTable, validAsset, emptySystems), { code: 'TABLE_DATA_FORBIDDEN' })

@@ -67,6 +67,58 @@ describe('DataChangeStatusPanel', () => {
     expect(facts).not.toHaveTextContent('urn:li:')
   })
 
+  it('shows a durable retention gap separately from current capture readiness', async () => {
+    const request = vi.fn((path: string) => responseFor(path, {
+      summary: summaryFor(path, {
+        capture_state: 'CAPTURE_CAUGHT_UP',
+        sync_status: 'CAPTURE_CAUGHT_UP',
+        history_completeness: 'DEGRADED_GAP',
+        history_gap_reason: 'RETENTION_EXPIRED',
+        history_gap_count: 1,
+        exact_current_segments: [
+          { partition: 0, start_offset: 150, next_offset: 507, status: 'EXACT_AFTER_GAP' },
+        ],
+      }),
+      page: eventPage([]),
+    }))
+    render(<DataChangeStatusPanel client={clientFor(request)} />)
+
+    const facts = await screen.findByLabelText('변경 이력 원장 상태')
+    expect(within(facts).getByText('과거 보존 구간 누락 · 현재 캡처 정상')).toBeInTheDocument()
+    expect(within(facts).getByText('RETENTION_EXPIRED · 1건 · 현재 exact 구간 1개')).toBeInTheDocument()
+  })
+
+  it('does not overclaim current readiness while a retained gap is catching up or failed', async () => {
+    for (const [captureState, expected] of [
+      ['CAPTURE_CATCHING_UP', '과거 보존 구간 누락 · 현재 캡처 진행 중'],
+      ['CAPTURE_FAILED', '과거 보존 구간 누락 · 현재 캡처 확인 필요'],
+    ] as const) {
+      const request = vi.fn((path: string) => responseFor(path, {
+        summary: summaryFor(path, {
+          capture_state: captureState,
+          sync_status: captureState,
+          history_completeness: 'DEGRADED_GAP',
+          history_gap_reason: 'RETENTION_EXPIRED',
+          history_gap_count: 1,
+          exact_current_segments: [
+            { partition: 0, start_offset: 150, next_offset: 200, status: 'EXACT_AFTER_GAP' },
+          ],
+          ...(captureState === 'CAPTURE_FAILED' ? {
+            capture_failure_classification: 'PREP_MCL_CAPTURE_DURABLE_APPEND_FAILED',
+            capture_failure_stage: 'DURABLE_APPEND',
+            capture_failure_detail_code: 'LEDGER_WRITE_REJECTED',
+          } : {}),
+        }),
+        page: eventPage([]),
+      }))
+      const { unmount } = render(<DataChangeStatusPanel client={clientFor(request)} />)
+      const facts = await screen.findByLabelText('변경 이력 원장 상태')
+      expect(within(facts).getByText(expected)).toBeInTheDocument()
+      expect(facts).not.toHaveTextContent('과거 보존 구간 누락 · 현재 캡처 정상')
+      unmount()
+    }
+  })
+
   it('renders load failure separately from zero and empty states', async () => {
     const request = vi.fn().mockRejectedValue(new Error('변경 이력 provider 조회 실패'))
     render(<DataChangeStatusPanel client={clientFor(request)} />)
@@ -319,6 +371,10 @@ function summary(weekStart: string, overrides: Record<string, unknown> = {}) {
     first_timeline_checkpoint: null,
     first_mcl_offsets: null,
     last_successful_capture_at: null,
+    history_completeness: 'UNKNOWN',
+    history_gap_reason: null,
+    history_gap_count: 0,
+    exact_current_segments: [],
     ...overrides,
   }
 }

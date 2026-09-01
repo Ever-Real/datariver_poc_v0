@@ -20,47 +20,42 @@ function principal(role, systemIds, globalSystemMutation = false, maxSecurityGra
     systemIds: new Set(systemIds),
     globalSystemMutation,
     maxSecurityGrade,
+    capabilitySet: new Set(role === 'admin' ? [] : ['change.read']),
   }
 }
 
-test('assertCrTableAccess enforces explicit grant, security grade, and feature policy', () => {
+test('assertCrTableAccess enforces explicit grant and change capability without TAG-derived grade authority', () => {
   const p = principal('developer', ['system-a'])
 
   // Wrong System / No explicit grant
   assert.throws(
     () => assertCrTableAccess({
-      principal: p, tableUrn: 'urn:table:1', tableGrade: 'normal', grantedTableUrns: new Set(),
-      featurePolicyDocument: {}, featureSecurityAllowed: () => true, securityGradeRank: () => 1
+      principal: p, tableUrn: 'urn:table:1', grantedTableUrns: new Set(),
     }),
     { code: 'TABLE_GRANT_REQUIRED' }
   )
 
   // Explicit grant allowed
   assert.doesNotThrow(() => assertCrTableAccess({
-    principal: p, tableUrn: 'urn:table:1', tableGrade: 'normal', grantedTableUrns: new Set(['urn:table:1']),
-    featurePolicyDocument: {}, featureSecurityAllowed: () => true, securityGradeRank: () => 1
+    principal: p, tableUrn: 'urn:table:1', grantedTableUrns: new Set(['urn:table:1']),
   }))
 
-  // Security grade exceeds maximum
+  // Missing capability still fails closed.
   assert.throws(
     () => assertCrTableAccess({
-      principal: principal('developer', ['system-a'], true, 'normal'),
-      tableUrn: 'urn:table:1', tableGrade: 'restricted', grantedTableUrns: new Set(['urn:table:1']),
-      featurePolicyDocument: {}, featureSecurityAllowed: () => true,
-      securityGradeRank: (g) => g === 'restricted' ? 3 : 1
+      principal: { ...p, capabilitySet: new Set() },
+      tableUrn: 'urn:table:1', grantedTableUrns: new Set(['urn:table:1']),
     }),
-    { code: 'SECURITY_GRADE_FORBIDDEN' }
+    { code: 'CAPABILITY_REQUIRED' }
   )
 
-  // Feature policy denied
-  assert.throws(
-    () => assertCrTableAccess({
-      principal: principal('developer', ['system-a'], true, 'normal'),
-      tableUrn: 'urn:table:1', tableGrade: 'normal', grantedTableUrns: new Set(['urn:table:1']),
-      featurePolicyDocument: {}, featureSecurityAllowed: () => false, securityGradeRank: () => 1
-    }),
-    { code: 'FEATURE_POLICY_DENIED' }
-  )
+  // CR classification remains business metadata and never changes Table authority here.
+  for (const tableGrade of ['normal', 'credential', 'restricted', 'invalid']) {
+    assert.doesNotThrow(() => assertCrTableAccess({
+      principal: p, tableUrn: 'urn:table:1', tableGrade,
+      grantedTableUrns: new Set(['urn:table:1']),
+    }))
+  }
 })
 
 test('resolveNewCrResponsibleSystem resolves exact active mapping', () => {

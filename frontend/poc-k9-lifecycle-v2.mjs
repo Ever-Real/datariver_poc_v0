@@ -1,3 +1,5 @@
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
+
 export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
 export const K9_V2_SOURCE_RUN_MODES = Object.freeze(['RESUME', 'REFRESH'])
@@ -114,11 +116,15 @@ function safeSourceCaptureDiagnostic(error) {
     const stage = error?.k9SourceDiagnostic?.failureStage
     const detail = error?.k9SourceDiagnostic?.failureDetailCode
     if (sourceFailureStages.has(stage) && safeDiagnosticTokenPattern.test(detail || '')) {
+      const eligibility = sanitizeK9SourceEligibilityTelemetry(
+        error?.k9SourceDiagnostic?.sourceEligibility,
+      )
       return Object.freeze({
         code,
         stage,
         failure_detail_code: detail,
         retryable: true,
+        ...(eligibility ? { source_eligibility: eligibility } : {}),
       })
     }
   }

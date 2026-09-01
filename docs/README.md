@@ -72,6 +72,8 @@
 | 74 | [DEV → PREP39083 → OPS release cycle](66_RELEASE_CYCLE.md) | serial Product/Evidence, source, artifact and persistent-state authority | PREP handoff contract |
 | 75 | [Migration governance and accepted-history integrity](68_MIGRATION_GOVERNANCE_AND_INTEGRITY.md) | immutable accepted revisions, checksum gate, bounded new-migration review and baseline-V2 backlog | Active fail-closed release contract |
 | 76 | [Dedicated PREP release and Git artifact transport](adr/0132-prep-release-and-development-isolation.md) | dirty-development isolation, one-command release preparation, automatic PREP retrieval and receipt status | Accepted PREP operations contract |
+| 77 | [K9 source/graph/semantic lifecycle decoupling](adr/0133-k9-source-graph-semantic-lifecycle-decoupling.md) | immutable source snapshot, independent projector receipts, aggregate readiness and bounded resume | Accepted |
+| 78 | [K9 TAG authority separation and MCL retention gaps](adr/0134-k9-tag-authority-and-mcl-retention-gap.md) | free-form TAG taxonomy without Table authority; durable non-destructive Kafka retention-gap recovery | Accepted |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -115,6 +117,11 @@ historical Change Request routing evidence and is not silently rewritten.
 security-grade/current-Table helpers, exact-first non-union transition, Admin/session invariants,
 schema-migration risk contract, and the bounded 120-cell PHASE 1C-3 management policy. PHASE 1D
 remains responsible for retrieval-time enforcement and existence hiding.
+[ADR-0134](adr/0134-k9-tag-authority-and-mcl-retention-gap.md) supersedes ADR-0126 only for Table
+TAG-derived grades: free-form DataHub TAGs are taxonomy/telemetry, never K9 eligibility or Table
+authorization authority. Table reads use Product-owned role/capability, Workspace and exact active
+Table grants. It also defines append-only `RETENTION_EXPIRED` MCL gap receipts and truthfully
+separates current capture readiness from historical completeness.
 Immutable editable Change Request revisions after a recoverable reviewer request are defined by
 [ADR-0110](adr/0110-editable-change-request-revision-rounds.md); terminal rejection remains
 unchanged and historical rounds, targets, decisions and attachments stay append-only.

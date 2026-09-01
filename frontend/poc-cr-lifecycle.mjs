@@ -56,17 +56,14 @@ function appendApprovalProjection(cr, lane) {
   cr.approvals = approvals
 }
 
-// Requirement 2: table grant + grade + feature policy cell check.
-export function assertCrTableAccess({ principal, tableUrn, tableGrade, grantedTableUrns, featurePolicyDocument, featureSecurityAllowed, securityGradeRank }) {
+// Requirement 2: the CR classification remains business metadata. Table read
+// authority is the Product-owned role/capability plus exact active Table grant.
+export function assertCrTableAccess({ principal, tableUrn, grantedTableUrns }) {
   const isAdmin = principal.role === 'admin'
   if (!isAdmin && !(grantedTableUrns instanceof Set && grantedTableUrns.has(tableUrn)))
     throw crErr(403, 'TABLE_GRANT_REQUIRED', 'An explicit active Table grant is required.')
-  if (!isAdmin && tableGrade && typeof securityGradeRank === 'function'
-    && securityGradeRank(tableGrade) > securityGradeRank(principal.maxSecurityGrade))
-    throw crErr(403, 'SECURITY_GRADE_FORBIDDEN', 'Table security grade exceeds subject maximum.')
-  if (featurePolicyDocument && typeof featureSecurityAllowed === 'function'
-    && !featureSecurityAllowed(featurePolicyDocument, 'change', principal.role, tableGrade || 'normal'))
-    throw crErr(403, 'FEATURE_POLICY_DENIED', 'Change feature is disabled for this role and classification.')
+  if (!isAdmin && !(principal.capabilitySet instanceof Set && principal.capabilitySet.has('change.read')))
+    throw crErr(403, 'CAPABILITY_REQUIRED', 'change.read is required for Change Request Table access.')
 }
 
 // Requirement 3: exact Table-System only, no legacy fallback.

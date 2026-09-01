@@ -8,7 +8,7 @@ import {
   resolveTableSystemAuthority,
   securityGradeRank,
   tableAuthoritySnapshot,
-  tableSecurityGrade,
+  legacyTableTagGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
 import {
@@ -101,10 +101,10 @@ test('canonical security grade helpers: normalize, rank, compare, tags, invalid'
   assert.equal(compareSecurityGrades('credential', 'credential'), 0)
   assert.throws(() => compareSecurityGrades('normal', 'invalid'), { code: 'SECURITY_GRADE_INVALID' })
 
-  assert.equal(tableSecurityGrade({ tags: ['not-restricted', 'CLASSIFICATION:RESTRICTED'] }), 'normal')
-  assert.equal(tableSecurityGrade({ tags: [' Restricted '] }), 'restricted')
-  assert.equal(tableSecurityGrade({ tags: [{ urn: 'urn:li:tag:credential', name: 'anything' }, 'restricted'] }), 'restricted')
-  assert.equal(tableSecurityGrade({ tags: ['credential'] }), 'credential')
+  assert.equal(legacyTableTagGrade({ tags: ['not-restricted', 'CLASSIFICATION:RESTRICTED'] }), 'normal')
+  assert.equal(legacyTableTagGrade({ tags: [' Restricted '] }), 'restricted')
+  assert.equal(legacyTableTagGrade({ tags: [{ urn: 'urn:li:tag:credential', name: 'anything' }, 'restricted'] }), 'restricted')
+  assert.equal(legacyTableTagGrade({ tags: ['credential'] }), 'credential')
 })
 
 test('returns TABLE-only candidates with search, schema, System and grade filters', () => {

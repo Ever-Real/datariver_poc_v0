@@ -332,6 +332,10 @@ function summary() {
     first_timeline_checkpoint: null,
     first_mcl_offsets: [{ partition: 0, offset: 10 }],
     last_successful_capture_at: timestamp,
+    history_completeness: 'EXACT',
+    history_gap_reason: null,
+    history_gap_count: 0,
+    exact_current_segments: [{ partition: 0, start_offset: 10, next_offset: 11, status: 'EXACT' }],
   }
 }
 

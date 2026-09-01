@@ -1,5 +1,6 @@
 /* global Buffer, structuredClone */
 import { canonicalStringify, computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 export const K9_LIFECYCLE_KEY_V2 = 'managed-k9-v2'
 export const K9_SOURCE_SNAPSHOT_CONTRACT_V2 = 'DATARIVER_K9_SOURCE_SNAPSHOT_V2'
@@ -369,12 +370,14 @@ function jsonSize(value) {
 }
 
 export function normalizeK9SourceSnapshotV2(value) {
-  const keys = [
+  const legacyKeys = [
     'authority_pin', 'catalog_generation', 'contract_version', 'dangling_state_hash',
     'datahub_commit', 'datahub_version', 'inventory_projection_hash', 'lineage_hash',
     'metadata_hash', 'metadata_source_profile', 'source_fingerprint_id', 'source_snapshot_id',
   ]
-  if (!exactKeys(value, keys) || value.contract_version !== K9_SOURCE_SNAPSHOT_CONTRACT_V2) {
+  const currentKeys = [...legacyKeys, 'source_eligibility']
+  if ((!exactKeys(value, legacyKeys) && !exactKeys(value, currentKeys))
+    || value.contract_version !== K9_SOURCE_SNAPSHOT_CONTRACT_V2) {
     throw lifecycleError('K9_SOURCE_SNAPSHOT_INVALID', 'The K9 source snapshot V2 shape is invalid.')
   }
   const normalized = {
@@ -392,6 +395,11 @@ export function normalizeK9SourceSnapshotV2(value) {
     metadata_source_profile: value.metadata_source_profile === null
       ? null
       : structuredClone(value.metadata_source_profile),
+    ...(Object.hasOwn(value, 'source_eligibility') ? {
+      source_eligibility: value.source_eligibility === null
+        ? null
+        : sanitizeK9SourceEligibilityTelemetry(value.source_eligibility),
+    } : {}),
   }
   const authorityKeys = [
     'authorization_fingerprint', 'authorization_generation', 'classification_ceiling', 'classification_policy_version',
@@ -414,6 +422,8 @@ export function normalizeK9SourceSnapshotV2(value) {
     || normalized.authority_pin.policy_version.length < 1 || normalized.authority_pin.policy_version.length > 200
     || normalized.source_fingerprint_id !== normalized.source_snapshot_id
     || (normalized.metadata_source_profile !== null && !isObject(normalized.metadata_source_profile))
+    || (value.source_eligibility !== null && value.source_eligibility !== undefined
+      && normalized.source_eligibility === null)
     || jsonSize(normalized.metadata_source_profile) > 65_536) {
     throw lifecycleError('K9_SOURCE_SNAPSHOT_INVALID', 'The K9 source snapshot V2 binding is invalid.')
   }
@@ -421,6 +431,7 @@ export function normalizeK9SourceSnapshotV2(value) {
   delete document.source_snapshot_id
   delete document.source_fingerprint_id
   delete document.metadata_source_profile
+  delete document.source_eligibility
   if (computeSha256(document) !== normalized.source_snapshot_id || jsonSize(normalized) > 131_072) {
     throw lifecycleError('K9_SOURCE_SNAPSHOT_HASH_MISMATCH', 'The K9 source snapshot V2 identity does not match its canonical document.')
   }
@@ -445,10 +456,16 @@ export function normalizeK9SourcePayloadsV2(value, snapshotValue) {
     DANGLING_STATE: snapshot.dangling_state_hash,
   }
   const inventory = payloads.INVENTORY
-  if (!exactKeys(inventory, ['items', 'projection_version', 'source_generation', 'source_scope'])
+  const legacyInventoryKeys = ['items', 'projection_version', 'source_generation', 'source_scope']
+  const currentInventoryKeys = ['eligibility', ...legacyInventoryKeys]
+  if ((!exactKeys(inventory, legacyInventoryKeys) && !exactKeys(inventory, currentInventoryKeys))
     || (!Number.isSafeInteger(inventory.projection_version) && inventory.projection_version !== null)
     || (inventory.source_scope !== null && typeof inventory.source_scope !== 'string')
     || inventory.source_generation !== snapshot.catalog_generation
+    || ((inventory.eligibility ?? null) === null) !== ((snapshot.source_eligibility ?? null) === null)
+    || (inventory.eligibility !== null && inventory.eligibility !== undefined
+      && canonicalStringify(sanitizeK9SourceEligibilityTelemetry(inventory.eligibility))
+        !== canonicalStringify(snapshot.source_eligibility))
     || !Array.isArray(inventory.items)
     || inventory.items.some((item, index, items) => !isObject(item)
       || (index > 0 && canonicalStringify(items[index - 1]).localeCompare(canonicalStringify(item)) > 0))) {

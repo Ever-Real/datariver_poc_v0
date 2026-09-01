@@ -4,6 +4,7 @@ import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_REFRESH_MODE = 'DAILY'
@@ -144,12 +145,17 @@ async function datahubSourceStage(failureStage, action, sourceRetryWait) {
         ? errorChain(error).map((item) => sanitizeK9MetadataSourceProfile(item?.k9MetadataSourceProfile))
           .find(Boolean) || null
         : null
+      const sourceEligibility = failureStage === 'INVENTORY'
+        ? errorChain(error).map((item) => sanitizeK9SourceEligibilityTelemetry(item?.k9SourceEligibility))
+          .find(Boolean) || null
+        : null
       throw Object.assign(new Error('K9_DATAHUB_SOURCE_FAILED'), {
         k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
         k9SourceDiagnostic: Object.freeze({
           failureStage,
           failureDetailCode,
           ...(metadataProfile ? { metadataProfile } : {}),
+          ...(sourceEligibility ? { sourceEligibility } : {}),
         }),
       })
     }
@@ -356,6 +362,10 @@ export function createPocK9RefreshTask({
             ...(candidateDiagnostic.failureStage === 'METADATA_COLLECTION'
               && sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile)
               ? { metadataProfile: sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile) }
+              : {}),
+            ...(candidateDiagnostic.failureStage === 'INVENTORY'
+              && sanitizeK9SourceEligibilityTelemetry(candidateDiagnostic.sourceEligibility)
+              ? { sourceEligibility: sanitizeK9SourceEligibilityTelemetry(candidateDiagnostic.sourceEligibility) }
               : {}),
           }
         : null

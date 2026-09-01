@@ -93,6 +93,25 @@ function mclFailureDiagnostic(body) {
   }
 }
 
+function boundedK9SourceEligibility(value) {
+  if (!value || value.contract !== 'DATARIVER_K9_SOURCE_ELIGIBILITY_V1'
+    || value.classification_authority !== false) return null
+  const fields = [
+    'provider_current_inventory_count', 'canonical_current_count', 'eligible_source_count',
+    'invalid_identity_count', 'unsupported_kind_count', 'classification_exact_count',
+    'classification_missing_count', 'classification_multiple_count', 'classification_invalid_count',
+  ]
+  if (fields.some((field) => !Number.isSafeInteger(value[field])
+    || value[field] < 0 || value[field] > 1_000_000_000)) return null
+  return Object.fromEntries([
+    ['contract', value.contract],
+    ...fields.map((field) => [field, value[field]]),
+    ['classification_ceiling', safeK9Token(value.classification_ceiling)
+      ? value.classification_ceiling : null],
+    ['classification_authority', false],
+  ])
+}
+
 function k9SourceFailureDiagnostic(asset) {
   if (!(asset?.last_error_code === 'K9_DATAHUB_SOURCE_FAILED'
     && k9SourceFailureStages.has(asset?.failure_stage)
@@ -158,9 +177,11 @@ function k9SourceFailureDiagnostic(asset) {
       && /^[0-9a-f]{64}$/.test(direct.first_dangling_identity_hash)
       ? direct.first_dangling_identity_hash : null,
   } : null
+  const sourceEligibility = boundedK9SourceEligibility(asset.source_eligibility)
   return {
     failure_stage: asset.failure_stage,
     failure_detail_code: asset.failure_detail_code,
+    ...(sourceEligibility ? { source_eligibility: sourceEligibility } : {}),
     ...(boundedDirect ? {
       provider_failure_class: boundedDirect.provider_failure_class,
       batch_number: boundedDirect.batch_number,
@@ -366,6 +387,7 @@ function boundedK9V2LifecycleStatus(lifecycle) {
       active_snapshot_id: snapshot(lifecycle.source?.active_snapshot_id),
       status: ['NOT_STARTED', 'PENDING', 'RUNNING', 'READY', 'FAILED'].includes(lifecycle.source?.status)
         ? lifecycle.source.status : 'FAILED',
+      eligibility: boundedK9SourceEligibility(lifecycle.source?.eligibility),
     },
     projectors: Object.fromEntries(k9V2Projectors.map((item) => (
       [item, projector(lifecycle.projectors?.[item])]
@@ -609,6 +631,11 @@ async function main() {
     k9_assignment_scope: null,
     k9_lifecycle: null,
     mcl_change_history: 'FAIL',
+    mcl_current_capture: 'PENDING',
+    mcl_history_completeness: 'UNKNOWN',
+    mcl_history_gap_reason: null,
+    mcl_history_gap_count: 0,
+    mcl_exact_current_segment_count: 0,
     llm_general: 'FAIL',
     readiness: {
       DATAHUB: { status: 'PENDING', stage: null, classification: null },
@@ -734,6 +761,9 @@ async function main() {
                 product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
                 failure_stage: sourceCaptureFailure.failure_stage,
                 failure_detail_code: sourceCaptureFailure.failure_detail_code,
+                ...(boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility)
+                  ? { source_eligibility: boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility) }
+                  : {}),
               },
             )
           }
@@ -862,6 +892,7 @@ async function main() {
     week.setUTCDate(week.getUTCDate() - day)
     const weekStart = week.toISOString().slice(0, 10)
     try {
+      let mclHistoryCompleteness = 'UNKNOWN'
       await retryReadiness(async () => {
         const changeHistory = await responseJson(
         `${transportOrigin}/api/v1/change-history/summary?week_start=${weekStart}`,
@@ -891,18 +922,46 @@ async function main() {
           mclFailureDiagnostic(changeHistory.body),
         )
       }
-      if (![
-        'CAPTURE_PENDING',
-        'CONTIGUOUS_CAPTURE_RECORDED',
-        'CAPTURE_CATCHING_UP',
-        'CAPTURE_CAUGHT_UP',
-      ].includes(changeHistory.body?.capture_state)) {
-        throw smokeFailure('MCL_CHANGE_HISTORY', 'PREP_SMOKE_MCL_SOURCE_FAILED', 'MCL source/checkpoint contract is not ready.')
+      if (changeHistory.body?.capture_state !== 'CAPTURE_CAUGHT_UP') {
+        throw smokeFailure(
+          'MCL_CHANGE_HISTORY',
+          'PREP_SMOKE_MCL_CURRENT_CAPTURE_NOT_READY',
+          'MCL current retained capture has not reached its observed high watermark.',
+        )
       }
-        report.mcl_change_history = 'PASS'
+      const historyCompleteness = changeHistory.body?.history_completeness
+      const gapCount = changeHistory.body?.history_gap_count
+      const exactSegments = changeHistory.body?.exact_current_segments
+      if (!['EXACT', 'DEGRADED_GAP'].includes(historyCompleteness)
+        || !Number.isSafeInteger(gapCount) || gapCount < 0
+        || !Array.isArray(exactSegments) || exactSegments.length > 1_000
+        || (historyCompleteness === 'DEGRADED_GAP'
+          && (changeHistory.body?.history_gap_reason !== 'RETENTION_EXPIRED'
+            || gapCount < 1 || exactSegments.length < 1))
+        || (historyCompleteness === 'EXACT'
+          && (changeHistory.body?.history_gap_reason !== null || gapCount !== 0))) {
+        throw smokeFailure(
+          'MCL_CHANGE_HISTORY',
+          'PREP_SMOKE_MCL_SOURCE_FAILED',
+          'MCL current capture and historical-completeness contracts conflict.',
+        )
+      }
+      mclHistoryCompleteness = historyCompleteness
+      report.mcl_current_capture = 'READY'
+      report.mcl_history_completeness = historyCompleteness
+      report.mcl_history_gap_reason = changeHistory.body.history_gap_reason
+      report.mcl_history_gap_count = gapCount
+      report.mcl_exact_current_segment_count = exactSegments.length
+      report.mcl_change_history = historyCompleteness
       }, readinessTimeoutMs, '5/6 MCL')
-      report.readiness.MCL = { status: 'PASS', stage: null, classification: null }
-      progress('5/6', 'MCL source and durable checkpoint contract PASS')
+      report.readiness.MCL = {
+        status: mclHistoryCompleteness === 'DEGRADED_GAP' ? 'DEGRADED_GAP' : 'PASS',
+        stage: null,
+        classification: null,
+      }
+      progress('5/6', mclHistoryCompleteness === 'DEGRADED_GAP'
+        ? 'MCL current capture READY; history DEGRADED_GAP (RETENTION_EXPIRED)'
+        : 'MCL current capture READY; history EXACT')
     } catch (error) {
       laneFailures.push(error)
       report.readiness.MCL = {

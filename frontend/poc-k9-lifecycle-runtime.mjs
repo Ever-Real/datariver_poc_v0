@@ -5,6 +5,7 @@ import {
   normalizeK9ProjectorReceiptV2,
 } from './poc-k9-lifecycle-persistence.mjs'
 import { evaluateK9V2AggregateReadiness } from './poc-k9-lifecycle-v2.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
 const TOKEN = /^[A-Z][A-Z0-9_]{0,79}$/u
@@ -42,6 +43,7 @@ function sourceEnvelope(state, sourceReceipt) {
     status: sourceReceipt?.status || 'PENDING',
     source_snapshot_id: state.desired_snapshot_id,
     source_snapshot: state.desired_snapshot,
+    eligibility: state.desired_snapshot.source_eligibility || null,
     source_payloads: Object.freeze({
       inventory: state.desired_source_payloads?.INVENTORY,
       lineage: state.desired_source_payloads?.LINEAGE,
@@ -121,6 +123,8 @@ function publicProjectorDiagnostic(value) {
   ]) {
     if (Object.hasOwn(value, field)) diagnostic[field] = value[field] === true
   }
+  const sourceEligibility = sanitizeK9SourceEligibilityTelemetry(value.source_eligibility)
+  if (sourceEligibility) diagnostic.source_eligibility = sourceEligibility
   return Object.freeze(diagnostic)
 }
 
@@ -134,7 +138,9 @@ export function publicK9V2LifecycleStatus(state) {
   if (!state) {
     return Object.freeze({
       contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
-      source: Object.freeze({ desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' }),
+      source: Object.freeze({
+        desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED', eligibility: null,
+      }),
       projectors: Object.freeze(Object.fromEntries(
         K9_PROJECTORS_V2.filter((item) => item !== 'SOURCE').map((item) => (
           [item, Object.freeze({
@@ -179,6 +185,7 @@ export function publicK9V2LifecycleStatus(state) {
       desired_snapshot_id: state.desired_snapshot_id,
       active_snapshot_id: state.active_snapshot_id || null,
       status: sourceReceipt?.status || 'PENDING',
+      eligibility: sanitizeK9SourceEligibilityTelemetry(sourceReceipt?.eligibility),
     }),
     projectors,
     aggregate: Object.freeze({

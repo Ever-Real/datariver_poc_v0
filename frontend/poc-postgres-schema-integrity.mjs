@@ -26,14 +26,19 @@ export const POC_POSTGRES_SCHEMA_V5_REVISION = 5
 export const POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE = 'product-owned-schema-contract-v5'
 export const POC_POSTGRES_SCHEMA_V5_FINGERPRINT = '94708241e9aae3f87a89388a9c86adac3214054c0a37be0f7595544e012eabc5'
 
-export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6'
-export const POC_POSTGRES_SCHEMA_REVISION = 6
-export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v6'
+export const POC_POSTGRES_SCHEMA_V6_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V6'
+export const POC_POSTGRES_SCHEMA_V6_REVISION = 6
+export const POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE = 'product-owned-schema-contract-v6'
+export const POC_POSTGRES_SCHEMA_V6_FINGERPRINT = '912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc'
+
+export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V7'
+export const POC_POSTGRES_SCHEMA_REVISION = 7
+export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v7'
 
 // Generated from the pinned PostgreSQL 17 / pgvector 0.8.2 canonical init contract.
 // The fingerprint covers only public Product-owned objects whose names use the reserved
 // poc_ prefix. Unrelated schemas, tables, extensions and rows are deliberately excluded.
-export const POC_POSTGRES_SCHEMA_FINGERPRINT = '912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc'
+export const POC_POSTGRES_SCHEMA_FINGERPRINT = '1481be3bb0ff1f92aaad70e41a8b7e534c685c207dc8f5918be750b73887861f'
 export const POC_POSTGRES_MIGRATABLE_FINGERPRINTS = new Set([
   'd96eab3a780b05349bbccdbf1e2ee25e0d9da4d4b8c63c5cfd9c4fe97935d30b',
 ])
@@ -181,7 +186,8 @@ function validateReceipt(receipt, { contract, revision, fingerprint }) {
 }
 
 function receiptValues(receipts, legacyReceipt, {
-  v1Fingerprint, v2Fingerprint, v3Fingerprint, v4Fingerprint, v5Fingerprint, v6Fingerprint,
+  v1Fingerprint, v2Fingerprint, v3Fingerprint, v4Fingerprint, v5Fingerprint,
+  v6Fingerprint, v7Fingerprint,
 }) {
   const rows = legacyReceipt === undefined
     ? receipts
@@ -203,7 +209,8 @@ function receiptValues(receipts, legacyReceipt, {
     }
     if (![POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE,
       POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE,
-      POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_RECEIPT_SCOPE].includes(row.scope)) {
+      POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE,
+      POC_POSTGRES_SCHEMA_RECEIPT_SCOPE].includes(row.scope)) {
       const revision = /^product-owned-schema-contract-v([0-9]+)$/.exec(row.scope)?.[1]
       throw schemaError(
         revision && Number(revision) > POC_POSTGRES_SCHEMA_REVISION
@@ -219,7 +226,8 @@ function receiptValues(receipts, legacyReceipt, {
   const v3 = values.get(POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE)
   const v4 = values.get(POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE)
   const v5 = values.get(POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE)
-  const v6 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
+  const v6 = values.get(POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE)
+  const v7 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
   if (v1 !== undefined) {
     validateReceipt(v1, {
       contract: POC_POSTGRES_SCHEMA_V1_CONTRACT,
@@ -257,9 +265,16 @@ function receiptValues(receipts, legacyReceipt, {
   }
   if (v6 !== undefined) {
     validateReceipt(v6, {
+      contract: POC_POSTGRES_SCHEMA_V6_CONTRACT,
+      revision: POC_POSTGRES_SCHEMA_V6_REVISION,
+      fingerprint: v6Fingerprint,
+    })
+  }
+  if (v7 !== undefined) {
+    validateReceipt(v7, {
       contract: POC_POSTGRES_SCHEMA_CONTRACT,
       revision: POC_POSTGRES_SCHEMA_REVISION,
-      fingerprint: v6Fingerprint,
+      fingerprint: v7Fingerprint,
     })
   }
   if ((v1 !== undefined && v3 !== undefined && v2 === undefined)
@@ -267,13 +282,16 @@ function receiptValues(receipts, legacyReceipt, {
     || (v5 !== undefined && v4 === undefined
       && (v1 !== undefined || v2 !== undefined || v3 !== undefined))
     || (v6 !== undefined && v5 === undefined
-      && (v1 !== undefined || v2 !== undefined || v3 !== undefined || v4 !== undefined))) {
+      && (v1 !== undefined || v2 !== undefined || v3 !== undefined || v4 !== undefined))
+    || (v7 !== undefined && v6 === undefined
+      && (v1 !== undefined || v2 !== undefined || v3 !== undefined
+        || v4 !== undefined || v5 !== undefined))) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt ancestry is incomplete.',
     )
   }
-  return { v1, v2, v3, v4, v5, v6 }
+  return { v1, v2, v3, v4, v5, v6, v7 }
 }
 
 export function classifyPocPostgresOwnedSchema({
@@ -286,6 +304,7 @@ export function classifyPocPostgresOwnedSchema({
   v3Fingerprint = POC_POSTGRES_SCHEMA_V3_FINGERPRINT,
   v4Fingerprint = POC_POSTGRES_SCHEMA_V4_FINGERPRINT,
   v5Fingerprint = POC_POSTGRES_SCHEMA_V5_FINGERPRINT,
+  v6Fingerprint = POC_POSTGRES_SCHEMA_V6_FINGERPRINT,
   migratableFingerprints = POC_POSTGRES_MIGRATABLE_FINGERPRINTS,
 } = {}) {
   const normalized = canonicalizePocOwnedSchemaRows(rows)
@@ -295,12 +314,14 @@ export function classifyPocPostgresOwnedSchema({
     v3Fingerprint,
     v4Fingerprint,
     v5Fingerprint,
-    v6Fingerprint: expectedFingerprint,
+    v6Fingerprint,
+    v7Fingerprint: expectedFingerprint,
   })
   if (normalized.length === 0) {
     if (receiptSet.v1 !== undefined || receiptSet.v2 !== undefined
       || receiptSet.v3 !== undefined || receiptSet.v4 !== undefined
-      || receiptSet.v5 !== undefined || receiptSet.v6 !== undefined) {
+      || receiptSet.v5 !== undefined || receiptSet.v6 !== undefined
+      || receiptSet.v7 !== undefined) {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
         'A Product schema receipt exists without its owned schema.',
@@ -312,78 +333,95 @@ export function classifyPocPostgresOwnedSchema({
   if (fingerprint === expectedFingerprint) {
     if (receiptSet.v1 !== undefined && receiptSet.v2 === undefined
       && receiptSet.v3 === undefined && receiptSet.v4 === undefined
-      && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+      && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+      && receiptSet.v7 === undefined) {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
         'The Product-owned PostgreSQL schema receipt ancestry does not match the current schema.',
       )
     }
-    const state = receiptSet.v6 !== undefined
+    const state = receiptSet.v7 !== undefined
       ? 'CURRENT'
-      : receiptSet.v5 !== undefined ? 'V6_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
+      : receiptSet.v6 !== undefined ? 'V7_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
     return Object.freeze({
       state,
       fingerprint,
     })
   }
+  if (fingerprint === v6Fingerprint
+    && receiptSet.v6 !== undefined && receiptSet.v7 === undefined) {
+    return Object.freeze({ state: 'RECEIPTED_V6', fingerprint })
+  }
+  if (fingerprint === v6Fingerprint
+    && receiptSet.v5 !== undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
+    return Object.freeze({ state: 'V6_RECEIPT_PENDING', fingerprint })
+  }
   if (fingerprint === v5Fingerprint
-    && receiptSet.v5 !== undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 !== undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V5', fingerprint })
   }
   if (fingerprint === v5Fingerprint
     && receiptSet.v4 !== undefined && receiptSet.v5 === undefined
-    && receiptSet.v6 === undefined) {
+    && receiptSet.v6 === undefined && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'V5_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v4Fingerprint
     && receiptSet.v4 !== undefined && receiptSet.v5 === undefined
-    && receiptSet.v6 === undefined) {
+    && receiptSet.v6 === undefined && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V4', fingerprint })
   }
   if (fingerprint === v4Fingerprint
     && receiptSet.v3 !== undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'V4_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v3Fingerprint
     && receiptSet.v3 !== undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V3', fingerprint })
   }
   if (fingerprint === v3Fingerprint
     && receiptSet.v2 !== undefined && receiptSet.v3 === undefined
     && receiptSet.v4 === undefined && receiptSet.v5 === undefined
-    && receiptSet.v6 === undefined) {
+    && receiptSet.v6 === undefined && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'V3_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v2Fingerprint
     && receiptSet.v2 !== undefined && receiptSet.v3 === undefined
     && receiptSet.v4 === undefined && receiptSet.v5 === undefined
-    && receiptSet.v6 === undefined) {
+    && receiptSet.v6 === undefined && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V2', fingerprint })
   }
   if (fingerprint === v2Fingerprint
     && receiptSet.v1 !== undefined && receiptSet.v2 === undefined
     && receiptSet.v3 === undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'V2_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v1Fingerprint
     && receiptSet.v1 !== undefined && receiptSet.v2 === undefined
     && receiptSet.v3 === undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'RECEIPTED_V1', fingerprint })
   }
   if (fingerprint === v1Fingerprint
     && receiptSet.v1 === undefined && receiptSet.v2 === undefined
     && receiptSet.v3 === undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'V1_RECEIPT_PENDING', fingerprint })
   }
   if (migratableFingerprints.has(fingerprint)
     && receiptSet.v1 === undefined && receiptSet.v2 === undefined
     && receiptSet.v3 === undefined && receiptSet.v4 === undefined
-    && receiptSet.v5 === undefined && receiptSet.v6 === undefined) {
+    && receiptSet.v5 === undefined && receiptSet.v6 === undefined
+    && receiptSet.v7 === undefined) {
     return Object.freeze({ state: 'KNOWN_OLDER_MIGRATABLE', fingerprint })
   }
   throw schemaError(
@@ -401,7 +439,7 @@ export async function inspectPocPostgresOwnedSchema(client) {
       `SELECT scope, value FROM poc_state
         WHERE scope LIKE 'product-owned-schema-contract-v%'
         ORDER BY scope
-        LIMIT 6`,
+        LIMIT 7`,
     )
     receipts = result.rows
   }
@@ -423,6 +461,25 @@ export async function recordPocPostgresOwnedSchemaReceipt(client) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt was not inserted.',
+    )
+  }
+}
+
+export async function recordPocPostgresV6SchemaReceipt(client) {
+  const receipt = {
+    contract: POC_POSTGRES_SCHEMA_V6_CONTRACT,
+    revision: POC_POSTGRES_SCHEMA_V6_REVISION,
+    fingerprint: POC_POSTGRES_SCHEMA_V6_FINGERPRINT,
+  }
+  const inserted = await client.query(
+    `INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+      RETURNING scope`,
+    [POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE, JSON.stringify(receipt)],
+  )
+  if (inserted.rows.length !== 1 || inserted.rows[0]?.scope !== POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE) {
+    throw schemaError(
+      'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+      'The Product-owned PostgreSQL schema V6 receipt was not inserted.',
     )
   }
 }
@@ -530,18 +587,20 @@ export async function convergePocPostgresOwnedSchema(client, {
   applyV4Schema,
   applyV5Schema,
   applyV6Schema,
+  applyV7Schema,
   inspect = inspectPocPostgresOwnedSchema,
   recordV1Receipt = recordPocPostgresV1SchemaReceipt,
   recordV2Receipt = recordPocPostgresV2SchemaReceipt,
   recordV3Receipt = recordPocPostgresV3SchemaReceipt,
   recordV4Receipt = recordPocPostgresV4SchemaReceipt,
   recordV5Receipt = recordPocPostgresV5SchemaReceipt,
+  recordV6Receipt = recordPocPostgresV6SchemaReceipt,
   recordReceipt = recordPocPostgresOwnedSchemaReceipt,
 } = {}) {
   if (typeof applyFreshSchema !== 'function' || typeof applyKnownOlderSchema !== 'function'
     || typeof applyV2Schema !== 'function' || typeof applyV3Schema !== 'function'
     || typeof applyV4Schema !== 'function' || typeof applyV5Schema !== 'function'
-    || typeof applyV6Schema !== 'function') {
+    || typeof applyV6Schema !== 'function' || typeof applyV7Schema !== 'function') {
     throw new Error('Product-owned PostgreSQL schema convergence callbacks are required.')
   }
   try {
@@ -660,9 +719,34 @@ export async function convergePocPostgresOwnedSchema(client, {
             'Product-owned PostgreSQL schema V5 to V6 migration was incomplete.',
           )
         }
-        await recordReceipt(client)
+        await recordV6Receipt(client)
+        current = await inspect(client)
+        if (current.state !== 'RECEIPTED_V6') {
+          throw schemaError(
+            'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+            'The Product-owned PostgreSQL schema V6 receipt was not durable.',
+          )
+        }
       }
-      if (!['RECEIPTED_V5', 'CURRENT'].includes(current.state)) {
+      if (current.state === 'RECEIPTED_V6') {
+        await applyV7Schema(client)
+        const v7Pending = await inspect(client)
+        if (v7Pending.state !== 'V7_RECEIPT_PENDING') {
+          throw schemaError(
+            'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+            'Product-owned PostgreSQL schema V6 to V7 migration was incomplete.',
+          )
+        }
+        await recordReceipt(client)
+        current = await inspect(client)
+        if (current.state !== 'CURRENT') {
+          throw schemaError(
+            'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+            'The Product-owned PostgreSQL schema V7 receipt was not durable.',
+          )
+        }
+      }
+      if (current.state !== 'CURRENT') {
         throw schemaError(
           'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED',
           'The Product-owned PostgreSQL schema is unreceipted or partially migrated.',
@@ -673,7 +757,7 @@ export async function convergePocPostgresOwnedSchema(client, {
     if (completed.state !== 'CURRENT') {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
-        'The Product-owned PostgreSQL schema V6 receipt was not durable.',
+        'The Product-owned PostgreSQL schema V7 receipt was not durable.',
       )
     }
     await client.query('COMMIT')

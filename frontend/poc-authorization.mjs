@@ -5,7 +5,6 @@ import {
   isCanonicalDatahubDatasetUrn,
   tablePolicyCellKey,
 } from './poc-table-data-access.mjs'
-import { tableSecurityGrade } from './poc-table-system-mappings.mjs'
 
 export const POC_AUTHORIZATION_POLICY_VERSION = 'POC_PROFILE_CAPABILITIES_V1'
 
@@ -291,21 +290,13 @@ export function assetSystemResolution(asset, accessDocument) {
     : { resolution: matches.length > 1 ? 'AMBIGUOUS' : 'UNRESOLVED', systemId: null }
 }
 
-function currentAssetSecurityGrade(asset) {
-  if (Object.hasOwn(asset || {}, 'security_grade')) {
-    return ['normal', 'credential', 'restricted'].includes(asset.security_grade) ? asset.security_grade : null
-  }
-  if (Array.isArray(asset?.tags) || Array.isArray(asset?.tag_references)) return tableSecurityGrade(asset)
-  return null
-}
-
 export function canReadAsset(principal, asset, feature = 'catalog') {
   if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return false
   const tableUrn = asset.id || asset.urn
   if (!isCanonicalDatahubDatasetUrn(tableUrn)) return false
   if (principal.role === 'admin') return true
   if (asset.dataset_kind !== 'TABLE') return false
-  return evaluateTableDataAccess(principal, tableUrn, currentAssetSecurityGrade(asset), feature)
+  return evaluateTableDataAccess(principal, tableUrn, feature)
 }
 
 export function filterAssetsForPrincipal(principal, assets, feature = 'catalog') {
@@ -326,7 +317,7 @@ export function getAllowedTableUrnsScope(principal, assets, feature = 'catalog')
 export function assertAssetMutation(principal, asset, feature = 'catalog') {
   const tableUrn = asset?.id || asset?.urn
   if (asset?.dataset_kind !== 'TABLE'
-    || !evaluateTableDataAccess(principal, tableUrn, currentAssetSecurityGrade(asset), feature)) {
+    || !evaluateTableDataAccess(principal, tableUrn, feature)) {
     throw authorizationError(403, 'TABLE_DATA_FORBIDDEN', 'The current Table is outside the request-time data scope.')
   }
 }
@@ -336,11 +327,9 @@ export function canReadRegistrationAsset(principal, asset, activeSystemIdsForCur
   const tableUrn = asset.id || asset.urn
   if (!isCanonicalDatahubDatasetUrn(tableUrn)) return false
   if (asset.dataset_kind !== 'TABLE') return false
-  const grade = currentAssetSecurityGrade(asset)
-  if (!grade) return false
   if (principal.role === 'admin') return true
   if (principal.role !== 'data_steward') return false
-  if (!evaluateTableDataAccess(principal, tableUrn, grade, 'registration')) return false
+  if (!evaluateTableDataAccess(principal, tableUrn, 'registration')) return false
   if (!activeSystemIdsForCurrentTable || !(activeSystemIdsForCurrentTable instanceof Set) || activeSystemIdsForCurrentTable.size === 0) return false
   for (const systemId of activeSystemIdsForCurrentTable) {
     if (principal.systemIds.has(systemId)) return true
