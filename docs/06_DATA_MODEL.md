@@ -50,6 +50,7 @@ erDiagram
     WORKSPACE ||--o{ CHANGE_HISTORY_SOURCE : scopes
     CHANGE_HISTORY_SOURCE ||--o{ CHANGE_HISTORY_LEDGER_EVENT : captures
     CHANGE_HISTORY_SOURCE ||--o{ CHANGE_HISTORY_CHECKPOINT : fences
+    CHANGE_HISTORY_SOURCE ||--o{ CHANGE_HISTORY_GAP_RECEIPT : records_retention_loss
     CHANGE_HISTORY_LEDGER_EVENT ||--o{ CHANGE_HISTORY_CR_LINK_EVENT : links
     CHANGE_REQUEST ||--o{ CHANGE_HISTORY_CR_LINK_EVENT : references_only
 ```
@@ -72,11 +73,12 @@ startup dependency and it does not authorize deleting historical migrations or `
 | `poc_catalog_embedding` | yes | yes, fenced generation | current Catalog/vector projection | generation contract in `poc_state` | same idempotent SQL | `ACTIVE` |
 | `poc_change_history_sources` | yes | insert-only operational identity | MCL source identity | parent of checkpoint/ledger | same idempotent SQL | `HISTORY_REQUIRED` |
 | `poc_change_history_checkpoints` | yes | atomic advance with ledger | MCL exact boundary/resume | FK to source | same idempotent SQL | `HISTORY_REQUIRED` |
+| `poc_change_history_gap_receipts` | yes | append-only before a retention-boundary advance | immutable Kafka `RETENTION_EXPIRED` interval and new exact-segment boundary | FK to source; exact source/topic/partition/boundary identity | `009-poc-change-history-retention-gap.sql` | `HISTORY_REQUIRED`, historical completeness may be `DEGRADED_GAP` |
 | `poc_change_history_ledger_events` | yes | append-only | normalized Change History | FK to source; parent of CR link history | same idempotent SQL | `HISTORY_REQUIRED` |
 | `poc_change_history_cr_link_events` | yes | append-only | candidate/primary/unlink history | FK to ledger event | same idempotent SQL | `HISTORY_REQUIRED` |
 | `poc_local_credentials` | login only | operator bootstrap/reset and bounded lock state | local authentication only; no role/System columns | `subject_id` references the access-document identity by application CAS | same additive idempotent SQL | `ACTIVE` |
 | `poc_local_sessions` | every protected request | login/logout/revoke/expiry lifecycle | opaque server session; token hash only | FK to `poc_local_credentials.subject_id` | same additive idempotent SQL | `ACTIVE` |
-| `poc_user_table_grants` | Admin account access management; PHASE 1D enforcement consumer | exact grant/remove active lifecycle | explicit User ↔ current DataHub Table relation only | `subject_id` and dataset URN are validated against the access document/current provider by the application | same additive idempotent SQL | `ACTIVE` |
+| `poc_user_table_grants` | Admin account access management and request-time Table authorization | exact grant/remove active lifecycle | explicit User ↔ current DataHub Table relation only | `subject_id` and dataset URN are validated against the access document/current provider by the application | same additive idempotent SQL | `ACTIVE` |
 | `poc_chat_sessions` | owner Chat history | create/favorite/archive/version lifecycle | owner-scoped POC Chat session | composite parent of owner-bound messages | `001-poc-state.sql` | `ACTIVE` |
 | `poc_chat_messages` | owner Chat history and authorized result pagination | append-only user/assistant turns | bounded answer evidence plus a bounded server-owned Catalog discovery descriptor; stored discovery items are never authorization authority and are revalidated through the current canonical Catalog path on history read and every cursor page | composite FK to `poc_chat_sessions`; message ID anchors the server-owned pagination descriptor | `001-poc-state.sql` plus additive `007-poc-chat-discovery.sql` | `HISTORY_REQUIRED` |
 
@@ -94,7 +96,8 @@ It contains one complete fixed `feature × role × security grade → boolean` m
 120 cells), a server actor/timestamp, bounded reason and CAS version. Canonical keys are fixed in
 source; Admin cells are immutable Allow and role-ineligible cells immutable Deny. The scope contains
 no User grant, Table identity, System assignment, custom Role, inheritance or expression and is not a
-generic permission database. PHASE 1C-3 manages this state; PHASE 1D owns cross-feature enforcement.
+generic permission database. It can govern only resources with an explicit Product-owned grade; it
+is not combined with a free-form DataHub TAG-derived Table grade.
 
 `poc_state` also owns the bounded `site-branding-v1` POC document. It stores one site name, optional
 server-validated raster logo/favicon payloads under random server asset identities, update evidence,
@@ -104,21 +107,21 @@ object, and therefore does not change the Product-owned schema inventory, finger
 revision or clean/resume schema path. It does not overwrite frontend source assets; null state falls
 back to the packaged Product mark and browser symbol.
 
-The Catalog projection retains exact Table tag URN/name references. PHASE 1C-2 derives the strict
-severity order `normal < credential < restricted` using exact normalized tag equality only, with
-`restricted` precedence when both canonical tags exist. Each access-document user has one
-`max_security_grade` scalar (existing users normalize to `normal`). Explicit User ↔ Table grants are
-stored in `poc_user_table_grants`; the relation intentionally has no Role, capability, System, grade,
-deny, schema inheritance or expression columns. Cross-feature retrieval-time enforcement remains
-PHASE 1D so management-state introduction does not empty existing user views prematurely.
+The Catalog projection retains exact Table tag URN/name references as descriptive taxonomy and
+metadata-quality telemetry. Per ADR-0134, arbitrary DataHub TAG values do not derive a Table
+authorization grade and do not determine K9 source eligibility. Table reads require Product-owned
+role/capability, Workspace scope and an exact active row in `poc_user_table_grants` (with the existing
+Admin boundary); the grant relation intentionally has no inferred grade, schema inheritance or
+free-form expression. `max_security_grade` and the bounded feature policy remain explicit
+Product-owned inputs for resources that actually own a classification, such as Knowledge. Absence
+of a Product-owned Table grade is not represented as `normal`.
 
 Clean POC volumes execute the immutable numbered `deploy/poc/postgres-init` sequence. With schema
 integrity required, Node startup fingerprints the exact Product-owned PostgreSQL catalog, accepts
-only the recorded immutable ancestry, and converges the accepted V4 catalog to V5 by adding the
-bounded `poc_chat_messages.discovery_json` descriptor through migration `007`; partial, unknown or
-newer catalogs fail closed without mutation. The non-integrity development path remains bounded
-additive initialization rather than a general migration authority; no migration squash, direct
-database patch or schema reset is part of this change.
+only the recorded immutable ancestry, and converges it forward through V7. Migration `007` adds the
+bounded `poc_chat_messages.discovery_json`, `008` adds K9 V2 lifecycle receipts, and `009` adds the
+append-only MCL retention-gap receipt. Partial, unknown or newer catalogs fail closed without
+mutation. No migration squash, direct database patch or schema reset is part of this contract.
 
 ```mermaid
 erDiagram
@@ -127,6 +130,7 @@ erDiagram
     POC_STATE ||--o{ POC_USER_TABLE_GRANTS : validates_subject
     POC_CHAT_SESSIONS ||--o{ POC_CHAT_MESSAGES : contains
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_CHECKPOINTS : fences
+    POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_GAP_RECEIPTS : records_retention_loss
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_LEDGER_EVENTS : captures
     POC_CHANGE_HISTORY_LEDGER_EVENTS ||--o{ POC_CHANGE_HISTORY_CR_LINK_EVENTS : links
     POC_STATE ||--o{ POC_CATALOG_EMBEDDING : selects_generation

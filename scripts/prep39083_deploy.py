@@ -3099,6 +3099,7 @@ def deploy(
     runner = preparation.runner
     source = preparation.source
     before_39080 = preparation.before_39080
+    smoke_report: dict[str, Any] = {}
     for warning in bundle.warnings:
         print(f"WARNING: {warning}", flush=True)
 
@@ -3297,6 +3298,7 @@ def deploy(
                     k9_mode=bundle.k9_mode,
                     glossary_term_urn=bundle.effective.get("PREP_GLOSSARY_TERM_URN", ""),
                 )
+                smoke_report = _read_json(RUNTIME_ROOT / "smoke.json", "authenticated smoke report")
         except PrepError:
             advance_attempt_phase(attempt, "SMOKE_FAILED")
             raise
@@ -3341,7 +3343,11 @@ def deploy(
     print("- Chat: ready")
     print("- Embedding/Reranker: READY; managed semantic index READY")
     print("- K9 Built-in Graphs: DAILY / READY")
-    print("- MCL Change History: READY")
+    if smoke_report.get("mcl_history_completeness") == "DEGRADED_GAP":
+        print("- MCL Current Capture: READY")
+        print("- MCL Historical Completeness: DEGRADED_GAP (RETENTION_EXPIRED)")
+    else:
+        print("- MCL Change History: READY / EXACT")
     print("- GX Quality Read: READY")
     print(f"- GX Quality Execution: {preflight.get('gx_quality_execution', 'DEFERRED')}")
     print(f"- Airflow: {preflight.get('airflow', 'DEFERRED')}")
@@ -3491,7 +3497,7 @@ def status(release: ReleaseIdentity) -> None:
         status_value = value.get("status")
         return (
             str(status_value)
-            if status_value in {"PASS", "FAILED", "PENDING", "DEFERRED"}
+            if status_value in {"PASS", "DEGRADED_GAP", "FAILED", "PENDING", "DEFERRED"}
             else None
         )
 
@@ -3526,7 +3532,7 @@ def status(release: ReleaseIdentity) -> None:
         semantic = "RUNNING"
     mcl = (
         "READY" if mcl_lane == "PASS"
-        else mcl_lane if mcl_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else mcl_lane if mcl_lane in {"DEGRADED_GAP", "FAILED", "PENDING", "DEFERRED"}
         else "READY" if ready
         else "FAILED" if failed_stage.startswith("MCL")
         else "UNKNOWN"
@@ -3559,6 +3565,22 @@ def status(release: ReleaseIdentity) -> None:
             f"Source snapshot: desired={desired_snapshot or 'NONE'}; "
             f"active={active_snapshot or 'NONE'}"
         )
+        source_eligibility = lifecycle_source.get("eligibility")
+        if isinstance(source_eligibility, dict):
+            print(
+                "Source eligibility: "
+                f"provider/current={source_eligibility.get('provider_current_inventory_count', 0)}; "
+                f"canonical={source_eligibility.get('canonical_current_count', 0)}; "
+                f"eligible={source_eligibility.get('eligible_source_count', 0)}"
+            )
+            print(
+                "Classification metadata: "
+                f"exact={source_eligibility.get('classification_exact_count', 0)}; "
+                f"missing={source_eligibility.get('classification_missing_count', 0)}; "
+                f"multiple={source_eligibility.get('classification_multiple_count', 0)}; "
+                f"invalid={source_eligibility.get('classification_invalid_count', 0)}; "
+                "authority=NO"
+            )
         for projector_name, label in (
             ("LINEAGE", "Lineage"), ("METADATA", "Metadata"), ("SEMANTIC", "Semantic projector")
         ):
@@ -3644,6 +3666,22 @@ def status(release: ReleaseIdentity) -> None:
             print(f"Received: {received}")
         if isinstance(elapsed, int):
             print(f"Elapsed: {elapsed} ms")
+        source_eligibility = smoke_diagnostic.get("source_eligibility")
+        if isinstance(source_eligibility, dict):
+            print(
+                "Source eligibility: "
+                f"provider/current={source_eligibility.get('provider_current_inventory_count', 0)}; "
+                f"canonical={source_eligibility.get('canonical_current_count', 0)}; "
+                f"eligible={source_eligibility.get('eligible_source_count', 0)}"
+            )
+            print(
+                "Classification metadata: "
+                f"exact={source_eligibility.get('classification_exact_count', 0)}; "
+                f"missing={source_eligibility.get('classification_missing_count', 0)}; "
+                f"multiple={source_eligibility.get('classification_multiple_count', 0)}; "
+                f"invalid={source_eligibility.get('classification_invalid_count', 0)}; "
+                "authority=NO"
+            )
         requested_nodes = smoke_diagnostic.get("batch_requested_nodes")
         requested_edges = smoke_diagnostic.get("batch_requested_edges")
         written_nodes = smoke_diagnostic.get("batch_written_nodes")
@@ -3700,6 +3738,14 @@ def status(release: ReleaseIdentity) -> None:
                     print(f"Incompatible type: {direct.get('dangling_incompatible_type_count', 0)}")
     print(f"Semantic: {semantic}")
     print(f"MCL: {mcl}")
+    if mcl == "DEGRADED_GAP":
+        print(f"MCL current capture: {smoke_report.get('mcl_current_capture', 'UNKNOWN')}")
+        print("MCL historical completeness: DEGRADED_GAP")
+        print(f"MCL gap: {smoke_report.get('mcl_history_gap_reason', 'UNKNOWN')}")
+        print(
+            "MCL exact current segment: "
+            f"{smoke_report.get('mcl_exact_current_segment_count', 0)}"
+        )
     print(f"GENERAL: {general}")
     print(f"Exact next action: {next_action}")
 

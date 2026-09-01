@@ -34,6 +34,7 @@ const systemResolutions = new Set(['RESOLVED', 'UNMAPPED', 'AMBIGUOUS'])
 const syncStates = new Set<ChangeHistorySummary['sync_status']>([
   'SOURCE_NOT_CONFIGURED', 'SOURCE_AMBIGUOUS', 'CHECKPOINT_NOT_AVAILABLE',
   'CHECKPOINT_INVALID', 'CAPTURE_PENDING', 'CONTIGUOUS_CAPTURE_RECORDED',
+  'CAPTURE_CATCHING_UP', 'CAPTURE_CAUGHT_UP',
   'DISCOVERY_FAILED', 'CAPTURE_FAILED',
 ])
 const diagnosticIdentifier = /^[A-Z][A-Z0-9_]{0,79}$/
@@ -337,7 +338,18 @@ function assertSummary(value: unknown, expectedWeekStart: string): asserts value
     || !nullableTimestamp(candidate.captured_at) || candidate.effective_week_start !== expectedWeekStart
     || !nullableTimestamp(candidate.history_available_from) || !nullableTimestamp(candidate.ledger_guarantee_from)
     || !nullableTimestamp(candidate.first_exact_capture_at) || !nullableTimestamp(candidate.first_timeline_checkpoint)
-    || !nullableTimestamp(candidate.last_successful_capture_at)) invalid()
+    || !nullableTimestamp(candidate.last_successful_capture_at)
+    || !['EXACT', 'DEGRADED_GAP', 'UNKNOWN'].includes(String(candidate.history_completeness))
+    || !(candidate.history_gap_reason === null || candidate.history_gap_reason === 'RETENTION_EXPIRED')
+    || !nonNegativeInteger(candidate.history_gap_count)
+    || !Array.isArray(candidate.exact_current_segments)
+    || candidate.exact_current_segments.length > 1_000
+    || candidate.exact_current_segments.some((segment: unknown) => !isRecord(segment)
+      || !nonNegativeInteger(segment.partition) || !nonNegativeInteger(segment.start_offset)
+      || !nonNegativeInteger(segment.next_offset) || Number(segment.next_offset) < Number(segment.start_offset)
+      || !['EXACT', 'EXACT_AFTER_GAP'].includes(String(segment.status)))) invalid()
+  if ((candidate.history_completeness === 'DEGRADED_GAP')
+    !== (candidate.history_gap_reason === 'RETENTION_EXPIRED' && Number(candidate.history_gap_count) > 0)) invalid()
   assertCountRecord(candidate.precision_counts, precisions)
   assertCountRecord(candidate.category_counts, categories)
   assertCountRecord(candidate.operation_counts, operations)

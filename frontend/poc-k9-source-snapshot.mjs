@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 
 import { sanitizeK9MetadataSourceProfile } from './poc-k9-metadata-collection.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 export const K9_SOURCE_SNAPSHOT_CONTRACT = 'DATARIVER_K9_SOURCE_SNAPSHOT_V2'
 
@@ -80,15 +81,22 @@ function normalizeSourceCollection(value) {
     .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)))
 }
 
-export function buildK9SourceInventoryProjection({ items, sourceScope }) {
+export function buildK9SourceInventoryProjection({ items, sourceScope, eligibility = null }) {
   const normalizedItems = normalizeSourceCollection(items)
   if (typeof sourceScope !== 'string' || !sourceScope.trim()) {
     throw new Error('The K9 source inventory scope is invalid')
+  }
+  const normalizedEligibility = eligibility === null
+    ? null
+    : sanitizeK9SourceEligibilityTelemetry(eligibility)
+  if (eligibility !== null && !normalizedEligibility) {
+    throw new Error('The K9 source eligibility telemetry is invalid')
   }
   return Object.freeze({
     projection_version: 2,
     source_scope: sourceScope.trim(),
     source_generation: canonicalHash(normalizedItems),
+    eligibility: normalizedEligibility,
     items: normalizedItems,
   })
 }
@@ -137,10 +145,17 @@ function normalizedInventoryProjection(value) {
   if (typeof catalogGeneration !== 'string' || !sha256Pattern.test(catalogGeneration)) {
     throw new Error('The shared DataHub Catalog generation is unavailable for K9 refresh')
   }
+  const eligibility = value?.eligibility === null || value?.eligibility === undefined
+    ? null
+    : sanitizeK9SourceEligibilityTelemetry(value.eligibility)
+  if (value?.eligibility !== null && value?.eligibility !== undefined && !eligibility) {
+    throw new Error('The K9 source eligibility telemetry is invalid for K9 refresh')
+  }
   return {
     projection_version: Number.isSafeInteger(value?.projection_version) ? value.projection_version : null,
     source_scope: typeof value?.source_scope === 'string' ? value.source_scope : null,
     source_generation: catalogGeneration,
+    eligibility,
     items: normalizeSourceCollection(value?.items),
   }
 }
@@ -263,6 +278,7 @@ export function buildDatahubKnowledgeSourceCapture({
     // Retained as a compatibility alias for the existing bounded
     // two-candidate consistency fence.
     source_fingerprint_id: sourceSnapshotId,
+    source_eligibility: inventory.eligibility,
     // Bounded source accounting remains available to the managed read model,
     // but operational progress/failure fields never enter the identity.
     metadata_source_profile: sourceOnlyMetadataProfile(metadataSource?.source_profile),

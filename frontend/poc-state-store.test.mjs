@@ -136,6 +136,9 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
         const nextOffset = checkpoints.get(checkpointKey(parameters))
         return { rows: nextOffset === undefined ? [] : [{ next_offset: nextOffset }] }
       }
+      if (normalized.startsWith('SELECT source_partition, count(*)::integer AS gap_receipt_count')) {
+        return { rows: [] }
+      }
       if (normalized.startsWith('INSERT INTO poc_change_history_ledger_events')) {
         if (failNextLedgerInsert) {
           failNextLedgerInsert = false
@@ -218,6 +221,96 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
     ledger,
     links,
     failLedgerInsert() { failNextLedgerInsert = true },
+  }
+}
+
+function createRetentionGapDatabaseDouble({ failAt } = {}) {
+  const statements = []
+  let checkpoint = { first_exact_offset: 0, next_offset: 10, version: 1 }
+  const receipts = new Map()
+  let transactionSnapshot
+
+  const receiptRow = (parameters) => ({
+    receipt_id: parameters[0],
+    previous_next_offset: parameters[4],
+    observed_low_watermark: parameters[5],
+    observed_high_watermark: parameters[6],
+    prior_exact_segment_identity: parameters[7],
+    new_segment_start: parameters[5],
+    reason: 'RETENTION_EXPIRED',
+    receipt_version: 1,
+    observed_at: parameters[8],
+  })
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      statements.push({ sql: normalized, parameters })
+      if (normalized === 'BEGIN') {
+        transactionSnapshot = {
+          checkpoint: { ...checkpoint },
+          receipts: new Map([...receipts].map(([key, value]) => [key, { ...value }])),
+        }
+        return { rows: [] }
+      }
+      if (normalized === 'COMMIT') {
+        transactionSnapshot = undefined
+        return { rows: [] }
+      }
+      if (normalized === 'ROLLBACK') {
+        if (transactionSnapshot) {
+          checkpoint = { ...transactionSnapshot.checkpoint }
+          receipts.clear()
+          for (const [key, value] of transactionSnapshot.receipts) receipts.set(key, value)
+        }
+        transactionSnapshot = undefined
+        return { rows: [] }
+      }
+      if (normalized.startsWith('SELECT first_exact_offset, next_offset')) {
+        return { rows: [{ ...checkpoint }] }
+      }
+      if (normalized.startsWith('SELECT receipt_id, previous_next_offset')
+        && normalized.includes('previous_next_offset = $4')) {
+        const row = [...receipts.values()].find((candidate) => (
+          candidate.previous_next_offset === parameters[3]
+          && candidate.observed_low_watermark === parameters[4]
+        ))
+        return { rows: row ? [{ ...row }] : [] }
+      }
+      if (normalized.startsWith('SELECT new_segment_start')) return { rows: [] }
+      if (normalized.startsWith('INSERT INTO poc_change_history_gap_receipts')) {
+        if (failAt === 'receipt') throw new Error('simulated gap receipt failure')
+        const row = receiptRow(parameters)
+        receipts.set(row.receipt_id, row)
+        return { rows: [] }
+      }
+      if (normalized.startsWith('UPDATE poc_change_history_checkpoints')) {
+        if (failAt === 'checkpoint') throw new Error('simulated gap checkpoint failure')
+        if (checkpoint.next_offset !== parameters[4]) return { rows: [] }
+        checkpoint = {
+          ...checkpoint,
+          next_offset: parameters[3],
+          version: checkpoint.version + 1,
+        }
+        return { rows: [{ next_offset: checkpoint.next_offset }] }
+      }
+      if (normalized.startsWith('SELECT receipt_id, previous_next_offset')
+        && normalized.includes('WHERE receipt_id = $1')) {
+        if (failAt === 'verify') return { rows: [] }
+        const row = receipts.get(parameters[0])
+        return { rows: row ? [{ ...row }] : [] }
+      }
+      throw new Error(`Unexpected retention-gap SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  return {
+    pool: {
+      async query() { return { rows: [] } },
+      async connect() { return client },
+    },
+    statements,
+    receipts,
+    checkpoint: () => ({ ...checkpoint }),
   }
 }
 
@@ -361,6 +454,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   const mcpInitSql = readFileSync(new URL('../deploy/poc/postgres-init/005-poc-mcp-read-receipts.sql', import.meta.url), 'utf8')
   const credentialAuditInitSql = readFileSync(new URL('../deploy/poc/postgres-init/006-poc-local-credential-provision-audit.sql', import.meta.url), 'utf8')
   const chatDiscoveryInitSql = readFileSync(new URL('../deploy/poc/postgres-init/007-poc-chat-discovery.sql', import.meta.url), 'utf8')
+  const retentionGapInitSql = readFileSync(new URL('../deploy/poc/postgres-init/009-poc-change-history-retention-gap.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -388,6 +482,12 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   assert.match(credentialAuditInitSql, /COMMIT;\s*$/)
   assert.match(chatDiscoveryInitSql, /^BEGIN;/)
   assert.match(chatDiscoveryInitSql, /COMMIT;\s*$/)
+  assert.match(retentionGapInitSql, /^BEGIN;/)
+  assert.match(retentionGapInitSql, /COMMIT;\s*$/)
+  assert.match(startupSql, /CREATE TABLE IF NOT EXISTS poc_change_history_gap_receipts/)
+  assert.match(retentionGapInitSql, /CREATE TABLE IF NOT EXISTS poc_change_history_gap_receipts/)
+  assert.match(retentionGapInitSql, /RETENTION_EXPIRED/)
+  assert.match(retentionGapInitSql, /trg_poc_change_history_gap_receipt_append_only/)
   assert.match(startupSql, /discovery_json jsonb/)
   assert.match(startupSql, /ck_poc_chat_message_discovery/)
   assert.match(chatDiscoveryInitSql, /ADD COLUMN discovery_json jsonb/)
@@ -1018,6 +1118,7 @@ test('reads complete ledger, links, access, core, and current catalog in one rep
         last_contiguous_event_identity: 'e'.repeat(64), last_source_occurred_at: '2026-08-13T00:00:00.000Z',
         last_captured_at: '2026-08-13T00:00:01.000Z', version: 2,
       }] }
+      if (normalized.includes('FROM poc_change_history_gap_receipts')) return { rows: [] }
       throw new Error(`Unexpected projection SQL: ${normalized}`)
     },
     release() {},
@@ -1094,6 +1195,59 @@ test('atomically fixes the initial partition boundary vector and rejects later t
   assert.equal(failingDatabase.sources.size, 0)
   assert.equal(failingDatabase.checkpoints.size, 0)
   assert.equal(failingDatabase.statements.at(-1).sql, 'ROLLBACK')
+})
+
+test('durably appends one retention-gap receipt before advancing and replays without duplication', async () => {
+  const database = createRetentionGapDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const command = {
+    sourceIdentityHash: SOURCE_HASH,
+    topicContract: 'MetadataChangeLog_Versioned_v1',
+    partition: 0,
+    previousNextOffset: 10,
+    lowWatermark: 30,
+    highWatermark: 100,
+    observedAt: '2026-09-01T00:00:00.000Z',
+  }
+  const first = await store.recordChangeHistoryRetentionGapAndAdvanceBoundary(command)
+  assert.equal(first.replayed, false)
+  assert.equal(first.reason, 'RETENTION_EXPIRED')
+  assert.equal(first.previousNextOffset, 10)
+  assert.equal(first.newSegmentStart, 30)
+  assert.equal(database.checkpoint().next_offset, 30)
+  assert.equal(database.receipts.size, 1)
+  const insertIndex = database.statements.findIndex(({ sql }) => (
+    sql.startsWith('INSERT INTO poc_change_history_gap_receipts')
+  ))
+  const advanceIndex = database.statements.findIndex(({ sql }) => (
+    sql.startsWith('UPDATE poc_change_history_checkpoints')
+  ))
+  assert.ok(insertIndex >= 0 && advanceIndex > insertIndex, 'receipt must precede checkpoint advance')
+
+  const replay = await store.recordChangeHistoryRetentionGapAndAdvanceBoundary(command)
+  assert.equal(replay.replayed, true)
+  assert.equal(replay.receiptId, first.receiptId)
+  assert.equal(database.receipts.size, 1)
+  assert.equal(database.checkpoint().next_offset, 30)
+})
+
+test('rolls back both receipt and checkpoint when retention-gap persistence cannot complete', async () => {
+  for (const failAt of ['receipt', 'checkpoint', 'verify']) {
+    const database = createRetentionGapDatabaseDouble({ failAt })
+    const store = createPocStateStore({ databasePool: database.pool })
+    await assert.rejects(store.recordChangeHistoryRetentionGapAndAdvanceBoundary({
+      sourceIdentityHash: SOURCE_HASH,
+      topicContract: 'MetadataChangeLog_Versioned_v1',
+      partition: 0,
+      previousNextOffset: 10,
+      lowWatermark: 30,
+      highWatermark: 100,
+      observedAt: '2026-09-01T00:00:00.000Z',
+    }))
+    assert.equal(database.receipts.size, 0, failAt)
+    assert.equal(database.checkpoint().next_offset, 10, failAt)
+    assert.equal(database.statements.at(-1).sql, 'ROLLBACK', failAt)
+  }
 })
 
 test('appends CR candidate and primary link history with exact replay and stale-chain rejection', async () => {

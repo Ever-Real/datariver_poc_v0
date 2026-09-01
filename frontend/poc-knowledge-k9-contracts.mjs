@@ -173,7 +173,7 @@ export const docSourceLineage = deepFreeze({
     { path: "completeness_metadata", type: "object" }
   ],
   authority_provenance_semantics: "pin dictates environment/workspace source; unverified payloads rejected",
-  classification_semantics: "classification ceiling violations fail closed",
+  classification_semantics: "the Product-owned service authority pin fails closed; free-form Dataset TAGs do not determine source eligibility or user access",
   canonical_entity_identity: {
     "nodes": ["id"],
     "edges": ["source_asset_id", "target_asset_id"]
@@ -209,7 +209,7 @@ export const docSourceGlossary = deepFreeze({
       "GET /poc-api/datahub/glossary/assignments?urn={urn}&target_type={TABLE|COLUMN}&limit=50&cursor={cursor} -> {items, total, page:{next_cursor,limit}}",
       "GET /poc-api/datahub/asset?urn={urn} -> {id, external_urn, ..., classification}"
     ],
-    required_product_seam: "async function collectGlossaryInventorySeam(authCtx) { ... } // module-private in poc-server.mjs. Invoked only after context.principal auth. Uses internal datahubGraphql queries and Product classification checks. Must return a server-owned exhaustive current-inventory trace, reject repeated/nonterminal-at-bound cursors, bind authority pin, reconcile provider assignment totals, and derive authorized assignment classification from the same canonical inventory (excluding absent/unknown/above-ceiling sources).",
+    required_product_seam: "async function collectGlossaryInventorySeam(authCtx) { ... } // module-private in poc-server.mjs. Invoked only after context.principal auth. Uses internal datahubGraphql queries over the canonical current Dataset inventory. Must return a server-owned exhaustive current-inventory trace, reject repeated/nonterminal-at-bound cursors, bind the service authority pin, and reconcile provider assignment totals. Free-form DataHub TAG classification is retained only as metadata-quality telemetry; it neither excludes K9 source Tables nor grants user read access. Request-time user reads require exact Product-owned Table grants and feature capability.",
     inventory_selection: "FULL_SERVER_INVENTORY_NO_QUERY",
     inventory_limit: 250,
     maximum_inventory_pages: 10002,

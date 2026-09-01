@@ -69,6 +69,10 @@ import {
   buildDatahubKnowledgeSourceCapture,
   buildK9SourceInventoryProjection,
 } from './poc-k9-source-snapshot.mjs'
+import {
+  sanitizeK9SourceEligibilityTelemetry,
+  selectCanonicalK9SourceInventory,
+} from './poc-k9-source-eligibility.mjs'
 import { createK9GraphProjectors } from './poc-k9-graph-projector.mjs'
 import {
   createK9V2LifecycleReceiptPort,
@@ -94,7 +98,7 @@ import {
   normalizeTableSystemMappingDocument,
   securityGradeRank,
   tableAuthoritySnapshot,
-  tableSecurityGrade,
+  legacyTableTagGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
 import {
@@ -1395,6 +1399,13 @@ function changeHistoryMinimumTimestamp(values) {
   return timestamps[0] ?? null
 }
 
+const changeHistoryUnknownCompleteness = Object.freeze({
+  history_completeness: 'UNKNOWN',
+  history_gap_reason: null,
+  history_gap_count: 0,
+  exact_current_segments: [],
+})
+
 function changeHistorySourceSummary(projection, rows, configuredHash) {
   const sources = Array.isArray(projection.sources) ? projection.sources : []
   let effectiveRows = rows
@@ -1406,6 +1417,7 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
     if (configuredSources.length !== 1) return {
       capture_state: 'SOURCE_NOT_CONFIGURED', sync_status: 'SOURCE_NOT_CONFIGURED',
       first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+      ...changeHistoryUnknownCompleteness,
     }
     const configuredSource = configuredSources[0]
     relevantSources = [configuredSource]
@@ -1420,17 +1432,23 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
   if (relevantSources.length === 0) return {
     capture_state: 'SOURCE_NOT_CONFIGURED', sync_status: 'SOURCE_NOT_CONFIGURED',
     first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+    ...changeHistoryUnknownCompleteness,
   }
   if (relevantSources.length !== 1) return {
     capture_state: 'SOURCE_AMBIGUOUS', sync_status: 'SOURCE_AMBIGUOUS',
     first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+    ...changeHistoryUnknownCompleteness,
   }
   const source = relevantSources[0]
   const checkpoints = (Array.isArray(projection.checkpoints) ? projection.checkpoints : [])
     .filter((checkpoint) => checkpoint.source_identity_hash === source.source_identity_hash)
+  const gapReceipts = (Array.isArray(projection.gapReceipts) ? projection.gapReceipts : [])
+    .filter((receipt) => receipt.source_identity_hash === source.source_identity_hash
+      && receipt.reason === 'RETENTION_EXPIRED')
   if (!checkpoints.length) return {
     capture_state: 'CHECKPOINT_NOT_AVAILABLE', sync_status: 'CHECKPOINT_NOT_AVAILABLE',
     first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+    ...changeHistoryUnknownCompleteness,
   }
   const validOffsets = checkpoints.every((checkpoint) => Number.isSafeInteger(Number(checkpoint.source_partition))
     && Number.isSafeInteger(Number(checkpoint.first_exact_offset))
@@ -1439,6 +1457,7 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
   if (!validOffsets) return {
     capture_state: 'CHECKPOINT_INVALID', sync_status: 'CHECKPOINT_INVALID',
     first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+    ...changeHistoryUnknownCompleteness,
   }
   const advanced = checkpoints.every((checkpoint) => Number(checkpoint.next_offset) > Number(checkpoint.first_exact_offset)
     && Number.isFinite(Date.parse(checkpoint.last_captured_at)))
@@ -1454,7 +1473,36 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
       .includes(captureStatus.state)
     ? captureStatus.state
     : null
-  const captureState = runtimeCaptureState ?? (advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING')
+  const latestGapByPartition = new Map()
+  for (const receipt of gapReceipts) {
+    const partition = Number(receipt.source_partition)
+    const start = Number(receipt.new_segment_start)
+    const high = Number(receipt.observed_high_watermark)
+    if (!Number.isSafeInteger(partition) || partition < 0
+      || !Number.isSafeInteger(start) || start < 0
+      || !Number.isSafeInteger(high) || high < start) continue
+    const current = latestGapByPartition.get(partition)
+    if (!current || start > current.start) latestGapByPartition.set(partition, { start, high })
+  }
+  const retainedGapCaughtUp = checkpoints.every((checkpoint) => {
+    const gap = latestGapByPartition.get(Number(checkpoint.source_partition))
+    return !gap || Number(checkpoint.next_offset) >= gap.high
+  })
+  // A receipt is durable before its checkpoint advances. An older READY status
+  // must not make the replacement exact segment appear current after interruption.
+  const captureState = gapReceipts.length > 0 && !retainedGapCaughtUp
+    ? 'CAPTURE_CATCHING_UP'
+    : runtimeCaptureState ?? (advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING')
+  const exactCurrentSegments = checkpoints.map((checkpoint) => ({
+    partition: Number(checkpoint.source_partition),
+    start_offset: latestGapByPartition.get(Number(checkpoint.source_partition))?.start
+      ?? Number(checkpoint.first_exact_offset),
+    next_offset: Number(checkpoint.next_offset),
+    status: 'EXACT_AFTER_GAP',
+  })).map((segment) => ({
+    ...segment,
+    status: latestGapByPartition.has(segment.partition) ? 'EXACT_AFTER_GAP' : 'EXACT',
+  })).sort((left, right) => left.partition - right.partition)
   return {
     capture_state: captureState,
     sync_status: captureState,
@@ -1462,7 +1510,14 @@ function changeHistorySourceSummary(projection, rows, configuredHash) {
     last_successful_capture_at: advanced
       ? changeHistoryMinimumTimestamp(checkpoints.map((checkpoint) => checkpoint.last_captured_at))
       : null,
-    ledger_guarantee_from: advanced ? changeHistoryMinimumTimestamp(exactCapturedAt) : null,
+    // One continuity-wide guarantee cannot span an observed retention gap.
+    // Exact coverage remains explicit in exact_current_segments.
+    ledger_guarantee_from: advanced && gapReceipts.length === 0
+      ? changeHistoryMinimumTimestamp(exactCapturedAt) : null,
+    history_completeness: gapReceipts.length > 0 ? 'DEGRADED_GAP' : 'EXACT',
+    history_gap_reason: gapReceipts.length > 0 ? 'RETENTION_EXPIRED' : null,
+    history_gap_count: gapReceipts.length,
+    exact_current_segments: exactCurrentSegments,
   }
 }
 
@@ -1537,6 +1592,11 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     first_timeline_checkpoint: null,
     first_mcl_offsets: source.first_mcl_offsets,
     last_successful_capture_at: source.last_successful_capture_at,
+    history_completeness: source.history_completeness || 'UNKNOWN',
+    history_gap_reason: source.history_gap_reason || null,
+    history_gap_count: Number.isSafeInteger(source.history_gap_count) ? source.history_gap_count : 0,
+    exact_current_segments: Array.isArray(source.exact_current_segments)
+      ? source.exact_current_segments : [],
   }
 }
 
@@ -3912,41 +3972,28 @@ async function currentDatahubTables(tableUrns, { signal, includeClassificationEr
       const classificationTags = references.filter((reference) => (
         reference.name.trim().toUpperCase().startsWith('CLASSIFICATION:')
       ))
-      if (classificationTags.length !== 1) {
-        if (includeClassificationErrors) confirmed.push({
-          id: entity.urn,
-          dataset_kind: 'TABLE',
-          classification: null,
-          classification_status: classificationTags.length === 0 ? 'MISSING' : 'MULTIPLE',
-          classification_values: classificationTags.map((reference) => reference.name),
-        })
-        return
-      }
-      const classification = classificationTags[0].name
-        .slice(classificationTags[0].name.indexOf(':') + 1)
-        .trim()
-        .toUpperCase()
-      if (!supportedDatahubClassifications.has(classification)) {
-        if (includeClassificationErrors) confirmed.push({
-          id: entity.urn,
-          dataset_kind: 'TABLE',
-          classification: null,
-          classification_status: 'INVALID',
-          classification_values: [classification],
-        })
-        return
-      }
+      const classificationValues = classificationTags.map((reference) => reference.name
+        .slice(reference.name.indexOf(':') + 1).trim().toUpperCase())
+      const classificationStatus = classificationValues.length === 0
+        ? 'MISSING'
+        : classificationValues.length > 1
+          ? 'MULTIPLE'
+          : supportedDatahubClassifications.has(classificationValues[0]) ? 'EXACT' : 'INVALID'
+      const classification = classificationStatus === 'EXACT' ? classificationValues[0] : null
       confirmed.push({
         id: entity.urn,
         dataset_kind: 'TABLE',
-        security_grade: tableSecurityGrade({ tag_references: references }),
+        // Retained only for CR/admin business snapshots and display compatibility.
+        // Table authorization never consumes this free-form TAG-derived value.
+        security_grade: legacyTableTagGrade({ tag_references: references }),
         classification,
-        classification_status: 'EXACT',
-        classification_values: [classification],
+        classification_status: classificationStatus,
+        classification_values: classificationValues,
         schema_field_paths: datahubSchemaFields(entity).map((field) => field.fieldPath),
       })
     })
   }
+  void includeClassificationErrors
   return confirmed
 }
 
@@ -5199,7 +5246,7 @@ function knowledgeCatalogDataset(asset, { detail = false } = {}) {
   if (asset?.dataset_kind !== 'TABLE' || !isCanonicalDatahubDatasetUrn(tableUrn)) {
     throw accessError(404, 'KNOWLEDGE_CATALOG_TABLE_NOT_FOUND', 'The Knowledge Catalog Table was not found.')
   }
-  const securityGrade = tableSecurityGrade(asset)
+  const securityGrade = legacyTableTagGrade(asset)
   const fields = detail
     ? (Array.isArray(asset.schema_fields) ? asset.schema_fields : []).map((field) => ({ ...field, table_urn: tableUrn }))
     : []
@@ -7999,7 +8046,7 @@ async function compileBulkCandidates(bytes, profile) {
       current_target: {
         id: detail.id, asset_type: 'DATASET', name: detail.name, platform: detail.platform,
         database_name: detail.database_name, schema_name: detail.schema_name,
-        dataset_kind: detail.dataset_kind, security_grade: tableSecurityGrade(detail),
+        dataset_kind: detail.dataset_kind, security_grade: legacyTableTagGrade(detail),
         classification: detail.classification, lifecycle: 'ACTIVE', source_version: detail.source_version,
         observed_at: detail.observed_at,
       },
@@ -9178,7 +9225,9 @@ function knowledgeChatGraph(scope) {
   }
 }
 
-const k9ClassificationToGrade = Object.freeze({
+// Product-owned service/graph policy only. This map must never classify a Table
+// from DataHub TAG metadata or participate in per-Table inclusion.
+const k9ServiceCeilingToGrade = Object.freeze({
   PUBLIC: 'normal',
   INTERNAL: 'normal',
   CONFIDENTIAL: 'credential',
@@ -9255,6 +9304,9 @@ export function managedK9SchedulerReadModel(
       ? {
           failure_stage: durableAttempt.failure_stage,
           failure_detail_code: durableAttempt.failure_detail_code,
+          ...(sanitizeK9SourceEligibilityTelemetry(durableAttempt.source_eligibility)
+            ? { source_eligibility: sanitizeK9SourceEligibilityTelemetry(durableAttempt.source_eligibility) }
+            : {}),
         }
       : {}),
   } : null
@@ -9312,8 +9364,17 @@ export function managedK9AssetSummary(
   const storedFailureCode = !refreshRunning && latestResult === 'FAILURE'
     ? /^((?:K9_)[A-Z0-9_]+):/.exec(row.latest_error_message || '')?.[1] || 'K9_REFRESH_FAILED'
     : null
+  const latestSourceEligibility = sanitizeK9SourceEligibilityTelemetry(
+    row.latest_manifest?.failure_diagnostic?.source_eligibility,
+  )
+  const baseSourceDiagnostic = storedFailureCode === 'K9_DATAHUB_SOURCE_FAILED'
+    ? managedK9SourceDiagnostic(row.latest_error_message) : null
   const sourceDiagnostic = storedFailureCode === 'K9_DATAHUB_SOURCE_FAILED'
-    ? managedK9SourceDiagnostic(row.latest_error_message)
+    && (baseSourceDiagnostic || latestSourceEligibility)
+    ? {
+        ...(baseSourceDiagnostic || {}),
+        ...(latestSourceEligibility ? { source_eligibility: latestSourceEligibility } : {}),
+      }
     : null
   const latestFailureProfile = sanitizeK9MetadataSourceProfile(
     row.latest_manifest?.failure_diagnostic?.metadata_source_profile,
@@ -9396,6 +9457,7 @@ export function managedK9AssetSummary(
     semantic_index_binding_hash: semanticIndex?.bindingHash || null,
     graph_model_version: Number(manifest.model_version || 1),
     source_snapshot_id: sourceSnapshot.source_snapshot_id || null,
+    source_eligibility: sanitizeK9SourceEligibilityTelemetry(sourceSnapshot.source_eligibility),
     source_snapshot_observed_at: sourceSnapshot.observed_at || null,
     source_catalog_generation: sourceSnapshot.catalog_generation || null,
     source_datahub_version: sourceSnapshot.datahub_version || null,
@@ -9410,23 +9472,13 @@ export function managedK9AssetSummary(
   }
 }
 
-function assertManagedK9AssetGrade(context, classification) {
-  const grade = k9ClassificationToGrade[classification]
-  if (!grade) throw knowledgeChatNotFound()
-  // The dedicated MCP adapter is authenticated before this context marker is
-  // attached (exact token, active local subject, and exact workspace).  Its
-  // managed-graph visibility is therefore bounded by the subject clearance
-  // here and by exact DataHub table grants in authorizeManagedK9Release(), not
-  // by the interactive UI feature matrix.  Native/browser requests can never
-  // set this server-owned marker and retain the existing feature policy.
-  if (context.knowledgeAdapter === 'MCP') {
-    if (securityGradeRank(context.principal.maxSecurityGrade) < securityGradeRank(grade)) {
-      throw knowledgeChatNotFound()
-    }
-    return grade
+function assertManagedK9AssetAccess(context) {
+  if (context.principal?.role === 'admin') return
+  if (!context.principal?.capabilitySet?.has('knowledge.read')
+    || !(context.principal.activeTableGrantUrns instanceof Set)
+    || context.principal.activeTableGrantUrns.size === 0) {
+    throw knowledgeChatNotFound()
   }
-  assertKnowledgeChatAssetGrade(context, { classification: grade })
-  return grade
 }
 
 function managedK9NodeDatasetUrn(node) {
@@ -9447,15 +9499,12 @@ export function authorizeManagedK9Release(principal, canonicalRelease, { knowled
     const datasetUrn = managedK9NodeDatasetUrn(node)
     if (!datasetUrn) continue
     dataNodeIds.add(node.id)
-    const securityGrade = k9ClassificationToGrade[node.classification]
     const serviceTableAllowed = knowledgeAdapter === 'MCP'
-      && securityGrade
-      && securityGradeRank(principal.maxSecurityGrade) >= securityGradeRank(securityGrade)
+      && principal.capabilitySet?.has('knowledge.read')
       && principal.activeTableGrantUrns?.has(datasetUrn)
-    if (serviceTableAllowed || (knowledgeAdapter !== 'MCP' && securityGrade && canReadAsset(principal, {
+    if (serviceTableAllowed || (knowledgeAdapter !== 'MCP' && canReadAsset(principal, {
       id: datasetUrn,
       dataset_kind: 'TABLE',
-      security_grade: securityGrade,
     }, 'knowledge'))) {
       allowedNodeIds.add(node.id)
     }
@@ -9513,7 +9562,7 @@ async function managedK9Assets(context) {
     : null
   return rows.flatMap((row) => {
     try {
-      assertManagedK9AssetGrade(context, row.classification)
+      assertManagedK9AssetAccess(context)
       return [managedK9AssetSummary(
         row,
         semanticIndex,
@@ -9542,7 +9591,7 @@ async function managedK9LifecycleStatus(context) {
 }
 
 function managedK9ScopeFromRow(context, row, requestedReleaseId) {
-  assertManagedK9AssetGrade(context, row.classification)
+  assertManagedK9AssetAccess(context)
   if (!row.active_release_pointer || !row.active_canonical_release
     || (requestedReleaseId && requestedReleaseId !== row.active_release_pointer)) {
     throw knowledgeChatNotFound()
@@ -9560,7 +9609,7 @@ function managedK9ScopeFromRow(context, row, requestedReleaseId) {
     knowledgeAdapter: context.knowledgeAdapter,
   })
   const definition = k9GraphAssetDefinition(row.graph_id)
-  const grade = k9ClassificationToGrade[row.classification]
+  const grade = k9ServiceCeilingToGrade[row.classification]
   return Object.freeze({
     managed: true,
     graphId: row.graph_id,
@@ -11129,7 +11178,7 @@ async function knowledgeChatApi(request, response, url, context) {
       ? await context.stateStore.getK9ManagedGraphAsset(graphId)
       : null
     if (managed && !managed.active_release_pointer) {
-      assertManagedK9AssetGrade(context, managed.classification)
+      assertManagedK9AssetAccess(context)
       return json(response, 200, [])
     }
     const scope = await knowledgeChatScope(context, graphId)
@@ -12332,8 +12381,6 @@ async function crCreateApi(request, response, url, context) {
   const grantedSet = new Set((await context.stateStore.listUserTableGrants(context.principal.subjectId)).map((g) => g.tableUrn))
   const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
   const mappingDocument = normalizeTableSystemMappingDocument(mappingSnapshot.value)
-  const policySnapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
-  const featurePolicyDocument = normalizePersistedFeatureSecurityPolicy(policySnapshot.value)
   let tables
   try {
     tables = await context.currentDatahubTables([tableUrn], { includeClassificationErrors: true })
@@ -12342,7 +12389,7 @@ async function crCreateApi(request, response, url, context) {
   }
   const asset = tables.find((item) => item?.id === tableUrn)
   if (!asset || asset.dataset_kind !== 'TABLE') {
-    return problem(response, 400, 'CR_TABLE_INVALID', 'Target must be an active TABLE with a defined security grade.')
+    return problem(response, 400, 'CR_TABLE_INVALID', 'Target must be an active current TABLE.')
   }
   if (asset.classification_status === 'MULTIPLE') {
     return problem(response, 409, 'CR_CLASSIFICATION_MULTIPLE', 'The current DataHub Table has multiple classification tags. Submission is blocked.')
@@ -12356,16 +12403,16 @@ async function crCreateApi(request, response, url, context) {
     || asset.classification === null || asset.classification === '') {
     return problem(response, 409, 'CR_CLASSIFICATION_MISSING', 'The current DataHub Table has no classification tag. Submission is blocked.')
   }
-  if (typeof asset.security_grade !== 'string') {
-    return problem(response, 400, 'CR_TABLE_INVALID', 'Target must be an active TABLE with a defined security grade.')
-  }
-  const tableGrade = asset.security_grade
   const tableClassification = asset.classification
+  // Retained only in the immutable CR business snapshot/compatibility hash.
+  // It is not consulted by assertCrTableAccess or any Table read boundary.
+  const tableGrade = typeof asset.security_grade === 'string'
+    ? asset.security_grade : legacyTableTagGrade(asset)
   if (requestedClassification !== tableClassification) {
     return problem(response, 409, 'CR_CLASSIFICATION_MISMATCH', 'The requested classification must match the current DataHub Table classification.')
   }
   crValidateColumnProposals(changeDocument, asset)
-  assertCrTableAccess({ principal: context.principal, tableUrn, tableGrade, grantedTableUrns: grantedSet, featurePolicyDocument, featureSecurityAllowed, securityGradeRank })
+  assertCrTableAccess({ principal: context.principal, tableUrn, grantedTableUrns: grantedSet })
 
   // Exact Table-System resolution.
   const activeSystemIds = new Set((context.accessDocument.systems ?? []).filter((s) => s?.active).map((s) => s.system_id))
@@ -13580,18 +13627,11 @@ export async function startPocServer({ stateStore } = {}) {
     return urn
   }
 
-  function k9SourceClassification(item, ceiling) {
-    const tags = (item.tags || []).filter((tag) => tag.toUpperCase().startsWith('CLASSIFICATION:'))
-    // Unclassified or ambiguously classified source metadata has no graph-read
-    // authority. Exclude it instead of guessing a grade or failing the whole
-    // last-known-good refresh.
-    if (tags.length !== 1) return null
-    const classification = tags[0].slice(tags[0].indexOf(':') + 1).trim().toUpperCase()
-    if (!Object.hasOwn(k9ClassificationRanks, classification)) return null
+  function k9ProjectionClassification(_item, ceiling) {
     if (!Object.hasOwn(k9ClassificationRanks, ceiling)) throw new Error('Unknown K9 classification ceiling')
-    return k9ClassificationRanks[classification] <= k9ClassificationRanks[ceiling]
-      ? classification
-      : null
+    // This is an explicit Product-owned graph projection label. Free-form
+    // DataHub TAG values never decide source inclusion or Table authorization.
+    return ceiling
   }
 
   function k9MetadataProperties(asset, field) {
@@ -13637,8 +13677,8 @@ export async function startPocServer({ stateStore } = {}) {
   async function collectLineageInventorySeam(authorityPin, inventory) {
     if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
     const authorizedInventory = inventory.flatMap((item) => {
-      const classification = k9SourceClassification(item, authorityPin.classification_ceiling)
-      return classification ? [{ item, classification }] : []
+      const classification = k9ProjectionClassification(item, authorityPin.classification_ceiling)
+      return [{ item, classification }]
     })
     const authorizedByUrn = new Map(authorizedInventory.map((entry) => [k9AssetUrn(entry.item), entry]))
     const nodes = []
@@ -13824,7 +13864,7 @@ export async function startPocServer({ stateStore } = {}) {
       relationshipsQuery: datahubEntityRelationshipsQuery,
       buildScrollVariables: buildK9GlossaryScrollVariables,
       schemaFields: datahubSchemaFields,
-      sourceClassification: k9SourceClassification,
+      sourceClassification: k9ProjectionClassification,
       assetUrn: k9AssetUrn,
       metadataProperties: k9MetadataProperties,
       customProperties: customPropertyReferences,
@@ -13861,7 +13901,7 @@ export async function startPocServer({ stateStore } = {}) {
     const document = changeHistoryDocumentFromSnapshot(snapshot)
     const user = changeHistoryActiveUser(document, k9SubjectId)
     if (user.role !== 'manager') throw new Error('K9 system subject is not a manager')
-    const requiredGrade = k9ClassificationToGrade[k9SchedulerConfig.classificationCeiling]
+    const requiredGrade = k9ServiceCeilingToGrade[k9SchedulerConfig.classificationCeiling]
     if (!requiredGrade || securityGradeRank(user.max_security_grade || 'normal') < securityGradeRank(requiredGrade)) {
       throw new Error('K9 system subject security grade is below the configured classification ceiling')
     }
@@ -13902,19 +13942,28 @@ export async function startPocServer({ stateStore } = {}) {
       promoteActiveSnapshot: (...args) => pocStateStore.promoteK9ActiveSourceSnapshotV2(...args),
     })
     const receipts = createK9V2LifecycleReceiptPort({ lifecycle })
+    let latestK9SourceEligibility = null
     const captureSource = createPocK9SourceCaptureTask({
       resolveAuthContext: resolveLiveK9AuthCtx,
-      // K9 is a non-interactive service projection. Its source authority is the
-      // validated manager subject plus the configured classification ceiling;
-      // end-user Table grants remain read-time filters on managed releases.
-      currentInventory: async (liveAuth) => (await currentDatahubInventory())
-        .filter((item) => k9SourceClassification(
-          item,
-          liveAuth.authorityPin.classification_ceiling,
-        )),
+      // K9 projects the canonical current Dataset scope. TAG classification is
+      // bounded quality telemetry; exact grants remain request-time authority.
+      currentInventory: async (liveAuth) => {
+        const selection = selectCanonicalK9SourceInventory(await currentDatahubInventory(), {
+          classificationCeiling: liveAuth.authorityPin.classification_ceiling,
+        })
+        latestK9SourceEligibility = selection.telemetry
+        if (selection.items.length === 0) {
+          throw Object.assign(new Error('The canonical K9 source inventory is empty.'), {
+            k9SourceFailureDetailCode: 'EMPTY_SOURCE',
+            k9SourceEligibility: selection.telemetry,
+          })
+        }
+        return selection.items
+      },
       inventoryProjection: (_liveAuth, inventory) => buildK9SourceInventoryProjection({
         items: inventory,
         sourceScope: 'DATARIVER_K9_AUTHORIZED_INVENTORY_V2',
+        eligibility: latestK9SourceEligibility,
       }),
       collectLineage: collectLineageInventorySeam,
       collectMetadata: collectGlossaryInventorySeam,

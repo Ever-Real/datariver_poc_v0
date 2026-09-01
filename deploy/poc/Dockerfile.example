@@ -71,6 +71,7 @@ COPY frontend/poc-k9-managed-graphs.mjs ./poc-k9-managed-graphs.mjs
 COPY frontend/poc-k9-scheduler.mjs ./poc-k9-scheduler.mjs
 COPY frontend/poc-k9-metadata-collection.mjs ./poc-k9-metadata-collection.mjs
 COPY frontend/poc-k9-source-snapshot.mjs ./poc-k9-source-snapshot.mjs
+COPY frontend/poc-k9-source-eligibility.mjs ./poc-k9-source-eligibility.mjs
 COPY frontend/poc-k9-lifecycle-persistence.mjs ./poc-k9-lifecycle-persistence.mjs
 COPY frontend/poc-k9-lifecycle-v2.mjs ./poc-k9-lifecycle-v2.mjs
 COPY frontend/poc-k9-lifecycle-runtime.mjs ./poc-k9-lifecycle-runtime.mjs

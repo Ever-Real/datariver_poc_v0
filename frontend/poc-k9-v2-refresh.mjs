@@ -1,4 +1,5 @@
 import { createK9V2LifecycleOrchestrator } from './poc-k9-lifecycle-v2.mjs'
+import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
 const TOKEN = /^[A-Z][A-Z0-9_]{0,95}$/u
@@ -39,6 +40,8 @@ function boundedDiagnostic(value, fallback = aggregateFailure) {
   ]) {
     if (Object.hasOwn(value, field)) bounded[field] = value[field] === true
   }
+  const sourceEligibility = sanitizeK9SourceEligibilityTelemetry(value.source_eligibility)
+  if (sourceEligibility) bounded.source_eligibility = sourceEligibility
   return Object.freeze(bounded)
 }
 
@@ -75,6 +78,9 @@ export function createPocK9V2RefreshTask({
         failureStage: diagnostic.stage,
         ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.failure_detail_code
           ? { failureDetailCode: diagnostic.failure_detail_code }
+          : {}),
+        ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.source_eligibility
+          ? { sourceEligibility: diagnostic.source_eligibility }
           : {}),
         diagnostic,
         source_snapshot_id: result.source_snapshot_id,

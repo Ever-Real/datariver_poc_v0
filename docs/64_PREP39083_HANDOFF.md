@@ -183,8 +183,11 @@ Each consume transaction remains bounded by `POC_MCL_MAX_MESSAGES`. At server st
 advisory-lock owner repeats bounded batches, yielding between them, until it reaches the captured
 Kafka high watermark; a large retained backlog therefore continues in the background instead of
 waiting for the next daily boundary. Shutdown finishes the current bounded batch and starts no
-new one. A checkpoint behind Kafka retention is `HISTORY_GAP_BLOCKED` and is never advanced or
-silently skipped.
+new one. A checkpoint behind Kafka retention is never silently skipped or reset. The current
+ADR-0134 contract appends and verifies an immutable `RETENTION_EXPIRED` gap receipt before advancing
+to the observed low watermark, then captures the retained range as a new exact segment. Current
+capture may become READY while historical completeness remains visibly `DEGRADED_GAP`; receipt or
+retained-capture failure remains fail-closed.
 
 Capture failures persist only bounded classification, stage, and detail identifiers in the
 versioned runtime status. Raw exception text, provider response bodies, schema bodies, credentials,

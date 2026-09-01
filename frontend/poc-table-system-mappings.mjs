@@ -1,5 +1,5 @@
 /* global structuredClone */
-import { securityGradeRank, tagPrecedenceSecurityGrade, SECURITY_GRADES as POC_SECURITY_GRADES } from './poc-access-document.mjs'
+import { legacyTagTaxonomyGrade, securityGradeRank, SECURITY_GRADES as POC_SECURITY_GRADES } from './poc-access-document.mjs'
 
 export const POC_TABLE_SYSTEM_MAPPING_SCOPE = 'table-system-mappings-v1'
 export const POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION = 2
@@ -119,7 +119,7 @@ export function tableAuthoritySnapshot(asset, observedAt = new Date().toISOStrin
     database_name: asset.database_name,
     schema_name: asset.schema_name,
     asset_name: asset.name || asset.id,
-    security_grade: typeof asset.security_grade === 'string' ? asset.security_grade : tableSecurityGrade(asset),
+    security_grade: typeof asset.security_grade === 'string' ? asset.security_grade : legacyTableTagGrade(asset),
     observed_at: observedAt,
   }, 0)
 }
@@ -152,12 +152,14 @@ export function normalizeTableSystemMappingDocument(value) {
   return { schema_version: POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION, bindings, asset_snapshots: assetSnapshots }
 }
 
-export function tableSecurityGrade(asset) {
+// Historical/admin display compatibility only. This value is never an
+// authorization authority and never determines K9 source inclusion.
+export function legacyTableTagGrade(asset) {
   const tags = [
     ...(Array.isArray(asset?.tags) ? asset.tags : []),
     ...(Array.isArray(asset?.tag_references) ? asset.tag_references : []),
   ]
-  return tagPrecedenceSecurityGrade(tags)
+  return legacyTagTaxonomyGrade(tags)
 }
 
 export { securityGradeRank }
@@ -306,7 +308,7 @@ export function tableSystemCandidates({ assets, document, systems, query = '', s
   const search = query.trim().toLocaleLowerCase()
   return (Array.isArray(assets) ? assets : []).flatMap((asset) => {
     if (!asset || asset.dataset_kind !== 'TABLE' || typeof asset.id !== 'string') return []
-    const grade = tableSecurityGrade(asset)
+    const grade = legacyTableTagGrade(asset)
     const systemIds = [...new Set(bindingsByTable.get(asset.id) || [])].sort()
     if (schema && asset.schema_name !== schema) return []
     if (systemId && !systemIds.includes(systemId)) return []

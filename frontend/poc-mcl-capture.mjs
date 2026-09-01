@@ -319,6 +319,7 @@ function normalizeEntityLifecycle(record, assetUrn, detectedAt) {
 
 async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, clock }) {
   if (typeof stateStore?.initializeChangeHistoryCaptureBoundaries !== 'function'
+    || typeof stateStore?.recordChangeHistoryRetentionGapAndAdvanceBoundary !== 'function'
     || typeof stateStore?.appendChangeHistoryCapture !== 'function') {
     throw mclCaptureFailure(undefined, {
       stage: 'CAPTURE_INITIALIZATION', detailCode: 'DURABLE_STORE_UNAVAILABLE',
@@ -395,10 +396,15 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
     }
     let checkpointByPartition
     try {
-      checkpointByPartition = new Map(checkpoints.map((checkpoint) => [
-        nonnegativeInteger(checkpoint.partition, 'checkpoint partition'),
-        kafkaOffset(checkpoint.nextOffset, 'durable checkpoint'),
-      ]))
+      checkpointByPartition = new Map(checkpoints.map((checkpoint) => {
+        const partition = nonnegativeInteger(checkpoint.partition, 'checkpoint partition')
+        const nextOffset = kafkaOffset(checkpoint.nextOffset, 'durable checkpoint')
+        const gapReceiptCount = checkpoint.gapReceiptCount === undefined
+          ? 0 : nonnegativeInteger(checkpoint.gapReceiptCount, 'gap receipt count')
+        const currentSegmentStart = checkpoint.currentSegmentStart === undefined
+          ? null : kafkaOffset(checkpoint.currentSegmentStart, 'current segment start')
+        return [partition, { nextOffset, gapReceiptCount, currentSegmentStart }]
+      }))
     } catch (error) {
       throw mclCaptureFailure(error, {
         stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_VALUE_INVALID',
@@ -412,19 +418,39 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
     const targets = []
     let remainingBudget = config.maxMessages
     for (const { partition, low, high } of watermarks) {
-      const resume = checkpointByPartition.get(partition)
-      if (resume === undefined) {
+      const checkpoint = checkpointByPartition.get(partition)
+      if (checkpoint === undefined) {
         throw mclCaptureFailure(undefined, {
           stage: 'CAPTURE_BOUNDARY_VALIDATION', detailCode: 'BOUNDARY_PARTITION_MISSING',
         })
       }
-      if (!Number.isSafeInteger(resume) || resume < low) {
-        throw Object.assign(
-          mclCaptureFailure(undefined, {
-            stage: 'RETENTION_CHECK', detailCode: 'CHECKPOINT_BEHIND_LOW_WATERMARK',
+      let resume = checkpoint.nextOffset
+      let gapReceiptCount = checkpoint.gapReceiptCount
+      let currentSegmentStart = checkpoint.currentSegmentStart
+      if (resume < low) {
+        const gap = await captureStage(
+          () => stateStore.recordChangeHistoryRetentionGapAndAdvanceBoundary({
+            sourceIdentityHash: config.sourceIdentityHash,
+            topicContract: config.topic,
+            partition,
+            previousNextOffset: resume,
+            lowWatermark: low,
+            highWatermark: high,
+            observedAt: clock().toISOString(),
           }),
-          { sourceIdentityHash: config.sourceIdentityHash },
+          'RETENTION_GAP_PERSISTENCE',
+          'GAP_RECEIPT_OR_BOUNDARY_WRITE_REJECTED',
         )
+        if (gap?.reason !== 'RETENTION_EXPIRED'
+          || gap?.newSegmentStart !== low
+          || gap?.lowWatermark !== low) {
+          throw mclCaptureFailure(undefined, {
+            stage: 'RETENTION_GAP_VALIDATION', detailCode: 'GAP_RECEIPT_INVALID',
+          })
+        }
+        resume = low
+        gapReceiptCount += gap.replayed ? 0 : 1
+        currentSegmentStart = low
       }
       if (resume > high) {
         throw mclCaptureFailure(undefined, {
@@ -435,7 +461,7 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       remainingBudget -= targetHigh - resume
       targets.push({
         partition, low, high: targetHigh, sourceHigh: high, next: resume,
-        processed: 0, ledgerEvents: 0,
+        processed: 0, ledgerEvents: 0, gapReceiptCount, currentSegmentStart,
       })
     }
     const pending = new Map(targets.filter((target) => target.next < target.high)
@@ -635,12 +661,17 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
 }
 
 function captureResult(config, targets) {
+  const degraded = targets.some(({ gapReceiptCount }) => gapReceiptCount > 0)
   return {
     topic: config.topic,
     sourceIdentityHash: config.sourceIdentityHash,
     bounded: true,
     caughtUp: targets.every(({ next, sourceHigh }) => next === sourceHigh),
-    partitions: targets.map(({ partition, low, high, sourceHigh, next, processed, ledgerEvents }) => ({
+    historyCompleteness: degraded ? 'DEGRADED_GAP' : 'EXACT',
+    partitions: targets.map(({
+      partition, low, high, sourceHigh, next, processed, ledgerEvents,
+      gapReceiptCount, currentSegmentStart,
+    }) => ({
       partition,
       lowWatermark: low,
       capturedHighWatermark: high,
@@ -648,6 +679,9 @@ function captureResult(config, targets) {
       nextOffset: next,
       processedRecords: processed,
       ledgerEvents,
+      historyCompleteness: gapReceiptCount > 0 ? 'DEGRADED_GAP' : 'EXACT',
+      gapReceiptCount,
+      exactCurrentSegmentStart: currentSegmentStart,
     })),
   }
 }

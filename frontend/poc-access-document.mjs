@@ -19,7 +19,9 @@ export function compareSecurityGrades(left, right) {
   return securityGradeRank(left) - securityGradeRank(right)
 }
 
-export function tagPrecedenceSecurityGrade(tags) {
+// Legacy Table taxonomy projection only. Free-form DataHub TAG values are not
+// consulted by any Table authorization or K9 source-eligibility path.
+export function legacyTagTaxonomyGrade(tags) {
   if (!Array.isArray(tags)) return 'normal'
   const normalized = new Set(tags.flatMap((tag) => {
     if (typeof tag === 'string') return [tag.trim().toLowerCase()]

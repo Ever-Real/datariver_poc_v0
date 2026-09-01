@@ -151,6 +151,10 @@ function currentWeekChangeSummary(weekStart: string, overrides: Record<string, u
     first_timeline_checkpoint: null,
     first_mcl_offsets: null,
     last_successful_capture_at: '2026-08-31T00:32:00.000Z',
+    history_completeness: 'EXACT',
+    history_gap_reason: null,
+    history_gap_count: 0,
+    exact_current_segments: [],
     ...overrides,
   }
 }

@@ -238,6 +238,13 @@ export function DataChangeStatusPanel({ client }: { client: ApiClient }) {
 }
 
 function SummaryView({ summary }: { summary: ChangeHistorySummary }) {
+  const currentCaptureReady = summary.capture_state === 'CAPTURE_CAUGHT_UP'
+  const degradedHistoryLabel = currentCaptureReady
+    ? '과거 보존 구간 누락 · 현재 캡처 정상'
+    : summary.capture_state === 'CAPTURE_CATCHING_UP'
+      || summary.capture_state === 'CONTIGUOUS_CAPTURE_RECORDED'
+      ? '과거 보존 구간 누락 · 현재 캡처 진행 중'
+      : '과거 보존 구간 누락 · 현재 캡처 확인 필요'
   const weeklyCounts: Array<[string, number]> = [
     ['CR 미연결', summary.unlinked_count],
     ['접수 완료', summary.received_count],
@@ -256,6 +263,19 @@ function SummaryView({ summary }: { summary: ChangeHistorySummary }) {
         <SummaryFact label="CR 미연결" value={formatCount(summary.unlinked_count)} />
         <SummaryFact label="DataHub 상태" value={syncStateLabel(summary.capture_state)} />
         <SummaryFact label="Sync 상태" value={syncStateLabel(summary.sync_status)} />
+        <SummaryFact
+          label="이력 완전성"
+          value={summary.history_completeness === 'DEGRADED_GAP'
+            ? degradedHistoryLabel
+            : summary.history_completeness === 'EXACT' ? '연속 이력' : '확인 불가'}
+        />
+        {summary.history_completeness === 'DEGRADED_GAP' && (
+          <SummaryFact
+            label="보존 만료 Gap"
+            value={`RETENTION_EXPIRED · ${summary.history_gap_count.toLocaleString()}건 · 현재 exact 구간 ${summary.exact_current_segments.length.toLocaleString()}개`}
+            code
+          />
+        )}
         {summary.capture_failure_classification && (
           <SummaryFact label="MCL failure" value={summary.capture_failure_classification} code />
         )}
@@ -679,6 +699,8 @@ function syncStateLabel(value: ChangeHistorySyncStatus): string {
     CHECKPOINT_INVALID: '체크포인트 오류',
     CAPTURE_PENDING: '캡처 대기',
     CONTIGUOUS_CAPTURE_RECORDED: '연속 캡처 기록됨',
+    CAPTURE_CATCHING_UP: '현재 구간 캡처 중',
+    CAPTURE_CAUGHT_UP: '현재 구간 캡처 완료',
     DISCOVERY_FAILED: '소스 탐색 실패',
     CAPTURE_FAILED: '캡처 실패',
   }
