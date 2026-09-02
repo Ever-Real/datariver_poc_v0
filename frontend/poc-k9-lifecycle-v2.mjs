@@ -5,27 +5,15 @@ export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANT
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
 export const K9_V2_SOURCE_RUN_MODES = Object.freeze(['RESUME', 'REFRESH'])
 
-const hashPattern = /^[0-9a-f]{64}$/u
-const safeDiagnosticTokenPattern = /^[A-Z][A-Z0-9_]{0,95}$/u
-const receiptStates = new Set(K9_V2_RECEIPT_STATES)
-const sourceRunModes = new Set(K9_V2_SOURCE_RUN_MODES)
-const sourceCaptureFailureCodes = new Set([
-  'K9_DATAHUB_SOURCE_FAILED',
-  'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
-  'K9_SOURCE_SNAPSHOT_FAILED',
-  'K9_SYSTEM_SUBJECT_FAILED',
-])
-const sourceFailureStages = new Set([
-  'INVENTORY',
-  'INVENTORY_PROJECTION',
-  'LINEAGE_COLLECTION',
-  'METADATA_COLLECTION',
-  'RUNTIME_IDENTITY',
-])
-
-const diagnostics = Object.freeze({
+export const K9_V2_FAILURE_DIAGNOSTICS = Object.freeze({
   AGGREGATE_NOT_READY: Object.freeze({
     code: 'K9_V2_AGGREGATE_NOT_READY', stage: 'READINESS', retryable: true,
+  }),
+  AGGREGATE_PROMOTION_FAILED: Object.freeze({
+    code: 'K9_V2_AGGREGATE_PROMOTION_FAILED', stage: 'AGGREGATE_READINESS', retryable: true,
+  }),
+  LIFECYCLE_FAILED: Object.freeze({
+    code: 'K9_V2_LIFECYCLE_FAILED', stage: 'K9_V2_LIFECYCLE', retryable: true,
   }),
   MIXED_SOURCE_SNAPSHOT_IDS: Object.freeze({
     code: 'K9_V2_MIXED_SOURCE_SNAPSHOT_IDS', stage: 'READINESS', retryable: false,
@@ -55,6 +43,46 @@ const diagnostics = Object.freeze({
     code: 'K9_V2_SOURCE_RECEIPT_READ_FAILED', stage: 'SOURCE_RECEIPT', retryable: true,
   }),
 })
+export const K9_V2_FAILURE_CODES = Object.freeze(
+  Object.values(K9_V2_FAILURE_DIAGNOSTICS).map((value) => value.code),
+)
+
+const hashPattern = /^[0-9a-f]{64}$/u
+const safeDiagnosticTokenPattern = /^[A-Z][A-Z0-9_]{0,95}$/u
+const receiptStates = new Set(K9_V2_RECEIPT_STATES)
+const sourceRunModes = new Set(K9_V2_SOURCE_RUN_MODES)
+const sourceCaptureFailureCodes = new Set([
+  'K9_DATAHUB_SOURCE_FAILED',
+  'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
+  'K9_SOURCE_SNAPSHOT_FAILED',
+  'K9_SYSTEM_SUBJECT_FAILED',
+])
+const sourceFailureStages = new Set([
+  'INVENTORY',
+  'INVENTORY_PROJECTION',
+  'LINEAGE_COLLECTION',
+  'METADATA_COLLECTION',
+  'RUNTIME_IDENTITY',
+])
+
+const diagnostics = K9_V2_FAILURE_DIAGNOSTICS
+const diagnosticByCode = new Map(
+  Object.values(K9_V2_FAILURE_DIAGNOSTICS).map((value) => [value.code, value]),
+)
+
+export function sanitizeK9V2FailureDiagnostic(value) {
+  const owned = diagnosticByCode.get(value?.code)
+  if (!owned || value?.stage !== owned.stage) return null
+  const detail = safeDiagnosticTokenPattern.test(value?.failure_detail_code || '')
+    ? value.failure_detail_code
+    : owned.code
+  return Object.freeze({
+    code: owned.code,
+    stage: owned.stage,
+    failure_detail_code: detail,
+    retryable: owned.retryable,
+  })
+}
 
 class LifecycleFailure extends Error {
   constructor(diagnostic, projectorId) {
@@ -436,6 +464,7 @@ export function createK9V2LifecycleOrchestrator({
       const projectorOutcomes = {}
       const failures = []
       try {
+        transition({ stage: 'SOURCE', status: 'RUNNING' })
         const disposition = await sourceRunDisposition(receipts, sourceRunMode)
         source = await captureOrReuseSource(captureSource, receipts, disposition)
         transition({ stage: 'SOURCE', status: 'READY', outcome: source.outcome })

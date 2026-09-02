@@ -392,6 +392,32 @@ test('managed K9 scheduler read model preserves only bounded pre-snapshot source
   assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
 })
 
+test('managed K9 scheduler read model preserves exact V2 failure and bounded source progress', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-v2-attempt-observability')
+  const config = {
+    requested: true, enabled: true, refreshMode: 'DAILY', schedule: '02:15 Asia/Seoul',
+    timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 15,
+  }
+  const readModel = managedK9SchedulerReadModel(config, { value: { last_attempt: {
+    status: 'FAILURE', reason: 'K9_V2_SOURCE_RECEIPT_READ_FAILED',
+    failure_stage: 'SOURCE_RECEIPT', failure_detail_code: 'K9_V2_SOURCE_RECEIPT_READ_FAILED',
+    scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+    trigger: 'scheduled', raw_urn: 'urn:li:dataset:must-not-survive',
+  } } }, {
+    status: 'RUNNING', scheduled_for: '2026-08-30T17:15:00.000Z', trigger: 'scheduled',
+    started_at: '2026-08-30T17:15:01.000Z', observed_at: '2026-08-30T17:16:00.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION', completed: 734, total: 1_892,
+    candidate_number: 1, candidate_total: 3, batch_number: 0, batch_total: 0,
+  })
+  assert.equal(readModel.scheduler_status, 'RUNNING')
+  assert.equal(readModel.scheduler_current_attempt.detail, 'LINEAGE_COLLECTION')
+  assert.equal(readModel.scheduler_current_attempt.completed, 734)
+  assert.equal(readModel.scheduler_current_attempt.candidate_total, 3)
+  assert.equal(readModel.scheduler_last_completed_attempt.reason, 'K9_V2_SOURCE_RECEIPT_READ_FAILED')
+  assert.equal(readModel.scheduler_last_completed_attempt.failure_stage, 'SOURCE_RECEIPT')
+  assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
+})
+
 test('managed K9 scheduler status distinguishes active, on-demand, disabled, and unavailable states', async () => {
   const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-scheduler-state-contract')
   const base = {

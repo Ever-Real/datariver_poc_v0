@@ -9,6 +9,7 @@ import {
   sanitizeK9LineageSourceProfile,
 } from './poc-k9-lineage-collection.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
+import { K9_V2_FAILURE_CODES } from './poc-k9-lifecycle-v2.mjs'
 
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_REFRESH_MODE = 'DAILY'
@@ -56,6 +57,7 @@ const supportedK9FailureCodes = new Set([
   'K9_SOURCE_SNAPSHOT_FAILED',
   'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
   'K9_SYSTEM_SUBJECT_FAILED',
+  ...K9_V2_FAILURE_CODES,
 ])
 
 function boundedK9FailureCode(value, fallback = 'K9_REFRESH_FAILED') {
@@ -186,32 +188,72 @@ async function collectStableK9Source({
   runtimeIdentity,
   sourceIdentity,
   sourceRetryWait,
+  reportProgress = null,
 }) {
   const liveAuth = await k9RefreshStage('K9_SYSTEM_SUBJECT_FAILED', resolveAuthContext)
+  const candidateTotal = SOURCE_CONSISTENCY_MAX_COMPARISONS + 1
+  let candidateNumber = 0
+  const publishProgress = (detail, value = {}) => {
+    if (typeof reportProgress !== 'function') return
+    try {
+      const integer = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+      reportProgress(Object.freeze({
+        stage: 'SOURCE_CAPTURE',
+        detail,
+        completed: integer(value.completed),
+        total: integer(value.total),
+        candidate_number: candidateNumber,
+        candidate_total: candidateTotal,
+        batch_number: integer(value.batch_number),
+        batch_total: integer(value.batch_total),
+      }))
+    } catch {
+      // Bounded operator telemetry must never alter source capture semantics.
+    }
+  }
   const collectCandidate = async () => {
+    candidateNumber += 1
+    publishProgress('INVENTORY')
     const inventory = await datahubSourceStage(
       'INVENTORY',
       () => currentInventory(liveAuth),
       sourceRetryWait,
     )
+    publishProgress('INVENTORY', { completed: inventory.length, total: inventory.length })
+    publishProgress('INVENTORY_PROJECTION', { total: inventory.length })
     const projection = await datahubSourceStage(
       'INVENTORY_PROJECTION',
       () => inventoryProjection(liveAuth, inventory),
       sourceRetryWait,
     )
+    publishProgress('INVENTORY_PROJECTION', {
+      completed: inventory.length,
+      total: inventory.length,
+    })
     const [lineageSource, metadataSource, datahubIdentity] = await Promise.all([
       datahubSourceStage(
         'LINEAGE_COLLECTION',
-        () => collectLineage(liveAuth.authorityPin, inventory),
+        () => collectLineage(liveAuth.authorityPin, inventory, {
+          reportProgress: (value) => publishProgress('LINEAGE_COLLECTION', value),
+        }),
         sourceRetryWait,
       ),
       datahubSourceStage(
         'METADATA_COLLECTION',
-        ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, { retryAttempt: attempt }),
+        ({ attempt }) => collectMetadata(liveAuth.authorityPin, inventory, {
+          retryAttempt: attempt,
+          reportSourceProgress: (value) => publishProgress('METADATA_COLLECTION', value),
+        }),
         sourceRetryWait,
       ),
-      datahubSourceStage('RUNTIME_IDENTITY', runtimeIdentity, sourceRetryWait),
+      datahubSourceStage('RUNTIME_IDENTITY', async () => {
+        publishProgress('RUNTIME_IDENTITY', { total: 1 })
+        const identity = await runtimeIdentity()
+        publishProgress('RUNTIME_IDENTITY', { completed: 1, total: 1 })
+        return identity
+      }, sourceRetryWait),
     ])
+    publishProgress('SOURCE_SNAPSHOT', { total: 1 })
     const identity = await k9RefreshStage('K9_SOURCE_SNAPSHOT_FAILED', () => sourceIdentity({
       inventoryProjection: projection,
       datahubIdentity,
@@ -224,6 +266,7 @@ async function collectStableK9Source({
         k9FailureCode: 'K9_SOURCE_SNAPSHOT_FAILED',
       })
     }
+    publishProgress('SOURCE_SNAPSHOT', { completed: 1, total: 1 })
     return {
       inventory, projection, lineageSource, metadataSource, datahubIdentity,
       identity, sourceSnapshotId,
@@ -231,9 +274,11 @@ async function collectStableK9Source({
   }
 
   let priorCandidate = await collectCandidate()
+  publishProgress('SOURCE_CONSISTENCY', { completed: candidateNumber, total: candidateTotal })
   let stableCandidate
   for (let comparison = 1; comparison <= SOURCE_CONSISTENCY_MAX_COMPARISONS; comparison += 1) {
     const nextCandidate = await collectCandidate()
+    publishProgress('SOURCE_CONSISTENCY', { completed: candidateNumber, total: candidateTotal })
     if (priorCandidate.sourceSnapshotId === nextCandidate.sourceSnapshotId) {
       stableCandidate = nextCandidate
       break
@@ -274,6 +319,7 @@ export function createPocK9SourceCaptureTask({
   runtimeIdentity,
   buildSourceCapture,
   sourceRetryWait = defaultSourceRetryWait,
+  reportProgress = null,
 } = {}) {
   const requiredFunctions = [
     resolveAuthContext, currentInventory, inventoryProjection, collectLineage,
@@ -297,6 +343,7 @@ export function createPocK9SourceCaptureTask({
       runtimeIdentity,
       sourceIdentity: buildSourceCapture,
       sourceRetryWait,
+      reportProgress,
     })
     const sourceCapture = captured.identity
     if (!sourceCapture?.snapshot || !sourceCapture?.source_payloads
@@ -567,12 +614,40 @@ export function createPocK9Scheduler({
   const updateProgress = (value) => {
     if (!activeAttempt || !value || typeof value !== 'object' || Array.isArray(value)) return false
     const integer = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+    const progressFields = new Set([
+      'stage', 'detail', 'completed', 'total', 'candidate_number', 'candidate_total',
+      'direct_resolution_total', 'batch_size', 'batch_total', 'batch_number',
+      'batch_requested_count', 'batch_response_count', 'batch_elapsed_ms',
+      'completed_resolution_count', 'dangling_unique_terms', 'dangling_assignment_references',
+      'retry_attempt', 'provider_failure_class',
+    ])
+    const baseAttempt = Object.fromEntries(Object.entries(activeAttempt)
+      .filter(([key]) => !progressFields.has(key)))
+    const sourceDetail = [
+      'INVENTORY', 'INVENTORY_PROJECTION', 'LINEAGE_COLLECTION', 'METADATA_COLLECTION',
+      'RUNTIME_IDENTITY', 'SOURCE_CONSISTENCY', 'SOURCE_SNAPSHOT',
+    ].includes(value.detail) ? value.detail : null
+    if (value.stage === 'SOURCE_CAPTURE' && sourceDetail) {
+      activeAttempt = Object.freeze({
+        ...baseAttempt,
+        observed_at: clock().toISOString(),
+        stage: 'SOURCE_CAPTURE',
+        detail: sourceDetail,
+        completed: integer(value.completed),
+        total: integer(value.total),
+        candidate_number: integer(value.candidate_number),
+        candidate_total: integer(value.candidate_total),
+        batch_number: integer(value.batch_number),
+        batch_total: integer(value.batch_total),
+      })
+      return true
+    }
     const providerClass = [
       'CONNECTIVITY', 'TIMEOUT', 'HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER',
       'GRAPHQL', 'CONTRACT',
     ].includes(value.provider_failure_class) ? value.provider_failure_class : null
     activeAttempt = Object.freeze({
-      ...activeAttempt,
+      ...baseAttempt,
       observed_at: clock().toISOString(),
       stage: 'METADATA_COLLECTION',
       detail: 'DIRECT_GLOSSARY_RESOLUTION',
@@ -618,6 +693,7 @@ export function createPocK9Scheduler({
       'batch_response_count', 'batch_elapsed_ms', 'completed_resolution_count',
       'dangling_unique_terms', 'dangling_assignment_references', 'retry_attempt',
       'provider_failure_class',
+      'completed', 'total', 'candidate_number', 'candidate_total',
     ])
     const baseAttempt = Object.fromEntries(Object.entries(activeAttempt)
       .filter(([key]) => !staleMetadataFields.has(key)))
@@ -625,7 +701,7 @@ export function createPocK9Scheduler({
       ...baseAttempt,
       observed_at: clock().toISOString(),
       stage,
-      detail: projectorId ? `${projectorId}_${status}` : status,
+      detail: projectorId ? `${projectorId}_${status}` : (diagnosticDetail || status),
       ...(projectorId ? { projector_id: projectorId } : {}),
       ...(diagnosticDetail ? { failure_detail_code: diagnosticDetail } : {}),
     })

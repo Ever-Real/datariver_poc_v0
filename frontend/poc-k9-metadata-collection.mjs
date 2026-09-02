@@ -637,6 +637,7 @@ export function createK9MetadataCollector({
     sourceGeneration = null,
     retryAttempt = 1,
     reportProgress = null,
+    reportDatasetProgress = null,
   } = {}) {
     const profile = createMetadataSourceProfile(sourceGeneration)
     profile.direct_resolution.retry_attempt = boundedCount(retryAttempt)
@@ -682,9 +683,22 @@ export function createK9MetadataCollector({
       return value.urn
     }
 
+    let processedDatasetCount = 0
+    const publishDatasetProgress = () => {
+      processedDatasetCount += 1
+      if (typeof reportDatasetProgress !== 'function') return
+      try {
+        reportDatasetProgress({ completed: processedDatasetCount, total: inventory.length })
+      } catch {
+        // Bounded progress must not affect metadata correctness.
+      }
+    }
     for (const item of inventory) {
       const classification = classificationFor(item, authorityPin.classification_ceiling)
-      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
+      if (!classification || !['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) {
+        publishDatasetProgress()
+        continue
+      }
       const canonicalAssetUrn = urnFor(item)
       const tableId = `TABLE:${canonicalAssetUrn}`
       table_nodes.push({ id: tableId, classification, properties: propertiesFor(item) })
@@ -713,6 +727,7 @@ export function createK9MetadataCollector({
           if (tagId) registerMetadataAssignment(column_tag_assignments, columnId, tagId)
         }
       }
+      publishDatasetProgress()
     }
 
     let nextScrollId = null

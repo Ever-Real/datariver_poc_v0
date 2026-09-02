@@ -142,6 +142,7 @@ function k9RefreshFixture(overrides = {}) {
 
 test('K9 V2 source capture fences two canonical candidates and resumes persisted payloads without DataHub', async () => {
   const calls = { inventory: 0, lineage: 0, metadata: 0, identity: 0 }
+  const progress = []
   const liveAuth = { authorityPin: { subject_id: 'k9' }, principal: { subjectId: 'k9' } }
   const inventoryInputs = []
   const projectionInputs = []
@@ -156,14 +157,23 @@ test('K9 V2 source capture fences two canonical candidates and resumes persisted
       projectionInputs.push({ auth, inventory })
       return { source_generation: 'a'.repeat(64) }
     },
-    collectLineage: async () => { calls.lineage += 1; return { nodes: [], edges: [] } },
-    collectMetadata: async () => { calls.metadata += 1; return { terms: [] } },
+    collectLineage: async (_authority, _inventory, context) => {
+      calls.lineage += 1
+      context.reportProgress({ completed: 1, total: 1 })
+      return { nodes: [], edges: [] }
+    },
+    collectMetadata: async (_authority, _inventory, context) => {
+      calls.metadata += 1
+      context.reportSourceProgress({ completed: 1, total: 1, batch_number: 1, batch_total: 1 })
+      return { terms: [] }
+    },
     runtimeIdentity: async () => { calls.identity += 1; return { version: '1.6.0rc1' } },
     buildSourceCapture: () => ({
       snapshot: { source_snapshot_id: 'b'.repeat(64) },
       source_payloads: { inventory: {}, lineage: {}, metadata: {}, dangling_state: {} },
     }),
     sourceRetryWait: async () => undefined,
+    reportProgress: (value) => progress.push(value),
   })
 
   const first = await capture()
@@ -175,6 +185,15 @@ test('K9 V2 source capture fences two canonical candidates and resumes persisted
     { auth: liveAuth, inventory: [{ id: 'dataset-1' }] },
     { auth: liveAuth, inventory: [{ id: 'dataset-1' }] },
   ])
+  assert.ok(progress.some((value) => value.detail === 'INVENTORY'
+    && value.candidate_number === 1 && value.candidate_total === 3))
+  assert.ok(progress.some((value) => value.detail === 'LINEAGE_COLLECTION'
+    && value.completed === 1 && value.total === 1))
+  assert.ok(progress.some((value) => value.detail === 'METADATA_COLLECTION'
+    && value.batch_number === 1 && value.batch_total === 1))
+  assert.ok(progress.some((value) => value.detail === 'SOURCE_CONSISTENCY'
+    && value.candidate_number === 2 && value.candidate_total === 3))
+  assert.ok(progress.every((value) => !JSON.stringify(value).includes('dataset-1')))
 
   const resumed = await capture({ currentReceipt: { ...first, status: 'RUNNING' } })
   assert.equal(resumed.status, 'READY')
@@ -296,6 +315,22 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     observed_at: '2026-08-30T03:00:00.000Z',
   })
   assert.ok(Number.isFinite(Date.parse(scheduler.currentAttempt().scheduled_for)))
+  assert.equal(scheduler.updateLifecycleProgress({ stage: 'SOURCE', status: 'RUNNING' }), true)
+  assert.equal(scheduler.updateProgress({
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 734, total: 1_892, candidate_number: 1, candidate_total: 3,
+  }), true)
+  assert.deepEqual(scheduler.currentAttempt(), {
+    status: 'RUNNING',
+    scheduled_for: scheduler.currentAttempt().scheduled_for,
+    trigger: 'scheduled',
+    started_at: '2026-08-30T03:00:00.000Z',
+    observed_at: '2026-08-30T03:00:00.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 734, total: 1_892,
+    candidate_number: 1, candidate_total: 3,
+    batch_number: 0, batch_total: 0,
+  })
   assert.equal(scheduler.updateProgress({
     total: 1_387,
     batch_size: 250,
@@ -844,6 +879,51 @@ test('K9 Scheduler durably records a first failure without a successful boundary
   })
   assert.ok(Number.isFinite(Date.parse(receipt.last_attempt.completed_at)))
   assert.equal(JSON.stringify(receipt).includes('provider detail'), false)
+})
+
+test('K9 Scheduler preserves reviewed V2 failures and downcasts unowned diagnostics', async () => {
+  const scheduledFor = '2026-08-24T17:00:00.000Z'
+  const exactDatabase = k9SchedulerDatabase()
+  const exactStore = createPocStateStore({ databasePool: exactDatabase.pool })
+  await exactStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1', scheduledFor, trigger: 'scheduled',
+  }, async () => ({
+    status: 'FAILURE',
+    failureCode: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    diagnostic: {
+      code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      stage: 'SOURCE_RECEIPT',
+      failure_detail_code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      retryable: true,
+      raw_urn: 'urn:li:dataset:must-not-survive',
+    },
+  }))
+  assert.deepEqual(exactDatabase.readValue().last_attempt, {
+    status: 'FAILURE',
+    reason: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    failure_stage: 'SOURCE_RECEIPT',
+    failure_detail_code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    scheduled_for: scheduledFor,
+    completed_at: exactDatabase.readValue().last_attempt.completed_at,
+    trigger: 'scheduled',
+  })
+  assert.equal(JSON.stringify(exactDatabase.readValue()).includes('urn:li:'), false)
+
+  const unownedDatabase = k9SchedulerDatabase()
+  const unownedStore = createPocStateStore({ databasePool: unownedDatabase.pool })
+  await unownedStore.runK9Scheduler({
+    lockName: 'datariver:poc:k9-scheduler:v1', scheduledFor, trigger: 'scheduled',
+  }, async () => ({
+    status: 'FAILURE',
+    failureCode: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    diagnostic: {
+      code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      stage: 'PRIVATE_PROVIDER_BODY',
+      retryable: true,
+    },
+  }))
+  assert.equal(unownedDatabase.readValue().last_attempt.reason, 'K9_REFRESH_FAILED')
+  assert.equal(unownedDatabase.readValue().last_attempt.failure_stage, undefined)
 })
 
 test('K9 Scheduler durably records only bounded DataHub source diagnostics', async () => {

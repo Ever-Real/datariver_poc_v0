@@ -11,6 +11,11 @@ const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 const canonicalIntranetOrigin = 'http://17.20.30.40:39083'
 const sourceSnapshotId = 'a'.repeat(64)
 
+test('PREP K9 readiness timeout remains exactly 1200 seconds', async () => {
+  const source = await readFile(script, 'utf8')
+  assert.match(source, /argument\('--readiness-timeout-ms'\), 1_200_000/)
+})
+
 function readyK9Lifecycle(overrides = {}) {
   const projector = (value = {}) => ({
     desired_snapshot_id: sourceSnapshotId,
@@ -536,6 +541,87 @@ test('PREP smoke lets a current same-boundary source attempt outrank stale EMPTY
   assert.equal(result.report.readiness.GENERAL.status, 'PASS')
 })
 
+test('PREP smoke emits bounded Source capture progress instead of a generic heartbeat', async () => {
+  const currentAttempt = {
+    status: 'RUNNING', scheduled_for: '2026-08-30T17:00:00.000Z', trigger: 'scheduled',
+    started_at: '2026-08-30T17:01:00.000Z', observed_at: '2026-08-30T17:01:01.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 734, total: 1_892, candidate_number: 1, candidate_total: 3,
+    batch_number: 0, batch_total: 0,
+    raw_urn: 'urn:li:dataset:must-not-survive',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', scheduler_current_attempt: currentAttempt,
+        last_error_code: 'K9_SEMANTIC_INDEX_FAILED',
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', scheduler_current_attempt: currentAttempt,
+      },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.match(result.completed.stdout, /K9 SOURCE_CAPTURE \/ LINEAGE_COLLECTION/)
+  assert.match(result.completed.stdout, /candidate 1\/3; 734\/1892 processed/)
+  assert.equal(result.completed.stdout.includes('still pending'), false)
+  assert.deepEqual(result.k9Progress, {
+    contract: 'DATARIVER_PREP39083_K9_PROGRESS_V2',
+    k9: 'RUNNING', stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 734, total: 1_892, candidate_number: 1, candidate_total: 3,
+    batch_number: 0, batch_total: 0, observed_at: result.k9Progress.observed_at,
+  })
+  assert.equal(JSON.stringify(result.report).includes('must-not-survive'), false)
+  assert.equal(result.report.k9_historical_asset_error, 'K9_SEMANTIC_INDEX_FAILED')
+})
+
+test('PREP smoke terminalizes the exact current V2 failure before historical asset state', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_SEMANTIC_INDEX_FAILED',
+        scheduler_last_completed_attempt: {
+          status: 'FAILURE', reason: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+          failure_stage: 'SOURCE_RECEIPT',
+          failure_detail_code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+          scheduled_for: '2026-08-30T17:00:00.000Z',
+          completed_at: '2026-08-30T17:01:00.000Z', trigger: 'scheduled',
+        },
+      },
+      { graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY' },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.diagnostic.product_error_code, 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED')
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_RECEIPT')
+  assert.equal(result.report.k9_historical_asset_error, 'K9_SEMANTIC_INDEX_FAILED')
+  assert.ok(result.failure.elapsed_ms < 5_000)
+})
+
 test('PREP smoke lets a current projector retry outrank its persisted failed receipt', async () => {
   const result = await fixture('required', {
     readinessTimeoutMs: '1000',
@@ -575,6 +661,55 @@ test('PREP smoke lets a current projector retry outrank its persisted failed rec
   assert.equal(result.failure.diagnostic.failure_stage, 'LINEAGE_PROJECTOR')
   assert.equal(result.failure.diagnostic.failure_detail_code, 'GRAPH_PROJECTION_RUNNING')
   assert.equal(result.failure.diagnostic.source_receipt_present, true)
+  assert.ok(result.failure.elapsed_ms >= 900)
+})
+
+test('PREP smoke lets a persisted RUNNING projector outrank completed V2 failure history', async () => {
+  const sourceFailure = {
+    status: 'FAILURE',
+    reason: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    failure_stage: 'SOURCE_RECEIPT',
+    failure_detail_code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    scheduled_for: '2026-08-30T17:00:00.000Z',
+    completed_at: '2026-08-31T03:00:00.000Z',
+    trigger: 'scheduled',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceFailure,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceFailure,
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle({
+      LINEAGE: {
+        desired_snapshot_id: sourceSnapshotId,
+        active_snapshot_id: null,
+        status: 'RUNNING',
+        progress: {
+          phase: 'GRAPH_WRITE', completed_units: 450, total_units: 1892,
+          batch_number: 9, batch_total: 38,
+        },
+      },
+      lifecycle: {
+        aggregate: { status: 'RUNNING', reason: 'K9_V2_AGGREGATE_NOT_READY' },
+      },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.failure.diagnostic.failure_stage, 'LINEAGE_PROJECTOR')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'GRAPH_WRITE')
+  assert.equal(result.failure.diagnostic.completed, 450)
+  assert.equal(result.failure.diagnostic.total, 1892)
+  assert.equal(result.failure.diagnostic.product_error_code, undefined)
   assert.ok(result.failure.elapsed_ms >= 900)
 })
 

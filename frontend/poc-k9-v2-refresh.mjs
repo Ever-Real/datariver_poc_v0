@@ -1,15 +1,14 @@
-import { createK9V2LifecycleOrchestrator } from './poc-k9-lifecycle-v2.mjs'
+import {
+  createK9V2LifecycleOrchestrator,
+  K9_V2_FAILURE_DIAGNOSTICS,
+} from './poc-k9-lifecycle-v2.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 import { sanitizeK9LineageSourceProfile } from './poc-k9-lineage-collection.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
 const TOKEN = /^[A-Z][A-Z0-9_]{0,95}$/u
 
-const aggregateFailure = Object.freeze({
-  code: 'K9_V2_AGGREGATE_PROMOTION_FAILED',
-  stage: 'AGGREGATE_READINESS',
-  retryable: true,
-})
+const aggregateFailure = K9_V2_FAILURE_DIAGNOSTICS.AGGREGATE_PROMOTION_FAILED
 
 function boundedDiagnostic(value, fallback = aggregateFailure) {
   if (!value || !TOKEN.test(value.code || '') || !TOKEN.test(value.stage || '')) return fallback
@@ -71,17 +70,16 @@ export function createPocK9V2RefreshTask({
   return async function triggerK9V2Refresh({ lifecycleMode = 'REFRESH' } = {}) {
     const result = await orchestrator.run({ sourceRunMode: lifecycleMode })
     if (result.status !== 'READY') {
-      const diagnostic = boundedDiagnostic(result.diagnostic, Object.freeze({
-        code: 'K9_V2_LIFECYCLE_FAILED', stage: 'K9_V2_LIFECYCLE', retryable: true,
-      }))
+      const diagnostic = boundedDiagnostic(
+        result.diagnostic,
+        K9_V2_FAILURE_DIAGNOSTICS.LIFECYCLE_FAILED,
+      )
       return Object.freeze({
         status: 'FAILURE',
         reason: diagnostic.code,
         failureCode: diagnostic.code,
         failureStage: diagnostic.stage,
-        ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.failure_detail_code
-          ? { failureDetailCode: diagnostic.failure_detail_code }
-          : {}),
+        failureDetailCode: diagnostic.failure_detail_code || diagnostic.code,
         ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.source_eligibility
           ? { sourceEligibility: diagnostic.source_eligibility }
           : {}),

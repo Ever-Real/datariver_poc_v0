@@ -78,6 +78,10 @@ import {
   createK9V2LifecycleReceiptPort,
   publicK9V2LifecycleStatus,
 } from './poc-k9-lifecycle-runtime.mjs'
+import {
+  K9_V2_FAILURE_CODES,
+  sanitizeK9V2FailureDiagnostic,
+} from './poc-k9-lifecycle-v2.mjs'
 import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.mjs'
 import { createPocK9V2RefreshTask } from './poc-k9-v2-refresh.mjs'
 import {
@@ -9260,6 +9264,7 @@ const k9SourceFailureDetails = new Set([
   ...K9_LINEAGE_FAILURE_DETAILS,
   ...K9_METADATA_FAILURE_DETAILS,
 ])
+const k9V2FailureCodes = new Set(K9_V2_FAILURE_CODES)
 
 function managedK9SourceDiagnostic(errorMessage) {
   const matched = /^K9_DATAHUB_SOURCE_FAILED: failure_stage=([A-Z0-9_]+); failure_detail_code=([A-Z0-9_]+)\.$/
@@ -9290,7 +9295,8 @@ export function managedK9SchedulerReadModel(
     return {
       scheduler_status: 'UNAVAILABLE', scheduler_requested: false, scheduler_timer_enabled: false,
       schedule: null, schedule_timezone: null, next_scheduled_run: null,
-      last_successful_schedule: null, scheduler_last_attempt: null,
+      last_successful_schedule: null, scheduler_current_attempt: null,
+      scheduler_last_completed_attempt: null, scheduler_last_attempt: null,
     }
   }
   const receipt = schedulerReceiptSnapshot?.value
@@ -9301,6 +9307,13 @@ export function managedK9SchedulerReadModel(
     && typeof durableAttempt?.reason === 'string'
     && /^K9_[A-Z0-9_]+$/.test(durableAttempt.reason)
     ? durableAttempt.reason : null
+  const durableV2Diagnostic = durableReason && k9V2FailureCodes.has(durableReason)
+    ? sanitizeK9V2FailureDiagnostic({
+        code: durableReason,
+        stage: durableAttempt.failure_stage,
+        failure_detail_code: durableAttempt.failure_detail_code,
+      })
+    : null
   const schedulerLastAttempt = durableStatus ? {
     status: durableStatus,
     scheduled_for: schedulerTimestamp(durableAttempt.scheduled_for),
@@ -9321,6 +9334,10 @@ export function managedK9SchedulerReadModel(
             : {}),
         }
       : {}),
+    ...(durableV2Diagnostic ? {
+      failure_stage: durableV2Diagnostic.stage,
+      failure_detail_code: durableV2Diagnostic.failure_detail_code,
+    } : {}),
   } : null
   const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
   const activeTrigger = ['scheduled', 'manual'].includes(activeRefreshAttempt?.trigger)
@@ -9329,6 +9346,8 @@ export function managedK9SchedulerReadModel(
     ? activeRefreshAttempt.stage : null
   const activeDetail = /^[A-Z][A-Z0-9_]{0,95}$/.test(activeRefreshAttempt?.detail || '')
     ? activeRefreshAttempt.detail : null
+  const activeCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const activeProgress = Object.hasOwn(activeRefreshAttempt || {}, 'completed')
   const schedulerCurrentAttempt = refreshRunning ? {
     status: 'RUNNING',
     scheduled_for: schedulerTimestamp(activeRefreshAttempt.scheduled_for),
@@ -9337,6 +9356,14 @@ export function managedK9SchedulerReadModel(
     observed_at: schedulerTimestamp(activeRefreshAttempt.observed_at),
     ...(activeStage ? { stage: activeStage } : {}),
     ...(activeDetail ? { detail: activeDetail } : {}),
+    ...(activeProgress ? {
+      completed: activeCount(activeRefreshAttempt.completed),
+      total: activeCount(activeRefreshAttempt.total),
+      candidate_number: activeCount(activeRefreshAttempt.candidate_number),
+      candidate_total: activeCount(activeRefreshAttempt.candidate_total),
+      batch_number: activeCount(activeRefreshAttempt.batch_number),
+      batch_total: activeCount(activeRefreshAttempt.batch_total),
+    } : {}),
   } : null
   const nextScheduledRun = schedulerConfig.enabled
     ? nextScheduleBoundary(
@@ -13709,7 +13736,7 @@ export async function startPocServer({ stateStore } = {}) {
     )))
   }
 
-  async function collectLineageInventorySeam(authorityPin, inventory) {
+  async function collectLineageInventorySeam(authorityPin, inventory, { reportProgress = null } = {}) {
     if (!inventory || !inventory.length) throw new Error('Incomplete inventory')
     const authorizedInventory = inventory.flatMap((item) => {
       const classification = k9ProjectionClassification(item, authorityPin.classification_ceiling)
@@ -13723,6 +13750,15 @@ export async function startPocServer({ stateStore } = {}) {
     const columnNodeMap = new Map()
     const completeness_metadata = { per_asset: {} }
     let processedAssetCount = 0
+    const publishLineageProgress = () => {
+      processedAssetCount += 1
+      if (typeof reportProgress !== 'function') return
+      try {
+        reportProgress({ completed: processedAssetCount, total: authorizedInventory.length })
+      } catch {
+        // Execution-only progress must not alter lineage capture correctness.
+      }
+    }
 
     const registerLineageEdge = (source, target, relationship, sourceEntityUrn) => {
       const key = `${source}->${target}`
@@ -13777,7 +13813,10 @@ export async function startPocServer({ stateStore } = {}) {
     }
 
     for (const { item, classification } of authorizedInventory) {
-      if (!['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) continue
+      if (!['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(item.dataset_kind)) {
+        publishLineageProgress()
+        continue
+      }
       const itemUrn = k9AssetUrn(item)
 
       const nodeId = 'TABLE:' + itemUrn
@@ -13889,7 +13928,7 @@ export async function startPocServer({ stateStore } = {}) {
           }
         }
       }
-      processedAssetCount += 1
+      publishLineageProgress()
     }
     nodes.push(...columnNodeMap.values())
     edges.push(...edgeMap.values())
@@ -13908,7 +13947,10 @@ export async function startPocServer({ stateStore } = {}) {
 
   let reportK9RefreshProgress = () => false
 
-  async function collectGlossaryInventorySeam(authorityPin, inventory, { retryAttempt = 1 } = {}) {
+  async function collectGlossaryInventorySeam(authorityPin, inventory, {
+    retryAttempt = 1,
+    reportSourceProgress = null,
+  } = {}) {
     const collectMetadata = createK9MetadataCollector({
       refreshGraphql: datahubRefreshGraphql,
       glossaryQuery: datahubK9GlossaryQuery,
@@ -13928,7 +13970,19 @@ export async function startPocServer({ stateStore } = {}) {
     return collectMetadata(authorityPin, inventory, {
       sourceGeneration: inventorySnapshot?.projection?.source_generation || null,
       retryAttempt,
-      reportProgress: (progress) => reportK9RefreshProgress(progress),
+      reportProgress: (progress) => {
+        if (typeof reportSourceProgress === 'function') {
+          reportSourceProgress({
+            completed: progress?.completed_resolution_count,
+            total: progress?.total,
+            batch_number: progress?.batch_number,
+            batch_total: progress?.batch_total,
+          })
+        }
+      },
+      reportDatasetProgress: typeof reportSourceProgress === 'function'
+        ? (progress) => reportSourceProgress(progress)
+        : null,
     })
   }
 
@@ -14021,6 +14075,7 @@ export async function startPocServer({ stateStore } = {}) {
       collectMetadata: collectGlossaryInventorySeam,
       runtimeIdentity: datahubRuntimeIdentity,
       buildSourceCapture: buildDatahubKnowledgeSourceCapture,
+      reportProgress: (progress) => reportK9RefreshProgress(progress),
     })
     const graphProjectors = createK9GraphProjectors({
       persistence: lifecycle,
