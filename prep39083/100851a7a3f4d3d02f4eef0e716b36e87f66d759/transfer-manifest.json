@@ -1,0 +1,16 @@
+{
+  "contract": "DATARIVER_PREP39083_GIT_ARTIFACT_TRANSPORT_V1",
+  "purpose": "TRANSPORT_ONLY_NOT_PRODUCT_SOURCE",
+  "product_sha": "100851a7a3f4d3d02f4eef0e716b36e87f66d759",
+  "handoff_sha": "71c8ab68f79b866dc61b0b459cf1d0b3b9e08e1c",
+  "original_filename": "datariver-poc-100851a7a3f4d3d02f4eef0e716b36e87f66d759-linux-amd64.tar",
+  "original_size": 124368896,
+  "original_sha256": "86213730916acca9be664af3a6301aafb19122800ce1ce0387428ff4bdd2a116",
+  "chunk_size": 50331648,
+  "chunk_count": 3,
+  "chunks": [
+    "datariver-poc-100851a7a3f4d3d02f4eef0e716b36e87f66d759-linux-amd64.tar.part-000",
+    "datariver-poc-100851a7a3f4d3d02f4eef0e716b36e87f66d759-linux-amd64.tar.part-001",
+    "datariver-poc-100851a7a3f4d3d02f4eef0e716b36e87f66d759-linux-amd64.tar.part-002"
+  ]
+}
