@@ -542,6 +542,45 @@ test('persists earliest retained fresh boundaries before consume and fails close
   assert.equal(store.gapReceipts.length, 1)
   assert.equal(store.checkpoints.get(0), 150)
 
+  const currentDeltaKafka = kafkaDouble(
+    [{ partition: 0, low: '150', high: '152', offset: '150' }],
+    new Map([[0, [
+      { offset: '150', value: fixture.buffer },
+      { offset: '151', value: fixture.buffer },
+    ]]]),
+  )
+  const currentDelta = await createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: currentDeltaKafka,
+    schemaRegistry: fixture.registry,
+  }).run()
+  assert.equal(currentDelta.historyCompleteness, 'DEGRADED_GAP')
+  assert.equal(currentDelta.partitions[0].processedRecords, 2)
+  assert.equal(currentDelta.partitions[0].nextOffset, 152)
+  assert.equal(store.checkpoints.get(0), 152)
+  assert.equal(store.gapReceipts.length, 1)
+  assert.deepEqual(store.captures.map(({ offset }) => offset), [150, 151])
+
+  const currentDeltaRerunKafka = kafkaDouble(
+    [{ partition: 0, low: '150', high: '152', offset: '150' }],
+    new Map([[0, [
+      { offset: '150', value: fixture.buffer },
+      { offset: '151', value: fixture.buffer },
+    ]]]),
+  )
+  const currentDeltaRerun = await createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: currentDeltaRerunKafka,
+    schemaRegistry: fixture.registry,
+  }).run()
+  assert.equal(currentDeltaRerun.partitions[0].processedRecords, 0)
+  assert.equal(currentDeltaRerun.partitions[0].nextOffset, 152)
+  assert.equal(currentDeltaRerunKafka.state.consumerCreates, 0)
+  assert.equal(store.gapReceipts.length, 1)
+  assert.equal(store.captures.length, 2)
+
   const changedKafka = kafkaDouble([
     { partition: 0, low: '100', high: '100', offset: '100' },
     { partition: 1, low: '0', high: '0', offset: '0' },

@@ -350,6 +350,12 @@ test('managed K9 scheduler read model separates configured boundaries from durab
     schedule: '02:15 Asia/Seoul', schedule_timezone: 'Asia/Seoul',
     next_scheduled_run: '2026-08-30T17:15:00.000Z',
     last_successful_schedule: '2026-08-28T17:15:00.000Z',
+    scheduler_current_attempt: null,
+    scheduler_last_completed_attempt: {
+      status: 'FAILURE', reason: 'K9_METADATA_REFRESH_FAILED',
+      scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
+      trigger: 'scheduled',
+    },
     scheduler_last_attempt: {
       status: 'FAILURE', reason: 'K9_METADATA_REFRESH_FAILED',
       scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
@@ -381,6 +387,8 @@ test('managed K9 scheduler read model preserves only bounded pre-snapshot source
     scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
     trigger: 'scheduled',
   })
+  assert.deepEqual(readModel.scheduler_last_completed_attempt, readModel.scheduler_last_attempt)
+  assert.equal(readModel.scheduler_current_attempt, null)
   assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
 })
 
@@ -391,9 +399,18 @@ test('managed K9 scheduler status distinguishes active, on-demand, disabled, and
   }
   assert.equal(managedK9SchedulerReadModel({ ...base, requested: true, enabled: false }).scheduler_status, 'ON_DEMAND')
   assert.equal(managedK9SchedulerReadModel({ ...base, requested: false, enabled: false }).scheduler_status, 'DISABLED')
-  assert.equal(managedK9SchedulerReadModel({ ...base, requested: true, enabled: false }, null, {
+  const running = managedK9SchedulerReadModel({ ...base, requested: true, enabled: false }, null, {
     status: 'RUNNING', scheduled_for: '2026-08-29T00:00:00.000Z', trigger: 'manual',
-  }).scheduler_status, 'RUNNING')
+    started_at: '2026-08-29T00:00:01.000Z', observed_at: '2026-08-29T00:00:02.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'RUNNING', raw_urn: 'must-not-survive',
+  })
+  assert.equal(running.scheduler_status, 'RUNNING')
+  assert.deepEqual(running.scheduler_current_attempt, {
+    status: 'RUNNING', scheduled_for: '2026-08-29T00:00:00.000Z', trigger: 'manual',
+    started_at: '2026-08-29T00:00:01.000Z', observed_at: '2026-08-29T00:00:02.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'RUNNING',
+  })
+  assert.equal(JSON.stringify(running).includes('raw_urn'), false)
   assert.equal(managedK9SchedulerReadModel(null).scheduler_status, 'UNAVAILABLE')
 })
 

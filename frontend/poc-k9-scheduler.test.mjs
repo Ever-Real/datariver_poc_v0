@@ -243,6 +243,7 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     config,
     stateStore,
     triggerK9Refresh,
+    clock: () => new Date('2026-08-30T03:00:00.000Z'),
     setTimer: () => 1,
   })
 
@@ -257,6 +258,8 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     status: 'RUNNING',
     scheduled_for: scheduler.currentAttempt().scheduled_for,
     trigger: 'scheduled',
+    started_at: '2026-08-30T03:00:00.000Z',
+    observed_at: '2026-08-30T03:00:00.000Z',
   })
   assert.ok(Number.isFinite(Date.parse(scheduler.currentAttempt().scheduled_for)))
   assert.equal(scheduler.updateProgress({
@@ -276,6 +279,8 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     status: 'RUNNING',
     scheduled_for: scheduler.currentAttempt().scheduled_for,
     trigger: 'scheduled',
+    started_at: '2026-08-30T03:00:00.000Z',
+    observed_at: '2026-08-30T03:00:00.000Z',
     stage: 'METADATA_COLLECTION',
     detail: 'DIRECT_GLOSSARY_RESOLUTION',
     direct_resolution_total: 1_387,
@@ -301,6 +306,8 @@ test('K9 Scheduler exposes only the currently active retry attempt', async () =>
     status: 'RUNNING',
     scheduled_for: scheduler.currentAttempt().scheduled_for,
     trigger: 'scheduled',
+    started_at: '2026-08-30T03:00:00.000Z',
+    observed_at: '2026-08-30T03:00:00.000Z',
     stage: 'SEMANTIC_PROJECTOR',
     detail: 'SEMANTIC_FAILED',
     projector_id: 'SEMANTIC',
