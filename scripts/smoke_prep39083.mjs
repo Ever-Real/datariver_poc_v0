@@ -10,6 +10,7 @@ import {
   K9_LINEAGE_FAILURE_DETAILS,
   sanitizeK9LineageSourceProfile,
 } from '../frontend/poc-k9-lineage-collection.mjs'
+import { K9_V2_FAILURE_CODES } from '../frontend/poc-k9-lifecycle-v2.mjs'
 
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([
@@ -51,6 +52,7 @@ const glossaryFailureClassifications = new Set([
   'PREP_SMOKE_GLOSSARY_TERM_CONTRACT_FAILED',
 ])
 const k9V2Projectors = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
+const k9V2FailureCodes = new Set(K9_V2_FAILURE_CODES)
 const safeK9Token = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value)
 const safeSnapshotHash = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 const safeK9Timestamp = (value) => typeof value === 'string'
@@ -497,6 +499,18 @@ async function retryReadiness(operation, timeoutMs, label) {
           ? `; ${diagnostic.processed_count}/${diagnostic.expected_total} processed`
           : ''
         progress(label, `${pageProgress}${countProgress}`)
+      } else if (diagnostic?.failure_stage === 'SOURCE_CAPTURE'
+        && safeK9Token(diagnostic.failure_detail_code)
+        && (diagnostic.candidate_total > 0 || diagnostic.total > 0)) {
+        const candidate = Number.isSafeInteger(diagnostic.candidate_number)
+          && diagnostic.candidate_total > 0
+          ? `candidate ${diagnostic.candidate_number}/${diagnostic.candidate_total}; ` : ''
+        const processed = Number.isSafeInteger(diagnostic.completed) && diagnostic.total > 0
+          ? `${diagnostic.completed}/${diagnostic.total} processed; ` : ''
+        progress(
+          label,
+          `K9 SOURCE_CAPTURE / ${diagnostic.failure_detail_code}; ${candidate}${processed}elapsed ${Math.round((Date.now() - started) / 1000)}s`,
+        )
       } else {
         progress(label, `still pending (elapsed ${Math.round((Date.now() - started) / 1000)}s)`)
       }
@@ -736,6 +750,49 @@ async function main() {
         const lifecycle = managed.body?.k9_lifecycle
         if (lifecycle?.contract === 'DATARIVER_K9_LIFECYCLE_STATUS_V2') {
           report.k9_lifecycle = boundedK9V2LifecycleStatus(lifecycle)
+          const boundedAttempt = (attempt) => {
+            if (!attempt || !['RUNNING', 'SUCCESS', 'FAILURE'].includes(attempt.status)) return null
+            const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+            return {
+              status: attempt.status,
+              ...(safeK9Token(attempt.stage) ? { stage: attempt.stage } : {}),
+              ...(safeK9Token(attempt.detail) ? { detail: attempt.detail } : {}),
+              ...(safeK9Token(attempt.reason) ? { reason: attempt.reason } : {}),
+              ...(safeK9Token(attempt.failure_stage)
+                ? { failure_stage: attempt.failure_stage } : {}),
+              ...(safeK9Token(attempt.failure_detail_code)
+                ? { failure_detail_code: attempt.failure_detail_code } : {}),
+              completed: count(attempt.completed),
+              total: count(attempt.total),
+              candidate_number: count(attempt.candidate_number),
+              candidate_total: count(attempt.candidate_total),
+              batch_number: count(attempt.batch_number),
+              batch_total: count(attempt.batch_total),
+              ...(safeK9Timestamp(attempt.scheduled_for)
+                ? { scheduled_for: attempt.scheduled_for } : {}),
+              ...(safeK9Timestamp(attempt.started_at) ? { started_at: attempt.started_at } : {}),
+              ...(safeK9Timestamp(attempt.observed_at) ? { observed_at: attempt.observed_at } : {}),
+              ...(safeK9Timestamp(attempt.completed_at) ? { completed_at: attempt.completed_at } : {}),
+            }
+          }
+          const currentAttempt = items
+            .map((item) => item?.scheduler_current_attempt)
+            .find((attempt) => attempt?.status === 'RUNNING')
+          const lastCompletedAttempt = items
+            .map((item) => item?.scheduler_last_completed_attempt || item?.scheduler_last_attempt)
+            .find((attempt) => ['SUCCESS', 'FAILURE'].includes(attempt?.status))
+          const historicalAssetError = [lineage, metadata]
+            .map((item) => item?.last_error_code)
+            .find((code) => safeK9Token(code)) || null
+          const schedulerStatus = items
+            .map((item) => item?.scheduler_status)
+            .find((value) => ['RUNNING', 'SCHEDULED', 'ON_DEMAND', 'DISABLED'].includes(value))
+          report.k9_scheduler = {
+            status: currentAttempt ? 'RUNNING' : (schedulerStatus || 'UNKNOWN'),
+            current_attempt: boundedAttempt(currentAttempt),
+            last_completed_attempt: boundedAttempt(lastCompletedAttempt),
+          }
+          report.k9_historical_asset_error = historicalAssetError
           const runningProjector = k9V2RunningProjector(lifecycle)
           if (runningProjector) {
             if (progressOutput) await atomicJson(progressOutput, runningProjector)
@@ -744,10 +801,25 @@ async function main() {
               `K9 ${runningProjector.stage} ${runningProjector.completed}/${runningProjector.total}; batch ${runningProjector.batch_number}/${runningProjector.batch_total}`,
             )
           }
-          const currentAttempt = items
-            .map((item) => item?.scheduler_current_attempt)
-            .find((attempt) => attempt?.status === 'RUNNING')
           if (currentAttempt) {
+            const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+            if (currentAttempt.stage === 'SOURCE_CAPTURE' && safeK9Token(currentAttempt.detail)
+              && (count(currentAttempt.candidate_total) > 0 || count(currentAttempt.total) > 0)) {
+              const sourceProgress = {
+                contract: 'DATARIVER_PREP39083_K9_PROGRESS_V2',
+                k9: 'RUNNING',
+                stage: 'SOURCE_CAPTURE',
+                detail: currentAttempt.detail,
+                completed: count(currentAttempt.completed),
+                total: count(currentAttempt.total),
+                candidate_number: count(currentAttempt.candidate_number),
+                candidate_total: count(currentAttempt.candidate_total),
+                batch_number: count(currentAttempt.batch_number),
+                batch_total: count(currentAttempt.batch_total),
+                observed_at: new Date().toISOString(),
+              }
+              if (progressOutput) await atomicJson(progressOutput, sourceProgress)
+            }
             throw smokeFailure(
               'K9',
               'PREP_SMOKE_K9_NOT_READY',
@@ -768,9 +840,34 @@ async function main() {
                 trigger: ['scheduled', 'manual'].includes(currentAttempt.trigger)
                   ? currentAttempt.trigger : null,
                 source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
+                completed: count(currentAttempt.completed),
+                total: count(currentAttempt.total),
+                candidate_number: count(currentAttempt.candidate_number),
+                candidate_total: count(currentAttempt.candidate_total),
+                batch_number: count(currentAttempt.batch_number),
+                batch_total: count(currentAttempt.batch_total),
               },
             )
           }
+          if (runningProjector) {
+            throw smokeFailure(
+              'K9',
+              'PREP_SMOKE_K9_NOT_READY',
+              'The persisted K9 V2 projector lifecycle is still running.',
+              null,
+              {
+                terminal: false,
+                failure_stage: runningProjector.stage,
+                failure_detail_code: runningProjector.detail,
+                source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
+                completed: runningProjector.completed,
+                total: runningProjector.total,
+                batch_number: runningProjector.batch_number,
+                batch_total: runningProjector.batch_total,
+              },
+            )
+          }
+          if (progressOutput && !runningProjector) await removeIfPresent(progressOutput)
           const projectorFailure = k9V2ProjectorFailure(lifecycle)
           if (projectorFailure) {
             throw smokeFailure(
@@ -812,6 +909,30 @@ async function main() {
                 ...(sanitizeK9LineageSourceProfile(sourceCaptureFailure.lineage_source_profile)
                   ? { lineage_profile: sanitizeK9LineageSourceProfile(sourceCaptureFailure.lineage_source_profile) }
                   : {}),
+              },
+            )
+          }
+          const completedV2Failure = lastCompletedAttempt?.status === 'FAILURE'
+            && k9V2FailureCodes.has(lastCompletedAttempt.reason)
+            && safeK9Token(lastCompletedAttempt.failure_stage)
+            && safeK9Token(lastCompletedAttempt.failure_detail_code)
+            ? lastCompletedAttempt : null
+          if (completedV2Failure) {
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              'PREP_SMOKE_K9_REFRESH_FAILED',
+              'The current completed K9 V2 attempt failed with a bounded diagnostic.',
+              null,
+              {
+                terminal: true,
+                product_error_code: completedV2Failure.reason,
+                failure_stage: completedV2Failure.failure_stage,
+                failure_detail_code: completedV2Failure.failure_detail_code,
+                scheduled_for: safeK9Timestamp(completedV2Failure.scheduled_for)
+                  ? completedV2Failure.scheduled_for : null,
+                attempt_observed_at: safeK9Timestamp(completedV2Failure.completed_at)
+                  ? completedV2Failure.completed_at : null,
+                source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
               },
             )
           }
@@ -924,6 +1045,7 @@ async function main() {
         progress('4/6', 'K9 DEFERRED')
       }
     } catch (error) {
+      if (progressOutput && error?.terminal) await removeIfPresent(progressOutput)
       laneFailures.push(error)
       report.readiness.K9 = {
         status: 'FAILED',

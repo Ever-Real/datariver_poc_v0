@@ -185,3 +185,68 @@ test('V2 trigger exposes the exact bounded source diagnostic before snapshot per
   })
   assert.equal(JSON.stringify(result).includes('private DataHub'), false)
 })
+
+test('V2 trigger preserves each bounded pre-snapshot receipt failure boundary', async () => {
+  const projectorPorts = Object.fromEntries(['LINEAGE', 'METADATA', 'SEMANTIC'].map((id) => [id, {
+    async project() { throw new Error('must not project') },
+  }]))
+  const cases = [
+    {
+      name: 'source read', expected: 'K9_V2_SOURCE_RECEIPT_READ_FAILED',
+      captureSource: async () => source(),
+      receipts: { async readSourceCaptureReceipt() { throw new Error('private read') } },
+    },
+    {
+      name: 'source capture', expected: 'K9_V2_SOURCE_CAPTURE_FAILED',
+      captureSource: async () => { throw new Error('private capture') },
+      receipts: { async readSourceCaptureReceipt() { return null } },
+    },
+    {
+      name: 'source invalid', expected: 'K9_V2_SOURCE_RECEIPT_INVALID',
+      captureSource: async () => ({ status: 'RUNNING', raw_urn: 'urn:li:dataset:private' }),
+      receipts: { async readSourceCaptureReceipt() { return null } },
+    },
+    {
+      name: 'source persist', expected: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      captureSource: async () => source(),
+      receipts: {
+        async readSourceCaptureReceipt() { return null },
+        async writeSourceCaptureReceipt() { throw new Error('private persistence') },
+      },
+    },
+    {
+      name: 'source readback', expected: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      captureSource: async () => source(),
+      receipts: (() => {
+        let written = false
+        return {
+          async readSourceCaptureReceipt() {
+            return written ? { ...source(), source_snapshot_id: 'b'.repeat(64) } : null
+          },
+          async writeSourceCaptureReceipt() { written = true },
+        }
+      })(),
+    },
+  ]
+
+  for (const value of cases) {
+    const receipts = {
+      async writeSourceCaptureReceipt() {},
+      async readProjectorDesiredReceipt() { return null },
+      async readProjectorActiveReceipt() { return null },
+      async promoteAggregate() { throw new Error('must not promote') },
+      ...value.receipts,
+    }
+    const trigger = createPocK9V2RefreshTask({
+      captureSource: value.captureSource,
+      receipts,
+      projectors: projectorPorts,
+    })
+    const result = await trigger()
+    assert.equal(result.status, 'FAILURE', value.name)
+    assert.equal(result.failureCode, value.expected, value.name)
+    assert.equal(result.failureDetailCode, value.expected, value.name)
+    assert.equal(JSON.stringify(result).includes('private'), false, value.name)
+    assert.equal(JSON.stringify(result).includes('urn:li:'), false, value.name)
+  }
+})

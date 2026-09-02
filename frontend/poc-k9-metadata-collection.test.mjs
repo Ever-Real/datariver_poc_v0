@@ -112,6 +112,21 @@ async function failureRecord(collector, inventory = [dataset('one')], context) {
   assert.fail('Expected metadata collection to fail')
 }
 
+test('metadata source progress counts existing Dataset work without exposing identities', async () => {
+  const progress = []
+  await fixture().collector(
+    authorityPin,
+    [dataset('one'), dataset('two')],
+    { reportDatasetProgress: (value) => progress.push(value) },
+  )
+  assert.deepEqual(progress, [
+    { completed: 1, total: 2 },
+    { completed: 2, total: 2 },
+  ])
+  assert.equal(JSON.stringify(progress).includes('urn:li:'), false)
+  assert.equal(JSON.stringify(progress).includes('one'), false)
+})
+
 test('DataHub v1.6.0 tag provenance survives persistence and restart-style serialization', async () => {
   const seededTagUrn = 'urn:li:tag:datariver_classification_internal'
   const realDatahubTag = (properties) => normalizeDatahubTagReferences({ globalTags: { tags: [{ tag: {

@@ -3888,6 +3888,28 @@ def status(release: ReleaseIdentity) -> None:
         or lifecycle.get("contract") != "DATARIVER_K9_LIFECYCLE_STATUS_V2"
     ):
         lifecycle = {}
+    scheduler_summary = smoke_report.get("k9_scheduler", {}) if smoke_report else {}
+    if not isinstance(scheduler_summary, dict):
+        scheduler_summary = {}
+    scheduler_current = scheduler_summary.get("current_attempt")
+    if not isinstance(scheduler_current, dict):
+        scheduler_current = {}
+    # A completed command leaves a historical smoke report behind. Its captured
+    # current attempt is no longer live once target-local deploy ownership is gone.
+    if not active:
+        scheduler_current = {}
+    scheduler_last = scheduler_summary.get("last_completed_attempt")
+    if not isinstance(scheduler_last, dict):
+        scheduler_last = {}
+    progress_summary = k9_progress if isinstance(k9_progress, dict) else {}
+    current_progress = bool(
+        active
+        and progress_summary.get("k9") == "RUNNING"
+        and progress_summary.get("contract") in {
+            "DATARIVER_PREP39083_K9_PROGRESS_V1",
+            "DATARIVER_PREP39083_K9_PROGRESS_V2",
+        }
+    )
 
     def lane_state(name: str) -> str | None:
         value = readiness.get(name)
@@ -3910,7 +3932,7 @@ def status(release: ReleaseIdentity) -> None:
         else "FAILED" if failed_stage.startswith("K9")
         else "UNKNOWN"
     )
-    if active and isinstance(k9_progress, dict) and k9_progress.get("k9") == "RUNNING":
+    if current_progress:
         k9 = "RUNNING"
     lifecycle_projectors = lifecycle.get("projectors", {})
     if not isinstance(lifecycle_projectors, dict):
@@ -3984,6 +4006,35 @@ def status(release: ReleaseIdentity) -> None:
             next_action = "Run ./scripts/prep39083 deploy to reconcile the tracked release."
         print(f"Identity action: {identity_action}")
     print(f"Web: {web}")
+    recorded_scheduler_status = scheduler_summary.get("status", "NONE")
+    scheduler_status = (
+        "RUNNING"
+        if current_progress
+        else "UNKNOWN"
+        if recorded_scheduler_status == "RUNNING" and not active
+        else recorded_scheduler_status
+    )
+    current_attempt_status = (
+        "RUNNING" if current_progress else scheduler_current.get("status", "NONE")
+    )
+    current_stage = (
+        progress_summary.get("stage", "NONE") if current_progress
+        else scheduler_current.get("stage", "NONE")
+    )
+    current_detail = (
+        progress_summary.get("detail", "NONE") if current_progress
+        else scheduler_current.get("detail", "NONE")
+    )
+    print(f"K9 scheduler: {scheduler_status}")
+    print(f"K9 current attempt: {current_attempt_status}")
+    print(f"K9 current stage: {current_stage}")
+    print(f"K9 current detail: {current_detail}")
+    print(f"K9 last attempt: {scheduler_last.get('status', 'NONE')}")
+    print(f"K9 last reason: {scheduler_last.get('reason', 'NONE')}")
+    print(f"K9 last failure stage: {scheduler_last.get('failure_stage', 'NONE')}")
+    print(f"K9 last failure detail: {scheduler_last.get('failure_detail_code', 'NONE')}")
+    historical_asset_error = smoke_report.get("k9_historical_asset_error") if smoke_report else None
+    print(f"K9 historical asset error: {historical_asset_error or 'NONE'}")
     lifecycle_source = lifecycle.get("source", {}) if lifecycle else {}
     if isinstance(lifecycle_source, dict):
         source_status = lifecycle_source.get("status", "UNKNOWN")
@@ -4060,11 +4111,23 @@ def status(release: ReleaseIdentity) -> None:
                 f"table={assignment_scope.get('provider_incoming_table_total', 0)}; "
                 f"column={assignment_scope.get('provider_incoming_column_total', 0)}"
             )
-    if k9 == "RUNNING" and isinstance(k9_progress, dict):
-        print(f"K9 stage: {k9_progress.get('stage', 'UNKNOWN')}")
-        print(f"K9 detail: {k9_progress.get('detail', 'UNKNOWN')}")
-        print(f"Progress: {k9_progress.get('completed', 0)}/{k9_progress.get('total', 0)}")
-        print(f"Batch: {k9_progress.get('batch_number', 0)}/{k9_progress.get('batch_total', 0)}")
+    if k9 == "RUNNING" and current_progress:
+        print(f"K9 stage: {progress_summary.get('stage', 'UNKNOWN')}")
+        print(f"K9 detail: {progress_summary.get('detail', 'UNKNOWN')}")
+        print(
+            f"Progress: {progress_summary.get('completed', 0)}/"
+            f"{progress_summary.get('total', 0)}"
+        )
+        if progress_summary.get("stage") == "SOURCE_CAPTURE":
+            print(
+                "Source candidate: "
+                f"{progress_summary.get('candidate_number', 0)}/"
+                f"{progress_summary.get('candidate_total', 0)}"
+            )
+        print(
+            f"Batch: {progress_summary.get('batch_number', 0)}/"
+            f"{progress_summary.get('batch_total', 0)}"
+        )
     if k9 == "FAILED":
         print(f"K9 stage: {smoke_diagnostic.get('failure_stage', failed_stage or 'UNKNOWN')}")
         print(f"K9 detail: {smoke_diagnostic.get('failure_detail_code', code)}")

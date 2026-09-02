@@ -26,6 +26,10 @@ import {
   K9_LIFECYCLE_KEY_V2,
   K9_LEGACY_ADOPTION_SCOPE_V2,
 } from './poc-k9-lifecycle-persistence.mjs'
+import {
+  K9_V2_FAILURE_CODES,
+  sanitizeK9V2FailureDiagnostic,
+} from './poc-k9-lifecycle-v2.mjs'
 import { createK9SemanticPersistenceV2 } from './poc-k9-semantic-persistence.mjs'
 import {
   POC_POSTGRES_SCHEMA_INTEGRITY_FLAG,
@@ -58,6 +62,7 @@ const K9_REFRESH_FAILURE_CODES = new Set([
   'K9_SOURCE_SNAPSHOT_FAILED',
   'K9_SOURCE_DRIFT_RETRY_EXHAUSTED',
   'K9_SYSTEM_SUBJECT_FAILED',
+  ...K9_V2_FAILURE_CODES,
 ])
 const K9_SOURCE_FAILURE_STAGES = new Set([
   'INVENTORY',
@@ -3628,10 +3633,12 @@ export function createPocStateStore({ databasePool } = {}) {
       const completedAt = new Date().toISOString()
 
       if (result && result.status === 'FAILURE') {
+        const v2Diagnostic = sanitizeK9V2FailureDiagnostic(result.diagnostic)
         const failureCode = typeof result.failureCode === 'string'
           && K9_REFRESH_FAILURE_CODES.has(result.failureCode)
-          ? result.failureCode
-          : 'K9_REFRESH_FAILED'
+          && (!result.failureCode.startsWith('K9_V2_')
+            || v2Diagnostic?.code === result.failureCode)
+          ? result.failureCode : 'K9_REFRESH_FAILED'
         const sourceDiagnostic = failureCode === 'K9_DATAHUB_SOURCE_FAILED'
           && K9_SOURCE_FAILURE_STAGES.has(result.failureStage)
           && K9_SOURCE_FAILURE_DETAILS.has(result.failureDetailCode)
@@ -3652,6 +3659,13 @@ export function createPocStateStore({ databasePool } = {}) {
                 : {}),
             }
           : null
+        const v2FailureDiagnostic = failureCode.startsWith('K9_V2_')
+          && v2Diagnostic?.code === failureCode
+          ? {
+              failure_stage: v2Diagnostic.stage,
+              failure_detail_code: v2Diagnostic.failure_detail_code,
+            }
+          : null
         const failureReceipt = {
           ...(current.rows[0]?.value || {}),
           version: 1,
@@ -3660,7 +3674,7 @@ export function createPocStateStore({ databasePool } = {}) {
           last_attempt: {
             status: 'FAILURE',
             reason: failureCode,
-            ...(sourceDiagnostic || {}),
+            ...(sourceDiagnostic || v2FailureDiagnostic || {}),
             scheduled_for: scheduledFor,
             completed_at: completedAt,
             trigger,

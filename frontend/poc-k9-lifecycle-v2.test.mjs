@@ -407,9 +407,10 @@ test('source capture preserves bounded DataHub stage and detail without leaking 
       failure: lineageProfile.failure,
     },
   })
-  assert.deepEqual(transitions, [{
-    stage: 'SOURCE', status: 'FAILED', diagnostic: result.diagnostic,
-  }])
+  assert.deepEqual(transitions, [
+    { stage: 'SOURCE', status: 'RUNNING' },
+    { stage: 'SOURCE', status: 'FAILED', diagnostic: result.diagnostic },
+  ])
   assert.equal(JSON.stringify(result).includes('private provider'), false)
   assert.equal(JSON.stringify(result).includes('urn:li:'), false)
   for (const projectorId of K9_V2_PROJECTOR_IDS) {

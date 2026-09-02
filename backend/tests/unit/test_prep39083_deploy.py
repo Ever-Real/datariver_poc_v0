@@ -476,6 +476,105 @@ def test_status_projects_atomic_k9_progress_for_an_active_deploy(
     assert "Batch: 2/6" in output
 
 
+def test_status_projects_active_source_capture_candidate_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    progress = tmp_path / "k9-progress.json"
+    attempt.write_text(json.dumps({"phase": "SMOKE_RUNNING"}), encoding="utf-8")
+    progress.write_text(
+        json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_K9_PROGRESS_V2",
+                "k9": "RUNNING",
+                "stage": "SOURCE_CAPTURE",
+                "detail": "LINEAGE_COLLECTION",
+                "completed": 734,
+                "total": 1892,
+                "candidate_number": 1,
+                "candidate_total": 3,
+                "batch_number": 0,
+                "batch_total": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", progress)
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: True)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "K9 scheduler: RUNNING" in output
+    assert "K9 current attempt: RUNNING" in output
+    assert "K9 current stage: SOURCE_CAPTURE" in output
+    assert "K9 current detail: LINEAGE_COLLECTION" in output
+    assert "Progress: 734/1892" in output
+    assert "Source candidate: 1/3" in output
+    assert "Batch: 0/0" in output
+
+
+def test_status_rejects_stale_progress_when_no_deploy_is_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    progress = tmp_path / "k9-progress.json"
+    smoke = tmp_path / "smoke.json"
+    progress.write_text(
+        json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_K9_PROGRESS_V2",
+                "k9": "RUNNING",
+                "stage": "SOURCE_CAPTURE",
+                "detail": "LINEAGE_COLLECTION",
+                "completed": 734,
+                "total": 1892,
+            }
+        ),
+        encoding="utf-8",
+    )
+    smoke.write_text(
+        json.dumps(
+            {
+                "k9_scheduler": {
+                    "status": "RUNNING",
+                    "current_attempt": {
+                        "status": "RUNNING",
+                        "stage": "SOURCE_CAPTURE",
+                        "detail": "LINEAGE_COLLECTION",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", tmp_path / "deploy-attempt.json")
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(deploy, "K9_PROGRESS", progress)
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "K9 scheduler: UNKNOWN" in output
+    assert "K9 current attempt: NONE" in output
+    assert "K9 current stage: NONE" in output
+    assert "K9 current detail: NONE" in output
+    assert "K9: RUNNING" not in output
+    assert "Progress: 734/1892" not in output
+
+
 def test_status_uses_v2_lifecycle_and_independent_smoke_lane_matrix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
