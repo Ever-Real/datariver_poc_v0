@@ -1,4 +1,5 @@
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
+import { sanitizeK9LineageSourceProfile } from './poc-k9-lineage-collection.mjs'
 
 export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
@@ -119,12 +120,16 @@ function safeSourceCaptureDiagnostic(error) {
       const eligibility = sanitizeK9SourceEligibilityTelemetry(
         error?.k9SourceDiagnostic?.sourceEligibility,
       )
+      const lineageProfile = sanitizeK9LineageSourceProfile(
+        error?.k9SourceDiagnostic?.lineageProfile,
+      )
       return Object.freeze({
         code,
         stage,
         failure_detail_code: detail,
         retryable: true,
         ...(eligibility ? { source_eligibility: eligibility } : {}),
+        ...(lineageProfile ? { lineage_source_profile: lineageProfile } : {}),
       })
     }
   }

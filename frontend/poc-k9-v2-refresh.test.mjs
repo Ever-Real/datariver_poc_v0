@@ -115,13 +115,29 @@ test('aggregate pointer failure remains fail-closed after every projector is REA
 
 test('V2 trigger exposes the exact bounded source diagnostic before snapshot persistence', async () => {
   const value = fixture()
+  const lineageProfile = {
+    contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+    total_asset_count: 1_892,
+    processed_asset_count: 731,
+    pages_fetched: 2,
+    provider_relationship_total: 150,
+    returned_relationship_count: 148,
+    filtered_relationship_count: 1,
+    failure: {
+      detail_code: 'LINEAGE_COMPLETENESS_MISMATCH', direction: 'UPSTREAM',
+      page_number: 2, request_start: 100, response_start: 100,
+      response_count: 1, total: 150, filtered: 0, relationships: 1,
+      identity_hash: 'd'.repeat(64),
+    },
+  }
   value.trigger = createPocK9V2RefreshTask({
     captureSource: mock.fn(async () => {
       throw Object.assign(new Error('private DataHub response'), {
         k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
         k9SourceDiagnostic: {
           failureStage: 'LINEAGE_COLLECTION',
-          failureDetailCode: 'GRAPHQL',
+          failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+          lineageProfile,
         },
       })
     }),
@@ -145,11 +161,27 @@ test('V2 trigger exposes the exact bounded source diagnostic before snapshot per
     failureCode: result.failureCode,
     failureStage: result.failureStage,
     failureDetailCode: result.failureDetailCode,
+    lineageProfile: result.lineageProfile,
   }, {
     status: 'FAILURE',
     failureCode: 'K9_DATAHUB_SOURCE_FAILED',
     failureStage: 'LINEAGE_COLLECTION',
-    failureDetailCode: 'GRAPHQL',
+    failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+    lineageProfile: {
+      contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+      total_asset_count: 1_892,
+      processed_asset_count: 731,
+      pages_fetched: 2,
+      provider_relationship_total: 150,
+      returned_relationship_count: 148,
+      filtered_relationship_count: 1,
+      projectable_table_edge_observation_count: 0,
+      projectable_column_edge_observation_count: 0,
+      outside_source_scope_relationship_count: 0,
+      exact_duplicate_observation_count: 0,
+      distinct_same_edge_observation_count: 0,
+      failure: lineageProfile.failure,
+    },
   })
   assert.equal(JSON.stringify(result).includes('private DataHub'), false)
 })

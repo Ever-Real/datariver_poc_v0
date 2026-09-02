@@ -6,6 +6,10 @@ import process from 'node:process'
 
 import { prepGeneralSmokeClassification } from '../frontend/poc-llm-timeout.mjs'
 import { K9_METADATA_FAILURE_DETAILS } from '../frontend/poc-k9-metadata-collection.mjs'
+import {
+  K9_LINEAGE_FAILURE_DETAILS,
+  sanitizeK9LineageSourceProfile,
+} from '../frontend/poc-k9-lineage-collection.mjs'
 
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([
@@ -32,6 +36,7 @@ const k9SourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_LINEAGE_FAILURE_DETAILS,
   ...K9_METADATA_FAILURE_DETAILS,
 ])
 const k9ProviderFailureClasses = new Set([
@@ -181,10 +186,12 @@ function k9SourceFailureDiagnostic(asset) {
       ? direct.first_dangling_identity_hash : null,
   } : null
   const sourceEligibility = boundedK9SourceEligibility(asset.source_eligibility)
+  const lineageProfile = sanitizeK9LineageSourceProfile(asset.lineage_source_profile)
   return {
     failure_stage: asset.failure_stage,
     failure_detail_code: asset.failure_detail_code,
     ...(sourceEligibility ? { source_eligibility: sourceEligibility } : {}),
+    ...(lineageProfile ? { lineage_profile: lineageProfile } : {}),
     ...(boundedDirect ? {
       provider_failure_class: boundedDirect.provider_failure_class,
       batch_number: boundedDirect.batch_number,
@@ -801,6 +808,9 @@ async function main() {
                 source_receipt_present: false,
                 ...(boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility)
                   ? { source_eligibility: boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility) }
+                  : {}),
+                ...(sanitizeK9LineageSourceProfile(sourceCaptureFailure.lineage_source_profile)
+                  ? { lineage_profile: sanitizeK9LineageSourceProfile(sourceCaptureFailure.lineage_source_profile) }
                   : {}),
               },
             )

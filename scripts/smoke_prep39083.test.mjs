@@ -748,6 +748,50 @@ test('PREP smoke preserves bounded K9 source and provider diagnostics', async ()
   assert.equal(JSON.stringify(result.failure.diagnostic).includes('urn:li:'), false)
 })
 
+test('PREP smoke preserves typed bounded lineage accounting without raw identities', async () => {
+  const lineageProfile = {
+    contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+    total_asset_count: 1_892,
+    processed_asset_count: 731,
+    pages_fetched: 2,
+    provider_relationship_total: 150,
+    returned_relationship_count: 148,
+    filtered_relationship_count: 1,
+    failure: {
+      detail_code: 'LINEAGE_COMPLETENESS_MISMATCH', direction: 'UPSTREAM',
+      page_number: 2, request_start: 100, response_start: 100,
+      response_count: 1, total: 150, filtered: 0, relationships: 1,
+      identity_hash: 'd'.repeat(64),
+    },
+  }
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+        failure_stage: 'LINEAGE_COLLECTION',
+        failure_detail_code: 'LINEAGE_COMPLETENESS_MISMATCH',
+        lineage_source_profile: lineageProfile,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'FAILED', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', last_error_code: 'K9_DATAHUB_SOURCE_FAILED',
+        failure_stage: 'LINEAGE_COLLECTION',
+        failure_detail_code: 'LINEAGE_COMPLETENESS_MISMATCH',
+      },
+    ],
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED')
+  assert.equal(result.failure.diagnostic.failure_stage, 'LINEAGE_COLLECTION')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'LINEAGE_COMPLETENESS_MISMATCH')
+  assert.equal(result.failure.diagnostic.lineage_profile.returned_relationship_count, 148)
+  assert.equal(result.failure.diagnostic.lineage_profile.filtered_relationship_count, 1)
+  assert.equal(result.failure.diagnostic.lineage_profile.failure.identity_hash, 'd'.repeat(64))
+  assert.equal(JSON.stringify(result.failure.diagnostic).includes('urn:li:'), false)
+})
+
 test('PREP smoke persists actual K9 direct-resolution progress while readiness is pending', async () => {
   const runningAttempt = {
     status: 'RUNNING', stage: 'METADATA_COLLECTION', detail: 'DIRECT_GLOSSARY_RESOLUTION',

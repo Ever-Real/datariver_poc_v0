@@ -353,12 +353,28 @@ test('invalid READY source receipts fail closed without silently recollecting so
 test('source capture preserves bounded DataHub stage and detail without leaking provider errors', async () => {
   const receipts = fakeReceiptPort()
   const transitions = []
+  const lineageProfile = {
+    contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+    total_asset_count: 1_892,
+    processed_asset_count: 731,
+    pages_fetched: 2,
+    provider_relationship_total: 150,
+    returned_relationship_count: 148,
+    filtered_relationship_count: 1,
+    failure: {
+      detail_code: 'LINEAGE_COMPLETENESS_MISMATCH', direction: 'UPSTREAM',
+      page_number: 2, request_start: 100, response_start: 100,
+      response_count: 1, total: 150, filtered: 0, relationships: 1,
+      identity_hash: 'd'.repeat(64),
+    },
+  }
   const captureSource = mock.fn(async () => {
     throw Object.assign(new Error('private provider response and token'), {
       k9FailureCode: 'K9_DATAHUB_SOURCE_FAILED',
       k9SourceDiagnostic: {
-        failureStage: 'METADATA_COLLECTION',
-        failureDetailCode: 'GRAPHQL',
+        failureStage: 'LINEAGE_COLLECTION',
+        failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+        lineageProfile,
         raw_urn: 'urn:li:glossaryTerm:must-not-survive',
       },
     })
@@ -372,9 +388,24 @@ test('source capture preserves bounded DataHub stage and detail without leaking 
   assert.equal(result.status, 'FAILED')
   assert.deepEqual(result.diagnostic, {
     code: 'K9_DATAHUB_SOURCE_FAILED',
-    stage: 'METADATA_COLLECTION',
-    failure_detail_code: 'GRAPHQL',
+    stage: 'LINEAGE_COLLECTION',
+    failure_detail_code: 'LINEAGE_COMPLETENESS_MISMATCH',
     retryable: true,
+    lineage_source_profile: {
+      contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+      total_asset_count: 1_892,
+      processed_asset_count: 731,
+      pages_fetched: 2,
+      provider_relationship_total: 150,
+      returned_relationship_count: 148,
+      filtered_relationship_count: 1,
+      projectable_table_edge_observation_count: 0,
+      projectable_column_edge_observation_count: 0,
+      outside_source_scope_relationship_count: 0,
+      exact_duplicate_observation_count: 0,
+      distinct_same_edge_observation_count: 0,
+      failure: lineageProfile.failure,
+    },
   })
   assert.deepEqual(transitions, [{
     stage: 'SOURCE', status: 'FAILED', diagnostic: result.diagnostic,

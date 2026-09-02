@@ -14,6 +14,10 @@ import {
   K9_METADATA_SOURCE_PROFILE_CONTRACT,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import {
+  K9_LINEAGE_SOURCE_PROFILE_CONTRACT,
+  sanitizeK9LineageSourceProfile,
+} from './poc-k9-lineage-collection.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
 function metadataSourceProfile(overrides = {}) {
@@ -39,6 +43,36 @@ function metadataSourceProfile(overrides = {}) {
         page_number: 1,
         ordinal: 1,
       },
+    },
+    ...overrides,
+  })
+}
+
+function lineageSourceProfile(overrides = {}) {
+  return sanitizeK9LineageSourceProfile({
+    contract: K9_LINEAGE_SOURCE_PROFILE_CONTRACT,
+    total_asset_count: 1_892,
+    processed_asset_count: 731,
+    pages_fetched: 2,
+    provider_relationship_total: 150,
+    returned_relationship_count: 148,
+    filtered_relationship_count: 1,
+    projectable_table_edge_observation_count: 140,
+    projectable_column_edge_observation_count: 0,
+    outside_source_scope_relationship_count: 8,
+    exact_duplicate_observation_count: 0,
+    distinct_same_edge_observation_count: 0,
+    failure: {
+      detail_code: 'LINEAGE_COMPLETENESS_MISMATCH',
+      direction: 'UPSTREAM',
+      page_number: 2,
+      request_start: 100,
+      response_start: 100,
+      response_count: 1,
+      total: 150,
+      filtered: 0,
+      relationships: 1,
+      identity_hash: 'd'.repeat(64),
     },
     ...overrides,
   })
@@ -816,6 +850,7 @@ test('K9 Scheduler durably records only bounded DataHub source diagnostics', asy
   const database = k9SchedulerDatabase()
   const stateStore = createPocStateStore({ databasePool: database.pool })
   const scheduledFor = '2026-08-24T17:00:00.000Z'
+  const lineageProfile = lineageSourceProfile()
 
   await stateStore.runK9Scheduler({
     lockName: 'datariver:poc:k9-scheduler:v1', scheduledFor, trigger: 'scheduled',
@@ -824,14 +859,16 @@ test('K9 Scheduler durably records only bounded DataHub source diagnostics', asy
     reason: 'private provider body with urn:li:dataset:secret',
     failureCode: 'K9_DATAHUB_SOURCE_FAILED',
     failureStage: 'LINEAGE_COLLECTION',
-    failureDetailCode: 'GRAPHQL',
+    failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+    lineageProfile,
   }))
 
   assert.deepEqual(database.readValue().last_attempt, {
     status: 'FAILURE',
     reason: 'K9_DATAHUB_SOURCE_FAILED',
     failure_stage: 'LINEAGE_COLLECTION',
-    failure_detail_code: 'GRAPHQL',
+    failure_detail_code: 'LINEAGE_COMPLETENESS_MISMATCH',
+    lineage_source_profile: lineageProfile,
     scheduled_for: scheduledFor,
     completed_at: database.readValue().last_attempt.completed_at,
     trigger: 'scheduled',
@@ -902,6 +939,45 @@ test('K9 source lineage GraphQL failure retains its exact non-retryable substage
   assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments[2], {
     failureStage: 'LINEAGE_COLLECTION', failureDetailCode: 'GRAPHQL',
   })
+})
+
+test('K9 source lineage invariant persists only bounded accounting and preserves LKG promotion order', async () => {
+  const profile = lineageSourceProfile()
+  const { task, dependencies, managedGraphs } = k9RefreshFixture({
+    collectLineage: mock.fn(async () => {
+      throw Object.assign(new Error('raw urn:li:dataset:private and provider body'), {
+        k9SourceFailureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+        k9LineageSourceProfile: profile,
+      })
+    }),
+  })
+
+  const result = await task()
+
+  assert.deepEqual(result, {
+    status: 'FAILURE',
+    reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failureCode: 'K9_DATAHUB_SOURCE_FAILED',
+    failureStage: 'LINEAGE_COLLECTION',
+    failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+    lineageProfile: profile,
+    lineage: undefined,
+    glossary: undefined,
+  })
+  assert.deepEqual(managedGraphs.recordRefreshFailure.mock.calls[0].arguments, [
+    'K9_DATAHUB_SOURCE_FAILED',
+    ['metadata-lineage', 'data-glossary'],
+    {
+      failureStage: 'LINEAGE_COLLECTION',
+      failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+      lineageProfile: profile,
+    },
+  ])
+  assert.equal(dependencies.ensureSemanticIndex.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerLineagePublish.mock.calls.length, 0)
+  assert.equal(managedGraphs.triggerGlossaryPublish.mock.calls.length, 0)
+  assert.equal(JSON.stringify(result).includes('urn:li:'), false)
+  assert.equal(JSON.stringify(managedGraphs.recordRefreshFailure.mock.calls).includes('provider body'), false)
 })
 
 test('K9 source metadata GraphQL failure retains its exact non-retryable substage', async () => {

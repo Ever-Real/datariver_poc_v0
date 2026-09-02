@@ -1,5 +1,6 @@
 import { createK9V2LifecycleOrchestrator } from './poc-k9-lifecycle-v2.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
+import { sanitizeK9LineageSourceProfile } from './poc-k9-lineage-collection.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
 const TOKEN = /^[A-Z][A-Z0-9_]{0,95}$/u
@@ -42,6 +43,8 @@ function boundedDiagnostic(value, fallback = aggregateFailure) {
   }
   const sourceEligibility = sanitizeK9SourceEligibilityTelemetry(value.source_eligibility)
   if (sourceEligibility) bounded.source_eligibility = sourceEligibility
+  const lineageProfile = sanitizeK9LineageSourceProfile(value.lineage_source_profile)
+  if (lineageProfile) bounded.lineage_source_profile = lineageProfile
   return Object.freeze(bounded)
 }
 
@@ -81,6 +84,9 @@ export function createPocK9V2RefreshTask({
           : {}),
         ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.source_eligibility
           ? { sourceEligibility: diagnostic.source_eligibility }
+          : {}),
+        ...(diagnostic.code === 'K9_DATAHUB_SOURCE_FAILED' && diagnostic.lineage_source_profile
+          ? { lineageProfile: diagnostic.lineage_source_profile }
           : {}),
         diagnostic,
         source_snapshot_id: result.source_snapshot_id,
