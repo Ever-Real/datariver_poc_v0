@@ -37,7 +37,7 @@ from prep39083_artifact import (
     require_expected_identity,
     sha256_file,
 )
-from prep39083_release import ReleaseError, source_contract
+from prep39083_release import RUNTIME_INPUTS, ReleaseError, source_contract
 from prep39083_transport import (
     GitTransportIdentity,
     TransportError,
@@ -65,8 +65,10 @@ SMOKE_REPORT = RUNTIME_ROOT / "smoke.json"
 K9_PROGRESS = RUNTIME_ROOT / "k9-progress.json"
 DEPLOY_LOCK = RUNTIME_ROOT / "deploy.lock"
 LAST_COMMAND = RUNTIME_ROOT / "last-command.json"
+SYNC_RECEIPT = RUNTIME_ROOT / "source-sync.json"
 COMMAND_LOGS = RUNTIME_ROOT / "logs"
 PREP_RELEASE_BRANCH = "prep39083-release"
+SYNC_RECEIPT_CONTRACT = "DATARIVER_PREP39083_SOURCE_SYNC_V1"
 ACCEPTED_CONTRACT_V1 = "DATARIVER_PREP39083_ACCEPTED_V1"
 ACCEPTED_CONTRACT_V2 = "DATARIVER_PREP39083_ACCEPTED_V2"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -1385,7 +1387,8 @@ def verify_source_identity(release: ReleaseIdentity) -> dict[str, str]:
             "SOURCE_IDENTITY",
             "PREP_SOURCE_CONTRACT_FAILED",
             "Product/Evidence ancestry, cleanliness, or runtime-input stability failed.",
-            "Run git switch dev and fast-forward origin/dev, then retry from a clean checkout.",
+            "Run ./scripts/prep39083 sync, then ./scripts/prep39083 status "
+            "from the dedicated release checkout.",
         ) from error
 
 
@@ -1506,6 +1509,254 @@ def sync_release_source(*, root: Path | None = None) -> str:
             "The dedicated PREP release ref could not be fast-forwarded.",
             "Preserve local source and verify the existing Git authentication path.",
         ) from error
+
+
+def write_source_sync_receipt(
+    target: str,
+    release: ReleaseIdentity,
+    *,
+    path: Path = SYNC_RECEIPT,
+    create_only: bool = False,
+) -> None:
+    if not SHA_PATTERN.fullmatch(target):
+        raise PrepError(
+            "SOURCE_SYNC",
+            "PREP_RELEASE_SOURCE_SYNC_INCOMPLETE",
+            "The synchronized PREP release target is invalid.",
+            "Run ./scripts/prep39083 sync again and inspect Git connectivity.",
+        )
+    payload = {
+        "contract": SYNC_RECEIPT_CONTRACT,
+        "sync_result": "PASS",
+        "release_branch": PREP_RELEASE_BRANCH,
+        "target_head": target,
+        "tracked_product": release.product_sha,
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
+    if not create_only:
+        _atomic_json(path, payload)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as error:
+        raise PrepError(
+            "SOURCE_IDENTITY",
+            "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH",
+            "The legacy sync receipt adoption target is no longer absent.",
+            "Run ./scripts/prep39083 sync, then ./scripts/prep39083 status.",
+        ) from error
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(f"{json.dumps(payload, indent=2, sort_keys=True)}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def source_sync_receipt_state(
+    path: Path = SYNC_RECEIPT,
+) -> tuple[str, dict[str, str] | None]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", None
+    except OSError:
+        return "INVALID", None
+    if not stat.S_ISREG(metadata.st_mode):
+        return "INVALID", None
+    value = _optional_json(path)
+    expected_keys = {
+        "contract",
+        "sync_result",
+        "release_branch",
+        "target_head",
+        "tracked_product",
+        "completed_at",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_keys
+        or value.get("contract") != SYNC_RECEIPT_CONTRACT
+    ):
+        return "INVALID", None
+    expected = {
+        "sync_result": "PASS",
+        "release_branch": PREP_RELEASE_BRANCH,
+    }
+    if any(value.get(key) != candidate for key, candidate in expected.items()):
+        return "INVALID", None
+    if not all(
+        isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
+        for key in ("target_head", "tracked_product")
+    ):
+        return "INVALID", None
+    completed_at = value.get("completed_at")
+    if not isinstance(completed_at, str):
+        return "INVALID", None
+    try:
+        observed_at = datetime.fromisoformat(completed_at)
+    except ValueError:
+        return "INVALID", None
+    if observed_at.tzinfo is None or observed_at.astimezone(UTC).isoformat() != completed_at:
+        return "INVALID", None
+    return "CURRENT", {str(key): str(candidate) for key, candidate in value.items()}
+
+
+def read_source_sync_receipt(path: Path = SYNC_RECEIPT) -> dict[str, str] | None:
+    state, receipt = source_sync_receipt_state(path)
+    return receipt if state == "CURRENT" else None
+
+
+def legacy_source_sync_pass(path: Path = LAST_COMMAND) -> bool:
+    value = _optional_json(path)
+    return bool(
+        isinstance(value, dict)
+        and value.get("contract") == "DATARIVER_PREP39083_LAST_COMMAND_V1"
+        and value.get("action") == "sync"
+        and value.get("result") == "PASS"
+    )
+
+
+def verify_deploy_source_identity(
+    release: ReleaseIdentity,
+    *,
+    root: Path = ROOT,
+    sync_receipt_path: Path = SYNC_RECEIPT,
+    last_command_path: Path = LAST_COMMAND,
+) -> dict[str, str]:
+    runner = Runner(environment=child_environment({}))
+    receipt_state, receipt = source_sync_receipt_state(sync_receipt_path)
+    try:
+        repository = Path(
+            runner.output(["git", "rev-parse", "--show-toplevel"], cwd=root)
+        ).resolve()
+        branch = runner.output(["git", "branch", "--show-current"], cwd=root)
+        head = runner.output(["git", "rev-parse", "HEAD"], cwd=root)
+        local_release = runner.output(
+            ["git", "rev-parse", f"refs/heads/{PREP_RELEASE_BRANCH}"],
+            cwd=root,
+        )
+        tracked_release = runner.output(
+            ["git", "rev-parse", f"refs/remotes/origin/{PREP_RELEASE_BRANCH}"],
+            cwd=root,
+        )
+        tracked_document = json.loads(
+            runner.output(
+                ["git", "show", f"{head}:deploy/prep39083/release.json"],
+                cwd=root,
+            )
+        )
+        local_release_document = json.loads(
+            (root / "deploy/prep39083/release.json").read_text(encoding="utf-8")
+        )
+        tracked_transport_document = json.loads(
+            runner.output(
+                ["git", "show", f"{head}:deploy/prep39083/transport.json"],
+                cwd=root,
+            )
+        )
+        local_transport_document = json.loads(
+            (root / "deploy/prep39083/transport.json").read_text(encoding="utf-8")
+        )
+        clean = not runner.output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root,
+        )
+        product_exists = (
+            runner.run(
+                ["git", "cat-file", "-e", f"{release.product_sha}^{{commit}}"],
+                check=False,
+                cwd=root,
+            ).returncode
+            == 0
+        )
+        evidence_exists = (
+            runner.run(
+                ["git", "cat-file", "-e", f"{release.evidence_sha}^{{commit}}"],
+                check=False,
+                cwd=root,
+            ).returncode
+            == 0
+        )
+        product_to_evidence = (
+            runner.run(
+                ["git", "merge-base", "--is-ancestor", release.product_sha, release.evidence_sha],
+                check=False,
+                cwd=root,
+            ).returncode
+            == 0
+        )
+        evidence_to_head = (
+            runner.run(
+                ["git", "merge-base", "--is-ancestor", release.evidence_sha, head],
+                check=False,
+                cwd=root,
+            ).returncode
+            == 0
+        )
+        runtime_input_stable = (
+            runner.run(
+                [
+                    "git",
+                    "diff",
+                    "--quiet",
+                    release.product_sha,
+                    head,
+                    "--",
+                    *RUNTIME_INPUTS,
+                ],
+                check=False,
+                cwd=root,
+            ).returncode
+            == 0
+        )
+    except (CommandFailure, OSError, json.JSONDecodeError) as error:
+        raise PrepError(
+            "SOURCE_IDENTITY",
+            "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH",
+            "The PREP checkout cannot prove its synchronized release identity.",
+            "Run ./scripts/prep39083 sync, then ./scripts/prep39083 status.",
+        ) from error
+    exact_checkout = (
+        repository == root.resolve()
+        and branch == PREP_RELEASE_BRANCH
+        and head == local_release == tracked_release
+        and isinstance(tracked_document, dict)
+        and tracked_document == local_release_document
+        and isinstance(tracked_transport_document, dict)
+        and tracked_transport_document == local_transport_document
+        and tracked_document.get("product_sha") == release.product_sha
+        and clean
+        and product_exists
+        and evidence_exists
+        and product_to_evidence
+        and evidence_to_head
+        and runtime_input_stable
+    )
+    receipt_matches = bool(
+        receipt is not None
+        and receipt["target_head"] == head
+        and receipt["tracked_product"] == release.product_sha
+    )
+    legacy_adoptable = bool(
+        receipt_state == "ABSENT" and legacy_source_sync_pass(last_command_path) and exact_checkout
+    )
+    valid = exact_checkout and (receipt_matches or legacy_adoptable)
+    if not valid:
+        raise PrepError(
+            "SOURCE_IDENTITY",
+            "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH",
+            "The checkout branch, HEAD, last successful sync, and tracked Product "
+            "do not identify one PREP release.",
+            "Run ./scripts/prep39083 sync, then ./scripts/prep39083 status; "
+            "do not reset the checkout.",
+        )
+    return {
+        "branch": branch,
+        "head": head,
+        "tracked_product": release.product_sha,
+        "sync_target": receipt["target_head"] if receipt_matches and receipt else head,
+        "sync_receipt_state": "CURRENT" if receipt_matches else "LEGACY_PASS_ADOPTABLE",
+    }
 
 
 @contextmanager
@@ -3426,6 +3677,153 @@ def _optional_json(path: Path) -> Mapping[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _status_command_output(
+    runner: Runner,
+    arguments: Sequence[str],
+    *,
+    cwd: Path = ROOT,
+) -> str | None:
+    completed = runner.run(arguments, check=False, cwd=cwd)
+    value = completed.stdout.strip()
+    return value if completed.returncode == 0 and value else None
+
+
+def status_source_identity(
+    release: ReleaseIdentity,
+    *,
+    runner: Runner | None = None,
+    root: Path = ROOT,
+    sync_receipt_path: Path = SYNC_RECEIPT,
+    last_command_path: Path = LAST_COMMAND,
+) -> dict[str, str | bool]:
+    command_runner = runner or Runner(environment=child_environment({}))
+    branch = _status_command_output(command_runner, ["git", "branch", "--show-current"], cwd=root)
+    head = _status_command_output(command_runner, ["git", "rev-parse", "HEAD"], cwd=root)
+    local_release = _status_command_output(
+        command_runner,
+        ["git", "rev-parse", f"refs/heads/{PREP_RELEASE_BRANCH}"],
+        cwd=root,
+    )
+    tracking_release = _status_command_output(
+        command_runner,
+        ["git", "rev-parse", f"refs/remotes/origin/{PREP_RELEASE_BRANCH}"],
+        cwd=root,
+    )
+    checkout_status = command_runner.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        check=False,
+        cwd=root,
+    )
+    checkout_clean = checkout_status.returncode == 0 and not checkout_status.stdout.strip()
+
+    def tracked_document_matches(relative: str) -> bool:
+        if not head:
+            return False
+        tracked = _status_command_output(
+            command_runner, ["git", "show", f"{head}:{relative}"], cwd=root,
+        )
+        try:
+            local = json.loads((root / relative).read_text(encoding="utf-8"))
+            expected = json.loads(tracked) if tracked is not None else None
+        except (OSError, json.JSONDecodeError):
+            return False
+        return isinstance(local, dict) and local == expected
+
+    tracked_manifests_match = all(
+        tracked_document_matches(relative)
+        for relative in (
+            "deploy/prep39083/release.json",
+            "deploy/prep39083/transport.json",
+        )
+    )
+    sync_receipt_state, sync_receipt = source_sync_receipt_state(sync_receipt_path)
+    sync_target = sync_receipt.get("target_head") if sync_receipt else None
+    sync_product = sync_receipt.get("tracked_product") if sync_receipt else None
+    legacy_sync = legacy_source_sync_pass(last_command_path)
+
+    running_image = "NONE"
+    running_product = "NONE"
+    web_ids = _status_command_output(
+        command_runner,
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={release.project}",
+            "--filter",
+            "label=com.docker.compose.service=web",
+            "--format",
+            "{{.ID}}",
+        ],
+    )
+    identifiers = web_ids.splitlines() if web_ids else []
+    if len(identifiers) == 1:
+        inspected = _status_command_output(
+            command_runner,
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.Config.Image}}|{{.Image}}",
+                identifiers[0],
+            ],
+        )
+        if inspected and "|" in inspected:
+            running_image, image_id = inspected.split("|", 1)
+            revision = _status_command_output(
+                command_runner,
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    "--format",
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+                    image_id,
+                ],
+            )
+            running_product = (
+                revision if revision and SHA_PATTERN.fullmatch(revision) else "UNKNOWN"
+            )
+    elif len(identifiers) > 1:
+        running_image = "AMBIGUOUS"
+        running_product = "AMBIGUOUS"
+
+    exact_checkout = bool(
+        branch == PREP_RELEASE_BRANCH and head and head == local_release == tracking_release
+    )
+    if sync_receipt_state == "ABSENT" and legacy_sync and exact_checkout:
+        sync_target = head
+        sync_product = release.product_sha
+        sync_receipt_state = "LEGACY_PASS_ADOPTABLE"
+    source_synced = bool(
+        exact_checkout
+        and checkout_clean
+        and tracked_manifests_match
+        and head == sync_target
+        and sync_product == release.product_sha
+        and sync_receipt_state in {"CURRENT", "LEGACY_PASS_ADOPTABLE"}
+    )
+    runtime_matches = running_product in {"NONE", release.product_sha}
+    return {
+        "checkout_branch": branch or "UNKNOWN",
+        "checkout_head": head or "UNKNOWN",
+        "tracked_release_snapshot": head or "UNKNOWN",
+        "dedicated_release_head": local_release or "UNKNOWN",
+        "remote_tracking_release_head": tracking_release or "UNKNOWN",
+        "tracked_release_product": release.product_sha,
+        "running_web_image": running_image,
+        "running_web_product": running_product,
+        "last_sync_target": sync_target or "NONE",
+        "last_sync_product": sync_product or "NONE",
+        "sync_receipt_state": sync_receipt_state,
+        "checkout_clean": checkout_clean,
+        "tracked_manifests_match": tracked_manifests_match,
+        "source_synced": source_synced,
+        "runtime_matches": runtime_matches,
+    }
+
+
 def status(release: ReleaseIdentity) -> None:
     active = deploy_lock_active()
     attempt = _optional_json(ATTEMPT_RECEIPT)
@@ -3475,6 +3873,7 @@ def status(release: ReleaseIdentity) -> None:
             )
         elif not web_lines:
             web = "ABSENT"
+    identity = status_source_identity(release, runner=runner)
     ready = phase == "ACCEPTED" and accepted_product == release.product_sha
     failed_stage = str(smoke_failure.get("stage", "")) if smoke_failure else ""
     smoke_diagnostic = smoke_failure.get("diagnostic", {}) if smoke_failure else {}
@@ -3544,9 +3943,20 @@ def status(release: ReleaseIdentity) -> None:
         else "FAILED" if failed_stage in {"GENERAL", "GENERAL_PROVIDER", "GENERAL_ROUTE"}
         else "UNKNOWN"
     )
-    handoff = Runner().output(["git", "rev-parse", "HEAD"])
-    print(f"Product: {release.product_sha}")
-    print(f"Handoff: {handoff}")
+    print(f"Source checkout: {ROOT.resolve()}")
+    print(f"Checkout branch: {identity['checkout_branch']}")
+    print(f"Checkout HEAD: {identity['checkout_head']}")
+    if "checkout_clean" in identity:
+        print(f"Checkout clean: {'YES' if identity['checkout_clean'] else 'NO'}")
+    if "tracked_manifests_match" in identity:
+        print(
+            "Tracked manifests: "
+            f"{'MATCH' if identity['tracked_manifests_match'] else 'MISMATCH'}"
+        )
+    print(f"Tracked Release Snapshot: {identity['tracked_release_snapshot']}")
+    print(f"Dedicated Release Head: {identity['dedicated_release_head']}")
+    print(f"Remote-tracking Release Head: {identity['remote_tracking_release_head']}")
+    print(f"Tracked Release Product: {identity['tracked_release_product']}")
     print(f"Target state: {target_state}")
     print(f"Deploy active: {'YES' if active else 'NO'}")
     print(f"Deploy phase: {phase}")
@@ -3554,6 +3964,25 @@ def status(release: ReleaseIdentity) -> None:
     print(f"Last failed step: {failed_step}")
     print(f"Code: {code}")
     print(f"Accepted Product: {accepted_product}")
+    print(f"Running Web Image: {identity['running_web_image']}")
+    print(f"Running Web Product: {identity['running_web_product']}")
+    print(f"Last sync target: {identity['last_sync_target']}")
+    print(f"Sync receipt: {identity['sync_receipt_state']}")
+    source_identity_mismatch = identity["source_synced"] is not True
+    runtime_identity_mismatch = identity["runtime_matches"] is not True or (
+        accepted_product != "NONE"
+        and identity["running_web_product"] not in {"NONE", "UNKNOWN"}
+        and accepted_product != identity["running_web_product"]
+    )
+    if source_identity_mismatch or runtime_identity_mismatch:
+        print("Identity warning: SOURCE_RUNTIME_IDENTITY_MISMATCH")
+        if source_identity_mismatch:
+            identity_action = "./scripts/prep39083 sync; ./scripts/prep39083 status"
+            next_action = "Run ./scripts/prep39083 sync, then ./scripts/prep39083 status."
+        else:
+            identity_action = "./scripts/prep39083 deploy"
+            next_action = "Run ./scripts/prep39083 deploy to reconcile the tracked release."
+        print(f"Identity action: {identity_action}")
     print(f"Web: {web}")
     lifecycle_source = lifecycle.get("source", {}) if lifecycle else {}
     if isinstance(lifecycle_source, dict):
@@ -3569,7 +3998,8 @@ def status(release: ReleaseIdentity) -> None:
         if isinstance(source_eligibility, dict):
             print(
                 "Source eligibility: "
-                f"provider/current={source_eligibility.get('provider_current_inventory_count', 0)}; "
+                "provider/current="
+                f"{source_eligibility.get('provider_current_inventory_count', 0)}; "
                 f"canonical={source_eligibility.get('canonical_current_count', 0)}; "
                 f"eligible={source_eligibility.get('eligible_source_count', 0)}"
             )
@@ -3638,6 +4068,15 @@ def status(release: ReleaseIdentity) -> None:
     if k9 == "FAILED":
         print(f"K9 stage: {smoke_diagnostic.get('failure_stage', failed_stage or 'UNKNOWN')}")
         print(f"K9 detail: {smoke_diagnostic.get('failure_detail_code', code)}")
+        if smoke_diagnostic.get("scheduled_for"):
+            print(f"K9 scheduled for: {smoke_diagnostic['scheduled_for']}")
+        if smoke_diagnostic.get("attempt_observed_at"):
+            print(f"K9 attempt observed: {smoke_diagnostic['attempt_observed_at']}")
+        if "source_receipt_present" in smoke_diagnostic:
+            print(
+                "K9 source receipt present: "
+                f"{'YES' if smoke_diagnostic['source_receipt_present'] is True else 'NO'}"
+            )
         provider_class = smoke_diagnostic.get("provider_failure_class")
         if provider_class:
             print(f"Provider class: {provider_class}")
@@ -3670,7 +4109,8 @@ def status(release: ReleaseIdentity) -> None:
         if isinstance(source_eligibility, dict):
             print(
                 "Source eligibility: "
-                f"provider/current={source_eligibility.get('provider_current_inventory_count', 0)}; "
+                "provider/current="
+                f"{source_eligibility.get('provider_current_inventory_count', 0)}; "
                 f"canonical={source_eligibility.get('canonical_current_count', 0)}; "
                 f"eligible={source_eligibility.get('eligible_source_count', 0)}"
             )
@@ -3890,6 +4330,8 @@ def execute(arguments: argparse.Namespace) -> None:
         if arguments.action == "sync":
             with deployment_lock("sync"):
                 snapshot = sync_release_source()
+                release = load_release_identity()
+                write_source_sync_receipt(snapshot, release)
                 print("PREP39083 SOURCE SYNC PASS")
                 print(f"Handoff: {snapshot}")
                 write_last_command("sync", "PASS")
@@ -3900,6 +4342,13 @@ def execute(arguments: argparse.Namespace) -> None:
             return
         if arguments.action == "deploy":
             with deployment_lock("deploy"):
+                source_identity = verify_deploy_source_identity(release)
+                if source_identity["sync_receipt_state"] == "LEGACY_PASS_ADOPTABLE":
+                    write_source_sync_receipt(
+                        source_identity["head"],
+                        release,
+                        create_only=True,
+                    )
                 retrieval = ensure_git_transport_artifact(release)
                 print(f"Artifact retrieval: {retrieval}", flush=True)
                 bundle, preparation = prepare_deployment(release)

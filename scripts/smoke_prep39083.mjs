@@ -48,6 +48,9 @@ const glossaryFailureClassifications = new Set([
 const k9V2Projectors = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 const safeK9Token = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value)
 const safeSnapshotHash = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+const safeK9Timestamp = (value) => typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  && Number.isFinite(Date.parse(value))
 
 function argument(name, fallback = null) {
   const index = process.argv.indexOf(name)
@@ -734,6 +737,33 @@ async function main() {
               `K9 ${runningProjector.stage} ${runningProjector.completed}/${runningProjector.total}; batch ${runningProjector.batch_number}/${runningProjector.batch_total}`,
             )
           }
+          const currentAttempt = items
+            .map((item) => item?.scheduler_current_attempt)
+            .find((attempt) => attempt?.status === 'RUNNING')
+          if (currentAttempt) {
+            throw smokeFailure(
+              'K9',
+              'PREP_SMOKE_K9_NOT_READY',
+              'The current K9 lifecycle attempt is still running.',
+              null,
+              {
+                terminal: false,
+                failure_stage: safeK9Token(currentAttempt.stage)
+                  ? currentAttempt.stage : 'K9_LIFECYCLE',
+                failure_detail_code: safeK9Token(currentAttempt.detail)
+                  ? currentAttempt.detail : 'CURRENT_ATTEMPT_RUNNING',
+                scheduled_for: safeK9Timestamp(currentAttempt.scheduled_for)
+                  ? currentAttempt.scheduled_for : null,
+                attempt_started_at: safeK9Timestamp(currentAttempt.started_at)
+                  ? currentAttempt.started_at : null,
+                attempt_observed_at: safeK9Timestamp(currentAttempt.observed_at)
+                  ? currentAttempt.observed_at : null,
+                trigger: ['scheduled', 'manual'].includes(currentAttempt.trigger)
+                  ? currentAttempt.trigger : null,
+                source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
+              },
+            )
+          }
           const projectorFailure = k9V2ProjectorFailure(lifecycle)
           if (projectorFailure) {
             throw smokeFailure(
@@ -745,7 +775,8 @@ async function main() {
             )
           }
           const sourceCaptureFailure = items
-            .map((item) => item?.scheduler_last_attempt)
+            .map((item) => item?.scheduler_last_completed_attempt
+              || item?.scheduler_last_attempt)
             .find((attempt) => attempt?.status === 'FAILURE'
               && attempt?.reason === 'K9_DATAHUB_SOURCE_FAILED'
               && safeK9Token(attempt?.failure_stage)
@@ -761,6 +792,13 @@ async function main() {
                 product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
                 failure_stage: sourceCaptureFailure.failure_stage,
                 failure_detail_code: sourceCaptureFailure.failure_detail_code,
+                scheduled_for: safeK9Timestamp(sourceCaptureFailure.scheduled_for)
+                  ? sourceCaptureFailure.scheduled_for : null,
+                attempt_observed_at: safeK9Timestamp(sourceCaptureFailure.completed_at)
+                  ? sourceCaptureFailure.completed_at : null,
+                trigger: ['scheduled', 'manual'].includes(sourceCaptureFailure.trigger)
+                  ? sourceCaptureFailure.trigger : null,
+                source_receipt_present: false,
                 ...(boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility)
                   ? { source_eligibility: boundedK9SourceEligibility(sourceCaptureFailure.source_eligibility) }
                   : {}),

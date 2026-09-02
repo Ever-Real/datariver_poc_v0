@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -168,6 +169,25 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke)
     monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
     monkeypatch.setattr(deploy, "DEPLOY_LOCK", lock)
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda _release, runner=None: {
+            "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+            "checkout_head": "c" * 40,
+            "tracked_release_snapshot": "c" * 40,
+            "dedicated_release_head": "c" * 40,
+            "remote_tracking_release_head": "c" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": "NONE",
+            "running_web_product": "NONE",
+            "last_sync_target": "c" * 40,
+            "last_sync_product": "a" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": True,
+            "runtime_matches": True,
+        },
+    )
 
     deploy.status(_release())
 
@@ -185,6 +205,99 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     assert "Elapsed: 60000 ms" in output
     assert "Diagnostic profile: glossary=2500/2501; direct=250/1387" in output
     assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
+
+
+def test_status_separates_checkout_tracked_accepted_and_running_product_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    accepted = tmp_path / "accepted.json"
+    accepted.write_text(json.dumps({"product_sha": "b" * 40}), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", tmp_path / "deploy-attempt.json")
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "progress.json")
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda _release, runner=None: {
+            "checkout_branch": "dev",
+            "checkout_head": "c" * 40,
+            "tracked_release_snapshot": "c" * 40,
+            "dedicated_release_head": "d" * 40,
+            "remote_tracking_release_head": "d" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": f"datariver-poc:{'e' * 40}",
+            "running_web_product": "e" * 40,
+            "last_sync_target": "d" * 40,
+            "last_sync_product": "e" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": False,
+            "runtime_matches": False,
+        },
+    )
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Checkout branch: dev" in output
+    assert f"Checkout HEAD: {'c' * 40}" in output
+    assert f"Tracked Release Snapshot: {'c' * 40}" in output
+    assert f"Tracked Release Product: {'a' * 40}" in output
+    assert f"Accepted Product: {'b' * 40}" in output
+    assert f"Running Web Image: datariver-poc:{'e' * 40}" in output
+    assert f"Running Web Product: {'e' * 40}" in output
+    assert "Sync receipt: CURRENT" in output
+    assert "Identity warning: SOURCE_RUNTIME_IDENTITY_MISMATCH" in output
+    assert "\nProduct:" not in output
+
+
+def test_status_runtime_only_mismatch_never_claims_no_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    accepted = tmp_path / "accepted.json"
+    accepted.write_text(json.dumps({"product_sha": "b" * 40}), encoding="utf-8")
+    attempt = tmp_path / "deploy-attempt.json"
+    attempt.write_text(json.dumps({"phase": "ACCEPTED"}), encoding="utf-8")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", accepted)
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", tmp_path / "smoke-failure.json")
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "progress.json")
+    monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda _release, runner=None: {
+            "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+            "checkout_head": "d" * 40,
+            "tracked_release_snapshot": "d" * 40,
+            "dedicated_release_head": "d" * 40,
+            "remote_tracking_release_head": "d" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": f"datariver-poc:{'e' * 40}",
+            "running_web_product": "e" * 40,
+            "last_sync_target": "d" * 40,
+            "last_sync_product": "a" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": True,
+            "runtime_matches": False,
+        },
+    )
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Identity action: ./scripts/prep39083 deploy" in output
+    assert "Exact next action: Run ./scripts/prep39083 deploy to reconcile" in output
+    assert "No action required" not in output
 
 
 def test_status_renders_bounded_graph_projector_failure(
@@ -541,8 +654,21 @@ def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(
     subprocess.run(["git", "add", "."], cwd=author, check=True)
     subprocess.run(["git", "commit", "-m", "dev"], cwd=author, check=True)
     subprocess.run(["git", "push", "origin", "HEAD:dev"], cwd=author, check=True)
+    product = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=author,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     subprocess.run(["git", "switch", "-c", deploy.PREP_RELEASE_BRANCH], cwd=author, check=True)
     (author / "release.txt").write_text("release", encoding="utf-8")
+    (author / "deploy/prep39083").mkdir(parents=True)
+    (author / "deploy/prep39083/release.json").write_text(
+        json.dumps({"product_sha": product}),
+        encoding="utf-8",
+    )
+    (author / "deploy/prep39083/transport.json").write_text("{}", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=author, check=True)
     subprocess.run(["git", "commit", "-m", "release"], cwd=author, check=True)
     subprocess.run(
@@ -576,6 +702,132 @@ def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(
         ).stdout.strip()
         == deploy.PREP_RELEASE_BRANCH
     )
+    receipt = tmp_path / "source-sync.json"
+    release = deploy.ReleaseIdentity(
+        product,
+        target,
+        "linux/amd64",
+        39083,
+        "datariver-prep39083",
+    )
+    deploy.write_source_sync_receipt(target, release, path=receipt)
+    assert deploy.verify_deploy_source_identity(
+        release,
+        root=prep,
+        sync_receipt_path=receipt,
+    ) == {
+        "branch": deploy.PREP_RELEASE_BRANCH,
+        "head": target,
+        "tracked_product": release.product_sha,
+        "sync_target": target,
+        "sync_receipt_state": "CURRENT",
+    }
+
+    (prep / "release.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(deploy.PrepError) as dirty:
+        deploy.verify_deploy_source_identity(
+            release,
+            root=prep,
+            sync_receipt_path=receipt,
+        )
+    assert dirty.value.code == "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH"
+    (prep / "release.txt").write_text("release", encoding="utf-8")
+
+    receipt.unlink()
+    legacy_last = tmp_path / "last-command.json"
+    legacy_last.write_text(
+        json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_LAST_COMMAND_V1",
+                "action": "sync",
+                "result": "PASS",
+                "updated_at": "2026-09-02T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        deploy.verify_deploy_source_identity(
+            release,
+            root=prep,
+            sync_receipt_path=receipt,
+            last_command_path=legacy_last,
+        )["sync_receipt_state"]
+        == "LEGACY_PASS_ADOPTABLE"
+    )
+
+    receipt.write_text("{}", encoding="utf-8")
+    with pytest.raises(deploy.PrepError) as malformed:
+        deploy.verify_deploy_source_identity(
+            release,
+            root=prep,
+            sync_receipt_path=receipt,
+            last_command_path=legacy_last,
+        )
+    assert malformed.value.code == "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH"
+
+    subprocess.run(["git", "switch", "dev"], cwd=prep, check=True, capture_output=True)
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.verify_deploy_source_identity(release, root=prep, sync_receipt_path=receipt)
+    assert captured.value.code == "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH"
+
+
+def test_source_sync_receipt_rejects_noncanonical_or_nonregular_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source-sync.json"
+    release = _release()
+    deploy.write_source_sync_receipt("c" * 40, release, path=path)
+    state, value = deploy.source_sync_receipt_state(path)
+    assert state == "CURRENT"
+    assert value is not None
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["unexpected"] = "not-allowed"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert deploy.source_sync_receipt_state(path) == ("INVALID", None)
+
+    payload.pop("unexpected")
+    payload["completed_at"] = "2026-09-02T09:00:00+09:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert deploy.source_sync_receipt_state(path) == ("INVALID", None)
+
+    path.unlink()
+    path.symlink_to(tmp_path / "missing-target.json")
+    assert deploy.source_sync_receipt_state(path) == ("INVALID", None)
+
+
+def test_deploy_identity_failure_precedes_artifact_or_target_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(deploy, "LAST_COMMAND", tmp_path / "last-command.json")
+    monkeypatch.setattr(deploy, "load_release_identity", lambda: _release())
+    monkeypatch.setattr(deploy, "deployment_lock", lambda _action: nullcontext())
+
+    def reject_identity(_release: object) -> None:
+        raise deploy.PrepError(
+            "SOURCE_IDENTITY",
+            "PREP_RELEASE_SOURCE_IDENTITY_MISMATCH",
+            "dirty or mismatched release source",
+            "Run sync and status.",
+        )
+
+    monkeypatch.setattr(deploy, "verify_deploy_source_identity", reject_identity)
+    monkeypatch.setattr(
+        deploy,
+        "ensure_git_transport_artifact",
+        lambda _release: pytest.fail("artifact retrieval must not run"),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "prepare_deployment",
+        lambda _release: pytest.fail("target preparation must not run"),
+    )
+
+    with pytest.raises(SystemExit) as captured:
+        deploy.execute(type("Arguments", (), {"action": "deploy"})())
+    assert captured.value.code == 2
 
 
 def test_release_identity_requires_exact_artifact_v3_contract(tmp_path: Path) -> None:
@@ -1934,9 +2186,9 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert '"up", "-d", "--wait", "pgvector", "neo4j", "redis"' in source
     assert 'command = [*prefix, "up", "-d", "--no-build", "--wait"]' in source
     assert 'command.extend(["--force-recreate", "--no-deps"])' in source
-    assert 'runner.run(web_start_command(prefix, bundle.target_state))' in source
+    assert "runner.run(web_start_command(prefix, bundle.target_state))" in source
     assert source.index('"pgvector", "neo4j", "redis"') < source.index(
-        'runner.run(web_start_command(prefix, bundle.target_state))',
+        "runner.run(web_start_command(prefix, bundle.target_state))",
     )
     assert "snapshot_39080" in source
     assert "ALTER ROLE" in source

@@ -9311,6 +9311,21 @@ export function managedK9SchedulerReadModel(
       : {}),
   } : null
   const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
+  const activeTrigger = ['scheduled', 'manual'].includes(activeRefreshAttempt?.trigger)
+    ? activeRefreshAttempt.trigger : null
+  const activeStage = /^[A-Z][A-Z0-9_]{0,95}$/.test(activeRefreshAttempt?.stage || '')
+    ? activeRefreshAttempt.stage : null
+  const activeDetail = /^[A-Z][A-Z0-9_]{0,95}$/.test(activeRefreshAttempt?.detail || '')
+    ? activeRefreshAttempt.detail : null
+  const schedulerCurrentAttempt = refreshRunning ? {
+    status: 'RUNNING',
+    scheduled_for: schedulerTimestamp(activeRefreshAttempt.scheduled_for),
+    trigger: activeTrigger,
+    started_at: schedulerTimestamp(activeRefreshAttempt.started_at),
+    observed_at: schedulerTimestamp(activeRefreshAttempt.observed_at),
+    ...(activeStage ? { stage: activeStage } : {}),
+    ...(activeDetail ? { detail: activeDetail } : {}),
+  } : null
   const nextScheduledRun = schedulerConfig.enabled
     ? nextScheduleBoundary(
       now,
@@ -9330,6 +9345,10 @@ export function managedK9SchedulerReadModel(
     schedule_timezone: schedulerConfig.timeZone,
     next_scheduled_run: nextScheduledRun,
     last_successful_schedule: schedulerTimestamp(receipt?.last_successful_schedule),
+    scheduler_current_attempt: schedulerCurrentAttempt,
+    scheduler_last_completed_attempt: schedulerLastAttempt,
+    // Backward-compatible historical alias. New orchestration and smoke code
+    // must use the explicit current/completed fields above.
     scheduler_last_attempt: schedulerLastAttempt,
   }
 }

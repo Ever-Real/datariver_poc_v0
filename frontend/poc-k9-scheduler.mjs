@@ -559,6 +559,7 @@ export function createPocK9Scheduler({
     ].includes(value.provider_failure_class) ? value.provider_failure_class : null
     activeAttempt = Object.freeze({
       ...activeAttempt,
+      observed_at: clock().toISOString(),
       stage: 'METADATA_COLLECTION',
       detail: 'DIRECT_GLOSSARY_RESOLUTION',
       direct_resolution_total: integer(value.total),
@@ -608,6 +609,7 @@ export function createPocK9Scheduler({
       .filter(([key]) => !staleMetadataFields.has(key)))
     activeAttempt = Object.freeze({
       ...baseAttempt,
+      observed_at: clock().toISOString(),
       stage,
       detail: projectorId ? `${projectorId}_${status}` : status,
       ...(projectorId ? { projector_id: projectorId } : {}),
@@ -654,10 +656,13 @@ export function createPocK9Scheduler({
 
     if (!activeRun) {
       activeReconciliationGeneration = reconciliationGeneration
+      const startedAt = clock().toISOString()
       activeAttempt = Object.freeze({
         status: 'RUNNING',
         scheduled_for: scheduledFor.toISOString(),
         trigger: triggerType,
+        started_at: startedAt,
+        observed_at: startedAt,
       })
       activeRun = execute(
         scheduledFor, triggerType, reconciliationGeneration, lifecycleMode, bootstrapLifecycleV2,

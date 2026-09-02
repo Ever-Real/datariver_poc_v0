@@ -422,14 +422,31 @@ test('PREP smoke preserves bounded V2 graph adapter diagnostics without Cypher o
 })
 
 test('PREP smoke fails immediately with the durable pre-snapshot source diagnostic', async () => {
+  const sourceEligibility = {
+    contract: 'DATARIVER_K9_SOURCE_ELIGIBILITY_V1',
+    provider_current_inventory_count: 0,
+    canonical_current_count: 0,
+    eligible_source_count: 0,
+    invalid_identity_count: 0,
+    unsupported_kind_count: 0,
+    classification_exact_count: 0,
+    classification_missing_count: 0,
+    classification_multiple_count: 0,
+    classification_invalid_count: 0,
+    classification_ceiling: 'INTERNAL',
+    classification_authority: false,
+  }
   const result = await fixture('required', {
     managedItems: [
       {
         graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
         semantic_index_status: 'PENDING',
-        scheduler_last_attempt: {
+        scheduler_last_completed_attempt: {
           status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
-          failure_stage: 'METADATA_COLLECTION', failure_detail_code: 'GRAPHQL',
+          failure_stage: 'INVENTORY', failure_detail_code: 'EMPTY_SOURCE',
+          scheduled_for: '2026-08-30T17:00:00.000Z',
+          completed_at: '2026-08-30T17:00:05.000Z', trigger: 'scheduled',
+          source_eligibility: sourceEligibility,
         },
       },
       {
@@ -454,12 +471,138 @@ test('PREP smoke fails immediately with the durable pre-snapshot source diagnost
   assert.deepEqual(result.failure.diagnostic, {
     terminal: true,
     product_error_code: 'K9_DATAHUB_SOURCE_FAILED',
-    failure_stage: 'METADATA_COLLECTION',
-    failure_detail_code: 'GRAPHQL',
+    failure_stage: 'INVENTORY',
+    failure_detail_code: 'EMPTY_SOURCE',
+    scheduled_for: '2026-08-30T17:00:00.000Z',
+    attempt_observed_at: '2026-08-30T17:00:05.000Z',
+    trigger: 'scheduled',
+    source_receipt_present: false,
+    source_eligibility: sourceEligibility,
   })
   assert.ok(result.failure.elapsed_ms < 5_000)
   assert.equal(result.report.readiness.MCL.status, 'PASS')
   assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+})
+
+test('PREP smoke lets a current same-boundary source attempt outrank stale EMPTY_SOURCE history', async () => {
+  const staleFailure = {
+    status: 'FAILURE', reason: 'K9_DATAHUB_SOURCE_FAILED',
+    failure_stage: 'INVENTORY', failure_detail_code: 'EMPTY_SOURCE',
+    scheduled_for: '2026-08-30T17:00:00.000Z',
+    completed_at: '2026-08-30T17:00:05.000Z', trigger: 'scheduled',
+  }
+  const currentAttempt = {
+    status: 'RUNNING', scheduled_for: '2026-08-30T17:00:00.000Z', trigger: 'scheduled',
+    started_at: '2026-08-30T17:01:00.000Z', observed_at: '2026-08-30T17:01:01.000Z',
+    stage: 'SOURCE_CAPTURE', detail: 'RUNNING',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', scheduler_current_attempt: currentAttempt,
+        scheduler_last_completed_attempt: staleFailure, scheduler_last_attempt: staleFailure,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING', scheduler_current_attempt: currentAttempt,
+        scheduler_last_completed_attempt: staleFailure, scheduler_last_attempt: staleFailure,
+      },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_CAPTURE')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'RUNNING')
+  assert.equal(result.failure.diagnostic.scheduled_for, currentAttempt.scheduled_for)
+  assert.equal(result.failure.diagnostic.attempt_observed_at, currentAttempt.observed_at)
+  assert.equal(result.failure.diagnostic.source_receipt_present, false)
+  assert.ok(result.failure.elapsed_ms >= 900)
+  assert.equal(result.failure.diagnostic.product_error_code, undefined)
+  assert.equal(result.report.readiness.MCL.status, 'PASS')
+  assert.equal(result.report.readiness.GENERAL.status, 'PASS')
+})
+
+test('PREP smoke lets a current projector retry outrank its persisted failed receipt', async () => {
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY',
+        scheduler_current_attempt: {
+          status: 'RUNNING', scheduled_for: '2026-08-30T17:00:00.000Z', trigger: 'scheduled',
+          stage: 'LINEAGE_PROJECTOR', detail: 'GRAPH_PROJECTION_RUNNING',
+        },
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY',
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle({
+      LINEAGE: {
+        desired_snapshot_id: sourceSnapshotId,
+        active_snapshot_id: null,
+        status: 'FAILED',
+        diagnostic: {
+          failure_stage: 'GRAPH_PROJECTION',
+          failure_detail_code: 'K9_GRAPH_PROJECTION_FAILED',
+        },
+      },
+      lifecycle: {
+        aggregate: { status: 'FAILED', reason: 'K9_V2_PROJECTOR_FAILED' },
+      },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.failure.diagnostic.failure_stage, 'LINEAGE_PROJECTOR')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'GRAPH_PROJECTION_RUNNING')
+  assert.equal(result.failure.diagnostic.source_receipt_present, true)
+  assert.ok(result.failure.elapsed_ms >= 900)
+})
+
+test('PREP smoke waits for a current refresh instead of accepting its prior READY lifecycle', async () => {
+  const currentAttempt = {
+    status: 'RUNNING', scheduled_for: '2026-08-31T17:00:00.000Z', trigger: 'scheduled',
+    stage: 'SOURCE_CAPTURE', detail: 'RUNNING',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'READY', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'READY', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle(),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_CAPTURE')
+  assert.ok(result.failure.elapsed_ms >= 900)
 })
 
 test('PREP smoke persists actual V2 Semantic progress while aggregate readiness is pending', async () => {
