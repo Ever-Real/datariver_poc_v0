@@ -87,6 +87,11 @@ import {
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
 import {
+  createK9LineageTrace,
+  K9_LINEAGE_FAILURE_DETAILS,
+  sanitizeK9LineageSourceProfile,
+} from './poc-k9-lineage-collection.mjs'
+import {
   createProviderTransport,
   joinProviderUrl,
   llmEndpoint,
@@ -2200,7 +2205,10 @@ const datahubLineageQuery = `
 query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
   dataset(urn: $urn) {
     lineage(input: $input) {
+      start
+      count
       total
+      filtered
       relationships {
         type
         entity {
@@ -9249,6 +9257,7 @@ const k9SourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_LINEAGE_FAILURE_DETAILS,
   ...K9_METADATA_FAILURE_DETAILS,
 ])
 
@@ -9304,6 +9313,9 @@ export function managedK9SchedulerReadModel(
       ? {
           failure_stage: durableAttempt.failure_stage,
           failure_detail_code: durableAttempt.failure_detail_code,
+          ...(sanitizeK9LineageSourceProfile(durableAttempt.lineage_source_profile)
+            ? { lineage_source_profile: sanitizeK9LineageSourceProfile(durableAttempt.lineage_source_profile) }
+            : {}),
           ...(sanitizeK9SourceEligibilityTelemetry(durableAttempt.source_eligibility)
             ? { source_eligibility: sanitizeK9SourceEligibilityTelemetry(durableAttempt.source_eligibility) }
             : {}),
@@ -9398,6 +9410,9 @@ export function managedK9AssetSummary(
   const latestFailureProfile = sanitizeK9MetadataSourceProfile(
     row.latest_manifest?.failure_diagnostic?.metadata_source_profile,
   )
+  const latestLineageFailureProfile = sanitizeK9LineageSourceProfile(
+    row.latest_manifest?.failure_diagnostic?.lineage_source_profile,
+  )
   const activeMetadataProfile = sanitizeK9MetadataSourceProfile(sourceSnapshot.metadata_source_profile)
   const activeDirectResolution = activeMetadataProfile?.direct_resolution
   const activeAssignments = activeMetadataProfile?.assignments
@@ -9468,6 +9483,7 @@ export function managedK9AssetSummary(
     metadata_source_profile: includeQualityMetrics
       ? latestFailureProfile || activeMetadataProfile
       : null,
+    lineage_source_profile: latestLineageFailureProfile,
     k9_source_warning: sourceWarning,
     k9_assignment_scope: assignmentScope,
     semantic_index_status: semanticIndexMatchesSnapshot ? 'READY' : 'PENDING',
@@ -13706,6 +13722,7 @@ export async function startPocServer({ stateStore } = {}) {
     const nodeSet = new Set()
     const columnNodeMap = new Map()
     const completeness_metadata = { per_asset: {} }
+    let processedAssetCount = 0
 
     const registerLineageEdge = (source, target, relationship, sourceEntityUrn) => {
       const key = `${source}->${target}`
@@ -13774,46 +13791,61 @@ export async function startPocServer({ stateStore } = {}) {
 
       completeness_metadata.per_asset[itemUrn] = {}
       for (const direction of ['UPSTREAM', 'DOWNSTREAM']) {
-        let start = 0
-        let lastTotal = -1
-        let fetchedCount = 0
-        let pages = 0
-        const traceSet = new Set()
+        const trace = createK9LineageTrace({
+          assetIdentity: itemUrn,
+          direction,
+          requestedCount: 100,
+          maximumPages: 10_002,
+          totalAssetCount: authorizedInventory.length,
+          processedAssetCount,
+        })
         while (true) {
-          if (pages >= 10002) throw new Error('Exceeded lineage page limit')
+          const start = trace.nextStart
           const data = await datahubRefreshGraphql(datahubLineageQuery, {
             urn: itemUrn,
             input: { direction, start, count: 100, separateSiblings: false, includeGhostEntities: false }
           }, serverBackgroundAbortController?.signal)
-          pages++
-          const lineage = data.dataset?.lineage
-          if (!lineage || typeof lineage.total !== 'number') throw new Error('Malformed lineage response')
-          const total = lineage.total
-          if (lastTotal !== -1 && total !== lastTotal) throw new Error('Truncation or mutation during lineage pagination')
-          lastTotal = total
-          const rels = lineage.relationships || []
-          if (rels.length === 0 && start < total) throw new Error('Truncation or repeated cursor in lineage')
-          if (rels.length === 0) break
-          for (const rel of rels) {
-            if (rel.entity?.urn && rel.entity.type === 'DATASET') {
+          const lineage = data?.dataset?.lineage
+          const page = trace.observePage(lineage)
+          for (const rel of page.relationships) {
+            if (!rel || typeof rel !== 'object' || Array.isArray(rel)
+              || typeof rel.type !== 'string' || !rel.type
+              || !rel.entity || typeof rel.entity !== 'object' || Array.isArray(rel.entity)
+              || typeof rel.entity.urn !== 'string' || !rel.entity.urn
+              || typeof rel.entity.type !== 'string' || !rel.entity.type) {
+              trace.rejectMalformedRelationship()
+            }
+            if (rel.entity.type === 'DATASET') {
+              if (!isCanonicalDatahubDatasetUrn(rel.entity.urn)) trace.rejectMalformedRelationship()
               const relAsset = datasetAsset(rel.entity)
-              if (relAsset && authorizedByUrn.has(k9AssetUrn(relAsset))
+              if (relAsset && authorizedByUrn.has(rel.entity.urn)
                 && ['TABLE', 'VIEW', 'MATERIALIZED_VIEW'].includes(relAsset.dataset_kind)) {
-                const source = direction === 'UPSTREAM' ? 'TABLE:' + k9AssetUrn(relAsset) : 'TABLE:' + itemUrn
-                const target = direction === 'UPSTREAM' ? 'TABLE:' + itemUrn : 'TABLE:' + k9AssetUrn(relAsset)
+                const source = direction === 'UPSTREAM' ? 'TABLE:' + rel.entity.urn : 'TABLE:' + itemUrn
+                const target = direction === 'UPSTREAM' ? 'TABLE:' + itemUrn : 'TABLE:' + rel.entity.urn
                 const edgeKey = `${source}->${target}`
-                if (traceSet.has(edgeKey)) throw new Error('Duplicate edge identity within trace: ' + edgeKey)
-                traceSet.add(edgeKey)
+                const observationDisposition = trace.observeRelationship({
+                  observationIdentity: canonicalHash({ edge_key: edgeKey, relationship: rel }),
+                  edgeIdentity: edgeKey,
+                })
+                if (observationDisposition === 'EXACT_DUPLICATE') continue
                 registerLineageEdge(source, target, rel, itemUrn)
+                trace.recordProjectableTableEdge()
+              } else {
+                trace.recordOutsideSourceScope()
               }
+            } else {
+              trace.recordOutsideSourceScope()
             }
           }
-          fetchedCount += rels.length
-          start += 100
-          if (start >= total) break
+          if (page.done) break
         }
-        completeness_metadata.per_asset[itemUrn][direction] = { fetched: fetchedCount, total: lastTotal === -1 ? 0 : lastTotal }
-        if (fetchedCount !== (lastTotal === -1 ? 0 : lastTotal)) throw new Error('Completeness reconciliation failed')
+        const completedTrace = trace.complete()
+        completeness_metadata.per_asset[itemUrn][direction] = {
+          returned: completedTrace.returned,
+          filtered: completedTrace.filtered,
+          total: completedTrace.total,
+          pages: completedTrace.pages,
+        }
       }
 
       for (const fine of item.fine_grained_lineages || []) {
@@ -13857,6 +13889,7 @@ export async function startPocServer({ stateStore } = {}) {
           }
         }
       }
+      processedAssetCount += 1
     }
     nodes.push(...columnNodeMap.values())
     edges.push(...edgeMap.values())

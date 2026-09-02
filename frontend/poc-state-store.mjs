@@ -14,6 +14,10 @@ import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import {
+  K9_LINEAGE_FAILURE_DETAILS,
+  sanitizeK9LineageSourceProfile,
+} from './poc-k9-lineage-collection.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 import {
   adoptExactLegacyK9LifecycleV2,
@@ -71,6 +75,7 @@ const K9_SOURCE_FAILURE_DETAILS = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_LINEAGE_FAILURE_DETAILS,
   ...K9_METADATA_FAILURE_DETAILS,
 ])
 const PROTECTED_CORE_ACCESS_FIELDS = [
@@ -3456,6 +3461,10 @@ export function createPocStateStore({ databasePool } = {}) {
       ? {
           failureStage: sourceDiagnosticValue.failureStage,
           failureDetailCode: sourceDiagnosticValue.failureDetailCode,
+          ...(sourceDiagnosticValue.failureStage === 'LINEAGE_COLLECTION'
+            && sanitizeK9LineageSourceProfile(sourceDiagnosticValue.lineageProfile)
+            ? { lineageProfile: sanitizeK9LineageSourceProfile(sourceDiagnosticValue.lineageProfile) }
+            : {}),
           ...(sourceDiagnosticValue.failureStage === 'METADATA_COLLECTION'
             && sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile)
             ? { metadataProfile: sanitizeK9MetadataSourceProfile(sourceDiagnosticValue.metadataProfile) }
@@ -3475,8 +3484,11 @@ export function createPocStateStore({ databasePool } = {}) {
     const errorMessage = sourceDiagnostic
       ? `${failureCode}: failure_stage=${sourceDiagnostic.failureStage}; failure_detail_code=${sourceDiagnostic.failureDetailCode}.`
       : `${failureCode}: Shared managed refresh failed at a classified stage.`
-    const failureManifest = sourceDiagnostic?.metadataProfile || sourceDiagnostic?.sourceEligibility
+    const failureManifest = sourceDiagnostic?.lineageProfile
+      || sourceDiagnostic?.metadataProfile || sourceDiagnostic?.sourceEligibility
       ? { failure_diagnostic: {
+          ...(sourceDiagnostic.lineageProfile
+            ? { lineage_source_profile: sourceDiagnostic.lineageProfile } : {}),
           ...(sourceDiagnostic.metadataProfile
             ? { metadata_source_profile: sourceDiagnostic.metadataProfile } : {}),
           ...(sourceDiagnostic.sourceEligibility
@@ -3626,6 +3638,10 @@ export function createPocStateStore({ databasePool } = {}) {
           ? {
               failure_stage: result.failureStage,
               failure_detail_code: result.failureDetailCode,
+              ...(result.failureStage === 'LINEAGE_COLLECTION'
+                && sanitizeK9LineageSourceProfile(result.lineageProfile)
+                ? { lineage_source_profile: sanitizeK9LineageSourceProfile(result.lineageProfile) }
+                : {}),
               ...(result.failureStage === 'METADATA_COLLECTION'
                 && sanitizeK9MetadataSourceProfile(result.metadataProfile)
                 ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }

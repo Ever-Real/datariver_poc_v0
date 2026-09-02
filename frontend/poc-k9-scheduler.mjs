@@ -4,6 +4,10 @@ import {
   K9_METADATA_FAILURE_DETAILS,
   sanitizeK9MetadataSourceProfile,
 } from './poc-k9-metadata-collection.mjs'
+import {
+  K9_LINEAGE_FAILURE_DETAILS,
+  sanitizeK9LineageSourceProfile,
+} from './poc-k9-lineage-collection.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
@@ -31,6 +35,7 @@ const supportedSourceFailureDetails = new Set([
   'CONTRACT',
   'EMPTY_SOURCE',
   'INTERNAL_TRANSFORM',
+  ...K9_LINEAGE_FAILURE_DETAILS,
   ...K9_METADATA_FAILURE_DETAILS,
 ])
 const retryableSourceFailureDetails = new Set(['CONNECTIVITY', 'TIMEOUT', 'HTTP_5XX'])
@@ -145,6 +150,10 @@ async function datahubSourceStage(failureStage, action, sourceRetryWait) {
         ? errorChain(error).map((item) => sanitizeK9MetadataSourceProfile(item?.k9MetadataSourceProfile))
           .find(Boolean) || null
         : null
+      const lineageProfile = failureStage === 'LINEAGE_COLLECTION'
+        ? errorChain(error).map((item) => sanitizeK9LineageSourceProfile(item?.k9LineageSourceProfile))
+          .find(Boolean) || null
+        : null
       const sourceEligibility = failureStage === 'INVENTORY'
         ? errorChain(error).map((item) => sanitizeK9SourceEligibilityTelemetry(item?.k9SourceEligibility))
           .find(Boolean) || null
@@ -154,6 +163,7 @@ async function datahubSourceStage(failureStage, action, sourceRetryWait) {
         k9SourceDiagnostic: Object.freeze({
           failureStage,
           failureDetailCode,
+          ...(lineageProfile ? { lineageProfile } : {}),
           ...(metadataProfile ? { metadataProfile } : {}),
           ...(sourceEligibility ? { sourceEligibility } : {}),
         }),
@@ -359,6 +369,10 @@ export function createPocK9RefreshTask({
         ? {
             failureStage: candidateDiagnostic.failureStage,
             failureDetailCode: candidateDiagnostic.failureDetailCode,
+            ...(candidateDiagnostic.failureStage === 'LINEAGE_COLLECTION'
+              && sanitizeK9LineageSourceProfile(candidateDiagnostic.lineageProfile)
+              ? { lineageProfile: sanitizeK9LineageSourceProfile(candidateDiagnostic.lineageProfile) }
+              : {}),
             ...(candidateDiagnostic.failureStage === 'METADATA_COLLECTION'
               && sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile)
               ? { metadataProfile: sanitizeK9MetadataSourceProfile(candidateDiagnostic.metadataProfile) }

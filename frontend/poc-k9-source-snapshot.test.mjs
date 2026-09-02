@@ -57,7 +57,11 @@ function fixture() {
         target_asset_id: 'TABLE:urn:li:dataset:b',
         properties: { source: 'DataHub', observed_at: '2026-08-31T00:00:00.000Z' },
       }],
-      completeness_metadata: { per_asset: { a: { fetched: 1, total: 1 } } },
+      completeness_metadata: {
+        per_asset: {
+          a: { UPSTREAM: { returned: 1, filtered: 0, total: 1, pages: 1 } },
+        },
+      },
     },
     metadataSource: {
       authority_pin: structuredClone(authorityPin),
@@ -172,6 +176,11 @@ test('K9 V2 source snapshot rotates for every source identity input', () => {
     changed((input) => { input.inventoryProjection.source_generation = '3'.repeat(64) }),
     changed((input) => { input.inventoryProjection.items[0].name = 'Changed inventory' }),
     changed((input) => { input.lineageSource.edges[0].properties.source_relationship_type = 'COPY' }),
+    changed((input) => {
+      input.lineageSource.completeness_metadata.per_asset.a.UPSTREAM = {
+        returned: 1, filtered: 1, total: 2, pages: 1,
+      }
+    }),
     changed((input) => { input.metadataSource.terms[0].name = 'Changed term' }),
     changed((input) => {
       input.metadataSource.source_profile.assignments.dangling_reference_hash = '4'.repeat(64)

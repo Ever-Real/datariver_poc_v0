@@ -1734,6 +1734,33 @@ test('records K9 shared-stage failures atomically without changing active releas
         === 'b'.repeat(64)
       && !JSON.stringify(failureManifest).includes('urn:li:')
   )))
+  const lineageProfile = {
+    contract: 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1',
+    total_asset_count: 1_892,
+    processed_asset_count: 731,
+    pages_fetched: 2,
+    provider_relationship_total: 150,
+    returned_relationship_count: 148,
+    filtered_relationship_count: 1,
+    failure: {
+      detail_code: 'LINEAGE_COMPLETENESS_MISMATCH', direction: 'UPSTREAM',
+      page_number: 2, request_start: 100, response_start: 100,
+      response_count: 1, total: 150, filtered: 0, relationships: 1,
+      identity_hash: 'd'.repeat(64),
+    },
+  }
+  await store.recordK9ManagedRefreshFailure(graphIds, 'K9_DATAHUB_SOURCE_FAILED', {
+    failureStage: 'LINEAGE_COLLECTION',
+    failureDetailCode: 'LINEAGE_COMPLETENESS_MISMATCH',
+    lineageProfile,
+  })
+  assert.ok(inserted.slice(2).every(({ failureManifest }) => (
+    failureManifest.failure_diagnostic.lineage_source_profile.contract
+      === 'DATARIVER_K9_LINEAGE_SOURCE_PROFILE_V1'
+      && failureManifest.failure_diagnostic.lineage_source_profile.failure.identity_hash
+        === 'd'.repeat(64)
+      && !JSON.stringify(failureManifest).includes('urn:li:')
+  )))
   assert.equal(statements[0].sql, 'BEGIN')
   assert.equal(statements.at(-1).sql, 'COMMIT')
   assert.ok(statements.filter(({ sql }) => sql.startsWith('INSERT INTO poc_k9_refresh_runs')).every(({ sql }) => (
@@ -1746,7 +1773,7 @@ test('records K9 shared-stage failures atomically without changing active releas
     'K9_DATAHUB_SOURCE_FAILED',
     { failureStage: 'PRIVATE_PROVIDER_BODY', failureDetailCode: 'GRAPHQL' },
   ), /bounded diagnostic/)
-  assert.equal(inserted.length, 2)
+  assert.equal(inserted.length, 4)
 })
 
 test('CAS-replaces in-memory core state and rejects a stale retry without changing state', async () => {

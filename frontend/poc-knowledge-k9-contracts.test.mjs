@@ -124,7 +124,8 @@ test('declared route and provider boundaries match the pinned Product source', (
   assert.match(product, /async function datahubGlossaryAssignments[\s\S]*?providerStart[\s\S]*?items: pageItems,[\s\S]*?page: \{ next_cursor:/);
   assert.match(product, /async function datahubRefreshGraphql[\s\S]*?datahubGraphql\(query, variables, 60_000, signal\)/);
   assert.match(product, /DataRiverPocCatalogEmbeddingInventory[\s\S]*?\.\.\. on Dataset \{\s*exists\s*status \{ removed \}/);
-  assert.match(product, /collectLineageInventorySeam[\s\S]*?authorizedByUrn\.has\(k9AssetUrn\(relAsset\)\)[\s\S]*?registerLineageEdge/);
+  assert.match(product, /const datahubLineageQuery = `[\s\S]*?start[\s\S]*?count[\s\S]*?total[\s\S]*?filtered[\s\S]*?relationships/);
+  assert.match(product, /collectLineageInventorySeam[\s\S]*?createK9LineageTrace[\s\S]*?authorizedByUrn\.has\(rel\.entity\.urn\)[\s\S]*?observeRelationship[\s\S]*?registerLineageEdge/);
   assert.match(product, /collectGlossaryInventorySeam[\s\S]*?createK9MetadataCollector[\s\S]*?refreshGraphql: datahubRefreshGraphql,[\s\S]*?glossaryQuery: datahubK9GlossaryQuery,[\s\S]*?glossaryTermsQuery: datahubK9GlossaryTermsByUrnsQuery/);
   // Verify UI query is bounded and excludes heavy fields
   const uiQueryMatch = product.match(/const datahubGlossaryQuery = `([\s\S]*?)`/);
@@ -161,7 +162,7 @@ test('POC runtime image copies the bounded K9 metadata collector module', () => 
   const dockerfile = readFileSync(new URL('../deploy/poc/Dockerfile.example', import.meta.url), 'utf8');
   assert.match(
     dockerfile,
-    /COPY frontend\/poc-k9-scheduler\.mjs \.\/poc-k9-scheduler\.mjs\nCOPY frontend\/poc-k9-metadata-collection\.mjs \.\/poc-k9-metadata-collection\.mjs\nCOPY frontend\/poc-k9-source-snapshot\.mjs \.\/poc-k9-source-snapshot\.mjs\nCOPY frontend\/poc-k9-source-eligibility\.mjs \.\/poc-k9-source-eligibility\.mjs\nCOPY frontend\/poc-k9-lifecycle-persistence\.mjs \.\/poc-k9-lifecycle-persistence\.mjs\nCOPY frontend\/poc-k9-lifecycle-v2\.mjs \.\/poc-k9-lifecycle-v2\.mjs\nCOPY frontend\/poc-k9-lifecycle-runtime\.mjs \.\/poc-k9-lifecycle-runtime\.mjs\nCOPY frontend\/poc-k9-graph-projector\.mjs \.\/poc-k9-graph-projector\.mjs\nCOPY frontend\/poc-k9-semantic-persistence\.mjs \.\/poc-k9-semantic-persistence\.mjs\nCOPY frontend\/poc-k9-semantic-projector\.mjs \.\/poc-k9-semantic-projector\.mjs\nCOPY frontend\/poc-k9-semantic-runtime\.mjs \.\/poc-k9-semantic-runtime\.mjs\nCOPY frontend\/poc-k9-v2-refresh\.mjs \.\/poc-k9-v2-refresh\.mjs\n/,
+    /COPY frontend\/poc-k9-scheduler\.mjs \.\/poc-k9-scheduler\.mjs\nCOPY frontend\/poc-k9-metadata-collection\.mjs \.\/poc-k9-metadata-collection\.mjs\nCOPY frontend\/poc-k9-lineage-collection\.mjs \.\/poc-k9-lineage-collection\.mjs\nCOPY frontend\/poc-k9-source-snapshot\.mjs \.\/poc-k9-source-snapshot\.mjs\nCOPY frontend\/poc-k9-source-eligibility\.mjs \.\/poc-k9-source-eligibility\.mjs\nCOPY frontend\/poc-k9-lifecycle-persistence\.mjs \.\/poc-k9-lifecycle-persistence\.mjs\nCOPY frontend\/poc-k9-lifecycle-v2\.mjs \.\/poc-k9-lifecycle-v2\.mjs\nCOPY frontend\/poc-k9-lifecycle-runtime\.mjs \.\/poc-k9-lifecycle-runtime\.mjs\nCOPY frontend\/poc-k9-graph-projector\.mjs \.\/poc-k9-graph-projector\.mjs\nCOPY frontend\/poc-k9-semantic-persistence\.mjs \.\/poc-k9-semantic-persistence\.mjs\nCOPY frontend\/poc-k9-semantic-projector\.mjs \.\/poc-k9-semantic-projector\.mjs\nCOPY frontend\/poc-k9-semantic-runtime\.mjs \.\/poc-k9-semantic-runtime\.mjs\nCOPY frontend\/poc-k9-v2-refresh\.mjs \.\/poc-k9-v2-refresh\.mjs\n/,
   );
 });
 

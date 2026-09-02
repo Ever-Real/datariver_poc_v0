@@ -4122,6 +4122,24 @@ def status(release: ReleaseIdentity) -> None:
                 f"invalid={source_eligibility.get('classification_invalid_count', 0)}; "
                 "authority=NO"
             )
+        lineage_profile = smoke_diagnostic.get("lineage_profile")
+        if isinstance(lineage_profile, dict):
+            lineage_failure = lineage_profile.get("failure")
+            if isinstance(lineage_failure, dict):
+                print(
+                    "Lineage accounting: "
+                    f"returned={lineage_profile.get('returned_relationship_count', 0)}; "
+                    f"filtered={lineage_profile.get('filtered_relationship_count', 0)}; "
+                    f"total={lineage_profile.get('provider_relationship_total', 0)}; "
+                    f"pages={lineage_profile.get('pages_fetched', 0)}"
+                )
+                print(
+                    "Lineage locus: "
+                    f"direction={lineage_failure.get('direction', 'UNKNOWN')}; "
+                    f"page={lineage_failure.get('page_number', 0)}; "
+                    f"start={lineage_failure.get('request_start', 0)}; "
+                    f"identity_hash={str(lineage_failure.get('identity_hash', ''))[:16]}"
+                )
         requested_nodes = smoke_diagnostic.get("batch_requested_nodes")
         requested_edges = smoke_diagnostic.get("batch_requested_edges")
         written_nodes = smoke_diagnostic.get("batch_written_nodes")
