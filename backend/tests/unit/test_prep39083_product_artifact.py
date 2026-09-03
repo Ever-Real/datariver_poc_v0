@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,8 +17,8 @@ SPEC.loader.exec_module(MODULE)
 PRODUCT = "1" * 40
 
 
-def inspection(**overrides):
-    document = {
+def inspection(**overrides: Any) -> list[dict[str, Any]]:
+    document: dict[str, Any] = {
         "Os": "linux",
         "Architecture": "amd64",
         "Descriptor": {
@@ -39,7 +40,7 @@ def inspection(**overrides):
     return [document]
 
 
-def test_build_command_is_pinned_to_the_canonical_product_dockerfile():
+def test_build_command_is_pinned_to_the_canonical_product_dockerfile() -> None:
     command = MODULE.canonical_build_command(PRODUCT)
     dockerfile = command[command.index("--file") + 1]
     assert dockerfile.endswith("deploy/poc/Dockerfile.example")
@@ -50,7 +51,7 @@ def test_build_command_is_pinned_to_the_canonical_product_dockerfile():
     assert f"POC_SOURCE_COMMIT={PRODUCT}" in command
 
 
-def test_accepts_the_node_product_runtime_contract():
+def test_accepts_the_node_product_runtime_contract() -> None:
     observed = MODULE.validate_runtime_inspection(inspection(), PRODUCT)
     assert observed["Config"]["Cmd"] == ["node", "poc-server.mjs"]
 
@@ -67,6 +68,8 @@ def test_accepts_the_node_product_runtime_contract():
         ),
     ],
 )
-def test_rejects_frontend_only_or_mismatched_runtime_contract(document):
+def test_rejects_frontend_only_or_mismatched_runtime_contract(
+    document: list[dict[str, Any]],
+) -> None:
     with pytest.raises(MODULE.ProductArtifactError):
         MODULE.validate_runtime_inspection(document, PRODUCT)

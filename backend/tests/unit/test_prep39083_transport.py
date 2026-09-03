@@ -10,6 +10,7 @@ import sys
 import tarfile
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -127,7 +128,7 @@ def _oci_archive(path: Path, revision: str) -> None:
             _member(bundle, name, payload)
 
 
-def _fixture(tmp_path: Path, *, omit_last_chunk: bool = False) -> tuple[Path, object, object]:
+def _fixture(tmp_path: Path, *, omit_last_chunk: bool = False) -> tuple[Path, Any, Any]:
     remote = tmp_path / "remote.git"
     subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
         ["git", "init", "--bare", remote],  # noqa: S607 - Git is required by contract.
