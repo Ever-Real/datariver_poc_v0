@@ -1,0 +1,451 @@
+#!/bin/sh
+set -u
+
+# Read-only, one-line diagnostic for the live K9 V2 source-correction state.
+# The probe executes only inside the exact 08d Product web container, opens one
+# PostgreSQL READ ONLY transaction, and never reads smoke.json or contacts any
+# provider, Neo4j, Redis, MCL, or Knowledge Studio surface.
+
+EXPECTED_PRODUCT='08d28a62237de06035fa3197f8f8c174c7f92c75'
+OUTPUT_PREFIX='SOURCE_CORRECTION_STATE'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|live_desired=UNAVAILABLE|successor_present=UNAVAILABLE|source_receipt=UNAVAILABLE|claim=UNAVAILABLE|successor_self_loop=UNAVAILABLE|scheduler_attempt=UNAVAILABLE|old_x_immutable=UNAVAILABLE"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i "$exact_id" \
+    node --max-old-space-size=2048 --input-type=module 2>/dev/null <<'NODE'
+import { createHash } from 'node:crypto'
+import pg from 'pg'
+
+/* global Buffer, process, structuredClone */
+
+import {
+  canonicalStringify,
+  computeSha256,
+} from './poc-knowledge-k9-contracts.mjs'
+import {
+  K9_LIFECYCLE_KEY_V2,
+  K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1,
+  K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1,
+  K9_SOURCE_PAYLOAD_CHUNK_ENCODING_V1,
+  K9_SOURCE_PAYLOAD_KINDS_V2,
+  K9_SOURCE_PAYLOAD_MANIFEST_CONTRACT_V1,
+  createK9LifecyclePersistenceV2,
+  normalizeK9SourceSnapshotV2,
+} from './poc-k9-lifecycle-persistence.mjs'
+
+const { Pool } = pg
+const HASH = /^[0-9a-f]{64}$/u
+const TOKEN = /^[A-Z][A-Z0-9_]{0,95}$/u
+const OUTPUT_PREFIX = 'SOURCE_CORRECTION_STATE'
+const SCHEDULER_SCOPE = 'k9-scheduler-v1:datariver:poc:k9-scheduler:v1'
+const CLAIM_SCOPE_PREFIX = 'k9-source-correction-claim-v1:'
+const IMMUTABLE_TRIGGERS = new Set([
+  'trg_poc_k9_projector_receipts_v2_immutable',
+  'trg_poc_k9_source_payload_chunks_v2_immutable',
+  'trg_poc_k9_source_payloads_v2_immutable',
+  'trg_poc_k9_source_snapshots_v2_immutable',
+])
+
+let pool
+let client
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw new Error('PROBE_DATABASE_CONFIGURATION')
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+function exactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
+}
+
+function sha256Bytes(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function expectedPayloadHashes(snapshot) {
+  return {
+    INVENTORY: snapshot.inventory_projection_hash,
+    LINEAGE: snapshot.lineage_hash,
+    METADATA: snapshot.metadata_hash,
+    DANGLING_STATE: snapshot.dangling_state_hash,
+  }
+}
+
+function isPayloadManifest(value) {
+  return exactKeys(value, [
+    'chunk_count', 'chunk_hashes', 'chunk_size_bytes', 'contract', 'encoding',
+    'payload_hash', 'payload_kind', 'total_bytes',
+  ])
+    && value.contract === K9_SOURCE_PAYLOAD_MANIFEST_CONTRACT_V1
+    && value.encoding === K9_SOURCE_PAYLOAD_CHUNK_ENCODING_V1
+    && K9_SOURCE_PAYLOAD_KINDS_V2.includes(value.payload_kind)
+    && HASH.test(value.payload_hash || '')
+    && Number.isSafeInteger(value.total_bytes) && value.total_bytes >= 2
+    && Number.isSafeInteger(value.chunk_count) && value.chunk_count >= 1
+    && value.chunk_count <= 1024
+    && value.chunk_size_bytes === K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1
+    && Array.isArray(value.chunk_hashes)
+    && value.chunk_hashes.length === value.chunk_count
+    && value.chunk_hashes.every((item) => HASH.test(item || ''))
+}
+
+async function payloadRow(sourceSnapshotId, payloadKind) {
+  const rowResult = await client.query(`
+    SELECT source_snapshot_id, payload_kind, payload_hash, payload
+    FROM poc_k9_source_payloads_v2
+    WHERE source_snapshot_id = $1 AND payload_kind = $2
+  `, [sourceSnapshotId, payloadKind])
+  if (rowResult.rows.length !== 1) return null
+  const row = rowResult.rows[0]
+  const chunks = await client.query(`
+    SELECT chunk_number, chunk_count, payload_hash, chunk_hash, byte_count, payload_chunk
+    FROM poc_k9_source_payload_chunks_v2
+    WHERE source_snapshot_id = $1 AND payload_kind = $2
+    ORDER BY chunk_number
+  `, [sourceSnapshotId, payloadKind])
+  return { row, chunks: chunks.rows }
+}
+
+function validateAndJoinChunks(row, chunks, materialize) {
+  const manifest = row.payload
+  if (!isPayloadManifest(manifest)
+    || manifest.payload_kind !== row.payload_kind
+    || manifest.payload_hash !== row.payload_hash
+    || chunks.length !== manifest.chunk_count) return null
+
+  const root = createHash('sha256')
+  const buffers = []
+  let totalBytes = 0
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index]
+    const bytes = Buffer.from(chunk.payload_chunk)
+    if (Number(chunk.chunk_number) !== index + 1
+      || Number(chunk.chunk_count) !== manifest.chunk_count
+      || chunk.payload_hash !== manifest.payload_hash
+      || chunk.chunk_hash !== manifest.chunk_hashes[index]
+      || Number(chunk.byte_count) !== bytes.byteLength
+      || sha256Bytes(bytes) !== chunk.chunk_hash) return null
+    root.update(bytes)
+    if (materialize) buffers.push(bytes)
+    totalBytes += bytes.byteLength
+  }
+  if (totalBytes !== manifest.total_bytes || root.digest('hex') !== manifest.payload_hash) {
+    return null
+  }
+  return materialize ? Buffer.concat(buffers, totalBytes) : Buffer.alloc(0)
+}
+
+async function verifyPayload(sourceSnapshotId, payloadKind, expectedHash, materialize = false) {
+  const evidence = await payloadRow(sourceSnapshotId, payloadKind)
+  if (!evidence || evidence.row.source_snapshot_id !== sourceSnapshotId
+    || evidence.row.payload_kind !== payloadKind
+    || evidence.row.payload_hash !== expectedHash) return null
+  if (!isPayloadManifest(evidence.row.payload)) {
+    if (evidence.chunks.length !== 0 || computeSha256(evidence.row.payload) !== expectedHash) {
+      return null
+    }
+    return materialize ? structuredClone(evidence.row.payload) : true
+  }
+  const bytes = validateAndJoinChunks(evidence.row, evidence.chunks, materialize)
+  if (bytes === null) return null
+  if (!materialize) return true
+  let payload
+  try {
+    payload = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    return null
+  }
+  return canonicalStringify(payload) === bytes.toString('utf8')
+    && computeSha256(payload) === expectedHash ? payload : null
+}
+
+function normalizedRelationshipType(value) {
+  const key = typeof value === 'string'
+    ? value.normalize('NFKC').trim().toLocaleLowerCase()
+      .replace(/[._-]+/gu, ' ').replace(/\s+/gu, ' ').replaceAll(' ', '_')
+    : ''
+  if (key === 'ispartof' || key === 'is_part_of') return 'IS_PART_OF'
+  if (key === 'contains') return 'CONTAINS'
+  if (key === 'hasa' || key === 'has_a') return 'HAS_A'
+  if (key === 'isa' || key === 'is_a') return 'IS_A'
+  if (key === 'inheritsfrom' || key === 'inherits_from') return 'INHERITS_FROM'
+  return null
+}
+
+function metadataHasCanonicalSelfLoop(metadata) {
+  const collections = metadata?.collections
+  if (!collections || typeof collections !== 'object' || Array.isArray(collections)) return null
+  const direct = collections.glossary_relationships
+  if (!Array.isArray(direct)) return null
+  if (direct.length) {
+    for (const relation of direct) {
+      if (!relation || typeof relation !== 'object' || Array.isArray(relation)) return null
+      if (normalizedRelationshipType(relation.relationship_type)
+        && typeof relation.source_urn === 'string'
+        && relation.source_urn === relation.target_urn) return true
+    }
+    return false
+  }
+  for (const relation of collections.term_parent_edges || []) {
+    if (!relation || typeof relation !== 'object' || Array.isArray(relation)) return null
+    if (typeof relation.term_urn === 'string' && relation.term_urn === relation.parent_urn) return true
+  }
+  for (const relation of collections.node_parent_edges || []) {
+    if (!relation || typeof relation !== 'object' || Array.isArray(relation)) return null
+    if (typeof relation.child_urn === 'string' && relation.child_urn === relation.parent_urn) return true
+  }
+  return false
+}
+
+async function latestSourceReceipt(sourceSnapshotId) {
+  if (!HASH.test(sourceSnapshotId || '')) return 'UNAVAILABLE'
+  const result = await client.query(`
+    SELECT status, receipt
+    FROM poc_k9_projector_receipts_v2
+    WHERE source_snapshot_id = $1 AND projector = 'SOURCE'
+    ORDER BY attempt_number DESC, sequence DESC, receipt_id DESC
+    LIMIT 1
+  `, [sourceSnapshotId])
+  if (result.rows.length === 0) return 'NONE'
+  const row = result.rows[0]
+  if (!['PENDING', 'RUNNING', 'READY', 'FAILED'].includes(row.status)
+    || row.receipt?.status !== row.status
+    || row.receipt?.source_snapshot_id !== sourceSnapshotId) return 'INVALID'
+  return row.status
+}
+
+async function immutableOldSource(oldX) {
+  if (!HASH.test(oldX || '')) return 'UNAVAILABLE'
+  const snapshotResult = await client.query(`
+    SELECT snapshot FROM poc_k9_source_snapshots_v2 WHERE source_snapshot_id = $1
+  `, [oldX])
+  if (snapshotResult.rows.length !== 1) return 'NO'
+  let snapshot
+  try {
+    snapshot = normalizeK9SourceSnapshotV2(snapshotResult.rows[0].snapshot)
+  } catch {
+    return 'NO'
+  }
+  if (snapshot.source_snapshot_id !== oldX) return 'NO'
+  const hashes = expectedPayloadHashes(snapshot)
+  for (const kind of K9_SOURCE_PAYLOAD_KINDS_V2) {
+    if (await verifyPayload(oldX, kind, hashes[kind]) !== true) return 'NO'
+  }
+  if (await latestSourceReceipt(oldX) !== 'READY') return 'NO'
+  const triggers = await client.query(`
+    SELECT tgname, tgenabled
+    FROM pg_trigger
+    WHERE NOT tgisinternal AND tgname = ANY($1::text[])
+  `, [[...IMMUTABLE_TRIGGERS]])
+  const enabled = new Set(triggers.rows
+    .filter((row) => row.tgenabled !== 'D')
+    .map((row) => row.tgname))
+  return [...IMMUTABLE_TRIGGERS].every((name) => enabled.has(name)) ? 'YES' : 'NO'
+}
+
+function schedulerAttempt(value, claimUpdatedAt) {
+  const attempt = value?.last_attempt
+  if (!attempt) return 'NONE'
+  if (!['SUCCESS', 'FAILURE'].includes(attempt.status)) return 'INVALID'
+  const completedAt = Date.parse(attempt.completed_at || '')
+  const claimTime = claimUpdatedAt instanceof Date
+    ? claimUpdatedAt.getTime() : Date.parse(String(claimUpdatedAt || ''))
+  const timing = Number.isFinite(completedAt) && Number.isFinite(claimTime)
+    ? completedAt >= claimTime ? 'POST_CLAIM' : 'PRE_CLAIM'
+    : 'UNATTRIBUTED'
+  if (attempt.status === 'SUCCESS') return `${timing}_SUCCESS`
+  const reason = TOKEN.test(attempt.reason || '') ? attempt.reason : 'UNKNOWN_FAILURE'
+  return `${timing}_FAILURE_${reason}`
+}
+
+let output = {
+  liveDesired: 'UNAVAILABLE',
+  successorPresent: 'UNAVAILABLE',
+  sourceReceipt: 'UNAVAILABLE',
+  claim: 'UNAVAILABLE',
+  successorSelfLoop: 'UNAVAILABLE',
+  schedulerAttempt: 'UNAVAILABLE',
+  oldXImmutable: 'UNAVAILABLE',
+}
+
+try {
+  pool = new Pool(databaseConfig())
+  client = await pool.connect()
+  await client.query('BEGIN')
+  await client.query('SET TRANSACTION READ ONLY')
+
+  const lifecycleResult = await client.query(`
+    SELECT lifecycle_key, desired_snapshot_id, active_snapshot_id, status, version
+    FROM poc_k9_snapshot_lifecycle_v2
+    WHERE lifecycle_key = $1
+  `, [K9_LIFECYCLE_KEY_V2])
+  if (lifecycleResult.rows.length !== 1) throw new Error('PROBE_LIFECYCLE_UNAVAILABLE')
+  const lifecycle = lifecycleResult.rows[0]
+  if (!HASH.test(lifecycle.desired_snapshot_id || '')) throw new Error('PROBE_LIFECYCLE_INVALID')
+
+  const requestId = process.env.POC_K9_SOURCE_CORRECTION_REQUEST_ID?.trim() || null
+  let claimRows
+  if (requestId && HASH.test(requestId)) {
+    claimRows = await client.query(`
+      SELECT scope, value, version, updated_at
+      FROM poc_state WHERE scope = $1
+    `, [`${CLAIM_SCOPE_PREFIX}${requestId}`])
+  } else {
+    claimRows = await client.query(`
+      SELECT scope, value, version, updated_at
+      FROM poc_state
+      WHERE scope LIKE 'k9-source-correction-claim-v1:%'
+        AND value ->> 'contract' = $1
+      ORDER BY updated_at DESC, scope DESC
+      LIMIT 2
+    `, [K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1])
+  }
+  const claimRow = claimRows.rows.length === 1 ? claimRows.rows[0] : null
+  const claimValue = claimRow?.value
+  const claimScopeHash = claimRow?.scope?.startsWith(CLAIM_SCOPE_PREFIX)
+    ? claimRow.scope.slice(CLAIM_SCOPE_PREFIX.length) : null
+  const validClaim = claimRow
+    && Number(claimRow.version) === 1
+    && exactKeys(claimValue, [
+      'contract', 'expected_source_snapshot_id', 'request_id_hash', 'status',
+    ])
+    && claimValue.contract === K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1
+    && claimValue.status === 'CLAIMED'
+    && HASH.test(claimValue.request_id_hash || '')
+    && claimValue.request_id_hash === claimScopeHash
+    && HASH.test(claimValue.expected_source_snapshot_id || '')
+  output.claim = validClaim ? 'CLAIMED' : claimRows.rows.length ? 'INVALID' : 'NONE'
+  const oldX = validClaim ? claimValue.expected_source_snapshot_id : null
+
+  output.liveDesired = oldX === null
+    ? 'UNAVAILABLE'
+    : lifecycle.desired_snapshot_id === oldX ? 'X' : 'SUCCESSOR'
+  output.sourceReceipt = await latestSourceReceipt(lifecycle.desired_snapshot_id)
+  output.oldXImmutable = await immutableOldSource(oldX)
+
+  const readOnlyDatabase = { query: (...args) => client.query(...args) }
+  const persistence = createK9LifecyclePersistenceV2({
+    requireDatabase: async () => readOnlyDatabase,
+  })
+  const staged = await persistence.readStagedSourceEvidence()
+  const successorIds = new Set()
+  if (oldX && lifecycle.desired_snapshot_id !== oldX) {
+    successorIds.add(lifecycle.desired_snapshot_id)
+  }
+  if (oldX && staged?.source_snapshot_id && staged.source_snapshot_id !== oldX) {
+    successorIds.add(staged.source_snapshot_id)
+  }
+  output.successorPresent = oldX === null ? 'UNAVAILABLE' : successorIds.size ? 'YES' : 'NO'
+  if (successorIds.size === 0) {
+    output.successorSelfLoop = 'NA'
+  } else if (successorIds.size > 1) {
+    output.successorSelfLoop = 'UNAVAILABLE'
+  } else {
+    const successorId = [...successorIds][0]
+    let snapshot
+    let metadata
+    if (staged?.source_snapshot_id === successorId) {
+      snapshot = normalizeK9SourceSnapshotV2(staged.source_snapshot)
+      metadata = staged.source_payloads?.metadata
+    } else {
+      const snapshotResult = await client.query(`
+        SELECT snapshot FROM poc_k9_source_snapshots_v2 WHERE source_snapshot_id = $1
+      `, [successorId])
+      if (snapshotResult.rows.length === 1) {
+        snapshot = normalizeK9SourceSnapshotV2(snapshotResult.rows[0].snapshot)
+        metadata = await verifyPayload(successorId, 'METADATA', snapshot.metadata_hash, true)
+      }
+    }
+    const selfLoop = snapshot?.source_snapshot_id === successorId
+      && metadata && computeSha256(metadata) === snapshot.metadata_hash
+      ? metadataHasCanonicalSelfLoop(metadata) : null
+    output.successorSelfLoop = selfLoop === true ? 'YES' : selfLoop === false ? 'NO' : 'UNAVAILABLE'
+  }
+
+  const schedulerResult = await client.query(`
+    SELECT value FROM poc_state WHERE scope = $1
+  `, [SCHEDULER_SCOPE])
+  output.schedulerAttempt = schedulerResult.rows.length === 1
+    ? schedulerAttempt(schedulerResult.rows[0].value, claimRow?.updated_at)
+    : schedulerResult.rows.length === 0 ? 'NONE' : 'INVALID'
+} catch {
+  // The initialized bounded UNAVAILABLE document is the only failure output.
+} finally {
+  if (client) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+  if (pool) await pool.end().catch(() => undefined)
+}
+
+process.stdout.write(
+  `${OUTPUT_PREFIX}`
+  + `|live_desired=${output.liveDesired}`
+  + `|successor_present=${output.successorPresent}`
+  + `|source_receipt=${output.sourceReceipt}`
+  + `|claim=${output.claim}`
+  + `|successor_self_loop=${output.successorSelfLoop}`
+  + `|scheduler_attempt=${output.schedulerAttempt}`
+  + `|old_x_immutable=${output.oldXImmutable}\n`,
+)
+NODE
+)
+probe_status=$?
+
+evidence_lines=$(printf '%s\n' "$probe_output" | sed -n "/^${OUTPUT_PREFIX}|/p")
+first_line=$(printf '%s\n' "$evidence_lines" | sed -n '1p')
+second_line=$(printf '%s\n' "$evidence_lines" | sed -n '2p')
+
+if [ "$probe_status" -ne 0 ] || [ -z "$first_line" ] || [ -n "$second_line" ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+printf '%s\n' "$first_line"
