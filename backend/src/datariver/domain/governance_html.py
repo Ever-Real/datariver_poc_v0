@@ -13,7 +13,9 @@ from bleach.sanitizer import Cleaner  # type: ignore[import-untyped]
 
 from datariver.domain.common import ValidationError, canonical_json_hash
 
-GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V4_TABLE_PRESENTATION_TOKENS"
+GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = (
+    "GOVERNANCE_HTML_SANITIZER_V4_TABLE_PRESENTATION_TOKENS"
+)
 
 _ALLOWED_TAGS: Final = frozenset(
     {
@@ -72,10 +74,7 @@ _ALLOWED_ATTRIBUTES: Final = {
     "ol": frozenset({"start"}),
     "td": frozenset({"colspan", "rowspan", "data-governance-style"}),
     "th": frozenset({"colspan", "rowspan", "scope", "data-governance-style"}),
-    **{
-        tag: frozenset({"data-governance-style"})
-        for tag in _PRESENTATION_TAGS - {"td", "th"}
-    },
+    **{tag: frozenset({"data-governance-style"}) for tag in _PRESENTATION_TAGS - {"td", "th"}},
 }
 _ALLOWED_URL_SCHEMES: Final = frozenset({"https"})
 _DROP_CONTENT_TAGS: Final = frozenset(

@@ -70,9 +70,7 @@ def test_pilot_keycloak_imports_the_generated_realm_before_start() -> None:
         "--file /opt/keycloak/import-realm/datariver-realm.json --override false"
     )
     assert import_command in command
-    assert command.index(import_command) < command.index(
-        "exec /opt/keycloak/bin/kc.sh start-dev"
-    )
+    assert command.index(import_command) < command.index("exec /opt/keycloak/bin/kc.sh start-dev")
     assert "KC_SPI_IMPORT_SINGLE_FILE" not in keycloak["environment"]
     assert (
         "${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}"

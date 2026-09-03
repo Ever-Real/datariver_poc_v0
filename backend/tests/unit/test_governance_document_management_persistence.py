@@ -121,9 +121,10 @@ def test_detail_schema_and_presenter_expose_only_canonical_subject_display_names
     )
 
     assert response.subject_display_names == {subject_id: "Data Steward"}
-    assert "subject_display_names" in GovernanceDocumentDetailItemResponse.model_json_schema()[
-        "required"
-    ]
+    assert (
+        "subject_display_names"
+        in GovernanceDocumentDetailItemResponse.model_json_schema()["required"]
+    )
 
 
 def test_detail_repository_resolves_names_through_workspace_scoped_iam_membership() -> None:

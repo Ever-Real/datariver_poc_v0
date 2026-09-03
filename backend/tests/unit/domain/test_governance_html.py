@@ -88,9 +88,7 @@ def test_presentation_token_contract_is_exact(
     presentation: str,
     expected: str | None,
 ) -> None:
-    result = sanitize_governance_html(
-        f'<p data-governance-style="{presentation}">Policy</p>'
-    )
+    result = sanitize_governance_html(f'<p data-governance-style="{presentation}">Policy</p>')
 
     attribute = f' data-governance-style="{expected}"' if expected else ""
     assert result.html == f"<p{attribute}>Policy</p>"
@@ -110,7 +108,7 @@ def test_table_cell_background_presentation_is_bounded_and_persists() -> None:
 
 def test_legacy_v2_canonical_html_remains_safe_when_resanitized_by_v3() -> None:
     legacy_v2_html = (
-        '<h2>Legacy policy</h2><p><strong>Approved</strong> body</p>'
+        "<h2>Legacy policy</h2><p><strong>Approved</strong> body</p>"
         '<a href="/governance/policy">Evidence</a>'
     )
 

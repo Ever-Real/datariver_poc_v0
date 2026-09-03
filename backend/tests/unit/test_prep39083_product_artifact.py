@@ -45,7 +45,9 @@ def test_build_command_is_pinned_to_the_canonical_product_dockerfile():
     dockerfile = command[command.index("--file") + 1]
     assert dockerfile.endswith("deploy/poc/Dockerfile.example")
     assert not dockerfile.endswith("frontend/Dockerfile")
-    assert ["--platform", "linux/amd64"] == command[command.index("--platform"):command.index("--platform") + 2]
+    assert ["--platform", "linux/amd64"] == command[
+        command.index("--platform") : command.index("--platform") + 2
+    ]
     assert f"POC_SOURCE_COMMIT={PRODUCT}" in command
 
 
@@ -61,7 +63,9 @@ def test_accepts_the_node_product_runtime_contract():
         inspection(Config_Cmd=["nginx", "-g", "daemon off;"]),
         inspection(Config_Labels={"org.opencontainers.image.revision": "3" * 40}),
         inspection(Architecture="arm64"),
-        inspection(Descriptor={"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "bad"}),
+        inspection(
+            Descriptor={"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "bad"}
+        ),
     ],
 )
 def test_rejects_frontend_only_or_mismatched_runtime_contract(document):

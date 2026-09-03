@@ -1234,9 +1234,12 @@ def test_catalog_handoff_requires_a_canonical_query_and_catalog_evidence() -> No
     )
     non_catalog = replace(catalog, source_type="GOVERNANCE_DOCUMENT")
 
-    assert ChatService._catalog_search_handoff_query(
-        scope=ChatCatalogSearchScope(query=""), evidence=(catalog,)
-    ) == ""
+    assert (
+        ChatService._catalog_search_handoff_query(
+            scope=ChatCatalogSearchScope(query=""), evidence=(catalog,)
+        )
+        == ""
+    )
     assert (
         ChatService._catalog_search_handoff_query(
             scope=ChatCatalogSearchScope(query="resolved_catalog", search_fields=("TABLE",)),
@@ -1401,9 +1404,7 @@ async def test_reranker_top_n_limits_answer_context_without_truncating_discovery
         composer=composer,
         classification_access=cast(
             ClassificationAccessResolver,
-            FixedClassificationAccess(
-                governed_chat_access(embedding_binding, reranker_binding)
-            ),
+            FixedClassificationAccess(governed_chat_access(embedding_binding, reranker_binding)),
         ),
         inference_runtime_bindings=(embedding_binding, reranker_binding),
         uow_factory=chat_uow_factory(FakeChatStore()),
@@ -1445,8 +1446,7 @@ async def test_reranker_top_n_limits_answer_context_without_truncating_discovery
         "LOCAL_RERANKER_V1",
     ]
     assert all(
-        item.retrieval_method == "VECTOR_RETRIEVAL_V1"
-        for item in exchange.discovery.rankings[2:]
+        item.retrieval_method == "VECTOR_RETRIEVAL_V1" for item in exchange.discovery.rankings[2:]
     )
 
 
