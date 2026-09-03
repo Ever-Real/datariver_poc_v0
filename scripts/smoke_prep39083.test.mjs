@@ -500,6 +500,8 @@ test('PREP smoke lets a current same-boundary source attempt outrank stale EMPTY
     status: 'RUNNING', scheduled_for: '2026-08-30T17:00:00.000Z', trigger: 'scheduled',
     started_at: '2026-08-30T17:01:00.000Z', observed_at: '2026-08-30T17:01:01.000Z',
     stage: 'SOURCE_CAPTURE', detail: 'RUNNING',
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE', execution_id: 'b'.repeat(64),
+    expected_source_snapshot_id: 'a'.repeat(64),
   }
   const result = await fixture('required', {
     readinessTimeoutMs: '1000',
@@ -537,6 +539,8 @@ test('PREP smoke lets a current same-boundary source attempt outrank stale EMPTY
   assert.equal(result.failure.diagnostic.source_receipt_present, false)
   assert.ok(result.failure.elapsed_ms >= 900)
   assert.equal(result.failure.diagnostic.product_error_code, undefined)
+  assert.equal(result.report.k9_scheduler.current_attempt.lifecycle_mode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(result.report.k9_scheduler.current_attempt.execution_id, 'b'.repeat(64))
   assert.equal(result.report.readiness.MCL.status, 'PASS')
   assert.equal(result.report.readiness.GENERAL.status, 'PASS')
 })
@@ -712,6 +716,162 @@ test('PREP smoke lets a current projector retry outrank its persisted failed rec
   assert.equal(result.failure.diagnostic.failure_detail_code, 'GRAPH_PROJECTION_RUNNING')
   assert.equal(result.failure.diagnostic.source_receipt_present, true)
   assert.ok(result.failure.elapsed_ms >= 900)
+})
+
+test('PREP smoke lets a completed source-correction failure outrank the failed X projector', async () => {
+  const sourceCorrectionFailure = {
+    status: 'FAILURE',
+    reason: 'K9_V2_SOURCE_CAPTURE_FAILED',
+    failure_stage: 'SOURCE_CAPTURE',
+    failure_detail_code: 'K9_V2_SOURCE_CAPTURE_FAILED',
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE',
+    execution_id: 'b'.repeat(64),
+    expected_source_snapshot_id: sourceSnapshotId,
+    scheduled_for: '2026-09-01T17:00:00.000Z',
+    completed_at: '2026-09-02T09:08:17.000Z',
+    trigger: 'scheduled',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceCorrectionFailure,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceCorrectionFailure,
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle({
+      METADATA: {
+        desired_snapshot_id: sourceSnapshotId,
+        active_snapshot_id: null,
+        status: 'FAILED',
+        diagnostic: {
+          code: 'K9_GRAPH_PROJECTION_FAILED',
+          stage: 'GRAPH_QUERY_BUILD',
+          failure_detail_code: 'GLOSSARY_HIERARCHY_SELF_LOOP',
+        },
+      },
+      lifecycle: {
+        aggregate: { status: 'FAILED', reason: 'K9_V2_PROJECTOR_FAILED' },
+      },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_REFRESH_FAILED')
+  assert.equal(result.failure.diagnostic.product_error_code, 'K9_V2_SOURCE_CAPTURE_FAILED')
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_CAPTURE')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'K9_V2_SOURCE_CAPTURE_FAILED')
+  assert.notEqual(result.failure.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
+})
+
+test('PREP smoke keeps a delayed source-correction RUNNING ahead of the failed X projector', async () => {
+  const currentAttempt = {
+    status: 'RUNNING',
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE',
+    execution_id: 'b'.repeat(64),
+    expected_source_snapshot_id: sourceSnapshotId,
+    scheduled_for: '2026-09-01T17:00:00.000Z',
+    started_at: '2026-09-02T03:20:00.000Z',
+    observed_at: '2026-09-02T03:21:00.000Z',
+    trigger: 'scheduled',
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 127, total: 1_908, candidate_number: 1, candidate_total: 3,
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle({
+      METADATA: {
+        desired_snapshot_id: sourceSnapshotId,
+        active_snapshot_id: null,
+        status: 'FAILED',
+        diagnostic: {
+          code: 'K9_GRAPH_PROJECTION_FAILED',
+          stage: 'GRAPH_QUERY_BUILD',
+          failure_detail_code: 'GLOSSARY_HIERARCHY_SELF_LOOP',
+        },
+      },
+      lifecycle: {
+        aggregate: { status: 'FAILED', reason: 'K9_V2_PROJECTOR_FAILED' },
+      },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_CAPTURE')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'LINEAGE_COLLECTION')
+  assert.equal(result.failure.diagnostic.completed, 127)
+  assert.equal(result.failure.diagnostic.total, 1_908)
+  assert.notEqual(result.failure.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
+})
+
+test('PREP smoke scopes a post-capture projector failure to successor Y', async () => {
+  const successorSnapshotId = 'c'.repeat(64)
+  const sourceCorrectionFailure = {
+    status: 'FAILURE', reason: 'K9_REFRESH_FAILED',
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE',
+    execution_id: 'b'.repeat(64), expected_source_snapshot_id: sourceSnapshotId,
+    scheduled_for: '2026-09-01T17:00:00.000Z',
+    completed_at: '2026-09-02T09:08:17.000Z', trigger: 'scheduled',
+  }
+  const successorProjector = (status = 'READY') => ({
+    desired_snapshot_id: successorSnapshotId,
+    active_snapshot_id: status === 'READY' ? successorSnapshotId : null,
+    status,
+    diagnostic: status === 'FAILED' ? {
+      code: 'K9_GRAPH_PROJECTION_FAILED',
+      stage: 'GRAPH_QUERY_BUILD',
+      failure_detail_code: 'GLOSSARY_HIERARCHY_SELF_LOOP',
+    } : null,
+  })
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceCorrectionFailure,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_last_completed_attempt: sourceCorrectionFailure,
+      },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: {
+        desired_snapshot_id: successorSnapshotId,
+        active_snapshot_id: null,
+        status: 'READY',
+      },
+      projectors: {
+        LINEAGE: successorProjector(),
+        METADATA: successorProjector('FAILED'),
+        SEMANTIC: successorProjector(),
+      },
+      aggregate: { status: 'FAILED', reason: 'K9_V2_PROJECTOR_FAILED' },
+    },
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NEO4J_PROJECTION_FAILED')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
+  assert.equal(result.failure.diagnostic.desired_snapshot_id, successorSnapshotId)
+  assert.notEqual(result.failure.diagnostic.product_error_code, 'K9_REFRESH_FAILED')
 })
 
 test('PREP smoke lets a persisted RUNNING projector outrank completed V2 failure history', async () => {

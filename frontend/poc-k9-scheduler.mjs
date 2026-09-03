@@ -723,12 +723,18 @@ export function createPocK9Scheduler({
     lifecycleMode,
     bootstrapLifecycleV2,
     expectedSourceSnapshotId,
+    executionId,
   ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
     ...(bootstrapLifecycleV2 ? { bootstrapLifecycleV2: true } : {}),
     ...(reconciliationGeneration ? { reconciliationGeneration } : {}),
+    ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' ? {
+      lifecycleMode,
+      executionId,
+      expectedSourceSnapshotId,
+    } : {}),
   }, async () => {
     return await triggerK9Refresh({
       systemSubjectId: config.systemSubjectId,
@@ -755,6 +761,15 @@ export function createPocK9Scheduler({
         || !/^[0-9a-f]{64}$/u.test(expectedSourceSnapshotId))) {
       throw new Error('The expected K9 source snapshot identity is invalid.')
     }
+    const executionId = options.executionId == null ? null : options.executionId
+    if (executionId !== null
+      && (typeof executionId !== 'string' || !/^[0-9a-f]{64}$/u.test(executionId))) {
+      throw new Error('The K9 scheduler execution identity is invalid.')
+    }
+    if ((lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE')
+      !== (executionId !== null && expectedSourceSnapshotId !== null)) {
+      throw new Error('The K9 source-correction execution identity is incomplete.')
+    }
     const reconciliationGeneration = options.reconciliationGeneration == null
       ? null
       : options.reconciliationGeneration
@@ -764,29 +779,47 @@ export function createPocK9Scheduler({
       throw new Error('The requested K9 semantic reconciliation generation is invalid.')
     }
 
-    if (!activeRun) {
-      activeReconciliationGeneration = reconciliationGeneration
-      const startedAt = clock().toISOString()
-      activeAttempt = Object.freeze({
-        status: 'RUNNING',
-        scheduled_for: scheduledFor.toISOString(),
-        trigger: triggerType,
-        started_at: startedAt,
-        observed_at: startedAt,
-      })
-      activeRun = execute(
-        scheduledFor,
-        triggerType,
-        reconciliationGeneration,
-        lifecycleMode,
-        bootstrapLifecycleV2,
-        expectedSourceSnapshotId,
-      ).finally(() => {
-        activeRun = undefined
-        activeAttempt = undefined
-        activeReconciliationGeneration = null
-      })
+    if (activeRun) {
+      const activeSourceCorrection = activeAttempt?.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
+      const requestedSourceCorrection = lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+      const sameSourceCorrectionExecution = activeSourceCorrection
+        && requestedSourceCorrection
+        && activeAttempt?.execution_id === executionId
+        && activeAttempt?.expected_source_snapshot_id === expectedSourceSnapshotId
+      if ((activeSourceCorrection || requestedSourceCorrection) && !sameSourceCorrectionExecution) {
+        const error = new Error('A K9 source-correction execution cannot join another active run.')
+        error.code = 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT'
+        return Promise.reject(error)
+      }
+      return activeRun
     }
+    activeReconciliationGeneration = reconciliationGeneration
+    const startedAt = clock().toISOString()
+    activeAttempt = Object.freeze({
+      status: 'RUNNING',
+      scheduled_for: scheduledFor.toISOString(),
+      trigger: triggerType,
+      started_at: startedAt,
+      observed_at: startedAt,
+      ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' ? {
+        lifecycle_mode: lifecycleMode,
+        execution_id: executionId,
+        expected_source_snapshot_id: expectedSourceSnapshotId,
+      } : {}),
+    })
+    activeRun = execute(
+      scheduledFor,
+      triggerType,
+      reconciliationGeneration,
+      lifecycleMode,
+      bootstrapLifecycleV2,
+      expectedSourceSnapshotId,
+      executionId,
+    ).finally(() => {
+      activeRun = undefined
+      activeAttempt = undefined
+      activeReconciliationGeneration = null
+    })
     return activeRun
   }
 
@@ -898,10 +931,10 @@ export function createPocK9Scheduler({
         const claim = await stateStore.claimK9SourceCorrectionRecaptureV2(
           config.sourceCorrectionRequestId,
         )
-        if (claim?.status === 'CLAIMED') {
+        if (['CLAIMED', 'ALREADY_CLAIMED'].includes(claim?.status)) {
           lifecycleMode = 'SOURCE_CORRECTION_RECAPTURE'
           expectedSourceSnapshotId = claim.expectedSourceSnapshotId
-        } else if (claim?.status !== 'ALREADY_CLAIMED') {
+        } else {
           throw new Error('The K9 source-correction persistence claim is invalid.')
         }
       }
@@ -918,6 +951,8 @@ export function createPocK9Scheduler({
         // A new boundary remains an explicit REFRESH so DataHub drift is found.
         lifecycleMode,
         expectedSourceSnapshotId,
+        ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+          ? { executionId: config.sourceCorrectionRequestId } : {}),
         bootstrapLifecycleV2,
         reconciliationGeneration,
       }).catch(onError)

@@ -26,6 +26,12 @@ owned incomplete deployment whose desired Source is READY and has at least one f
 PostgreSQL records an append-only, exactly-once claim for that request before the scheduler selects
 `SOURCE_CORRECTION_RECAPTURE`.
 
+The claimed request identity is also the scheduler execution identity. It is distinct from the
+ordinary schedule boundary, survives process restart in the scheduler receipt, and cannot join or
+be satisfied by an ordinary `RESUME`/`REFRESH` run. If a process is interrupted after the claim but
+before a terminal scheduler receipt, startup continues that same claimed execution in
+`SOURCE_CORRECTION_RECAPTURE`; once a terminal receipt exists, the same identity is a no-op.
+
 The recapture is bound to the current desired snapshot X. It performs a fresh provider capture and
 requires the resulting canonical identity Y to differ from X. No change is a typed, non-promotable
 failure; the Product never manufactures a successor identity. A changed Y uses the existing
@@ -55,8 +61,9 @@ rewritten.
 The operator action is `./scripts/prep39083 deploy --source-correction-recapture` after the normal
 `sync` and `status` identity gates. The one-shot request is injected only into the effective deploy
 environment and is not written to the target-owned runtime environment. Reusing the same request
-after a restart cannot trigger another capture. A new explicit request is required for another
-provider correction.
+after a terminal scheduler receipt cannot trigger another capture. An interrupted, non-terminal
+execution may continue under that same identity, while a new explicit request is required for a
+different provider correction.
 
 No schema reset, receipt deletion, source mutation, Neo4j cleanup, LKG promotion on failure,
 timeout widening, fuzzy identity, authorization widening, MCL change, PREP-only persistence path,

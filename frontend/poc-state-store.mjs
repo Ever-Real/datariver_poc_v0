@@ -29,6 +29,7 @@ import {
 } from './poc-k9-lifecycle-persistence.mjs'
 import {
   K9_V2_FAILURE_CODES,
+  K9_V2_SOURCE_RUN_MODES,
   sanitizeK9V2FailureDiagnostic,
 } from './poc-k9-lifecycle-v2.mjs'
 import { createK9SemanticPersistenceV2 } from './poc-k9-semantic-persistence.mjs'
@@ -3587,6 +3588,21 @@ export function createPocStateStore({ databasePool } = {}) {
     const lockName = requireBoundedString(command.lockName, 'lockName', 255)
     const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
     const trigger = requireOneOf(command.trigger || 'scheduled', 'trigger', ['scheduled', 'manual'])
+    const lifecycleMode = requireOneOf(
+      command.lifecycleMode || 'REFRESH',
+      'lifecycleMode',
+      K9_V2_SOURCE_RUN_MODES,
+    )
+    const executionId = command.executionId == null
+      ? null
+      : requireSha256(command.executionId, 'executionId')
+    const expectedSourceSnapshotId = command.expectedSourceSnapshotId == null
+      ? null
+      : requireSha256(command.expectedSourceSnapshotId, 'expectedSourceSnapshotId')
+    const sourceCorrectionExecution = lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+    if (sourceCorrectionExecution !== (executionId !== null && expectedSourceSnapshotId !== null)) {
+      throw new Error('The POC K9 source-correction execution identity is invalid.')
+    }
     if (command.bootstrapLifecycleV2 !== undefined && command.bootstrapLifecycleV2 !== true) {
       throw new Error('The POC K9 scheduler lifecycle bootstrap command is invalid.')
     }
@@ -3613,6 +3629,15 @@ export function createPocStateStore({ databasePool } = {}) {
         ? null
         : requireSha256(storedReconciliationGeneration, 'stored last_successful_reconciliation_generation')
       const lastAttempt = current.rows[0]?.value?.last_attempt
+      const lastSourceCorrectionAttempt = current.rows[0]?.value?.last_source_correction_attempt
+      const sameSourceCorrectionExecution = sourceCorrectionExecution
+        && lastSourceCorrectionAttempt?.lifecycle_mode === lifecycleMode
+        && lastSourceCorrectionAttempt?.execution_id === executionId
+        && lastSourceCorrectionAttempt?.expected_source_snapshot_id === expectedSourceSnapshotId
+      if (sameSourceCorrectionExecution
+        && ['SUCCESS', 'FAILURE'].includes(lastSourceCorrectionAttempt?.status)) {
+        return { status: 'already_completed', scheduledFor }
+      }
       const retryFailedExactBoundary = lastAttempt?.status === 'FAILURE'
         && lastAttempt.scheduled_for === scheduledFor
       let lifecycleBootstrapRequired = false
@@ -3629,12 +3654,21 @@ export function createPocStateStore({ databasePool } = {}) {
         && (reconciliationGeneration === null
           || lastSuccessfulReconciliationGeneration === reconciliationGeneration)
         && !retryFailedExactBoundary
-        && !lifecycleBootstrapRequired) {
+        && !lifecycleBootstrapRequired
+        && !sourceCorrectionExecution) {
         return { status: 'already_completed', scheduledFor }
       }
-      if (lastSuccessfulSchedule !== null && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) return { status: 'stale', scheduledFor }
+      if (!sourceCorrectionExecution && lastSuccessfulSchedule !== null
+        && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) {
+        return { status: 'stale', scheduledFor }
+      }
       const result = await task()
       const completedAt = new Date().toISOString()
+      const executionIdentity = sourceCorrectionExecution ? {
+        lifecycle_mode: lifecycleMode,
+        execution_id: executionId,
+        expected_source_snapshot_id: expectedSourceSnapshotId,
+      } : {}
 
       if (result && result.status === 'FAILURE') {
         const v2Diagnostic = sanitizeK9V2FailureDiagnostic(result.diagnostic)
@@ -3675,20 +3709,23 @@ export function createPocStateStore({ databasePool } = {}) {
                 .map((field) => [field, v2Diagnostic[field]])),
             }
           : null
+        const failedAttempt = {
+          status: 'FAILURE',
+          reason: failureCode,
+          ...(sourceDiagnostic || v2FailureDiagnostic || {}),
+          scheduled_for: scheduledFor,
+          completed_at: completedAt,
+          trigger,
+          ...executionIdentity,
+          ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
+        }
         const failureReceipt = {
           ...(current.rows[0]?.value || {}),
           version: 1,
           last_successful_schedule: lastSuccessfulSchedule,
           last_successful_reconciliation_generation: lastSuccessfulReconciliationGeneration,
-          last_attempt: {
-            status: 'FAILURE',
-            reason: failureCode,
-            ...(sourceDiagnostic || v2FailureDiagnostic || {}),
-            scheduled_for: scheduledFor,
-            completed_at: completedAt,
-            trigger,
-            ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
-          },
+          last_attempt: failedAttempt,
+          ...(sourceCorrectionExecution ? { last_source_correction_attempt: failedAttempt } : {}),
         }
         const failureWrite = await client.query(`
           INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
@@ -3708,6 +3745,17 @@ export function createPocStateStore({ databasePool } = {}) {
         return { status: 'failed', scheduledFor, completedAt, result }
       }
 
+      const successfulAttempt = {
+        status: 'SUCCESS',
+        ...(sanitizeK9MetadataSourceProfile(result?.metadataProfile)
+          ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }
+          : {}),
+        scheduled_for: scheduledFor,
+        completed_at: completedAt,
+        trigger,
+        ...executionIdentity,
+        ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
+      }
       const receipt = {
         ...(current.rows[0]?.value || {}),
         version: 1,
@@ -3716,16 +3764,8 @@ export function createPocStateStore({ databasePool } = {}) {
           || lastSuccessfulReconciliationGeneration,
         completed_at: completedAt,
         trigger,
-        last_attempt: {
-          status: 'SUCCESS',
-          ...(sanitizeK9MetadataSourceProfile(result?.metadataProfile)
-            ? { metadata_source_profile: sanitizeK9MetadataSourceProfile(result.metadataProfile) }
-            : {}),
-          scheduled_for: scheduledFor,
-          completed_at: completedAt,
-          trigger,
-          ...(reconciliationGeneration ? { reconciliation_generation: reconciliationGeneration } : {}),
-        },
+        last_attempt: successfulAttempt,
+        ...(sourceCorrectionExecution ? { last_source_correction_attempt: successfulAttempt } : {}),
       }
 
       const receiptWrite = await client.query(`
@@ -3752,7 +3792,7 @@ export function createPocStateStore({ databasePool } = {}) {
         lastSuccessfulReconciliationGeneration,
         scheduledFor,
         reconciliationGeneration,
-        retryFailedExactBoundary || lifecycleBootstrapRequired,
+        retryFailedExactBoundary || lifecycleBootstrapRequired || sourceCorrectionExecution,
       ])
 
       if (receiptWrite.rows.length !== 1

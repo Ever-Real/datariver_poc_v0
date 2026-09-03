@@ -80,6 +80,7 @@ import {
 } from './poc-k9-lifecycle-runtime.mjs'
 import {
   K9_V2_FAILURE_CODES,
+  K9_V2_SOURCE_RUN_MODES,
   sanitizeK9V2FailureDiagnostic,
 } from './poc-k9-lifecycle-v2.mjs'
 import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.mjs'
@@ -9307,6 +9308,21 @@ export function managedK9SchedulerReadModel(
     && typeof durableAttempt?.reason === 'string'
     && /^K9_[A-Z0-9_]+$/.test(durableAttempt.reason)
     ? durableAttempt.reason : null
+  const durableLifecycleMode = K9_V2_SOURCE_RUN_MODES.includes(durableAttempt?.lifecycle_mode)
+    ? durableAttempt.lifecycle_mode : null
+  const durableExecutionId = /^[0-9a-f]{64}$/u.test(durableAttempt?.execution_id || '')
+    ? durableAttempt.execution_id : null
+  const durableExpectedSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
+    durableAttempt?.expected_source_snapshot_id || '',
+  ) ? durableAttempt.expected_source_snapshot_id : null
+  const durableSourceCorrectionIdentity = durableLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+    && durableExecutionId && durableExpectedSourceSnapshotId
+    ? {
+        lifecycle_mode: durableLifecycleMode,
+        execution_id: durableExecutionId,
+        expected_source_snapshot_id: durableExpectedSourceSnapshotId,
+      }
+    : null
   const durableV2Diagnostic = durableReason && k9V2FailureCodes.has(durableReason)
     ? sanitizeK9V2FailureDiagnostic({
         code: durableReason,
@@ -9324,6 +9340,7 @@ export function managedK9SchedulerReadModel(
     scheduled_for: schedulerTimestamp(durableAttempt.scheduled_for),
     completed_at: schedulerTimestamp(durableAttempt.completed_at),
     trigger: durableTrigger,
+    ...(durableSourceCorrectionIdentity || {}),
     ...(durableReason ? { reason: durableReason } : {}),
     ...(durableReason === 'K9_DATAHUB_SOURCE_FAILED'
       && k9SourceFailureStages.has(durableAttempt.failure_stage)
@@ -9358,12 +9375,28 @@ export function managedK9SchedulerReadModel(
     ? activeRefreshAttempt.detail : null
   const activeCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
   const activeProgress = Object.hasOwn(activeRefreshAttempt || {}, 'completed')
+  const activeLifecycleMode = K9_V2_SOURCE_RUN_MODES.includes(activeRefreshAttempt?.lifecycle_mode)
+    ? activeRefreshAttempt.lifecycle_mode : null
+  const activeExecutionId = /^[0-9a-f]{64}$/u.test(activeRefreshAttempt?.execution_id || '')
+    ? activeRefreshAttempt.execution_id : null
+  const activeExpectedSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
+    activeRefreshAttempt?.expected_source_snapshot_id || '',
+  ) ? activeRefreshAttempt.expected_source_snapshot_id : null
+  const activeSourceCorrectionIdentity = activeLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+    && activeExecutionId && activeExpectedSourceSnapshotId
+    ? {
+        lifecycle_mode: activeLifecycleMode,
+        execution_id: activeExecutionId,
+        expected_source_snapshot_id: activeExpectedSourceSnapshotId,
+      }
+    : null
   const schedulerCurrentAttempt = refreshRunning ? {
     status: 'RUNNING',
     scheduled_for: schedulerTimestamp(activeRefreshAttempt.scheduled_for),
     trigger: activeTrigger,
     started_at: schedulerTimestamp(activeRefreshAttempt.started_at),
     observed_at: schedulerTimestamp(activeRefreshAttempt.observed_at),
+    ...(activeSourceCorrectionIdentity || {}),
     ...(activeStage ? { stage: activeStage } : {}),
     ...(activeDetail ? { detail: activeDetail } : {}),
     ...(activeProgress ? {
