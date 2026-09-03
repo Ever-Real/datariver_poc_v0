@@ -118,10 +118,12 @@ of a Product-owned Table grade is not represented as `normal`.
 
 Clean POC volumes execute the immutable numbered `deploy/poc/postgres-init` sequence. With schema
 integrity required, Node startup fingerprints the exact Product-owned PostgreSQL catalog, accepts
-only the recorded immutable ancestry, and converges it forward through V7. Migration `007` adds the
+only the recorded immutable ancestry, and converges it forward through V8. Migration `007` adds the
 bounded `poc_chat_messages.discovery_json`, `008` adds K9 V2 lifecycle receipts, and `009` adds the
-append-only MCL retention-gap receipt. Partial, unknown or newer catalogs fail closed without
-mutation. No migration squash, direct database patch or schema reset is part of this contract.
+append-only MCL retention-gap receipt. Migration `010` adds deterministic immutable K9 source
+payload chunks plus a mutable verified-evidence staging pointer; legacy monolithic payload rows
+remain readable. Partial, unknown or newer catalogs fail closed without mutation. No migration
+squash, direct database patch or schema reset is part of this contract.
 
 ```mermaid
 erDiagram
@@ -134,7 +136,19 @@ erDiagram
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_LEDGER_EVENTS : captures
     POC_CHANGE_HISTORY_LEDGER_EVENTS ||--o{ POC_CHANGE_HISTORY_CR_LINK_EVENTS : links
     POC_STATE ||--o{ POC_CATALOG_EMBEDDING : selects_generation
+    POC_K9_SOURCE_SNAPSHOTS_V2 ||--o{ POC_K9_SOURCE_PAYLOADS_V2 : manifests
+    POC_K9_SOURCE_PAYLOADS_V2 ||--o{ POC_K9_SOURCE_PAYLOAD_CHUNKS_V2 : contains
+    POC_K9_SOURCE_SNAPSHOTS_V2 ||--o{ POC_K9_SOURCE_STAGING_V2 : verifies_before_head
 ```
+
+K9 V2 source payload persistence is content-addressed and bounded. Each new
+`poc_k9_source_payloads_v2` row stores a small manifest for one canonical `INVENTORY`, `LINEAGE`,
+`METADATA`, or `DANGLING_STATE` payload. `poc_k9_source_payload_chunks_v2` stores its ordered 1 MiB
+chunks with per-chunk and payload-root hashes; UPDATE/DELETE is rejected. The per-lifecycle
+`poc_k9_source_staging_v2` row may point to fully read-back-verified evidence as `VERIFIED`, then
+become `CONSUMED` in the same transaction that advances the desired lifecycle head. Neither state
+is a READY Source receipt, and incomplete evidence cannot advance the head. Existing monolithic
+payload rows remain valid historical input and are not copied into the chunk representation.
 
 The access document remains the only role/Responsible-System authority and owns user maximum grade.
 Credential and session rows own only authentication material. `poc_user_table_grants` is a bounded

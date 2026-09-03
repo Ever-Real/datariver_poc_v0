@@ -74,6 +74,7 @@
 | 76 | [Dedicated PREP release and Git artifact transport](adr/0132-prep-release-and-development-isolation.md) | dirty-development isolation, one-command release preparation, automatic PREP retrieval and receipt status | Accepted PREP operations contract |
 | 77 | [K9 source/graph/semantic lifecycle decoupling](adr/0133-k9-source-graph-semantic-lifecycle-decoupling.md) | immutable source snapshot, independent projector receipts, aggregate readiness and bounded resume | Accepted |
 | 78 | [K9 TAG authority separation and MCL retention gaps](adr/0134-k9-tag-authority-and-mcl-retention-gap.md) | free-form TAG taxonomy without Table authority; durable non-destructive Kafka retention-gap recovery | Accepted |
+| 79 | [K9 source payload chunk persistence](adr/0135-k9-source-payload-chunk-persistence.md) | deterministic immutable payload chunks, verified evidence staging and atomic desired-head promotion | Accepted; PREP runtime gate open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

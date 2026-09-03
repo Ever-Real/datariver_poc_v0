@@ -1,4 +1,4 @@
-/* global structuredClone */
+/* global Buffer, structuredClone */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
@@ -7,8 +7,14 @@ import { URL } from 'node:url'
 import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
 import {
   K9_LIFECYCLE_SCHEMA_V6,
+  K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1,
+  K9_SOURCE_PAYLOAD_CHUNK_INSERT_BATCH_V1,
+  K9_SOURCE_PAYLOAD_CHUNK_SCHEMA_V8,
+  K9_SOURCE_PERSISTENCE_SUBSTAGES_V2,
   K9_PROJECTOR_RECEIPT_CONTRACT_V2,
   adoptExactLegacyK9LifecycleV2,
+  classifyK9SourcePersistenceFailureV2,
+  encodeK9SourcePayloadChunksV2,
   normalizeK9ProjectorReceiptV2,
   normalizeK9SourcePayloadsV2,
   normalizeK9SourceSnapshotV2,
@@ -231,6 +237,97 @@ test('canonical 008 migration carries the runtime V6 identities and immutable re
   assert.match(migration, /product-owned-schema-contract-v6/)
   assert.match(migration, /912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc/)
   assert.doesNotMatch(migration, /DROP TABLE|TRUNCATE TABLE|DELETE FROM poc_k9_/)
+})
+
+test('declares one additive V8 chunk path with immutable evidence and a non-promotable staging pointer', () => {
+  const schema = K9_SOURCE_PAYLOAD_CHUNK_SCHEMA_V8.join('\n')
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS poc_k9_source_payload_chunks_v2/)
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS poc_k9_source_staging_v2/)
+  assert.match(schema, /FOREIGN KEY \(source_snapshot_id, payload_kind\)/)
+  assert.match(schema, /octet_length\(payload_chunk\) = byte_count/)
+  assert.match(schema, /BEFORE UPDATE OR DELETE ON poc_k9_source_payload_chunks_v2/)
+  assert.doesNotMatch(schema, /DROP TABLE|TRUNCATE TABLE|DELETE FROM poc_k9_/)
+  const migration = readFileSync(new URL(
+    '../deploy/poc/postgres-init/010-poc-k9-source-payload-chunks.sql', import.meta.url,
+  ), 'utf8')
+  assert.match(migration, /DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V8/)
+  assert.match(migration, /f5c1ef9ae3dee38422834d736df718793c5324fc0d7f553cbcc617739ffe6560/)
+  assert.match(migration, /BEGIN;[\s\S]*COMMIT;/)
+  assert.doesNotMatch(migration, /DROP TABLE|TRUNCATE TABLE|DELETE FROM poc_k9_/)
+})
+
+test('canonical source payload chunking is deterministic across and above the legacy 64 MiB boundary', () => {
+  const legacyLimit = 67_108_864
+  for (const targetBytes of [legacyLimit - 1, legacyLimit, legacyLimit + 1]) {
+    const payload = { blob: 'x'.repeat(targetBytes - Buffer.byteLength('{"blob":""}', 'utf8')) }
+    const payloadHash = computeSha256(payload)
+    const first = encodeK9SourcePayloadChunksV2('METADATA', payload, payloadHash)
+    const second = encodeK9SourcePayloadChunksV2('METADATA', payload, payloadHash)
+    assert.equal(first.payload_bytes, targetBytes)
+    assert.equal(first.manifest.payload_hash, payloadHash)
+    assert.equal(first.manifest.chunk_count, Math.ceil(targetBytes / K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1))
+    assert.deepEqual(first.manifest, second.manifest)
+    assert.deepEqual(first.chunks.map((item) => item.chunk_hash), second.chunks.map((item) => item.chunk_hash))
+    assert.ok(K9_SOURCE_PAYLOAD_CHUNK_INSERT_BATCH_V1 * K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1 <= 16_777_216)
+  }
+})
+
+test('classifies every persistence substage with only bounded payload and SQL evidence', () => {
+  for (const substage of K9_SOURCE_PERSISTENCE_SUBSTAGES_V2) {
+    const diagnostic = classifyK9SourcePersistenceFailureV2(
+      Object.assign(new Error('raw SQL and urn:li:dataset:must-not-survive'), {
+        code: '23514', constraint: 'ck_poc_k9_source_payload_chunk_v2_bounds',
+        detail: 'private row', query: 'SELECT secret',
+      }),
+      {
+        substage, payloadKind: 'METADATA', payloadBytes: 67_108_865,
+        configuredLimitBytes: 1_073_741_824,
+      },
+    )
+    assert.deepEqual(diagnostic, {
+      code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      stage: 'SOURCE_RECEIPT',
+      failure_detail_code: 'K9_SOURCE_PERSISTENCE_SQL_FAILED',
+      persistence_substage: substage,
+      payload_kind: 'METADATA',
+      payload_bytes: 67_108_865,
+      configured_limit_bytes: 1_073_741_824,
+      sqlstate_class: 'PAYLOAD_CONSTRAINT',
+      constraint_name: 'CK_POC_K9_SOURCE_PAYLOAD_CHUNK_V2_BOUNDS',
+      retryable: true,
+    })
+    assert.equal(JSON.stringify(diagnostic).includes('urn:li:'), false)
+    assert.equal(JSON.stringify(diagnostic).includes('SELECT'), false)
+  }
+  const unknown = classifyK9SourcePersistenceFailureV2(
+    Object.assign(new Error('private'), { code: 'SECRET_TOKEN', constraint: 'private_constraint' }),
+    { substage: 'PRIVATE_STAGE', payloadKind: 'PRIVATE', payloadBytes: -1 },
+  )
+  assert.equal(unknown.failure_detail_code, 'K9_SOURCE_PERSISTENCE_UNKNOWN')
+  assert.equal(unknown.persistence_substage, 'SOURCE_RECEIPT_VALIDATE')
+  assert.equal(unknown.payload_kind, 'NONE')
+  assert.equal(unknown.payload_bytes, 0)
+  assert.equal(unknown.constraint_name, 'NONE')
+  const foreignKey = classifyK9SourcePersistenceFailureV2(
+    Object.assign(new Error('private'), {
+      code: '23503', constraint: 'poc_k9_source_staging_v2_source_snapshot_id_fkey',
+    }),
+    { substage: 'SOURCE_EVIDENCE_STAGE' },
+  )
+  assert.equal(foreignKey.sqlstate_class, 'FK')
+  assert.equal(
+    foreignKey.constraint_name,
+    'POC_K9_SOURCE_STAGING_V2_SOURCE_SNAPSHOT_ID_FKEY',
+  )
+  const resanitized = classifyK9SourcePersistenceFailureV2({ diagnostic: {
+    code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED', stage: 'SOURCE_RECEIPT',
+    failure_detail_code: 'SECRET_TOKEN', persistence_substage: 'PRIVATE_STAGE',
+    payload_kind: 'PRIVATE', payload_bytes: -1, configured_limit_bytes: -1,
+    sqlstate_class: 'PRIVATE', constraint_name: 'PRIVATE', raw_payload: 'must-not-survive',
+  } })
+  assert.equal(resanitized.failure_detail_code, 'K9_SOURCE_PERSISTENCE_UNKNOWN')
+  assert.equal(resanitized.persistence_substage, 'SOURCE_RECEIPT_VALIDATE')
+  assert.equal(JSON.stringify(resanitized).includes('raw_payload'), false)
 })
 
 test('preserves every legacy pointer and records an immutable new-snapshot adoption decision', async () => {

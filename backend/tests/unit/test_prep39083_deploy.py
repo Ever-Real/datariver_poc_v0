@@ -207,6 +207,132 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
 
 
+def test_status_renders_bounded_source_persistence_substage_and_one_line_share_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    last = tmp_path / "last-command.json"
+    smoke = tmp_path / "smoke-failure.json"
+    attempt.write_text(
+        json.dumps(
+            {
+                "phase": "SMOKE_FAILED",
+                "target_state_before": "EXISTING_OWNED_INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "K9_INITIAL_REFRESH",
+                "code": "PREP_SMOKE_K9_REFRESH_FAILED",
+                "next_action": "Inspect status.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    smoke.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "product_error_code": "K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED",
+                    "failure_stage": "SOURCE_RECEIPT",
+                    "failure_detail_code": "K9_SOURCE_PAYLOAD_SIZE_LIMIT",
+                    "persistence_substage": "METADATA_PAYLOAD_NORMALIZE",
+                    "payload_kind": "METADATA",
+                    "payload_bytes": 67_108_865,
+                    "configured_limit_bytes": 67_108_864,
+                    "sqlstate_class": "NONE",
+                    "constraint_name": "NONE",
+                    "source_receipt_present": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "progress.json")
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK", tmp_path / "deploy.lock")
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda _release, runner=None: {
+            "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+            "checkout_head": "c" * 40,
+            "tracked_release_snapshot": "c" * 40,
+            "dedicated_release_head": "c" * 40,
+            "remote_tracking_release_head": "c" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": "NONE",
+            "running_web_product": "NONE",
+            "last_sync_target": "c" * 40,
+            "last_sync_product": "a" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": True,
+            "runtime_matches": True,
+        },
+    )
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Persistence substage: METADATA_PAYLOAD_NORMALIZE" in output
+    assert "Payload kind: METADATA" in output
+    assert "Payload bytes: 67108865" in output
+    assert "Configured limit bytes: 67108864" in output
+    assert "SQLSTATE class: NONE" in output
+    assert "Constraint: NONE" in output
+    assert output.rstrip().endswith(
+        "SHARE_SUMMARY|result=FAILED"
+        "|code=K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED"
+        "|stage=SOURCE_RECEIPT"
+        "|detail=K9_SOURCE_PAYLOAD_SIZE_LIMIT"
+        "|substage=METADATA_PAYLOAD_NORMALIZE"
+        "|kind=METADATA|bytes=67108865|limit=67108864"
+    )
+    assert "private" not in output
+
+    smoke.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "product_error_code": "K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED",
+                    "failure_stage": "PRIVATE_STAGE",
+                    "failure_detail_code": "PRIVATE_DETAIL",
+                    "persistence_substage": "PRIVATE_SUBSTAGE",
+                    "payload_kind": "PRIVATE_KIND",
+                    "payload_bytes": -1,
+                    "configured_limit_bytes": 2**63,
+                    "sqlstate_class": "PRIVATE_SQL",
+                    "constraint_name": "PRIVATE_SECRET_CONSTRAINT",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    deploy.status(_release())
+    sanitized = capsys.readouterr().out
+    assert "PRIVATE" not in sanitized
+    assert "K9 stage: SOURCE_RECEIPT" in sanitized
+    assert "K9 detail: K9_SOURCE_PERSISTENCE_UNKNOWN" in sanitized
+    assert "Persistence substage: SOURCE_RECEIPT_VALIDATE" in sanitized
+    assert "Payload kind: NONE" in sanitized
+    assert "Payload bytes: 0" in sanitized
+    assert "Configured limit bytes: 0" in sanitized
+    assert "SQLSTATE class: NONE" in sanitized
+    assert "Constraint: NONE" in sanitized
+
+
 def test_status_separates_checkout_tracked_accepted_and_running_product_identities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -653,7 +779,6 @@ def test_status_uses_v2_lifecycle_and_independent_smoke_lane_matrix(
     monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
     monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "k9-progress.json")
     monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
-
     deploy.status(_release())
 
     output = capsys.readouterr().out
@@ -780,6 +905,38 @@ def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
     monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
     monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "k9-progress.json")
     monkeypatch.setattr(deploy, "deploy_lock_active", lambda _path=deploy.DEPLOY_LOCK: False)
+    monkeypatch.setattr(
+        deploy,
+        "Runner",
+        lambda environment=None: type(
+            "HealthyRunner",
+            (),
+            {
+                "run": lambda self, args, check=False: subprocess.CompletedProcess(
+                    args, 0, "web|running|Up (healthy)\n", ""
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda _release, runner=None: {
+            "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+            "checkout_head": "c" * 40,
+            "tracked_release_snapshot": "c" * 40,
+            "dedicated_release_head": "c" * 40,
+            "remote_tracking_release_head": "c" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": f"datariver-poc:{'a' * 40}",
+            "running_web_product": "a" * 40,
+            "last_sync_target": "c" * 40,
+            "last_sync_product": "a" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": True,
+            "runtime_matches": True,
+        },
+    )
 
     deploy.status(_release())
 
@@ -794,6 +951,41 @@ def test_status_projects_dangling_glossary_warning_for_an_accepted_release(
     assert "K9 assignment scope: GLOBAL_GREATER (advisory)" in output
     assert "K9 scoped references: table=75431; column=80" in output
     assert "Provider incoming totals: table=90000; column=100" in output
+    assert "SHARE_SUMMARY|result=PASS|smoke=6/6|k9=READY|mcl=READY|general=PASS" in output
+
+    identity = {
+        "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+        "checkout_head": "c" * 40,
+        "tracked_release_snapshot": "c" * 40,
+        "dedicated_release_head": "c" * 40,
+        "remote_tracking_release_head": "c" * 40,
+        "tracked_release_product": "a" * 40,
+        "running_web_image": f"datariver-poc:{'a' * 40}",
+        "running_web_product": "a" * 40,
+        "last_sync_target": "c" * 40,
+        "last_sync_product": "a" * 40,
+        "sync_receipt_state": "CURRENT",
+        "source_synced": False,
+        "runtime_matches": True,
+    }
+    monkeypatch.setattr(deploy, "status_source_identity", lambda _release, runner=None: identity)
+    deploy.status(_release())
+    mismatch_output = capsys.readouterr().out
+    assert "SOURCE_RUNTIME_IDENTITY_MISMATCH" in mismatch_output
+    assert "SHARE_SUMMARY|result=PASS" not in mismatch_output
+
+    identity["source_synced"] = True
+    smoke_document = json.loads(smoke.read_text(encoding="utf-8"))
+    smoke_document["readiness"] = {
+        "K9": {"status": "PASS"},
+        "MCL": {"status": "FAILED"},
+        "GENERAL": {"status": "PASS"},
+    }
+    smoke.write_text(json.dumps(smoke_document), encoding="utf-8")
+    deploy.status(_release())
+    mcl_failed_output = capsys.readouterr().out
+    assert "MCL: FAILED" in mcl_failed_output
+    assert "SHARE_SUMMARY|result=PASS" not in mcl_failed_output
 
 
 def test_sync_bootstraps_and_fast_forwards_only_the_dedicated_release_branch(

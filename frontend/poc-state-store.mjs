@@ -22,6 +22,7 @@ import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibilit
 import {
   adoptExactLegacyK9LifecycleV2,
   applyK9LifecycleSchemaV6,
+  applyK9SourcePayloadChunkSchemaV8,
   createK9LifecyclePersistenceV2,
   K9_LIFECYCLE_KEY_V2,
   K9_LEGACY_ADOPTION_SCOPE_V2,
@@ -861,6 +862,7 @@ async function applyPocPostgresSchema(client) {
   for (const statement of LOCAL_SECURITY_EVENT_AUDIT_SCHEMA) await client.query(statement)
   await applyK9LifecycleSchemaV6(client)
   for (const statement of CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7) await client.query(statement)
+  await applyK9SourcePayloadChunkSchemaV8(client)
 }
 
 async function applyPocPostgresFreshSchema(client) {
@@ -871,6 +873,7 @@ async function applyPocPostgresFreshSchema(client) {
   for (const statement of CHAT_DISCOVERY_SCHEMA_V5) await client.query(statement)
   await applyK9LifecycleSchemaV6(client)
   for (const statement of CHANGE_HISTORY_RETENTION_GAP_SCHEMA_V7) await client.query(statement)
+  await applyK9SourcePayloadChunkSchemaV8(client)
 }
 
 async function initializePocPostgresSchema(pool, integrityRequired) {
@@ -907,6 +910,7 @@ async function initializePocPostgresSchema(pool, integrityRequired) {
           await migrationClient.query(statement)
         }
       },
+      applyV8Schema: applyK9SourcePayloadChunkSchemaV8,
     })
   } finally {
     client.release()
@@ -3664,6 +3668,11 @@ export function createPocStateStore({ databasePool } = {}) {
           ? {
               failure_stage: v2Diagnostic.stage,
               failure_detail_code: v2Diagnostic.failure_detail_code,
+              ...Object.fromEntries([
+                'persistence_substage', 'payload_kind', 'payload_bytes',
+                'configured_limit_bytes', 'sqlstate_class', 'constraint_name',
+              ].filter((field) => Object.hasOwn(v2Diagnostic, field))
+                .map((field) => [field, v2Diagnostic[field]])),
             }
           : null
         const failureReceipt = {
@@ -4026,6 +4035,7 @@ export function createPocStateStore({ databasePool } = {}) {
     stageK9SemanticBatchV2: k9LifecyclePersistence.stageSemanticBatch,
     activateK9SemanticSnapshotV2: k9LifecyclePersistence.activateSemanticSnapshot,
     readK9SnapshotLifecycleV2: k9LifecyclePersistence.readLifecycle,
+    readK9StagedSourceEvidenceV2: k9LifecyclePersistence.readStagedSourceEvidence,
     k9SemanticPersistenceV2: k9SemanticPersistence,
     listChatSessions,
     listChatMessages,

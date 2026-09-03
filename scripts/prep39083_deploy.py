@@ -145,6 +145,90 @@ SUPPORTED_MCL_SMOKE_FAILURE_CODES = frozenset(
         "PREP_SMOKE_MCL_RUNTIME_CAPTURE_FAILED",
     }
 )
+K9_SOURCE_PERSISTENCE_SUBSTAGES = frozenset(
+    {
+        "SOURCE_RECEIPT_VALIDATE",
+        "SNAPSHOT_NORMALIZE",
+        "INVENTORY_PAYLOAD_NORMALIZE",
+        "LINEAGE_PAYLOAD_NORMALIZE",
+        "METADATA_PAYLOAD_NORMALIZE",
+        "DANGLING_PAYLOAD_NORMALIZE",
+        "SNAPSHOT_INSERT",
+        "INVENTORY_PAYLOAD_INSERT",
+        "LINEAGE_PAYLOAD_INSERT",
+        "METADATA_PAYLOAD_INSERT",
+        "DANGLING_PAYLOAD_INSERT",
+        "SOURCE_EVIDENCE_STAGE",
+        "LIFECYCLE_HEAD_WRITE",
+        "TRANSACTION_COMMIT",
+        "LIFECYCLE_READBACK",
+        "SOURCE_PROJECTOR_RECEIPTS",
+    }
+)
+K9_SOURCE_PERSISTENCE_DETAILS = frozenset(
+    {
+        "K9_INVENTORY_PAYLOAD_NOT_NORMALIZED",
+        "K9_LIFECYCLE_IN_PROGRESS",
+        "K9_LIFECYCLE_STALE",
+        "K9_SOURCE_EVIDENCE_IN_PROGRESS",
+        "K9_SOURCE_EVIDENCE_INVALID",
+        "K9_SOURCE_EVIDENCE_STALE",
+        "K9_SOURCE_PAYLOAD_CONFLICT",
+        "K9_SOURCE_PAYLOAD_HASH_MISMATCH",
+        "K9_SOURCE_PAYLOAD_READBACK_MISMATCH",
+        "K9_SOURCE_PAYLOAD_SIZE_LIMIT",
+        "K9_SOURCE_PAYLOADS_INVALID",
+        "K9_SOURCE_RECEIPT_INVALID",
+        "K9_SOURCE_RECEIPT_READBACK_MISMATCH",
+        "K9_SOURCE_SNAPSHOT_CONFLICT",
+        "K9_SOURCE_SNAPSHOT_HASH_MISMATCH",
+        "K9_SOURCE_SNAPSHOT_INVALID",
+        "K9_SOURCE_PERSISTENCE_SQL_FAILED",
+        "K9_SOURCE_PERSISTENCE_UNKNOWN",
+    }
+)
+K9_SOURCE_PERSISTENCE_KINDS = frozenset(
+    {"INVENTORY", "LINEAGE", "METADATA", "DANGLING_STATE", "NONE"}
+)
+K9_SOURCE_PERSISTENCE_SQL_CLASSES = frozenset(
+    {
+        "CHECK_CONSTRAINT",
+        "CONNECTION",
+        "CONSTRAINT",
+        "FK",
+        "NONE",
+        "PAYLOAD_CONSTRAINT",
+        "SNAPSHOT_CONSTRAINT",
+        "TIMEOUT",
+        "TRANSACTION",
+    }
+)
+K9_SOURCE_PERSISTENCE_CONSTRAINTS = frozenset(
+    {
+        "CK_POC_K9_SOURCE_SNAPSHOT_V2_CONTRACT",
+        "CK_POC_K9_SOURCE_SNAPSHOT_V2_HASHES",
+        "CK_POC_K9_SOURCE_SNAPSHOT_V2_PAYLOAD",
+        "CK_POC_K9_SOURCE_PAYLOAD_V2_KIND",
+        "CK_POC_K9_SOURCE_PAYLOAD_V2_HASH",
+        "CK_POC_K9_SOURCE_PAYLOAD_V2_PAYLOAD",
+        "CK_POC_K9_SOURCE_PAYLOAD_CHUNK_V2_KIND",
+        "CK_POC_K9_SOURCE_PAYLOAD_CHUNK_V2_HASHES",
+        "CK_POC_K9_SOURCE_PAYLOAD_CHUNK_V2_BOUNDS",
+        "CK_POC_K9_SOURCE_STAGING_V2_HASH",
+        "CK_POC_K9_SOURCE_STAGING_V2_STATE",
+        "CK_POC_K9_SNAPSHOT_LIFECYCLE_V2_STATE",
+        "POC_K9_SNAPSHOT_LIFECYCLE_V2_ACTIVE_SNAPSHOT_ID_FKEY",
+        "POC_K9_SNAPSHOT_LIFECYCLE_V2_DESIRED_SNAPSHOT_ID_FKEY",
+        "POC_K9_SNAPSHOT_LIFECYCLE_V2_PKEY",
+        "POC_K9_SOURCE_PAYLOAD_CHUNKS__SOURCE_SNAPSHOT_ID_PAYLOAD_K_FKEY",
+        "POC_K9_SOURCE_PAYLOAD_CHUNKS_V2_PKEY",
+        "POC_K9_SOURCE_PAYLOADS_V2_PKEY",
+        "POC_K9_SOURCE_PAYLOADS_V2_SOURCE_SNAPSHOT_ID_FKEY",
+        "POC_K9_SOURCE_SNAPSHOTS_V2_PKEY",
+        "POC_K9_SOURCE_STAGING_V2_PKEY",
+        "POC_K9_SOURCE_STAGING_V2_SOURCE_SNAPSHOT_ID_FKEY",
+    }
+)
 SUPPORTED_POSTGRES_SCHEMA_FAILURE_CODES = frozenset(
     {
         "POC_POSTGRES_SCHEMA_INSPECTION_INVALID",
@@ -1448,8 +1532,7 @@ def sync_release_source(*, root: Path | None = None) -> str:
                 "fetch",
                 "--no-tags",
                 "origin",
-                f"refs/heads/{PREP_RELEASE_BRANCH}:"
-                f"refs/remotes/origin/{PREP_RELEASE_BRANCH}",
+                f"refs/heads/{PREP_RELEASE_BRANCH}:refs/remotes/origin/{PREP_RELEASE_BRANCH}",
             ],
             cwd=repository,
         )
@@ -3720,7 +3803,9 @@ def status_source_identity(
         if not head:
             return False
         tracked = _status_command_output(
-            command_runner, ["git", "show", f"{head}:{relative}"], cwd=root,
+            command_runner,
+            ["git", "show", f"{head}:{relative}"],
+            cwd=root,
         )
         try:
             local = json.loads((root / relative).read_text(encoding="utf-8"))
@@ -3867,9 +3952,7 @@ def status(release: ReleaseIdentity) -> None:
         web_lines = [line for line in containers.stdout.splitlines() if line.startswith("web|")]
         if len(web_lines) == 1:
             web = (
-                "HEALTHY"
-                if "(healthy)" in web_lines[0]
-                else web_lines[0].split("|", 2)[1].upper()
+                "HEALTHY" if "(healthy)" in web_lines[0] else web_lines[0].split("|", 2)[1].upper()
             )
         elif not web_lines:
             web = "ABSENT"
@@ -3905,7 +3988,8 @@ def status(release: ReleaseIdentity) -> None:
     current_progress = bool(
         active
         and progress_summary.get("k9") == "RUNNING"
-        and progress_summary.get("contract") in {
+        and progress_summary.get("contract")
+        in {
             "DATARIVER_PREP39083_K9_PROGRESS_V1",
             "DATARIVER_PREP39083_K9_PROGRESS_V2",
         }
@@ -3922,14 +4006,58 @@ def status(release: ReleaseIdentity) -> None:
             else None
         )
 
+    def bounded_summary_token(value: object, fallback: str = "NONE") -> str:
+        candidate = str(value or "")
+        return candidate if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", candidate) else fallback
+
+    def bounded_summary_count(value: object) -> int:
+        valid = (
+            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2_147_483_647
+        )
+        return value if valid else 0
+
+    def bounded_persistence_diagnostic(value: Mapping[str, object]) -> dict[str, object]:
+        if value.get("product_error_code") != "K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED":
+            return {}
+        detail = value.get("failure_detail_code")
+        substage = value.get("persistence_substage")
+        kind = value.get("payload_kind")
+        sql_class = value.get("sqlstate_class")
+        constraint = value.get("constraint_name")
+        return {
+            "failure_detail_code": (
+                detail
+                if detail in K9_SOURCE_PERSISTENCE_DETAILS
+                else "K9_SOURCE_PERSISTENCE_UNKNOWN"
+            ),
+            "persistence_substage": (
+                substage
+                if substage in K9_SOURCE_PERSISTENCE_SUBSTAGES
+                else "SOURCE_RECEIPT_VALIDATE"
+            ),
+            "payload_kind": kind if kind in K9_SOURCE_PERSISTENCE_KINDS else "NONE",
+            "payload_bytes": bounded_summary_count(value.get("payload_bytes")),
+            "configured_limit_bytes": bounded_summary_count(value.get("configured_limit_bytes")),
+            "sqlstate_class": (
+                sql_class if sql_class in K9_SOURCE_PERSISTENCE_SQL_CLASSES else "NONE"
+            ),
+            "constraint_name": (
+                constraint if constraint in K9_SOURCE_PERSISTENCE_CONSTRAINTS else "NONE"
+            ),
+        }
+
     k9_lane = lane_state("K9")
     mcl_lane = lane_state("MCL")
     general_lane = lane_state("GENERAL")
     k9 = (
-        "READY" if k9_lane == "PASS"
-        else k9_lane if k9_lane in {"FAILED", "PENDING", "DEFERRED"}
-        else "READY" if ready
-        else "FAILED" if failed_stage.startswith("K9")
+        "READY"
+        if k9_lane == "PASS"
+        else k9_lane
+        if k9_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else "READY"
+        if ready
+        else "FAILED"
+        if failed_stage.startswith("K9")
         else "UNKNOWN"
     )
     if current_progress:
@@ -3939,31 +4067,53 @@ def status(release: ReleaseIdentity) -> None:
         lifecycle_projectors = {}
     semantic_projector = lifecycle_projectors.get("SEMANTIC", {})
     semantic_status = (
-        semantic_projector.get("status")
-        if isinstance(semantic_projector, dict)
-        else None
+        semantic_projector.get("status") if isinstance(semantic_projector, dict) else None
     )
     semantic = (
         semantic_status
         if semantic_status in {"NOT_STARTED", "PENDING", "RUNNING", "READY", "FAILED"}
-        else "READY" if ready else "UNKNOWN"
+        else "READY"
+        if ready
+        else "UNKNOWN"
     )
-    if k9 == "RUNNING" and isinstance(k9_progress, dict) \
-            and k9_progress.get("stage") == "SEMANTIC_PROJECTOR":
+    if (
+        k9 == "RUNNING"
+        and isinstance(k9_progress, dict)
+        and k9_progress.get("stage") == "SEMANTIC_PROJECTOR"
+    ):
         semantic = "RUNNING"
     mcl = (
-        "READY" if mcl_lane == "PASS"
-        else mcl_lane if mcl_lane in {"DEGRADED_GAP", "FAILED", "PENDING", "DEFERRED"}
-        else "READY" if ready
-        else "FAILED" if failed_stage.startswith("MCL")
+        "READY"
+        if mcl_lane == "PASS"
+        else mcl_lane
+        if mcl_lane in {"DEGRADED_GAP", "FAILED", "PENDING", "DEFERRED"}
+        else "READY"
+        if ready
+        else "FAILED"
+        if failed_stage.startswith("MCL")
         else "UNKNOWN"
     )
     general = (
-        "READY" if general_lane == "PASS"
-        else general_lane if general_lane in {"FAILED", "PENDING", "DEFERRED"}
-        else "READY" if ready
-        else "FAILED" if failed_stage in {"GENERAL", "GENERAL_PROVIDER", "GENERAL_ROUTE"}
+        "READY"
+        if general_lane == "PASS"
+        else general_lane
+        if general_lane in {"FAILED", "PENDING", "DEFERRED"}
+        else "READY"
+        if ready
+        else "FAILED"
+        if failed_stage in {"GENERAL", "GENERAL_PROVIDER", "GENERAL_ROUTE"}
         else "UNKNOWN"
+    )
+    persistence_diagnostic = bounded_persistence_diagnostic(smoke_diagnostic)
+    displayed_k9_stage = (
+        "SOURCE_RECEIPT"
+        if persistence_diagnostic
+        else smoke_diagnostic.get("failure_stage", failed_stage or "UNKNOWN")
+    )
+    displayed_k9_detail = (
+        persistence_diagnostic["failure_detail_code"]
+        if persistence_diagnostic
+        else smoke_diagnostic.get("failure_detail_code", code)
     )
     print(f"Source checkout: {ROOT.resolve()}")
     print(f"Checkout branch: {identity['checkout_branch']}")
@@ -3972,8 +4122,7 @@ def status(release: ReleaseIdentity) -> None:
         print(f"Checkout clean: {'YES' if identity['checkout_clean'] else 'NO'}")
     if "tracked_manifests_match" in identity:
         print(
-            "Tracked manifests: "
-            f"{'MATCH' if identity['tracked_manifests_match'] else 'MISMATCH'}"
+            f"Tracked manifests: {'MATCH' if identity['tracked_manifests_match'] else 'MISMATCH'}"
         )
     print(f"Tracked Release Snapshot: {identity['tracked_release_snapshot']}")
     print(f"Dedicated Release Head: {identity['dedicated_release_head']}")
@@ -4018,11 +4167,13 @@ def status(release: ReleaseIdentity) -> None:
         "RUNNING" if current_progress else scheduler_current.get("status", "NONE")
     )
     current_stage = (
-        progress_summary.get("stage", "NONE") if current_progress
+        progress_summary.get("stage", "NONE")
+        if current_progress
         else scheduler_current.get("stage", "NONE")
     )
     current_detail = (
-        progress_summary.get("detail", "NONE") if current_progress
+        progress_summary.get("detail", "NONE")
+        if current_progress
         else scheduler_current.get("detail", "NONE")
     )
     print(f"K9 scheduler: {scheduler_status}")
@@ -4063,7 +4214,9 @@ def status(release: ReleaseIdentity) -> None:
                 "authority=NO"
             )
         for projector_name, label in (
-            ("LINEAGE", "Lineage"), ("METADATA", "Metadata"), ("SEMANTIC", "Semantic projector")
+            ("LINEAGE", "Lineage"),
+            ("METADATA", "Metadata"),
+            ("SEMANTIC", "Semantic projector"),
         ):
             projector_value = lifecycle_projectors.get(projector_name, {})
             if not isinstance(projector_value, dict):
@@ -4075,16 +4228,17 @@ def status(release: ReleaseIdentity) -> None:
             )
         aggregate = lifecycle.get("aggregate", {})
         aggregate_status = (
-            aggregate.get("status", "UNKNOWN")
-            if isinstance(aggregate, dict)
-            else "UNKNOWN"
+            aggregate.get("status", "UNKNOWN") if isinstance(aggregate, dict) else "UNKNOWN"
         )
         print(f"K9 aggregate: {aggregate_status}")
     print(f"K9: {k9}")
     source_warning = smoke_report.get("k9_source_warning") if smoke_report else None
-    if ready and isinstance(source_warning, dict) and (
-        source_warning.get("code") == "DANGLING_GLOSSARY_ASSIGNMENTS"
+    if (
+        ready
+        and isinstance(source_warning, dict)
+        and (source_warning.get("code") == "DANGLING_GLOSSARY_ASSIGNMENTS")
     ):
+
         def warning_count(key: str) -> int:
             value = source_warning.get(key, 0)
             valid = isinstance(value, int) and not isinstance(value, bool) and value >= 0
@@ -4115,8 +4269,7 @@ def status(release: ReleaseIdentity) -> None:
         print(f"K9 stage: {progress_summary.get('stage', 'UNKNOWN')}")
         print(f"K9 detail: {progress_summary.get('detail', 'UNKNOWN')}")
         print(
-            f"Progress: {progress_summary.get('completed', 0)}/"
-            f"{progress_summary.get('total', 0)}"
+            f"Progress: {progress_summary.get('completed', 0)}/{progress_summary.get('total', 0)}"
         )
         if progress_summary.get("stage") == "SOURCE_CAPTURE":
             print(
@@ -4129,8 +4282,8 @@ def status(release: ReleaseIdentity) -> None:
             f"{progress_summary.get('batch_total', 0)}"
         )
     if k9 == "FAILED":
-        print(f"K9 stage: {smoke_diagnostic.get('failure_stage', failed_stage or 'UNKNOWN')}")
-        print(f"K9 detail: {smoke_diagnostic.get('failure_detail_code', code)}")
+        print(f"K9 stage: {displayed_k9_stage}")
+        print(f"K9 detail: {displayed_k9_detail}")
         if smoke_diagnostic.get("scheduled_for"):
             print(f"K9 scheduled for: {smoke_diagnostic['scheduled_for']}")
         if smoke_diagnostic.get("attempt_observed_at"):
@@ -4140,6 +4293,13 @@ def status(release: ReleaseIdentity) -> None:
                 "K9 source receipt present: "
                 f"{'YES' if smoke_diagnostic['source_receipt_present'] is True else 'NO'}"
             )
+        if persistence_diagnostic:
+            print(f"Persistence substage: {persistence_diagnostic['persistence_substage']}")
+            print(f"Payload kind: {persistence_diagnostic['payload_kind']}")
+            print(f"Payload bytes: {persistence_diagnostic['payload_bytes']}")
+            print(f"Configured limit bytes: {persistence_diagnostic['configured_limit_bytes']}")
+            print(f"SQLSTATE class: {persistence_diagnostic['sqlstate_class']}")
+            print(f"Constraint: {persistence_diagnostic['constraint_name']}")
         provider_class = smoke_diagnostic.get("provider_failure_class")
         if provider_class:
             print(f"Provider class: {provider_class}")
@@ -4207,9 +4367,10 @@ def status(release: ReleaseIdentity) -> None:
         requested_edges = smoke_diagnostic.get("batch_requested_edges")
         written_nodes = smoke_diagnostic.get("batch_written_nodes")
         written_edges = smoke_diagnostic.get("batch_written_edges")
-        if any(isinstance(value, int) for value in (
-            requested_nodes, requested_edges, written_nodes, written_edges
-        )):
+        if any(
+            isinstance(value, int)
+            for value in (requested_nodes, requested_edges, written_nodes, written_edges)
+        ):
             print(
                 "Graph batch nodes/edges: "
                 f"requested={requested_nodes if isinstance(requested_nodes, int) else 0}/"
@@ -4264,11 +4425,44 @@ def status(release: ReleaseIdentity) -> None:
         print("MCL historical completeness: DEGRADED_GAP")
         print(f"MCL gap: {smoke_report.get('mcl_history_gap_reason', 'UNKNOWN')}")
         print(
-            "MCL exact current segment: "
-            f"{smoke_report.get('mcl_exact_current_segment_count', 0)}"
+            f"MCL exact current segment: {smoke_report.get('mcl_exact_current_segment_count', 0)}"
         )
     print(f"GENERAL: {general}")
     print(f"Exact next action: {next_action}")
+    mcl_acceptable = mcl == "READY" or (
+        mcl == "DEGRADED_GAP"
+        and smoke_report.get("mcl_current_capture") == "READY"
+        and smoke_report.get("mcl_history_gap_reason") == "RETENTION_EXPIRED"
+    )
+    if (
+        ready
+        and web == "HEALTHY"
+        and k9 == "READY"
+        and general == "READY"
+        and mcl_acceptable
+        and not source_identity_mismatch
+        and not runtime_identity_mismatch
+    ):
+        print(
+            "SHARE_SUMMARY|result=PASS|smoke=6/6|k9=READY|"
+            f"mcl={bounded_summary_token(mcl, 'UNKNOWN')}|general=PASS"
+        )
+    elif last_result == "FAILED":
+        summary_code = bounded_summary_token(
+            smoke_diagnostic.get("product_error_code", code), "UNKNOWN"
+        )
+        summary_stage = bounded_summary_token(displayed_k9_stage, "UNKNOWN")
+        summary_detail = bounded_summary_token(displayed_k9_detail, "UNKNOWN")
+        print(
+            "SHARE_SUMMARY|result=FAILED"
+            f"|code={summary_code}"
+            f"|stage={summary_stage}"
+            f"|detail={summary_detail}"
+            f"|substage={bounded_summary_token(persistence_diagnostic.get('persistence_substage'))}"
+            f"|kind={bounded_summary_token(persistence_diagnostic.get('payload_kind'))}"
+            f"|bytes={bounded_summary_count(persistence_diagnostic.get('payload_bytes'))}"
+            f"|limit={bounded_summary_count(persistence_diagnostic.get('configured_limit_bytes'))}"
+        )
 
 
 def logs(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:

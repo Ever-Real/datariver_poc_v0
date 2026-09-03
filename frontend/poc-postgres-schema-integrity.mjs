@@ -31,14 +31,19 @@ export const POC_POSTGRES_SCHEMA_V6_REVISION = 6
 export const POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE = 'product-owned-schema-contract-v6'
 export const POC_POSTGRES_SCHEMA_V6_FINGERPRINT = '912b81ebb39e2a725dece61e22a52064e7f133c5206caa65e0ce6f17782c2dcc'
 
-export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V7'
-export const POC_POSTGRES_SCHEMA_REVISION = 7
-export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v7'
+export const POC_POSTGRES_SCHEMA_V7_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V7'
+export const POC_POSTGRES_SCHEMA_V7_REVISION = 7
+export const POC_POSTGRES_SCHEMA_V7_RECEIPT_SCOPE = 'product-owned-schema-contract-v7'
+export const POC_POSTGRES_SCHEMA_V7_FINGERPRINT = '1481be3bb0ff1f92aaad70e41a8b7e534c685c207dc8f5918be750b73887861f'
+
+export const POC_POSTGRES_SCHEMA_CONTRACT = 'DATARIVER_POC_POSTGRES_OWNED_SCHEMA_V8'
+export const POC_POSTGRES_SCHEMA_REVISION = 8
+export const POC_POSTGRES_SCHEMA_RECEIPT_SCOPE = 'product-owned-schema-contract-v8'
 
 // Generated from the pinned PostgreSQL 17 / pgvector 0.8.2 canonical init contract.
 // The fingerprint covers only public Product-owned objects whose names use the reserved
 // poc_ prefix. Unrelated schemas, tables, extensions and rows are deliberately excluded.
-export const POC_POSTGRES_SCHEMA_FINGERPRINT = '1481be3bb0ff1f92aaad70e41a8b7e534c685c207dc8f5918be750b73887861f'
+export const POC_POSTGRES_SCHEMA_FINGERPRINT = 'f5c1ef9ae3dee38422834d736df718793c5324fc0d7f553cbcc617739ffe6560'
 export const POC_POSTGRES_MIGRATABLE_FINGERPRINTS = new Set([
   'd96eab3a780b05349bbccdbf1e2ee25e0d9da4d4b8c63c5cfd9c4fe97935d30b',
 ])
@@ -187,12 +192,12 @@ function validateReceipt(receipt, { contract, revision, fingerprint }) {
 
 function receiptValues(receipts, legacyReceipt, {
   v1Fingerprint, v2Fingerprint, v3Fingerprint, v4Fingerprint, v5Fingerprint,
-  v6Fingerprint, v7Fingerprint,
+  v6Fingerprint, v7Fingerprint, v8Fingerprint,
 }) {
   const rows = legacyReceipt === undefined
     ? receipts
     : [{ scope: POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, value: legacyReceipt }]
-  if (!Array.isArray(rows) || rows.length > 7) {
+  if (!Array.isArray(rows) || rows.length > 8) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt set is malformed.',
@@ -210,6 +215,7 @@ function receiptValues(receipts, legacyReceipt, {
     if (![POC_POSTGRES_SCHEMA_V1_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V2_RECEIPT_SCOPE,
       POC_POSTGRES_SCHEMA_V3_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE,
       POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE, POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE,
+      POC_POSTGRES_SCHEMA_V7_RECEIPT_SCOPE,
       POC_POSTGRES_SCHEMA_RECEIPT_SCOPE].includes(row.scope)) {
       const revision = /^product-owned-schema-contract-v([0-9]+)$/.exec(row.scope)?.[1]
       throw schemaError(
@@ -227,7 +233,8 @@ function receiptValues(receipts, legacyReceipt, {
   const v4 = values.get(POC_POSTGRES_SCHEMA_V4_RECEIPT_SCOPE)
   const v5 = values.get(POC_POSTGRES_SCHEMA_V5_RECEIPT_SCOPE)
   const v6 = values.get(POC_POSTGRES_SCHEMA_V6_RECEIPT_SCOPE)
-  const v7 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
+  const v7 = values.get(POC_POSTGRES_SCHEMA_V7_RECEIPT_SCOPE)
+  const v8 = values.get(POC_POSTGRES_SCHEMA_RECEIPT_SCOPE)
   if (v1 !== undefined) {
     validateReceipt(v1, {
       contract: POC_POSTGRES_SCHEMA_V1_CONTRACT,
@@ -272,9 +279,16 @@ function receiptValues(receipts, legacyReceipt, {
   }
   if (v7 !== undefined) {
     validateReceipt(v7, {
+      contract: POC_POSTGRES_SCHEMA_V7_CONTRACT,
+      revision: POC_POSTGRES_SCHEMA_V7_REVISION,
+      fingerprint: v7Fingerprint,
+    })
+  }
+  if (v8 !== undefined) {
+    validateReceipt(v8, {
       contract: POC_POSTGRES_SCHEMA_CONTRACT,
       revision: POC_POSTGRES_SCHEMA_REVISION,
-      fingerprint: v7Fingerprint,
+      fingerprint: v8Fingerprint,
     })
   }
   if ((v1 !== undefined && v3 !== undefined && v2 === undefined)
@@ -285,13 +299,16 @@ function receiptValues(receipts, legacyReceipt, {
       && (v1 !== undefined || v2 !== undefined || v3 !== undefined || v4 !== undefined))
     || (v7 !== undefined && v6 === undefined
       && (v1 !== undefined || v2 !== undefined || v3 !== undefined
-        || v4 !== undefined || v5 !== undefined))) {
+        || v4 !== undefined || v5 !== undefined))
+    || (v8 !== undefined && v7 === undefined
+      && (v1 !== undefined || v2 !== undefined || v3 !== undefined
+        || v4 !== undefined || v5 !== undefined || v6 !== undefined))) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt ancestry is incomplete.',
     )
   }
-  return { v1, v2, v3, v4, v5, v6, v7 }
+  return { v1, v2, v3, v4, v5, v6, v7, v8 }
 }
 
 export function classifyPocPostgresOwnedSchema({
@@ -305,6 +322,7 @@ export function classifyPocPostgresOwnedSchema({
   v4Fingerprint = POC_POSTGRES_SCHEMA_V4_FINGERPRINT,
   v5Fingerprint = POC_POSTGRES_SCHEMA_V5_FINGERPRINT,
   v6Fingerprint = POC_POSTGRES_SCHEMA_V6_FINGERPRINT,
+  v7Fingerprint = POC_POSTGRES_SCHEMA_V7_FINGERPRINT,
   migratableFingerprints = POC_POSTGRES_MIGRATABLE_FINGERPRINTS,
 } = {}) {
   const normalized = canonicalizePocOwnedSchemaRows(rows)
@@ -315,13 +333,14 @@ export function classifyPocPostgresOwnedSchema({
     v4Fingerprint,
     v5Fingerprint,
     v6Fingerprint,
-    v7Fingerprint: expectedFingerprint,
+    v7Fingerprint,
+    v8Fingerprint: expectedFingerprint,
   })
   if (normalized.length === 0) {
     if (receiptSet.v1 !== undefined || receiptSet.v2 !== undefined
       || receiptSet.v3 !== undefined || receiptSet.v4 !== undefined
       || receiptSet.v5 !== undefined || receiptSet.v6 !== undefined
-      || receiptSet.v7 !== undefined) {
+      || receiptSet.v7 !== undefined || receiptSet.v8 !== undefined) {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
         'A Product schema receipt exists without its owned schema.',
@@ -334,19 +353,34 @@ export function classifyPocPostgresOwnedSchema({
     if (receiptSet.v1 !== undefined && receiptSet.v2 === undefined
       && receiptSet.v3 === undefined && receiptSet.v4 === undefined
       && receiptSet.v5 === undefined && receiptSet.v6 === undefined
-      && receiptSet.v7 === undefined) {
+      && receiptSet.v7 === undefined && receiptSet.v8 === undefined) {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
         'The Product-owned PostgreSQL schema receipt ancestry does not match the current schema.',
       )
     }
-    const state = receiptSet.v7 !== undefined
+    const state = receiptSet.v8 !== undefined
       ? 'CURRENT'
-      : receiptSet.v6 !== undefined ? 'V7_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
+      : receiptSet.v7 !== undefined ? 'V8_RECEIPT_PENDING' : 'CURRENT_UNVERSIONED'
     return Object.freeze({
       state,
       fingerprint,
     })
+  }
+  if (receiptSet.v8 !== undefined) {
+    throw schemaError(
+      'POC_POSTGRES_SCHEMA_INTEGRITY_FAILED',
+      'The Product-owned PostgreSQL schema V8 receipt does not match the current schema.',
+    )
+  }
+  if (fingerprint === v7Fingerprint
+    && receiptSet.v7 !== undefined && receiptSet.v8 === undefined) {
+    return Object.freeze({ state: 'RECEIPTED_V7', fingerprint })
+  }
+  if (fingerprint === v7Fingerprint
+    && receiptSet.v6 !== undefined && receiptSet.v7 === undefined
+    && receiptSet.v8 === undefined) {
+    return Object.freeze({ state: 'V7_RECEIPT_PENDING', fingerprint })
   }
   if (fingerprint === v6Fingerprint
     && receiptSet.v6 !== undefined && receiptSet.v7 === undefined) {
@@ -439,7 +473,7 @@ export async function inspectPocPostgresOwnedSchema(client) {
       `SELECT scope, value FROM poc_state
         WHERE scope LIKE 'product-owned-schema-contract-v%'
         ORDER BY scope
-        LIMIT 7`,
+        LIMIT 8`,
     )
     receipts = result.rows
   }
@@ -461,6 +495,25 @@ export async function recordPocPostgresOwnedSchemaReceipt(client) {
     throw schemaError(
       'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
       'The Product-owned PostgreSQL schema receipt was not inserted.',
+    )
+  }
+}
+
+export async function recordPocPostgresV7SchemaReceipt(client) {
+  const receipt = {
+    contract: POC_POSTGRES_SCHEMA_V7_CONTRACT,
+    revision: POC_POSTGRES_SCHEMA_V7_REVISION,
+    fingerprint: POC_POSTGRES_SCHEMA_V7_FINGERPRINT,
+  }
+  const inserted = await client.query(
+    `INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+      RETURNING scope`,
+    [POC_POSTGRES_SCHEMA_V7_RECEIPT_SCOPE, JSON.stringify(receipt)],
+  )
+  if (inserted.rows.length !== 1 || inserted.rows[0]?.scope !== POC_POSTGRES_SCHEMA_V7_RECEIPT_SCOPE) {
+    throw schemaError(
+      'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+      'The Product-owned PostgreSQL schema V7 receipt was not inserted.',
     )
   }
 }
@@ -588,6 +641,7 @@ export async function convergePocPostgresOwnedSchema(client, {
   applyV5Schema,
   applyV6Schema,
   applyV7Schema,
+  applyV8Schema,
   inspect = inspectPocPostgresOwnedSchema,
   recordV1Receipt = recordPocPostgresV1SchemaReceipt,
   recordV2Receipt = recordPocPostgresV2SchemaReceipt,
@@ -595,12 +649,14 @@ export async function convergePocPostgresOwnedSchema(client, {
   recordV4Receipt = recordPocPostgresV4SchemaReceipt,
   recordV5Receipt = recordPocPostgresV5SchemaReceipt,
   recordV6Receipt = recordPocPostgresV6SchemaReceipt,
+  recordV7Receipt = recordPocPostgresV7SchemaReceipt,
   recordReceipt = recordPocPostgresOwnedSchemaReceipt,
 } = {}) {
   if (typeof applyFreshSchema !== 'function' || typeof applyKnownOlderSchema !== 'function'
     || typeof applyV2Schema !== 'function' || typeof applyV3Schema !== 'function'
     || typeof applyV4Schema !== 'function' || typeof applyV5Schema !== 'function'
-    || typeof applyV6Schema !== 'function' || typeof applyV7Schema !== 'function') {
+    || typeof applyV6Schema !== 'function' || typeof applyV7Schema !== 'function'
+    || typeof applyV8Schema !== 'function') {
     throw new Error('Product-owned PostgreSQL schema convergence callbacks are required.')
   }
   try {
@@ -737,12 +793,30 @@ export async function convergePocPostgresOwnedSchema(client, {
             'Product-owned PostgreSQL schema V6 to V7 migration was incomplete.',
           )
         }
+        await recordV7Receipt(client)
+        current = await inspect(client)
+        if (current.state !== 'RECEIPTED_V7') {
+          throw schemaError(
+            'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
+            'The Product-owned PostgreSQL schema V7 receipt was not durable.',
+          )
+        }
+      }
+      if (current.state === 'RECEIPTED_V7') {
+        await applyV8Schema(client)
+        const v8Pending = await inspect(client)
+        if (v8Pending.state !== 'V8_RECEIPT_PENDING') {
+          throw schemaError(
+            'POC_POSTGRES_SCHEMA_MIGRATION_INCOMPLETE',
+            'Product-owned PostgreSQL schema V7 to V8 migration was incomplete.',
+          )
+        }
         await recordReceipt(client)
         current = await inspect(client)
         if (current.state !== 'CURRENT') {
           throw schemaError(
             'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
-            'The Product-owned PostgreSQL schema V7 receipt was not durable.',
+            'The Product-owned PostgreSQL schema V8 receipt was not durable.',
           )
         }
       }
@@ -757,7 +831,7 @@ export async function convergePocPostgresOwnedSchema(client, {
     if (completed.state !== 'CURRENT') {
       throw schemaError(
         'POC_POSTGRES_SCHEMA_RECEIPT_MISMATCH',
-        'The Product-owned PostgreSQL schema V7 receipt was not durable.',
+        'The Product-owned PostgreSQL schema V8 receipt was not durable.',
       )
     }
     await client.query('COMMIT')

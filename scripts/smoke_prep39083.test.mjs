@@ -597,7 +597,10 @@ test('PREP smoke terminalizes the exact current V2 failure before historical ass
         scheduler_last_completed_attempt: {
           status: 'FAILURE', reason: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
           failure_stage: 'SOURCE_RECEIPT',
-          failure_detail_code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+          failure_detail_code: 'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
+          persistence_substage: 'METADATA_PAYLOAD_NORMALIZE',
+          payload_kind: 'METADATA', payload_bytes: 67_108_865,
+          configured_limit_bytes: 67_108_864, sqlstate_class: 'NONE', constraint_name: 'NONE',
           scheduled_for: '2026-08-30T17:00:00.000Z',
           completed_at: '2026-08-30T17:01:00.000Z', trigger: 'scheduled',
         },
@@ -618,8 +621,55 @@ test('PREP smoke terminalizes the exact current V2 failure before historical ass
   assert.equal(result.completed.code, 2)
   assert.equal(result.failure.diagnostic.product_error_code, 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED')
   assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_RECEIPT')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'K9_SOURCE_PAYLOAD_SIZE_LIMIT')
+  assert.equal(result.failure.diagnostic.persistence_substage, 'METADATA_PAYLOAD_NORMALIZE')
+  assert.equal(result.failure.diagnostic.payload_kind, 'METADATA')
+  assert.equal(result.failure.diagnostic.payload_bytes, 67_108_865)
+  assert.equal(result.failure.diagnostic.configured_limit_bytes, 67_108_864)
   assert.equal(result.report.k9_historical_asset_error, 'K9_SEMANTIC_INDEX_FAILED')
   assert.ok(result.failure.elapsed_ms < 5_000)
+})
+
+test('PREP smoke rejects unowned source persistence diagnostic tokens', async () => {
+  const result = await fixture('required', {
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'PENDING',
+        scheduler_last_completed_attempt: {
+          status: 'FAILURE', reason: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+          failure_stage: 'PRIVATE_STAGE', failure_detail_code: 'PRIVATE_DETAIL',
+          persistence_substage: 'PRIVATE_STAGE', payload_kind: 'PRIVATE_KIND',
+          payload_bytes: -1, configured_limit_bytes: Number.MAX_SAFE_INTEGER,
+          sqlstate_class: 'PRIVATE_SQL', constraint_name: 'PRIVATE_SECRET',
+          raw_payload: 'urn:li:dataset:private',
+          scheduled_for: '2026-08-30T17:00:00.000Z',
+          completed_at: '2026-08-30T17:01:00.000Z', trigger: 'scheduled',
+        },
+      },
+      { graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY' },
+    ],
+    k9Lifecycle: {
+      contract: 'DATARIVER_K9_LIFECYCLE_STATUS_V2',
+      source: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      projectors: {
+        LINEAGE: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        METADATA: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+        SEMANTIC: { desired_snapshot_id: null, active_snapshot_id: null, status: 'NOT_STARTED' },
+      },
+      aggregate: { status: 'NOT_READY', reason: 'K9_V2_SOURCE_NOT_STARTED' },
+    },
+  })
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.diagnostic.failure_stage, 'SOURCE_RECEIPT')
+  assert.equal(result.failure.diagnostic.failure_detail_code, 'K9_SOURCE_PERSISTENCE_UNKNOWN')
+  assert.equal(result.failure.diagnostic.persistence_substage, 'SOURCE_RECEIPT_VALIDATE')
+  assert.equal(result.failure.diagnostic.payload_kind, 'NONE')
+  assert.equal(result.failure.diagnostic.payload_bytes, 0)
+  assert.equal(result.failure.diagnostic.configured_limit_bytes, 0)
+  assert.equal(result.failure.diagnostic.sqlstate_class, 'NONE')
+  assert.equal(result.failure.diagnostic.constraint_name, 'NONE')
+  assert.equal(JSON.stringify(result.report).includes('PRIVATE'), false)
 })
 
 test('PREP smoke lets a current projector retry outrank its persisted failed receipt', async () => {

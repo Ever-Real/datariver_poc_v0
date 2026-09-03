@@ -1,5 +1,6 @@
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 import { sanitizeK9LineageSourceProfile } from './poc-k9-lineage-collection.mjs'
+import { sanitizeK9SourcePersistenceDiagnosticV2 } from './poc-k9-lifecycle-persistence.mjs'
 
 export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
@@ -76,12 +77,26 @@ export function sanitizeK9V2FailureDiagnostic(value) {
   const detail = safeDiagnosticTokenPattern.test(value?.failure_detail_code || '')
     ? value.failure_detail_code
     : owned.code
-  return Object.freeze({
+  const diagnostic = {
     code: owned.code,
     stage: owned.stage,
     failure_detail_code: detail,
     retryable: owned.retryable,
-  })
+  }
+  if (owned.code === diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.code) {
+    const persistence = sanitizeK9SourcePersistenceDiagnosticV2(value)
+    return persistence || Object.freeze({
+      ...diagnostic,
+      failure_detail_code: 'K9_SOURCE_PERSISTENCE_UNKNOWN',
+      persistence_substage: 'SOURCE_RECEIPT_VALIDATE',
+      payload_kind: 'NONE',
+      payload_bytes: 0,
+      configured_limit_bytes: 0,
+      sqlstate_class: 'NONE',
+      constraint_name: 'NONE',
+    })
+  }
+  return Object.freeze(diagnostic)
 }
 
 class LifecycleFailure extends Error {
@@ -364,13 +379,28 @@ async function captureOrReuseSource(captureSource, receipts, {
   }
   try {
     await receipts.writeSourceCaptureReceipt(capturedReceipt)
-  } catch {
-    throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED))
+  } catch (error) {
+    const persisted = sanitizeK9V2FailureDiagnostic(error?.diagnostic)
+    throw new LifecycleFailure(
+      persisted?.code === diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.code
+        ? persisted : frozenDiagnostic(diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED),
+    )
   }
   const persistedReceipt = await readSource(receipts)
   const persisted = sourceReceiptState(persistedReceipt)
   if (persisted.kind !== 'READY' || persisted.sourceSnapshotId !== captured.sourceSnapshotId) {
-    throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED))
+    throw new LifecycleFailure(sanitizeK9SourcePersistenceDiagnosticV2({
+      code: diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.code,
+      stage: diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.stage,
+      failure_detail_code: 'K9_SOURCE_RECEIPT_READBACK_MISMATCH',
+      persistence_substage: 'LIFECYCLE_READBACK',
+      payload_kind: 'NONE',
+      payload_bytes: 0,
+      configured_limit_bytes: 0,
+      sqlstate_class: 'NONE',
+      constraint_name: 'NONE',
+      retryable: true,
+    }))
   }
   return Object.freeze({
     outcome: 'CAPTURED', receipt: persisted.receipt, sourceSnapshotId: persisted.sourceSnapshotId,
