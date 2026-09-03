@@ -2372,6 +2372,63 @@ def test_ownership_fingerprint_excludes_fixed_release_configuration() -> None:
     assert deploy.target_ownership_fingerprint(before) != deploy.target_ownership_fingerprint(after)
 
 
+def test_source_correction_request_is_ephemeral_and_only_valid_for_owned_incomplete() -> None:
+    runtime = {
+        "POC_POSTGRES_PASSWORD": "preserved-postgres-secret",
+        "NEO4J_PASSWORD": "preserved-neo4j-secret",
+    }
+    bundle = deploy.EnvironmentBundle(
+        {},
+        {},
+        runtime,
+        {**runtime, "POC_IMAGE_TAG": "product"},
+        (),
+        deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+        "REQUIRED",
+    )
+    requested = deploy.with_source_correction_request(
+        bundle,
+        random_request=lambda: "7" * 64,
+    )
+
+    assert requested.runtime == runtime
+    assert "POC_K9_SOURCE_CORRECTION_REQUEST_ID" not in requested.runtime
+    assert requested.effective["POC_K9_SOURCE_CORRECTION_REQUEST_ID"] == "7" * 64
+    assert bundle.effective == {**runtime, "POC_IMAGE_TAG": "product"}
+
+    with pytest.raises(deploy.PrepError) as invalid_state:
+        deploy.with_source_correction_request(
+            replace(bundle, target_state=deploy.TargetState.EXISTING_ACCEPTED_RUNNING),
+            random_request=lambda: "8" * 64,
+        )
+    assert invalid_state.value.code == "PREP_SOURCE_CORRECTION_RECAPTURE_NOT_APPLICABLE"
+
+    with pytest.raises(deploy.PrepError) as invalid_request:
+        deploy.with_source_correction_request(
+            bundle,
+            random_request=lambda: "not-a-canonical-request",
+        )
+    assert invalid_request.value.code == "PREP_SOURCE_CORRECTION_REQUEST_INVALID"
+
+
+def test_source_correction_cli_flag_is_explicit_deploy_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prep39083_deploy.py", "deploy", "--source-correction-recapture"],
+    )
+    arguments = deploy.parse_arguments()
+    assert arguments.action == "deploy"
+    assert arguments.source_correction_recapture is True
+
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    assert "POC_K9_SOURCE_CORRECTION_REQUEST_ID" in source
+    assert 'runtime["POC_K9_SOURCE_CORRECTION_REQUEST_ID"]' not in source
+    assert "PREP_SOURCE_CORRECTION_RECAPTURE_ACTION_INVALID" in source
+
+
 def test_legacy_v1_receipt_migrates_after_runtime_already_has_descendant_fixed_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

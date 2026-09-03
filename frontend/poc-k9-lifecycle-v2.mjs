@@ -4,7 +4,11 @@ import { sanitizeK9SourcePersistenceDiagnosticV2 } from './poc-k9-lifecycle-pers
 
 export const K9_V2_PROJECTOR_IDS = Object.freeze(['LINEAGE', 'METADATA', 'SEMANTIC'])
 export const K9_V2_RECEIPT_STATES = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
-export const K9_V2_SOURCE_RUN_MODES = Object.freeze(['RESUME', 'REFRESH'])
+export const K9_V2_SOURCE_RUN_MODES = Object.freeze([
+  'RESUME',
+  'REFRESH',
+  'SOURCE_CORRECTION_RECAPTURE',
+])
 
 export const K9_V2_FAILURE_DIAGNOSTICS = Object.freeze({
   AGGREGATE_NOT_READY: Object.freeze({
@@ -33,6 +37,9 @@ export const K9_V2_FAILURE_DIAGNOSTICS = Object.freeze({
   }),
   SOURCE_CAPTURE_FAILED: Object.freeze({
     code: 'K9_V2_SOURCE_CAPTURE_FAILED', stage: 'SOURCE_CAPTURE', retryable: true,
+  }),
+  SOURCE_CORRECTION_NO_CHANGE: Object.freeze({
+    code: 'K9_V2_SOURCE_CORRECTION_NO_CHANGE', stage: 'SOURCE_CAPTURE', retryable: false,
   }),
   SOURCE_RECEIPT_INVALID: Object.freeze({
     code: 'K9_V2_SOURCE_RECEIPT_INVALID', stage: 'SOURCE_RECEIPT', retryable: false,
@@ -355,6 +362,7 @@ async function readSource(receipts) {
 async function captureOrReuseSource(captureSource, receipts, {
   currentReceipt,
   reuseCurrent = false,
+  requireChangedFrom = null,
 } = {}) {
   if (currentReceipt === undefined) currentReceipt = await readSource(receipts)
   const current = sourceReceiptState(currentReceipt)
@@ -376,6 +384,9 @@ async function captureOrReuseSource(captureSource, receipts, {
   const captured = sourceReceiptState(capturedReceipt)
   if (captured.kind !== 'READY') {
     throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_RECEIPT_INVALID))
+  }
+  if (requireChangedFrom && captured.sourceSnapshotId === requireChangedFrom) {
+    throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_CORRECTION_NO_CHANGE))
   }
   try {
     await receipts.writeSourceCaptureReceipt(capturedReceipt)
@@ -407,12 +418,25 @@ async function captureOrReuseSource(captureSource, receipts, {
   })
 }
 
-async function sourceRunDisposition(receipts, sourceRunMode) {
+async function sourceRunDisposition(receipts, sourceRunMode, expectedSourceSnapshotId = null) {
   if (!sourceRunModes.has(sourceRunMode)) {
     throw new TypeError('The K9 V2 source run mode is invalid.')
   }
   const currentReceipt = await readSource(receipts)
   const current = sourceReceiptState(currentReceipt)
+  if (sourceRunMode === 'SOURCE_CORRECTION_RECAPTURE') {
+    const expected = expectedSourceSnapshotId === null
+      ? current.sourceSnapshotId
+      : exactSnapshotId(expectedSourceSnapshotId)
+    if (current.kind !== 'READY' || !expected || current.sourceSnapshotId !== expected) {
+      throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_RECEIPT_INVALID))
+    }
+    return Object.freeze({
+      currentReceipt,
+      reuseCurrent: false,
+      requireChangedFrom: current.sourceSnapshotId,
+    })
+  }
   if (current.kind !== 'READY') return Object.freeze({ currentReceipt, reuseCurrent: false })
   // Startup/deploy recovery is receipt-driven. Once Source and every projector are
   // already READY for X, RESUME must be a zero-provider, zero-projector operation.
@@ -489,13 +513,17 @@ export function createK9V2LifecycleOrchestrator({
   }
 
   return Object.freeze({
-    async run({ sourceRunMode = 'REFRESH' } = {}) {
+    async run({ sourceRunMode = 'REFRESH', expectedSourceSnapshotId = null } = {}) {
       let source
       const projectorOutcomes = {}
       const failures = []
       try {
         transition({ stage: 'SOURCE', status: 'RUNNING' })
-        const disposition = await sourceRunDisposition(receipts, sourceRunMode)
+        const disposition = await sourceRunDisposition(
+          receipts,
+          sourceRunMode,
+          expectedSourceSnapshotId,
+        )
         source = await captureOrReuseSource(captureSource, receipts, disposition)
         transition({ stage: 'SOURCE', status: 'READY', outcome: source.outcome })
 

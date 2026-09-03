@@ -80,6 +80,14 @@ function graphFailureDiagnostic(state, error = null) {
   })
 }
 
+class GlossaryHierarchyIntegrityError extends Error {
+  constructor(code) {
+    super(code)
+    this.name = 'GlossaryHierarchyIntegrityError'
+    this.graphFailureDetailCode = code
+  }
+}
+
 function hasForbiddenControlCharacters(value) {
   return [...String(value)].some((character) => {
     const codePoint = character.codePointAt(0)
@@ -659,6 +667,8 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     let failureReason = null
     let failureCode = 'K9_DATAHUB_SOURCE_FAILED'
     let manifestHash, canonicalRelease, inputSnapshotHash
+    let stagingTouched = false
+    let hierarchyRejectedBeforeStaging = false
 
     try {
       const sourceData = await collectorFunc(authCtx)
@@ -766,6 +776,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       projectionState.failure_detail_code = 'STAGING_CLEANUP_FAILED'
       projectionState.query_family = 'STAGING_CLEANUP'
       projectionState.transaction_phase = 'STAGING'
+      stagingTouched = true
       await neo4j.run(
         'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
         { namespace: stagingNamespace }
@@ -892,6 +903,11 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       }
 
     } catch (e) {
+      const mappingDetail = safeGraphToken(e?.graphFailureDetailCode, null)
+      if (mappingDetail && projectionState.failure_stage === 'GRAPH_QUERY_BUILD') {
+        projectionState.failure_detail_code = mappingDetail
+        hierarchyRejectedBeforeStaging = true
+      }
       failureReason = e.message
       projectionState.error = e
     }
@@ -902,10 +918,12 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
         runId,
         `${failureCode}: failure_stage=${diagnostic.failure_stage}; failure_detail_code=${diagnostic.failure_detail_code}.`,
       )
-      await neo4j.run(
-        'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
-        { namespace: stagingNamespace }
-      ).catch(function() {})
+      if (stagingTouched || !hierarchyRejectedBeforeStaging) {
+        await neo4j.run(
+          'MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n',
+          { namespace: stagingNamespace }
+        ).catch(function() {})
+      }
 
       return {
         runId: runId, status: 'FAILURE', reason: failureReason, failureCode,
@@ -1055,23 +1073,23 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     }
   }
 
-  function hasGlossaryCycle(edgesMap, startNode) {
-    const visited = new Set()
-    const recStack = new Set()
-    function checkCycle(node) {
-      if (!visited.has(node)) {
-        visited.add(node)
-        recStack.add(node)
-        const neighbors = edgesMap.get(node) || []
-        for (const n of neighbors) {
-          if (!visited.has(n) && checkCycle(n)) return true
-          if (recStack.has(n)) return true
-        }
+  function hasGlossaryCycle(edgesMap) {
+    const state = new Map()
+    const visit = (node) => {
+      const current = state.get(node) || 0
+      if (current === 1) return true
+      if (current === 2) return false
+      state.set(node, 1)
+      for (const neighbor of edgesMap.get(node) || []) {
+        if (visit(neighbor)) return true
       }
-      recStack.delete(node)
+      state.set(node, 2)
       return false
     }
-    return checkCycle(startNode)
+    for (const node of edgesMap.keys()) {
+      if (visit(node)) return true
+    }
+    return false
   }
 
   function mapGlossary(sourceData) {
@@ -1303,8 +1321,16 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
           { source_relationship_type: relation.relationship_type },
         )
         if (type !== 'rel.glossary_related_to') {
-          if (!hierarchyAdj.has(relation.source_urn)) hierarchyAdj.set(relation.source_urn, [])
-          hierarchyAdj.get(relation.source_urn).push(relation.target_urn)
+          // DataHub persists the provider relationship and its provenance exactly as observed.
+          // Only the hierarchy-validation adjacency is normalized into child -> parent form.
+          const reverseHierarchy = ['contains', 'hasa', 'has_a'].includes(relationshipKey)
+          const hierarchySource = reverseHierarchy ? relation.target_urn : relation.source_urn
+          const hierarchyTarget = reverseHierarchy ? relation.source_urn : relation.target_urn
+          if (hierarchySource === hierarchyTarget) {
+            throw new GlossaryHierarchyIntegrityError('GLOSSARY_HIERARCHY_SELF_LOOP')
+          }
+          if (!hierarchyAdj.has(hierarchySource)) hierarchyAdj.set(hierarchySource, new Set())
+          hierarchyAdj.get(hierarchySource).add(hierarchyTarget)
         }
       }
     } else {
@@ -1313,14 +1339,20 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       for (const te of (sourceData.term_parent_edges || [])) {
         if (!isTermUrn(te.term_urn) || !isNodeUrn(te.parent_urn)) throw new Error('Invalid legacy glossary parent identity')
         addTypedRelation(te.term_urn, te.parent_urn, 'rel.glossary_in_term_group', 'parentNodes', te.term_urn)
-        if (!hierarchyAdj.has(te.term_urn)) hierarchyAdj.set(te.term_urn, [])
-        hierarchyAdj.get(te.term_urn).push(te.parent_urn)
+        if (te.term_urn === te.parent_urn) {
+          throw new GlossaryHierarchyIntegrityError('GLOSSARY_HIERARCHY_SELF_LOOP')
+        }
+        if (!hierarchyAdj.has(te.term_urn)) hierarchyAdj.set(te.term_urn, new Set())
+        hierarchyAdj.get(te.term_urn).add(te.parent_urn)
       }
       for (const ne of (sourceData.node_parent_edges || [])) {
         if (!isNodeUrn(ne.child_urn) || !isNodeUrn(ne.parent_urn)) throw new Error('Invalid legacy glossary-node parent identity')
         addTypedRelation(ne.child_urn, ne.parent_urn, 'rel.glossary_in_term_group', 'parentNodes', ne.child_urn)
-        if (!hierarchyAdj.has(ne.child_urn)) hierarchyAdj.set(ne.child_urn, [])
-        hierarchyAdj.get(ne.child_urn).push(ne.parent_urn)
+        if (ne.child_urn === ne.parent_urn) {
+          throw new GlossaryHierarchyIntegrityError('GLOSSARY_HIERARCHY_SELF_LOOP')
+        }
+        if (!hierarchyAdj.has(ne.child_urn)) hierarchyAdj.set(ne.child_urn, new Set())
+        hierarchyAdj.get(ne.child_urn).add(ne.parent_urn)
       }
     }
 
@@ -1356,10 +1388,8 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
     const nodes = Array.from(nodeMap.values()).sort((a,b) => a.id.localeCompare(b.id))
     const edges = Array.from(edgeMap.values()).sort((a,b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target) || a.type.localeCompare(b.type))
 
-    for (const n of nodes) {
-      if (hasGlossaryCycle(hierarchyAdj, n.id)) {
-        throw new Error('Cycle detected in glossary hierarchy starting from: ' + n.id)
-      }
+    if (hasGlossaryCycle(hierarchyAdj)) {
+      throw new GlossaryHierarchyIntegrityError('GLOSSARY_HIERARCHY_CYCLE')
     }
 
     return {

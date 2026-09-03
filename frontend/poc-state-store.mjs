@@ -4028,6 +4028,7 @@ export function createPocStateStore({ databasePool } = {}) {
     recordK9ManagedRefreshFailure,
     executeK9Transaction,
     runK9Scheduler,
+    claimK9SourceCorrectionRecaptureV2: k9LifecyclePersistence.claimSourceCorrectionRecapture,
     setK9DesiredSourceSnapshotV2: k9LifecyclePersistence.setDesiredSnapshot,
     appendK9ProjectorReceiptV2: k9LifecyclePersistence.appendProjectorReceipt,
     promoteK9ActiveSourceSnapshotV2: k9LifecyclePersistence.promoteActiveSnapshot,

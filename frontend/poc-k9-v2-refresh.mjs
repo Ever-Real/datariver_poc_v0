@@ -71,8 +71,14 @@ export function createPocK9V2RefreshTask({
     projectors,
     onTransition,
   })
-  return async function triggerK9V2Refresh({ lifecycleMode = 'REFRESH' } = {}) {
-    const result = await orchestrator.run({ sourceRunMode: lifecycleMode })
+  return async function triggerK9V2Refresh({
+    lifecycleMode = 'REFRESH',
+    expectedSourceSnapshotId = null,
+  } = {}) {
+    const result = await orchestrator.run({
+      sourceRunMode: lifecycleMode,
+      expectedSourceSnapshotId,
+    })
     if (result.status !== 'READY') {
       const diagnostic = boundedDiagnostic(
         result.diagnostic,

@@ -46,6 +46,11 @@ function fakeReceiptPort({ sourceReceipt, desired = {}, active = {} } = {}) {
     },
     async writeSourceCaptureReceipt(receipt) {
       state.calls.push(['write-source'])
+      if (state.sourceReceipt?.source_snapshot_id !== receipt?.source_snapshot_id) {
+        // PostgreSQL desired projector reads are scoped to the new desired snapshot;
+        // the prior active receipts remain readable as LKG evidence only.
+        state.desired = {}
+      }
       state.sourceReceipt = receipt
     },
     async readProjectorDesiredReceipt(projectorId) {
@@ -265,6 +270,96 @@ test('TEST-shaped graph-only retry reuses Source and Semantic then READY rerun i
   ])), { LINEAGE: 'REUSED', METADATA: 'REUSED', SEMANTIC: 'REUSED' })
   assert.equal(captureSource.mock.calls.length, 0)
   assert.deepEqual(calls, { LINEAGE: 1, METADATA: 1, SEMANTIC: 0 })
+})
+
+test('explicit source correction preserves X and captures isolated successor Y', async () => {
+  const sourceX = readySourceReceipt(snapshotA, { marker: 'immutable-x' })
+  const receipts = fakeReceiptPort({
+    sourceReceipt: sourceX,
+    desired: {
+      LINEAGE: desiredReceipt('LINEAGE', snapshotA),
+      METADATA: desiredReceipt('METADATA', snapshotA, 'FAILED'),
+      SEMANTIC: desiredReceipt('SEMANTIC', snapshotA),
+    },
+    active: Object.fromEntries(K9_V2_PROJECTOR_IDS.map((id) => [
+      id, activeReceipt(id, snapshotA),
+    ])),
+  })
+  const captureSource = mock.fn(async () => readySourceReceipt(snapshotB, { marker: 'corrected-y' }))
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run({
+    sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
+    expectedSourceSnapshotId: snapshotA,
+  })
+
+  assert.equal(result.status, 'READY')
+  assert.equal(result.source_snapshot_id, snapshotB)
+  assert.equal(result.source.outcome, 'CAPTURED')
+  assert.deepEqual(sourceX.evidence, { marker: 'immutable-x' })
+  assert.equal(captureSource.mock.calls.length, 1)
+  for (const projectorId of K9_V2_PROJECTOR_IDS) {
+    assert.equal(projectors[projectorId].project.mock.calls.length, 1)
+    assert.equal(receipts.state.desired[projectorId].source_snapshot_id, snapshotB)
+    assert.equal(receipts.state.active[projectorId].source_snapshot_id, snapshotB)
+  }
+
+  const resumed = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run({ sourceRunMode: 'RESUME' })
+  assert.equal(resumed.status, 'READY')
+  assert.equal(resumed.source.outcome, 'REUSED')
+  assert.equal(captureSource.mock.calls.length, 1)
+  for (const projectorId of K9_V2_PROJECTOR_IDS) {
+    assert.equal(resumed.projectors[projectorId].outcome, 'REUSED')
+    assert.equal(projectors[projectorId].project.mock.calls.length, 1)
+  }
+})
+
+test('explicit source correction fails closed when provider content did not change', async () => {
+  const receipts = fakeReceiptPort({
+    sourceReceipt: readySourceReceipt(snapshotA),
+    desired: { METADATA: desiredReceipt('METADATA', snapshotA, 'FAILED') },
+  })
+  const captureSource = mock.fn(async () => readySourceReceipt(snapshotA))
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run({
+    sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
+    expectedSourceSnapshotId: snapshotA,
+  })
+
+  assert.equal(result.status, 'FAILED')
+  assert.deepEqual(result.diagnostic, {
+    code: 'K9_V2_SOURCE_CORRECTION_NO_CHANGE',
+    stage: 'SOURCE_CAPTURE',
+    retryable: false,
+  })
+  assert.equal(receipts.state.calls.some(([operation]) => operation === 'write-source'), false)
+  for (const projectorId of K9_V2_PROJECTOR_IDS) {
+    assert.equal(projectors[projectorId].project.mock.calls.length, 0)
+  }
+})
+
+test('explicit source correction rejects X/Y head mixing before provider capture', async () => {
+  const receipts = fakeReceiptPort({ sourceReceipt: readySourceReceipt(snapshotB) })
+  const captureSource = mock.fn()
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run({
+    sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
+    expectedSourceSnapshotId: snapshotA,
+  })
+
+  assert.equal(result.status, 'FAILED')
+  assert.equal(result.diagnostic.code, 'K9_V2_SOURCE_RECEIPT_INVALID')
+  assert.equal(captureSource.mock.calls.length, 0)
 })
 
 test('aggregate readiness fails closed when any desired or active receipt has a mixed snapshot ID', () => {
