@@ -806,7 +806,7 @@ test('PREP-shaped V2 retry uses persisted PostgreSQL source and reruns only Sema
   await pool.end()
 }))
 
-test('source-correction claim is one-shot and preserves failed X while desired head advances to Y', {
+test('source-correction claim and scheduler execution are one-shot while failed X advances to Y', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('k9_v2_source_correction', async ({ connectionString }) => {
   const pool = new Pool({ connectionString, max: 3 })
@@ -850,6 +850,40 @@ test('source-correction claim is one-shot and preserves failed X while desired h
       assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
         status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
       })
+
+      let recaptureInvocations = 0
+      const executionCommand = {
+        lockName: 'datariver:poc:k9-scheduler:v1',
+        scheduledFor: '2026-09-01T17:00:00.000Z',
+        trigger: 'scheduled',
+        lifecycleMode: 'SOURCE_CORRECTION_RECAPTURE',
+        executionId: requestId,
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      }
+      const failedExecution = await store.runK9Scheduler(executionCommand, async () => {
+        recaptureInvocations += 1
+        return {
+          status: 'FAILURE',
+          failureCode: 'K9_V2_SOURCE_CAPTURE_FAILED',
+          diagnostic: {
+            code: 'K9_V2_SOURCE_CAPTURE_FAILED', stage: 'SOURCE_CAPTURE', retryable: true,
+          },
+        }
+      })
+      const replayedExecution = await store.runK9Scheduler(executionCommand, async () => {
+        recaptureInvocations += 1
+        return { status: 'SUCCESS' }
+      })
+      assert.equal(failedExecution.status, 'failed')
+      assert.equal(replayedExecution.status, 'already_completed')
+      assert.equal(recaptureInvocations, 1)
+      const schedulerReceipt = await store.readK9SchedulerReceipt(executionCommand.lockName)
+      assert.equal(schedulerReceipt.value.last_attempt.reason, 'K9_V2_SOURCE_CAPTURE_FAILED')
+      assert.equal(schedulerReceipt.value.last_attempt.execution_id, requestId)
+      assert.deepEqual(
+        schedulerReceipt.value.last_source_correction_attempt,
+        schedulerReceipt.value.last_attempt,
+      )
 
       await store.setK9DesiredSourceSnapshotV2(sourceY)
       const after = await store.readK9SnapshotLifecycleV2()

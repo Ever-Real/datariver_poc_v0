@@ -404,6 +404,8 @@ test('managed K9 scheduler read model preserves exact V2 failure and bounded sou
     persistence_substage: 'METADATA_PAYLOAD_NORMALIZE', payload_kind: 'METADATA',
     payload_bytes: 67_108_865, configured_limit_bytes: 67_108_864,
     sqlstate_class: 'NONE', constraint_name: 'NONE',
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE', execution_id: 'b'.repeat(64),
+    expected_source_snapshot_id: 'a'.repeat(64),
     scheduled_for: '2026-08-29T17:15:00.000Z', completed_at: '2026-08-29T17:16:00.000Z',
     trigger: 'scheduled', raw_urn: 'urn:li:dataset:must-not-survive',
   } } }, {
@@ -411,11 +413,16 @@ test('managed K9 scheduler read model preserves exact V2 failure and bounded sou
     started_at: '2026-08-30T17:15:01.000Z', observed_at: '2026-08-30T17:16:00.000Z',
     stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION', completed: 734, total: 1_892,
     candidate_number: 1, candidate_total: 3, batch_number: 0, batch_total: 0,
+    lifecycle_mode: 'SOURCE_CORRECTION_RECAPTURE', execution_id: 'c'.repeat(64),
+    expected_source_snapshot_id: 'a'.repeat(64),
   })
   assert.equal(readModel.scheduler_status, 'RUNNING')
   assert.equal(readModel.scheduler_current_attempt.detail, 'LINEAGE_COLLECTION')
   assert.equal(readModel.scheduler_current_attempt.completed, 734)
   assert.equal(readModel.scheduler_current_attempt.candidate_total, 3)
+  assert.equal(readModel.scheduler_current_attempt.lifecycle_mode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(readModel.scheduler_current_attempt.execution_id, 'c'.repeat(64))
+  assert.equal(readModel.scheduler_current_attempt.expected_source_snapshot_id, 'a'.repeat(64))
   assert.equal(readModel.scheduler_last_completed_attempt.reason, 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED')
   assert.equal(readModel.scheduler_last_completed_attempt.failure_stage, 'SOURCE_RECEIPT')
   assert.equal(readModel.scheduler_last_completed_attempt.persistence_substage, 'METADATA_PAYLOAD_NORMALIZE')
@@ -424,6 +431,12 @@ test('managed K9 scheduler read model preserves exact V2 failure and bounded sou
   assert.equal(readModel.scheduler_last_completed_attempt.configured_limit_bytes, 67_108_864)
   assert.equal(readModel.scheduler_last_completed_attempt.sqlstate_class, 'NONE')
   assert.equal(readModel.scheduler_last_completed_attempt.constraint_name, 'NONE')
+  assert.equal(readModel.scheduler_last_completed_attempt.lifecycle_mode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(readModel.scheduler_last_completed_attempt.execution_id, 'b'.repeat(64))
+  assert.equal(
+    readModel.scheduler_last_completed_attempt.expected_source_snapshot_id,
+    'a'.repeat(64),
+  )
   assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
 })
 

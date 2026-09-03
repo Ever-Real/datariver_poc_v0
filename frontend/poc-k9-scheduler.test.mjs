@@ -275,7 +275,7 @@ test('K9 Scheduler claims explicit source correction once and binds recapture to
   })
 })
 
-test('K9 Scheduler does not replay an already-claimed source-correction request', async () => {
+test('K9 Scheduler resumes an already-claimed source-correction request without collapsing to RESUME', async () => {
   const requestId = '9'.repeat(64)
   const scheduledFor = '2026-09-03T02:00:00.000Z'
   const config = loadPocK9SchedulerConfig({
@@ -286,6 +286,7 @@ test('K9 Scheduler does not replay an already-claimed source-correction request'
     POC_K9_SCHEDULE_HOUR: '2',
     POC_K9_SOURCE_CORRECTION_REQUEST_ID: requestId,
   })
+  const commands = []
   const stateStore = {
     configured: { postgres: true },
     readK9SnapshotLifecycleV2: mock.fn(async () => ({ desired_snapshot_id: 'b'.repeat(64) })),
@@ -295,7 +296,10 @@ test('K9 Scheduler does not replay an already-claimed source-correction request'
     claimK9SourceCorrectionRecaptureV2: mock.fn(async () => ({
       status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: 'a'.repeat(64),
     })),
-    runK9Scheduler: mock.fn(async (_command, task) => task()),
+    runK9Scheduler: mock.fn(async (command, task) => {
+      commands.push(command)
+      return task()
+    }),
   }
   const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
   const scheduler = createPocK9Scheduler({
@@ -310,8 +314,70 @@ test('K9 Scheduler does not replay an already-claimed source-correction request'
   await scheduler.stop()
 
   assert.equal(triggerK9Refresh.mock.calls.length, 1)
-  assert.equal(triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode, 'RESUME')
-  assert.equal(Object.hasOwn(triggerK9Refresh.mock.calls[0].arguments[0], 'expectedSourceSnapshotId'), false)
+  assert.equal(
+    triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode,
+    'SOURCE_CORRECTION_RECAPTURE',
+  )
+  assert.equal(
+    triggerK9Refresh.mock.calls[0].arguments[0].expectedSourceSnapshotId,
+    'a'.repeat(64),
+  )
+  assert.equal(commands[0].lifecycleMode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(commands[0].executionId, requestId)
+  assert.equal(commands[0].expectedSourceSnapshotId, 'a'.repeat(64))
+})
+
+test('K9 Scheduler refuses to collapse an ordinary trigger into an active source-correction run', async () => {
+  const requestId = '9'.repeat(64)
+  const sourceSnapshotId = 'a'.repeat(64)
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SOURCE_CORRECTION_REQUEST_ID: requestId,
+  })
+  let releaseCapture
+  const captureGate = new Promise((resolve) => { releaseCapture = resolve })
+  const stateStore = {
+    configured: { postgres: true },
+    readK9SnapshotLifecycleV2: mock.fn(async () => ({ desired_snapshot_id: sourceSnapshotId })),
+    readK9SchedulerReceipt: mock.fn(async () => null),
+    claimK9SourceCorrectionRecaptureV2: mock.fn(async () => ({
+      status: 'CLAIMED', expectedSourceSnapshotId: sourceSnapshotId,
+    })),
+    runK9Scheduler: mock.fn(async (_command, task) => task()),
+  }
+  const triggerK9Refresh = mock.fn(async () => {
+    await captureGate
+    return { status: 'SUCCESS' }
+  })
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    clock: () => new Date('2026-09-03T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  while (triggerK9Refresh.mock.calls.length === 0) await new Promise(setImmediate)
+  assert.equal(scheduler.updateLifecycleProgress({ stage: 'SOURCE', status: 'RUNNING' }), true)
+  assert.equal(scheduler.updateProgress({
+    stage: 'SOURCE_CAPTURE', detail: 'LINEAGE_COLLECTION',
+    completed: 127, total: 1_908, candidate_number: 1, candidate_total: 3,
+  }), true)
+  assert.equal(scheduler.currentAttempt().lifecycle_mode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(scheduler.currentAttempt().stage, 'SOURCE_CAPTURE')
+  assert.equal(scheduler.currentAttempt().detail, 'LINEAGE_COLLECTION')
+  assert.equal(scheduler.currentAttempt().completed, 127)
+  assert.equal(scheduler.currentAttempt().total, 1_908)
+  await assert.rejects(
+    scheduler.triggerManual(new Date('2026-09-03T02:00:00.000Z')),
+    { code: 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT' },
+  )
+  releaseCapture()
+  await scheduler.stop()
 })
 
 test('K9 Scheduler supports configured daily, hourly, and manual refresh policies', async () => {
@@ -1034,6 +1100,88 @@ test('K9 Scheduler preserves reviewed V2 failures and downcasts unowned diagnost
   }))
   assert.equal(unownedDatabase.readValue().last_attempt.reason, 'K9_REFRESH_FAILED')
   assert.equal(unownedDatabase.readValue().last_attempt.failure_stage, undefined)
+})
+
+test('K9 Scheduler binds source-correction idempotency to its explicit execution identity', async () => {
+  const scheduledFor = '2026-09-01T17:00:00.000Z'
+  const sourceSnapshotId = 'a'.repeat(64)
+  const executionId = 'b'.repeat(64)
+  const database = k9SchedulerDatabase({
+    version: 1,
+    last_successful_schedule: null,
+    last_successful_reconciliation_generation: null,
+    last_attempt: {
+      status: 'FAILURE', reason: 'K9_SEMANTIC_INDEX_FAILED',
+      scheduled_for: scheduledFor, completed_at: '2026-09-02T01:00:00.000Z',
+      trigger: 'scheduled',
+    },
+  })
+  const stateStore = createPocStateStore({ databasePool: database.pool })
+  let invocations = 0
+  const command = {
+    lockName: 'datariver:poc:k9-scheduler:v1',
+    scheduledFor,
+    trigger: 'scheduled',
+    lifecycleMode: 'SOURCE_CORRECTION_RECAPTURE',
+    executionId,
+    expectedSourceSnapshotId: sourceSnapshotId,
+  }
+  const failure = async () => {
+    invocations += 1
+    return {
+      status: 'FAILURE',
+      failureCode: 'K9_V2_SOURCE_CAPTURE_FAILED',
+      diagnostic: {
+        code: 'K9_V2_SOURCE_CAPTURE_FAILED', stage: 'SOURCE_CAPTURE', retryable: true,
+      },
+    }
+  }
+
+  const first = await stateStore.runK9Scheduler(command, failure)
+  const replay = await stateStore.runK9Scheduler(command, failure)
+
+  assert.equal(first.status, 'failed')
+  assert.equal(replay.status, 'already_completed')
+  assert.equal(invocations, 1)
+  assert.equal(database.readValue().last_attempt.lifecycle_mode, 'SOURCE_CORRECTION_RECAPTURE')
+  assert.equal(database.readValue().last_attempt.execution_id, executionId)
+  assert.equal(database.readValue().last_attempt.expected_source_snapshot_id, sourceSnapshotId)
+  assert.equal(database.readValue().last_attempt.reason, 'K9_V2_SOURCE_CAPTURE_FAILED')
+  assert.deepEqual(
+    database.readValue().last_source_correction_attempt,
+    database.readValue().last_attempt,
+  )
+
+  const successorExecutionId = 'c'.repeat(64)
+  const successor = await stateStore.runK9Scheduler({
+    ...command, executionId: successorExecutionId,
+  }, async () => {
+    invocations += 1
+    return { status: 'SUCCESS' }
+  })
+  assert.equal(successor.status, 'succeeded')
+  assert.equal(invocations, 2)
+  assert.equal(database.readValue().last_attempt.execution_id, successorExecutionId)
+
+  const ordinaryBoundary = '2026-09-02T17:00:00.000Z'
+  await stateStore.runK9Scheduler({
+    lockName: command.lockName, scheduledFor: ordinaryBoundary, trigger: 'scheduled',
+  }, async () => {
+    invocations += 1
+    return { status: 'SUCCESS' }
+  })
+  const terminalReplay = await stateStore.runK9Scheduler({
+    ...command, executionId: successorExecutionId,
+  }, async () => {
+    invocations += 1
+    return { status: 'SUCCESS' }
+  })
+  assert.equal(terminalReplay.status, 'already_completed')
+  assert.equal(invocations, 3)
+  assert.equal(
+    database.readValue().last_source_correction_attempt.execution_id,
+    successorExecutionId,
+  )
 })
 
 test('K9 Scheduler durably records only bounded DataHub source diagnostics', async () => {

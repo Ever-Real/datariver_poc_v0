@@ -781,6 +781,15 @@ async function main() {
               : null
             return {
               status: attempt.status,
+              ...(attempt.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
+                && safeSnapshotHash(attempt.execution_id)
+                && safeSnapshotHash(attempt.expected_source_snapshot_id)
+                ? {
+                    lifecycle_mode: attempt.lifecycle_mode,
+                    execution_id: attempt.execution_id,
+                    expected_source_snapshot_id: attempt.expected_source_snapshot_id,
+                  }
+                : {}),
               ...(safeK9Token(attempt.stage) ? { stage: attempt.stage } : {}),
               ...(safeK9Token(attempt.detail) ? { detail: attempt.detail } : {}),
               ...(safeK9Token(attempt.reason) ? { reason: attempt.reason } : {}),
@@ -903,6 +912,58 @@ async function main() {
             )
           }
           if (progressOutput && !runningProjector) await removeIfPresent(progressOutput)
+          const sourceCorrectionSuccessorExists = safeSnapshotHash(
+            lifecycle.source?.desired_snapshot_id,
+          ) && lifecycle.source.desired_snapshot_id
+            !== boundedLastCompletedAttempt?.expected_source_snapshot_id
+          const completedSourceCorrectionFailure = boundedLastCompletedAttempt?.status === 'FAILURE'
+            && boundedLastCompletedAttempt.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
+            && safeSnapshotHash(boundedLastCompletedAttempt.execution_id)
+            && safeSnapshotHash(boundedLastCompletedAttempt.expected_source_snapshot_id)
+            && safeK9Token(boundedLastCompletedAttempt.reason)
+            && !sourceCorrectionSuccessorExists
+            ? boundedLastCompletedAttempt : null
+          if (completedSourceCorrectionFailure) {
+            const persistenceDiagnostic = completedSourceCorrectionFailure.reason
+              === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED'
+              ? sanitizeK9SourcePersistenceDiagnosticV2({
+                  code: completedSourceCorrectionFailure.reason,
+                  stage: completedSourceCorrectionFailure.failure_stage,
+                  failure_detail_code: completedSourceCorrectionFailure.failure_detail_code,
+                  persistence_substage: completedSourceCorrectionFailure.persistence_substage,
+                  payload_kind: completedSourceCorrectionFailure.payload_kind,
+                  payload_bytes: completedSourceCorrectionFailure.payload_bytes,
+                  configured_limit_bytes: completedSourceCorrectionFailure.configured_limit_bytes,
+                  sqlstate_class: completedSourceCorrectionFailure.sqlstate_class,
+                  constraint_name: completedSourceCorrectionFailure.constraint_name,
+                  retryable: completedSourceCorrectionFailure.retryable,
+                })
+              : null
+            throw smokeFailure(
+              'K9_INITIAL_REFRESH',
+              completedSourceCorrectionFailure.reason === 'K9_DATAHUB_SOURCE_FAILED'
+                ? 'PREP_SMOKE_K9_DATAHUB_SOURCE_FAILED'
+                : 'PREP_SMOKE_K9_REFRESH_FAILED',
+              'The explicit K9 source-correction attempt failed before successor readiness.',
+              null,
+              {
+                terminal: true,
+                product_error_code: completedSourceCorrectionFailure.reason,
+                failure_stage: persistenceDiagnostic?.stage
+                  || completedSourceCorrectionFailure.failure_stage || 'SOURCE_CAPTURE',
+                failure_detail_code: persistenceDiagnostic?.failure_detail_code
+                  || completedSourceCorrectionFailure.failure_detail_code
+                  || completedSourceCorrectionFailure.reason,
+                scheduled_for: completedSourceCorrectionFailure.scheduled_for || null,
+                attempt_observed_at: completedSourceCorrectionFailure.completed_at || null,
+                source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
+                ...(persistenceDiagnostic ? Object.fromEntries([
+                  'persistence_substage', 'payload_kind', 'payload_bytes',
+                  'configured_limit_bytes', 'sqlstate_class', 'constraint_name',
+                ].map((field) => [field, persistenceDiagnostic[field]])) : {}),
+              },
+            )
+          }
           const projectorFailure = k9V2ProjectorFailure(lifecycle)
           if (projectorFailure) {
             throw smokeFailure(
