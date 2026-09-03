@@ -1392,6 +1392,8 @@ def require_prep_platform(runner: Runner) -> None:
 
 def prepare_deployment(
     release: ReleaseIdentity,
+    *,
+    source_correction_recapture: bool = False,
 ) -> tuple[EnvironmentBundle, DeploymentPreparation]:
     operator = read_env_file(OPERATOR_ENV, private=True, label=".env.prep")
     runner = Runner(environment=child_environment(operator))
@@ -1402,6 +1404,13 @@ def prepare_deployment(
     inventory = inspect_target_inventory(runner, release)
     state = classify_target_state(inventory)
     runner.note(f"Classify PREP target state: {state.value}")
+    if source_correction_recapture and state is not TargetState.EXISTING_OWNED_INCOMPLETE:
+        raise PrepError(
+            "SOURCE_CORRECTION",
+            "PREP_SOURCE_CORRECTION_RECAPTURE_NOT_APPLICABLE",
+            "Source-correction recapture requires one owned incomplete deployment.",
+            "Run ./scripts/prep39083 status and preserve the current accepted/LKG state.",
+        )
     if state is TargetState.EXISTING_STATE_AMBIGUOUS:
         if inventory.accepted_marker_present:
             _accepted_state_failure(
@@ -1453,6 +1462,8 @@ def prepare_deployment(
                 "Prove incomplete target ownership and source ancestry before reconciliation"
             )
     bundle = reconcile_environment(release, target_state=state)
+    if source_correction_recapture:
+        bundle = with_source_correction_request(bundle)
     runner.environment = child_environment(bundle.effective)
     return bundle, DeploymentPreparation(
         runner,
@@ -1461,6 +1472,31 @@ def prepare_deployment(
         before_39080,
         previous_attempt,
     )
+
+
+def with_source_correction_request(
+    bundle: EnvironmentBundle,
+    *,
+    random_request: Callable[[], str] = lambda: secrets.token_hex(32),
+) -> EnvironmentBundle:
+    if bundle.target_state is not TargetState.EXISTING_OWNED_INCOMPLETE:
+        raise PrepError(
+            "SOURCE_CORRECTION",
+            "PREP_SOURCE_CORRECTION_RECAPTURE_NOT_APPLICABLE",
+            "Source-correction recapture requires one owned incomplete deployment.",
+            "Run ./scripts/prep39083 status and preserve the current accepted/LKG state.",
+        )
+    request_id = random_request()
+    if not re.fullmatch(r"[0-9a-f]{64}", request_id):
+        raise PrepError(
+            "SOURCE_CORRECTION",
+            "PREP_SOURCE_CORRECTION_REQUEST_INVALID",
+            "The one-shot source-correction request identity is invalid.",
+            "Preserve PREP state and retry the same explicit deploy command.",
+        )
+    effective = dict(bundle.effective)
+    effective["POC_K9_SOURCE_CORRECTION_REQUEST_ID"] = request_id
+    return replace(bundle, effective=effective)
 
 
 def verify_source_identity(release: ReleaseIdentity) -> dict[str, str]:
@@ -4538,6 +4574,11 @@ def parse_arguments() -> argparse.Namespace:
         "action",
         choices=("sync", "deploy", "doctor", "status", "logs", "smoke", "export"),
     )
+    parser.add_argument(
+        "--source-correction-recapture",
+        action="store_true",
+        help="recapture corrected K9 provider source for one owned incomplete deployment",
+    )
     return parser.parse_args()
 
 
@@ -4602,6 +4643,16 @@ def fail(error: PrepError) -> NoReturn:
 
 def execute(arguments: argparse.Namespace) -> None:
     try:
+        source_correction_recapture = bool(
+            getattr(arguments, "source_correction_recapture", False)
+        )
+        if source_correction_recapture and arguments.action != "deploy":
+            raise PrepError(
+                "SOURCE_CORRECTION",
+                "PREP_SOURCE_CORRECTION_RECAPTURE_ACTION_INVALID",
+                "Source-correction recapture is supported only by deploy.",
+                "Use ./scripts/prep39083 deploy --source-correction-recapture.",
+            )
         if arguments.action == "sync":
             with deployment_lock("sync"):
                 snapshot = sync_release_source()
@@ -4626,7 +4677,10 @@ def execute(arguments: argparse.Namespace) -> None:
                     )
                 retrieval = ensure_git_transport_artifact(release)
                 print(f"Artifact retrieval: {retrieval}", flush=True)
-                bundle, preparation = prepare_deployment(release)
+                bundle, preparation = prepare_deployment(
+                    release,
+                    source_correction_recapture=source_correction_recapture,
+                )
                 deploy(release, bundle, preparation)
                 write_last_command("deploy", "ACCEPTED")
             return

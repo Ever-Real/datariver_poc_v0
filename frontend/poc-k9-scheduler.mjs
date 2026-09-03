@@ -9,7 +9,10 @@ import {
   sanitizeK9LineageSourceProfile,
 } from './poc-k9-lineage-collection.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
-import { K9_V2_FAILURE_CODES } from './poc-k9-lifecycle-v2.mjs'
+import {
+  K9_V2_FAILURE_CODES,
+  K9_V2_SOURCE_RUN_MODES,
+} from './poc-k9-lifecycle-v2.mjs'
 
 const DEFAULT_TIME_ZONE = 'Asia/Seoul'
 const DEFAULT_REFRESH_MODE = 'DAILY'
@@ -547,6 +550,7 @@ export function loadPocK9SchedulerConfig(environment = process.env) {
   const scheduleHour = boundedInteger(environment.POC_K9_SCHEDULE_HOUR, DEFAULT_SCHEDULE_HOUR, 0, 23, 'POC_K9_SCHEDULE_HOUR')
   const scheduleMinute = boundedInteger(environment.POC_K9_SCHEDULE_MINUTE, DEFAULT_SCHEDULE_MINUTE, 0, 59, 'POC_K9_SCHEDULE_MINUTE')
   const classificationCeiling = environment.POC_K9_CLASSIFICATION_CEILING?.trim().toUpperCase() || 'INTERNAL'
+  const sourceCorrectionRequestId = environment.POC_K9_SOURCE_CORRECTION_REQUEST_ID?.trim() || null
 
   if (requested) {
     if (!systemSubjectId || !workspaceId) {
@@ -558,6 +562,9 @@ export function loadPocK9SchedulerConfig(environment = process.env) {
   if (!supportedRefreshModes.has(refreshMode)) throw new Error('POC_K9_REFRESH_MODE must be DAILY, HOURLY, MANUAL, or EVENT_DRIVEN.')
   if (!supportedClassificationCeilings.has(classificationCeiling)) {
     throw new Error('POC_K9_CLASSIFICATION_CEILING must be PUBLIC, INTERNAL, CONFIDENTIAL, or RESTRICTED.')
+  }
+  if (sourceCorrectionRequestId !== null && !/^[0-9a-f]{64}$/u.test(sourceCorrectionRequestId)) {
+    throw new Error('POC_K9_SOURCE_CORRECTION_REQUEST_ID must be one canonical SHA-256 token.')
   }
 
   const timerEnabled = requested && ['DAILY', 'HOURLY'].includes(refreshMode)
@@ -580,6 +587,7 @@ export function loadPocK9SchedulerConfig(environment = process.env) {
     lockName: DEFAULT_LOCK_NAME,
     systemSubjectId,
     workspaceId,
+    sourceCorrectionRequestId,
   })
 }
 
@@ -714,6 +722,7 @@ export function createPocK9Scheduler({
     reconciliationGeneration,
     lifecycleMode,
     bootstrapLifecycleV2,
+    expectedSourceSnapshotId,
   ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
@@ -725,6 +734,7 @@ export function createPocK9Scheduler({
       systemSubjectId: config.systemSubjectId,
       workspaceId: config.workspaceId,
       lifecycleMode,
+      ...(expectedSourceSnapshotId ? { expectedSourceSnapshotId } : {}),
     })
   })
 
@@ -734,7 +744,17 @@ export function createPocK9Scheduler({
       ? currentScheduleBoundary(clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode)
       : validScheduleBoundary(options.scheduledFor, config)
     const triggerType = options.trigger === 'manual' ? 'manual' : 'scheduled'
-    const lifecycleMode = options.lifecycleMode === 'RESUME' ? 'RESUME' : 'REFRESH'
+    const lifecycleMode = K9_V2_SOURCE_RUN_MODES.includes(options.lifecycleMode)
+      ? options.lifecycleMode
+      : 'REFRESH'
+    const expectedSourceSnapshotId = options.expectedSourceSnapshotId == null
+      ? null
+      : options.expectedSourceSnapshotId
+    if (expectedSourceSnapshotId !== null
+      && (typeof expectedSourceSnapshotId !== 'string'
+        || !/^[0-9a-f]{64}$/u.test(expectedSourceSnapshotId))) {
+      throw new Error('The expected K9 source snapshot identity is invalid.')
+    }
     const reconciliationGeneration = options.reconciliationGeneration == null
       ? null
       : options.reconciliationGeneration
@@ -755,7 +775,12 @@ export function createPocK9Scheduler({
         observed_at: startedAt,
       })
       activeRun = execute(
-        scheduledFor, triggerType, reconciliationGeneration, lifecycleMode, bootstrapLifecycleV2,
+        scheduledFor,
+        triggerType,
+        reconciliationGeneration,
+        lifecycleMode,
+        bootstrapLifecycleV2,
+        expectedSourceSnapshotId,
       ).finally(() => {
         activeRun = undefined
         activeAttempt = undefined
@@ -852,6 +877,7 @@ export function createPocK9Scheduler({
         clock(), config.timeZone, config.scheduleHour, config.scheduleMinute, config.refreshMode,
       )
       let lifecycleMode = 'REFRESH'
+      let expectedSourceSnapshotId = null
       let bootstrapLifecycleV2 = false
       if (typeof stateStore.readK9SnapshotLifecycleV2 === 'function') {
         bootstrapLifecycleV2 = await stateStore.readK9SnapshotLifecycleV2() === null
@@ -863,6 +889,20 @@ export function createPocK9Scheduler({
           && lastAttempt?.status === 'FAILURE'
           && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
           lifecycleMode = 'RESUME'
+        }
+      }
+      if (config.sourceCorrectionRequestId) {
+        if (typeof stateStore.claimK9SourceCorrectionRecaptureV2 !== 'function') {
+          throw new Error('The K9 source-correction persistence claim is unavailable.')
+        }
+        const claim = await stateStore.claimK9SourceCorrectionRecaptureV2(
+          config.sourceCorrectionRequestId,
+        )
+        if (claim?.status === 'CLAIMED') {
+          lifecycleMode = 'SOURCE_CORRECTION_RECAPTURE'
+          expectedSourceSnapshotId = claim.expectedSourceSnapshotId
+        } else if (claim?.status !== 'ALREADY_CLAIMED') {
+          throw new Error('The K9 source-correction persistence claim is invalid.')
         }
       }
       let reconciliationGeneration = null
@@ -877,6 +917,7 @@ export function createPocK9Scheduler({
         // A failed attempt at this exact boundary resumes persisted V2 work.
         // A new boundary remains an explicit REFRESH so DataHub drift is found.
         lifecycleMode,
+        expectedSourceSnapshotId,
         bootstrapLifecycleV2,
         reconciliationGeneration,
       }).catch(onError)

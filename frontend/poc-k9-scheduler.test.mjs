@@ -214,6 +214,104 @@ test('K9 Scheduler Config reads correctly', () => {
   assert.equal(config.refreshMode, 'DAILY')
   assert.equal(config.schedule, '02:00 Asia/Seoul')
   assert.equal(config.classificationCeiling, 'INTERNAL')
+  assert.equal(config.sourceCorrectionRequestId, null)
+})
+
+test('K9 Scheduler accepts only one bounded source-correction request identity', () => {
+  const common = {
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+  }
+  const requestId = '9'.repeat(64)
+  assert.equal(loadPocK9SchedulerConfig({
+    ...common,
+    POC_K9_SOURCE_CORRECTION_REQUEST_ID: requestId,
+  }).sourceCorrectionRequestId, requestId)
+  assert.throws(() => loadPocK9SchedulerConfig({
+    ...common,
+    POC_K9_SOURCE_CORRECTION_REQUEST_ID: 'not-a-hash',
+  }), /canonical SHA-256 token/)
+})
+
+test('K9 Scheduler claims explicit source correction once and binds recapture to snapshot X', async () => {
+  const requestId = '9'.repeat(64)
+  const sourceSnapshotId = 'a'.repeat(64)
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SOURCE_CORRECTION_REQUEST_ID: requestId,
+  })
+  const stateStore = {
+    configured: { postgres: true },
+    readK9SnapshotLifecycleV2: mock.fn(async () => ({ desired_snapshot_id: sourceSnapshotId })),
+    readK9SchedulerReceipt: mock.fn(async () => null),
+    claimK9SourceCorrectionRecaptureV2: mock.fn(async () => ({
+      status: 'CLAIMED', expectedSourceSnapshotId: sourceSnapshotId,
+    })),
+    runK9Scheduler: mock.fn(async (_command, task) => task()),
+  }
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    clock: () => new Date('2026-09-03T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  await scheduler.stop()
+
+  assert.equal(stateStore.claimK9SourceCorrectionRecaptureV2.mock.calls.length, 1)
+  assert.equal(stateStore.claimK9SourceCorrectionRecaptureV2.mock.calls[0].arguments[0], requestId)
+  assert.deepEqual(triggerK9Refresh.mock.calls[0].arguments[0], {
+    systemSubjectId: 'hash123',
+    workspaceId: 'ws123',
+    lifecycleMode: 'SOURCE_CORRECTION_RECAPTURE',
+    expectedSourceSnapshotId: sourceSnapshotId,
+  })
+})
+
+test('K9 Scheduler does not replay an already-claimed source-correction request', async () => {
+  const requestId = '9'.repeat(64)
+  const scheduledFor = '2026-09-03T02:00:00.000Z'
+  const config = loadPocK9SchedulerConfig({
+    POC_K9_SCHEDULER_ENABLED: 'true',
+    POC_K9_SYSTEM_SUBJECT_ID: 'hash123',
+    POC_K9_WORKSPACE_ID: 'ws123',
+    POC_K9_SCHEDULER_TIME_ZONE: 'UTC',
+    POC_K9_SCHEDULE_HOUR: '2',
+    POC_K9_SOURCE_CORRECTION_REQUEST_ID: requestId,
+  })
+  const stateStore = {
+    configured: { postgres: true },
+    readK9SnapshotLifecycleV2: mock.fn(async () => ({ desired_snapshot_id: 'b'.repeat(64) })),
+    readK9SchedulerReceipt: mock.fn(async () => ({ value: { last_attempt: {
+      status: 'FAILURE', scheduled_for: scheduledFor,
+    } } })),
+    claimK9SourceCorrectionRecaptureV2: mock.fn(async () => ({
+      status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: 'a'.repeat(64),
+    })),
+    runK9Scheduler: mock.fn(async (_command, task) => task()),
+  }
+  const triggerK9Refresh = mock.fn(async () => ({ status: 'SUCCESS' }))
+  const scheduler = createPocK9Scheduler({
+    config,
+    stateStore,
+    triggerK9Refresh,
+    clock: () => new Date('2026-09-03T03:00:00.000Z'),
+    setTimer: () => 1,
+  })
+
+  await scheduler.start()
+  await scheduler.stop()
+
+  assert.equal(triggerK9Refresh.mock.calls.length, 1)
+  assert.equal(triggerK9Refresh.mock.calls[0].arguments[0].lifecycleMode, 'RESUME')
+  assert.equal(Object.hasOwn(triggerK9Refresh.mock.calls[0].arguments[0], 'expectedSourceSnapshotId'), false)
 })
 
 test('K9 Scheduler supports configured daily, hourly, and manual refresh policies', async () => {

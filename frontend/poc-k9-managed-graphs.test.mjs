@@ -116,6 +116,28 @@ function persistedLineageFixture() {
   }
 }
 
+function glossaryHierarchyFixture(relationships, extra = {}) {
+  const identities = [...new Set(relationships.flatMap((item) => [
+    item.source_urn,
+    item.target_urn,
+  ]))]
+  return {
+    table_nodes: [],
+    column_nodes: [],
+    table_column_edges: [],
+    terms: identities.map((urn, index) => ({ urn, name: `Synthetic term ${index + 1}` })),
+    parent_nodes: [],
+    tags: [],
+    domains: [],
+    containers: [],
+    platform_instances: [],
+    table_assignments: [],
+    column_assignments: [],
+    glossary_relationships: relationships,
+    ...extra,
+  }
+}
+
 async function publishPersistedLineage(neo4j) {
   const stateStore = createBaseStateStore()
   let policies = []
@@ -493,6 +515,119 @@ test('K9 Managed Graphs - mapper deduplication and deterministic sorting', async
   const glossaryResult = k9.mapGlossary(glossaryDataSafe)
   assert.equal(glossaryResult.nodes.length, 4)
   assert.equal(glossaryResult.edges[0].type, 'rel.table_contains_column')
+})
+
+test('K9 glossary hierarchy rejects generic self loops before Neo4j write or promotion', async () => {
+  const term = 'urn:li:glossaryTerm:synthetic-self'
+  for (const relationshipType of ['IS_A', 'IS_PART_OF']) {
+    const stateStore = createBaseStateStore()
+    let policies = []
+    stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+    stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+      policies.find((item) => item.graph_id === graphId) || null
+    ))
+    const neo4j = createBaseNeo4j()
+    const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+    await k9.bootstrapK9Policies(authCtx)
+    const collections = glossaryHierarchyFixture([{
+      source_urn: term,
+      target_urn: term,
+      relationship_type: relationshipType,
+    }])
+    const sourcePayload = { collections, completeness_metadata: { complete: true } }
+    const result = await k9.publishPersistedProjection(authCtx, {
+      projector_id: 'METADATA',
+      source_snapshot: {
+        source_snapshot_id: '8'.repeat(64),
+        metadata_hash: computeSha256(sourcePayload),
+        authority_pin: validV2AuthorityPin,
+      },
+      source_payload: sourcePayload,
+    })
+
+    assert.equal(result.status, 'FAILURE')
+    assert.equal(result.diagnostic.failure_stage, 'GRAPH_QUERY_BUILD')
+    assert.equal(result.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
+    assert.equal(neo4j.run.mock.calls.length, 0)
+    assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
+  }
+})
+
+test('K9 glossary hierarchy canonicalizes inverse container relations without changing graph edges', () => {
+  const child = 'urn:li:glossaryTerm:synthetic-child'
+  const parent = 'urn:li:glossaryTerm:synthetic-parent'
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+
+  for (const inverseType of ['CONTAINS', 'HAS_A']) {
+    const result = k9.mapGlossary(glossaryHierarchyFixture([
+      { source_urn: child, target_urn: parent, relationship_type: 'IS_PART_OF' },
+      { source_urn: parent, target_urn: child, relationship_type: inverseType },
+    ]))
+    assert.equal(result.edges.length, 2)
+    assert.ok(result.edges.some((edge) => edge.source === child && edge.target === parent))
+    assert.ok(result.edges.some((edge) => edge.source === parent && edge.target === child))
+  }
+})
+
+test('K9 glossary hierarchy rejects genuine two-node and N-node canonical cycles', () => {
+  const terms = ['alpha', 'beta', 'gamma', 'delta']
+    .map((value) => `urn:li:glossaryTerm:synthetic-${value}`)
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+  const cycle = (identities) => identities.map((source, index) => ({
+    source_urn: source,
+    target_urn: identities[(index + 1) % identities.length],
+    relationship_type: 'IS_A',
+  }))
+
+  for (const relationships of [cycle(terms.slice(0, 2)), cycle(terms)]) {
+    assert.throws(
+      () => k9.mapGlossary(glossaryHierarchyFixture(relationships)),
+      (error) => error?.graphFailureDetailCode === 'GLOSSARY_HIERARCHY_CYCLE',
+    )
+  }
+})
+
+test('K9 glossary RELATED_TO and unrelated Studio state do not affect hierarchy or mapping hash', () => {
+  const first = 'urn:li:glossaryTerm:synthetic-related-a'
+  const second = 'urn:li:glossaryTerm:synthetic-related-b'
+  const source = glossaryHierarchyFixture([
+    { source_urn: first, target_urn: second, relationship_type: 'RELATED_TO' },
+    { source_urn: second, target_urn: first, relationship_type: 'RELATED_TO' },
+  ])
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+  const withoutStudio = k9.mapGlossary(source)
+  const withStudio = k9.mapGlossary({
+    ...source,
+    graphs: [{ id: 'unrelated-studio-graph' }],
+    studio_drafts: [{ id: 'unrelated-studio-draft' }],
+    studio_releases: [{ id: 'unrelated-studio-release' }],
+    active_studio_release_id: 'unrelated-studio-release',
+  })
+
+  assert.equal(computeSha256(withStudio), computeSha256(withoutStudio))
+  assert.equal(withStudio.edges.length, 2)
+})
+
+test('K9 glossary mapping converges on ordinary asset add and remove input', () => {
+  const first = 'urn:li:glossaryTerm:synthetic-lifecycle-a'
+  const second = 'urn:li:glossaryTerm:synthetic-lifecycle-b'
+  const k9 = createK9ManagedGraphs({ stateStore: createBaseStateStore(), neo4j: createBaseNeo4j() })
+  const initial = k9.mapGlossary(glossaryHierarchyFixture([], {
+    terms: [{ urn: first, name: 'Synthetic first' }],
+  }))
+  const added = k9.mapGlossary(glossaryHierarchyFixture([], {
+    terms: [
+      { urn: first, name: 'Synthetic first' },
+      { urn: second, name: 'Synthetic second' },
+    ],
+  }))
+  const removed = k9.mapGlossary(glossaryHierarchyFixture([], {
+    terms: [{ urn: second, name: 'Synthetic second' }],
+  }))
+
+  assert.deepEqual(initial.nodes.map((node) => node.id), [first])
+  assert.deepEqual(added.nodes.map((node) => node.id), [first, second])
+  assert.deepEqual(removed.nodes.map((node) => node.id), [second])
 })
 
 test('KG2 Metadata Master uses typed hubs, explicit provenance and evidence-derived aliases and units', () => {

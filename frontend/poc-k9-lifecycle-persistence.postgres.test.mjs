@@ -806,6 +806,78 @@ test('PREP-shaped V2 retry uses persisted PostgreSQL source and reruns only Sema
   await pool.end()
 }))
 
+test('source-correction claim is one-shot and preserves failed X while desired head advances to Y', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_v2_source_correction', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 3 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const store = createPocStateStore({ databasePool: pool })
+    try {
+      const sourceX = sourceEnvelope('4', 'provider-before-correction')
+      const sourceY = sourceEnvelope('5', 'provider-after-correction')
+      await store.setK9DesiredSourceSnapshotV2(sourceX)
+
+      let sourcePrevious = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['READY', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'SOURCE', status, attemptNumber: 1, sequence,
+          previous: sourcePrevious,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        sourcePrevious = next
+      }
+      let metadataPrevious = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['FAILED', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'METADATA', status, attemptNumber: 1, sequence,
+          previous: metadataPrevious,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        metadataPrevious = next
+      }
+      const before = await store.readK9SnapshotLifecycleV2()
+      assert.equal(before.status, 'FAILED')
+      assert.equal(before.desired_snapshot_id, sourceX.snapshot.source_snapshot_id)
+      assert.equal(before.active_snapshot_id, null)
+
+      const requestId = '7'.repeat(64)
+      assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
+        status: 'CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
+      assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
+        status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
+
+      await store.setK9DesiredSourceSnapshotV2(sourceY)
+      const after = await store.readK9SnapshotLifecycleV2()
+      assert.equal(after.status, 'PENDING')
+      assert.equal(after.desired_snapshot_id, sourceY.snapshot.source_snapshot_id)
+      assert.equal(after.active_snapshot_id, null)
+      assert.equal(after.desired_projector_receipts.length, 0)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_source_snapshots_v2',
+      )).rows[0].count, 2)
+      assert.equal((await pool.query(`
+        SELECT count(*)::integer AS count FROM poc_k9_projector_receipts_v2
+        WHERE source_snapshot_id = $1
+      `, [sourceX.snapshot.source_snapshot_id])).rows[0].count, 6)
+      assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
+        status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
+      await assert.rejects(
+        store.claimK9SourceCorrectionRecaptureV2('8'.repeat(64)),
+        { code: 'K9_SOURCE_CORRECTION_NOT_APPLICABLE' },
+      )
+    } finally {
+      await store.close()
+    }
+  })
+  await pool.end()
+}))
+
 test('V5 adoption preserves accepted/failed legacy runs, LKG and semantic pointer and requires a new snapshot', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('k9_v2_adoption', async ({ connectionString }) => {

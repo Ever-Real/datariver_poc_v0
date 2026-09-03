@@ -317,6 +317,38 @@ test('a same-X graph-only retry appends a new attempt and preserves the prior ac
   assert.equal(readyState.active.active_snapshot_id, envelope.snapshot.source_snapshot_id)
 })
 
+test('Metadata projector durably preserves bounded glossary hierarchy diagnostics', async () => {
+  const envelope = sourceEnvelope()
+  const persistence = fakePersistence(envelope)
+  const managedGraphs = {
+    publishPersistedProjection: mock.fn(async () => ({
+      status: 'FAILURE',
+      failureCode: 'K9_GRAPH_PROJECTION_FAILED',
+      diagnostic: {
+        failure_stage: 'GRAPH_QUERY_BUILD',
+        failure_detail_code: 'GLOSSARY_HIERARCHY_SELF_LOOP',
+        query_family: 'NONE',
+        transaction_phase: 'BINDING',
+        expected_snapshot_id_present: false,
+        active_snapshot_id_present: false,
+        promotion_attempted: false,
+        promotion_completed: false,
+      },
+    })),
+  }
+
+  await assert.rejects(
+    projector('METADATA', persistence, managedGraphs).project(sourceReceipt(envelope)),
+    (error) => error instanceof K9GraphProjectorError
+      && error.diagnostic.stage === 'GRAPH_QUERY_BUILD'
+      && error.diagnostic.failure_detail_code === 'GLOSSARY_HIERARCHY_SELF_LOOP',
+  )
+  const failed = k9GraphProjectorReceiptState(persistence.lifecycle, 'METADATA').desired
+  assert.equal(failed.status, 'FAILED')
+  assert.equal(failed.receipt.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
+  assert.equal(JSON.stringify(failed).includes('urn:li:'), false)
+})
+
 test('malformed persisted payload identity fails before a receipt or graph candidate is created', async () => {
   const envelope = sourceEnvelope()
   const persistence = fakePersistence(envelope)

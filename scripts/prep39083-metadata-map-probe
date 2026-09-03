@@ -1,0 +1,409 @@
+#!/bin/sh
+set -u
+
+# Read-only, single-output diagnostic for the f3 PREP METADATA mapper failure.
+# It reads the already persisted K9 V2 source evidence in a READ ONLY transaction,
+# runs the Product mapper against an in-memory state store and a Neo4j-deny stub,
+# and never calls DataHub or Knowledge Studio.
+
+EXPECTED_PRODUCT='f3e1e2e1306c0309888c657658757d530391aa6a'
+EXPECTED_SNAPSHOT_PREFIX='1d058'
+OUTPUT_PREFIX='METADATA_MAP_EVIDENCE'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|snapshot_match=NO|payload_hash=FAIL|class=$1|collection=NONE|occurrences=0|identity_hash=NONE"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -eq 0 ]; then
+  emit_shell_failure 'RUNTIME_PRODUCT_CONTAINER_UNAVAILABLE'
+  exit 2
+fi
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure 'RUNTIME_PRODUCT_CONTAINER_AMBIGUOUS'
+  exit 2
+fi
+
+health=$(docker inspect --format '{{.State.Health.Status}}' "$exact_id" 2>/dev/null || true)
+if [ "$health" != 'healthy' ]; then
+  emit_shell_failure 'RUNTIME_CONTAINER_NOT_HEALTHY'
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i \
+    -e DATARIVER_METADATA_PROBE_SNAPSHOT_PREFIX="$EXPECTED_SNAPSHOT_PREFIX" \
+    "$exact_id" \
+    node --max-old-space-size=2048 --input-type=module 2>/dev/null <<'NODE'
+import { createHash } from 'node:crypto'
+import pg from 'pg'
+
+import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import {
+  createK9LifecyclePersistenceV2,
+  normalizeK9SourceSnapshotV2,
+} from './poc-k9-lifecycle-persistence.mjs'
+import { createK9ManagedGraphs } from './poc-k9-managed-graphs.mjs'
+import { loadPocK9SchedulerConfig } from './poc-k9-scheduler.mjs'
+
+const { Pool } = pg
+const expectedSnapshotPrefix = process.env.DATARIVER_METADATA_PROBE_SNAPSHOT_PREFIX || ''
+const collectionNames = Object.freeze([
+  'table_nodes',
+  'column_nodes',
+  'table_column_edges',
+  'terms',
+  'parent_nodes',
+  'term_parent_edges',
+  'node_parent_edges',
+  'glossary_relationships',
+  'table_assignments',
+  'column_assignments',
+  'tags',
+  'domains',
+  'containers',
+  'platform_instances',
+  'table_tag_assignments',
+  'column_tag_assignments',
+  'table_domain_assignments',
+  'table_container_assignments',
+  'table_platform_instance_assignments',
+])
+const allowedCollections = new Set([
+  ...collectionNames.map((value) => value.toUpperCase()),
+  'MAPPED_GRAPH',
+  'PAYLOAD',
+  'NONE',
+])
+
+let output = {
+  snapshotMatch: 'NO',
+  payloadHash: 'FAIL',
+  failureClass: 'PROBE_FAILED',
+  collection: 'NONE',
+  occurrences: 0,
+  identityHash: 'NONE',
+}
+let pool
+let client
+
+function probeFailure(code) {
+  const error = new Error('Bounded metadata probe failure.')
+  error.probeCode = code
+  return error
+}
+
+function hashIdentity(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function safeCollection(value) {
+  return allowedCollections.has(value) ? value : 'NONE'
+}
+
+function itemIdentityHash(item) {
+  if (!item || typeof item !== 'object') return 'NONE'
+  const values = [
+    item.id,
+    item.urn,
+    item.term_urn,
+    item.source_id,
+    item.target_id,
+    item.source_urn,
+    item.target_urn,
+    item.table_id,
+    item.column_id,
+    item.child_urn,
+    item.parent_urn,
+  ].filter((value) => typeof value === 'string' && value.length > 0)
+  return values.length ? hashIdentity(values.join('\u0000')) : 'NONE'
+}
+
+function classifyMappingFailure(message, cursor, metadata) {
+  const rules = [
+    [/^Conflicting duplicate node: (.+)$/u, 'DUPLICATE_NODE_CONFLICT', 1],
+    [/^Conflicting duplicate edge: (.+)$/u, 'DUPLICATE_EDGE_CONFLICT', 1],
+    [/^Duplicate canonical node ID with conflicting properties: (.+)$/u, 'DUPLICATE_NODE_CONFLICT', 1],
+    [/^Invalid table id: (.+)$/u, 'INVALID_TABLE_IDENTITY', 1],
+    [/^Invalid column id: (.+)$/u, 'INVALID_COLUMN_IDENTITY', 1],
+    [/^Invalid term (?:urn|id): (.+)$/u, 'INVALID_TERM_IDENTITY', 1],
+    [/^Invalid (?:glossary )?Domain urn: (.+)$/u, 'INVALID_DOMAIN_IDENTITY', 1],
+    [/^Invalid node urn: (.+)$/u, 'INVALID_GLOSSARY_NODE_IDENTITY', 1],
+    [/^Invalid Tag urn: (.+)$/u, 'INVALID_TAG_IDENTITY', 1],
+    [/^Invalid Container urn: (.+)$/u, 'INVALID_CONTAINER_IDENTITY', 1],
+    [/^Invalid Data Platform Instance urn: (.+)$/u, 'INVALID_PLATFORM_INSTANCE_IDENTITY', 1],
+    [/^Cycle detected in glossary hierarchy starting from: (.+)$/u, 'GLOSSARY_HIERARCHY_CYCLE', 1],
+    [/^Dangling edge (?:source|target): (.+)$/u, 'DANGLING_EDGE', 1],
+    [/^Managed relation provenance is incomplete: (.+)$/u, 'RELATION_PROVENANCE_INVALID', 1],
+    [/^(?:Missing classification|Unknown classification|Classification exceeds ceiling)/u, 'CLASSIFICATION_INVALID', 0],
+    [/^Invalid table-column containment identity$/u, 'INVALID_TABLE_COLUMN_IDENTITY', 0],
+    [/^Invalid explicit glossary relationship identity$/u, 'INVALID_GLOSSARY_RELATIONSHIP_IDENTITY', 0],
+    [/^Invalid legacy glossary(?:-node)? parent identity$/u, 'INVALID_LEGACY_GLOSSARY_RELATIONSHIP_IDENTITY', 0],
+  ]
+
+  for (const [pattern, failureClass, identityGroup] of rules) {
+    const match = pattern.exec(message)
+    if (!match) continue
+
+    let collection = safeCollection(cursor.collection)
+    if (failureClass === 'GLOSSARY_HIERARCHY_CYCLE') {
+      collection = metadata.collections.glossary_relationships.length
+        ? 'GLOSSARY_RELATIONSHIPS'
+        : 'TERM_PARENT_EDGES'
+    }
+
+    return {
+      failureClass,
+      collection,
+      occurrences: 1,
+      identityHash: identityGroup && match[identityGroup]
+        ? hashIdentity(match[identityGroup])
+        : itemIdentityHash(cursor.item),
+    }
+  }
+
+  return {
+    failureClass: 'MAPPING_CONTRACT_INVALID',
+    collection: safeCollection(cursor.collection),
+    occurrences: 1,
+    identityHash: itemIdentityHash(cursor.item),
+  }
+}
+
+function trackedCollections(collections, cursor) {
+  return Object.fromEntries(collectionNames.map((key) => {
+    const items = collections[key]
+    if (!Array.isArray(items)) return [key, items]
+
+    return [key, new Proxy(items, {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          return function * trackedIterator() {
+            for (const item of target) {
+              cursor.collection = key.toUpperCase()
+              cursor.item = item
+              yield item
+            }
+          }
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })]
+  }))
+}
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw probeFailure('DATABASE_CONFIGURATION_UNAVAILABLE')
+
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+async function diagnoseMapper(metadata, snapshot) {
+  let policies = []
+  const stateStore = {
+    ensureK9Policies: async (value) => { policies = value },
+    getK9Policy: async (graphId) => (
+      policies.find((item) => item.graph_id === graphId) || null
+    ),
+    createK9PreparingRun: async () => undefined,
+    getLastK9Run: async () => null,
+    finalizeK9RunFailure: async () => undefined,
+    executeK9Transaction: async () => {
+      throw probeFailure('POST_MAPPING_WRITE_FORBIDDEN')
+    },
+    getK9OrphanRuns: async () => [],
+    getK9PreparingRuns: async () => [],
+    finalizeK9RunNoOp: async () => undefined,
+    recordK9ManagedRefreshFailure: async () => undefined,
+  }
+  const neo4j = {
+    run: async () => {
+      throw probeFailure('NEO4J_ACCESS_FORBIDDEN')
+    },
+  }
+
+  const config = loadPocK9SchedulerConfig()
+  const managed = createK9ManagedGraphs({
+    stateStore,
+    neo4j,
+    schedule: config.schedule,
+    classificationCeiling: config.classificationCeiling,
+    log: { info() {}, warn() {} },
+  })
+  const auth = {
+    principal: { subjectId: process.env.POC_K9_SYSTEM_SUBJECT_ID },
+    workspaceId: process.env.POC_K9_WORKSPACE_ID,
+  }
+  await managed.bootstrapK9Policies(auth)
+
+  const cursor = { collection: 'NONE', item: null }
+  try {
+    managed.mapGlossary({
+      ...trackedCollections(metadata.collections, cursor),
+      completeness_metadata: metadata.completeness_metadata,
+      raw_assignment_reference_hash: metadata.raw_assignment_reference_hash ?? null,
+      authority_pin: structuredClone(snapshot.authority_pin),
+      source_snapshot: structuredClone(snapshot),
+    })
+  } catch (error) {
+    return classifyMappingFailure(String(error?.message || ''), cursor, metadata)
+  }
+
+  try {
+    const result = await managed.publishPersistedProjection(auth, {
+      projector_id: 'METADATA',
+      source_snapshot: snapshot,
+      source_payload: metadata,
+    })
+    if (result?.status === 'FAILURE'
+      && result?.diagnostic?.failure_stage === 'GRAPH_QUERY_BUILD'
+      && result?.diagnostic?.failure_detail_code === 'GRAPH_MAPPING_FAILED') {
+      return classifyMappingFailure(
+        String(result.reason || ''),
+        { collection: 'MAPPED_GRAPH', item: null },
+        metadata,
+      )
+    }
+    return {
+      failureClass: 'MAPPING_NOT_REPRODUCED',
+      collection: 'NONE',
+      occurrences: 0,
+      identityHash: 'NONE',
+    }
+  } catch (error) {
+    return classifyMappingFailure(
+      String(error?.message || ''),
+      { collection: 'PAYLOAD', item: null },
+      metadata,
+    )
+  }
+}
+
+try {
+  if (!/^[0-9a-f]{5,64}$/u.test(expectedSnapshotPrefix)) {
+    throw probeFailure('SOURCE_SNAPSHOT_PREFIX_INVALID')
+  }
+
+  pool = new Pool(databaseConfig())
+  client = await pool.connect()
+  await client.query('BEGIN')
+  await client.query('SET TRANSACTION READ ONLY')
+
+  const readOnlyDatabase = { query: (...args) => client.query(...args) }
+  const persistence = createK9LifecyclePersistenceV2({
+    requireDatabase: async () => readOnlyDatabase,
+  })
+  const lifecycle = await persistence.readLifecycle()
+  if (!lifecycle) throw probeFailure('SOURCE_LIFECYCLE_NOT_FOUND')
+
+  const snapshot = normalizeK9SourceSnapshotV2(lifecycle.desired_snapshot)
+  if (lifecycle.desired_snapshot_id !== snapshot.source_snapshot_id
+    || !snapshot.source_snapshot_id.startsWith(expectedSnapshotPrefix)) {
+    throw probeFailure('SOURCE_SNAPSHOT_MISMATCH')
+  }
+
+  const metadataReceipt = lifecycle.desired_projector_receipts.find(
+    (receipt) => receipt?.projector === 'METADATA',
+  )
+  if (metadataReceipt?.source_snapshot_id !== snapshot.source_snapshot_id
+    || metadataReceipt?.status !== 'FAILED'
+    || metadataReceipt?.diagnostic?.stage !== 'GRAPH_QUERY_BUILD'
+    || metadataReceipt?.diagnostic?.failure_detail_code !== 'GRAPH_MAPPING_FAILED') {
+    throw probeFailure('METADATA_FAILURE_RECEIPT_MISMATCH')
+  }
+
+  output.snapshotMatch = 'YES'
+  const metadata = lifecycle.desired_source_payloads?.METADATA
+  if (!metadata
+    || computeSha256(metadata) !== snapshot.metadata_hash
+    || !metadata.collections
+    || typeof metadata.collections !== 'object'
+    || Array.isArray(metadata.collections)
+    || collectionNames.some((key) => !Array.isArray(metadata.collections[key]))) {
+    throw probeFailure('METADATA_PAYLOAD_CONTRACT_INVALID')
+  }
+
+  output.payloadHash = 'PASS'
+  const diagnosis = await diagnoseMapper(metadata, snapshot)
+  output = {
+    ...output,
+    failureClass: diagnosis.failureClass,
+    collection: diagnosis.collection,
+    occurrences: diagnosis.occurrences,
+    identityHash: diagnosis.identityHash,
+  }
+} catch (error) {
+  output.failureClass = typeof error?.probeCode === 'string'
+    ? error.probeCode
+    : 'PROBE_FAILED'
+  output.collection = 'NONE'
+  output.occurrences = 0
+  output.identityHash = 'NONE'
+} finally {
+  if (client) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+  if (pool) await pool.end().catch(() => undefined)
+}
+
+process.stdout.write(
+  `METADATA_MAP_EVIDENCE|snapshot_match=${output.snapshotMatch}`
+  + `|payload_hash=${output.payloadHash}`
+  + `|class=${output.failureClass}`
+  + `|collection=${safeCollection(output.collection)}`
+  + `|occurrences=${output.occurrences}`
+  + `|identity_hash=${output.identityHash}\n`,
+)
+NODE
+)
+probe_status=$?
+
+evidence_lines=$(printf '%s\n' "$probe_output" | sed -n "/^${OUTPUT_PREFIX}|/p")
+first_line=$(printf '%s\n' "$evidence_lines" | sed -n '1p')
+second_line=$(printf '%s\n' "$evidence_lines" | sed -n '2p')
+
+if [ "$probe_status" -ne 0 ] || [ -z "$first_line" ] || [ -n "$second_line" ]; then
+  emit_shell_failure 'PROBE_EXECUTION_FAILED'
+  exit 2
+fi
+
+printf '%s\n' "$first_line"

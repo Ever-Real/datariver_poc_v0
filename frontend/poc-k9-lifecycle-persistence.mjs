@@ -10,6 +10,7 @@ export const K9_PROJECTORS_V2 = Object.freeze(['SOURCE', 'LINEAGE', 'METADATA', 
 export const K9_LIFECYCLE_STATES_V2 = Object.freeze(['PENDING', 'RUNNING', 'READY', 'FAILED'])
 export const K9_LEGACY_ADOPTION_SCOPE_V2 = 'k9-lifecycle-adoption-v2'
 export const K9_LEGACY_ADOPTION_CONTRACT_V2 = 'DATARIVER_K9_LEGACY_ADOPTION_V2'
+export const K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1 = 'DATARIVER_K9_SOURCE_CORRECTION_CLAIM_V1'
 export const K9_SOURCE_PAYLOAD_KINDS_V2 = Object.freeze([
   'INVENTORY', 'LINEAGE', 'METADATA', 'DANGLING_STATE',
 ])
@@ -1407,6 +1408,100 @@ function allowedReceiptTransition(previous, receipt) {
 export function createK9LifecyclePersistenceV2({ requireDatabase }) {
   if (typeof requireDatabase !== 'function') throw new Error('K9 lifecycle persistence requires a database provider.')
 
+  async function claimSourceCorrectionRecapture(
+    requestIdValue,
+    lifecycleKeyValue = K9_LIFECYCLE_KEY_V2,
+  ) {
+    const requestId = hash(requestIdValue, 'requestId')
+    const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
+    const scope = `k9-source-correction-claim-v1:${requestId}`
+    const pool = await requireDatabase()
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `k9-lifecycle-v2:${lifecycleKey}`,
+      ])
+      const existing = await client.query(
+        'SELECT value, version FROM poc_state WHERE scope = $1 FOR UPDATE',
+        [scope],
+      )
+      if (existing.rows.length) {
+        const value = existing.rows[0]?.value
+        if (existing.rows.length !== 1 || Number(existing.rows[0]?.version) !== 1
+          || value?.contract !== K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1
+          || value?.request_id_hash !== requestId
+          || !HASH.test(value?.expected_source_snapshot_id || '')) {
+          throw lifecycleError(
+            'K9_SOURCE_CORRECTION_CLAIM_CONFLICT',
+            'The source-correction recapture claim is invalid.',
+          )
+        }
+        await client.query('COMMIT')
+        return Object.freeze({
+          status: 'ALREADY_CLAIMED',
+          expectedSourceSnapshotId: value.expected_source_snapshot_id,
+        })
+      }
+
+      const head = await client.query(
+        'SELECT * FROM poc_k9_snapshot_lifecycle_v2 WHERE lifecycle_key = $1 FOR UPDATE',
+        [lifecycleKey],
+      )
+      const expectedSourceSnapshotId = head.rows[0]?.desired_snapshot_id
+      if (head.rows.length !== 1 || head.rows[0].status !== 'FAILED'
+        || !HASH.test(expectedSourceSnapshotId || '')) {
+        throw lifecycleError(
+          'K9_SOURCE_CORRECTION_NOT_APPLICABLE',
+          'Source-correction recapture requires one failed immutable desired lifecycle.',
+        )
+      }
+      const latest = await client.query(`
+        SELECT DISTINCT ON (projector) projector, status
+        FROM poc_k9_projector_receipts_v2
+        WHERE source_snapshot_id = $1
+        ORDER BY projector, attempt_number DESC, sequence DESC, receipt_id DESC
+      `, [expectedSourceSnapshotId])
+      const statuses = new Map(latest.rows.map((row) => [row.projector, row.status]))
+      if (statuses.get('SOURCE') !== 'READY'
+        || !K9_PROJECTORS_V2.some((projector) => (
+          projector !== 'SOURCE' && statuses.get(projector) === 'FAILED'
+        ))) {
+        throw lifecycleError(
+          'K9_SOURCE_CORRECTION_NOT_APPLICABLE',
+          'Source-correction recapture requires READY Source evidence and a failed projector.',
+        )
+      }
+      const claim = Object.freeze({
+        contract: K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1,
+        request_id_hash: requestId,
+        expected_source_snapshot_id: expectedSourceSnapshotId,
+        status: 'CLAIMED',
+      })
+      const inserted = await client.query(`
+        INSERT INTO poc_state (scope, value, version)
+        VALUES ($1, $2::jsonb, 1)
+        ON CONFLICT (scope) DO NOTHING
+        RETURNING value, version
+      `, [scope, JSON.stringify(claim)])
+      if (inserted.rows.length !== 1
+        || Number(inserted.rows[0]?.version) !== 1
+        || canonicalStringify(inserted.rows[0]?.value) !== canonicalStringify(claim)) {
+        throw lifecycleError(
+          'K9_SOURCE_CORRECTION_CLAIM_CONFLICT',
+          'The source-correction recapture claim could not be recorded exactly once.',
+        )
+      }
+      await client.query('COMMIT')
+      return Object.freeze({ status: 'CLAIMED', expectedSourceSnapshotId })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async function setDesiredSnapshot({ snapshot: snapshotValue, source_payloads: sourcePayloadsValue }, lifecycleKeyValue = K9_LIFECYCLE_KEY_V2) {
     let snapshot
     try {
@@ -2114,6 +2209,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
   }
 
   return Object.freeze({
+    claimSourceCorrectionRecapture,
     setDesiredSnapshot,
     appendProjectorReceipt,
     promoteActiveSnapshot,

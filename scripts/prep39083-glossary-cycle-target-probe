@@ -1,0 +1,270 @@
+#!/bin/sh
+set -u
+
+# Read-only, single-output diagnostic for the exact canonical glossary hierarchy
+# cycle in persisted PREP K9 V2 METADATA evidence. No provider, Neo4j, Redis,
+# MCL, or Knowledge Studio call is made.
+
+EXPECTED_PRODUCT='f3e1e2e1306c0309888c657658757d530391aa6a'
+EXPECTED_SNAPSHOT_PREFIX='1d058'
+OUTPUT_PREFIX='GLOSSARY_CANONICAL_CYCLE'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|class=PROBE_FAILED|cycle_length=0"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+health=$(docker inspect --format '{{.State.Health.Status}}' "$exact_id" 2>/dev/null || true)
+if [ "$health" != 'healthy' ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i \
+    -e DATARIVER_GLOSSARY_CYCLE_SNAPSHOT_PREFIX="$EXPECTED_SNAPSHOT_PREFIX" \
+    "$exact_id" \
+    node --max-old-space-size=2048 --input-type=module 2>/dev/null <<'NODE'
+import pg from 'pg'
+
+import {
+  computeSha256,
+  isNodeUrn,
+  isTermUrn,
+} from './poc-knowledge-k9-contracts.mjs'
+import {
+  createK9LifecyclePersistenceV2,
+  normalizeK9SourceSnapshotV2,
+} from './poc-k9-lifecycle-persistence.mjs'
+
+const { Pool } = pg
+const expectedSnapshotPrefix = process.env.DATARIVER_GLOSSARY_CYCLE_SNAPSHOT_PREFIX || ''
+const outputPrefix = 'GLOSSARY_CANONICAL_CYCLE'
+const maxCycleOutputEdges = 8
+let pool
+let client
+
+function probeFailure() {
+  return new Error('Bounded glossary cycle target probe failure.')
+}
+
+function normalizedAlias(value) {
+  return typeof value === 'string'
+    ? value.normalize('NFKC').trim().toLocaleLowerCase().replace(/[._-]+/gu, ' ').replace(/\s+/gu, ' ')
+    : ''
+}
+
+function hierarchyType(value) {
+  const key = normalizedAlias(value).replaceAll(' ', '_')
+  if (key === 'ispartof' || key === 'is_part_of') return 'IS_PART_OF'
+  if (key === 'contains') return 'CONTAINS'
+  if (key === 'hasa' || key === 'has_a') return 'HAS_A'
+  if (key === 'isa' || key === 'is_a') return 'IS_A'
+  if (key === 'inheritsfrom' || key === 'inherits_from') return 'INHERITS_FROM'
+  return null
+}
+
+function safeGlossaryUrn(value) {
+  return isTermUrn(value) || isNodeUrn(value) ? value : null
+}
+
+function encodeOutputField(value) {
+  return value.replaceAll('%', '%25').replaceAll('|', '%7C').replaceAll('=', '%3D')
+}
+
+function exactStringCompare(left, right) {
+  if (left === right) return 0
+  return left < right ? -1 : 1
+}
+
+function canonicalEdge(relation) {
+  const type = hierarchyType(relation.relationship_type)
+  if (!type) return null
+  const originalSource = safeGlossaryUrn(relation.source_urn)
+  const originalTarget = safeGlossaryUrn(relation.target_urn)
+  if (!originalSource || !originalTarget) throw probeFailure()
+  const reverse = type === 'CONTAINS' || type === 'HAS_A'
+  return Object.freeze({
+    source: reverse ? originalTarget : originalSource,
+    target: reverse ? originalSource : originalTarget,
+    type,
+    originalSource,
+    originalTarget,
+  })
+}
+
+function canonicalHierarchyEdges(edges) {
+  const canonical = new Map()
+  for (const edge of edges) {
+    const key = `${edge.source}\u0000${edge.target}`
+    if (!canonical.has(key)) canonical.set(key, edge)
+  }
+  return [...canonical.values()]
+}
+
+function findDirectedCycle(edges) {
+  const adjacency = new Map()
+  const nodes = new Set()
+  for (const edge of edges) {
+    nodes.add(edge.source)
+    nodes.add(edge.target)
+    if (!adjacency.has(edge.source)) adjacency.set(edge.source, [])
+    adjacency.get(edge.source).push(edge)
+  }
+
+  const state = new Map()
+  const nodeStack = []
+  const edgeStack = []
+  let cycle = null
+
+  function visit(node) {
+    state.set(node, 1)
+    nodeStack.push(node)
+    for (const edge of adjacency.get(node) || []) {
+      const targetState = state.get(edge.target) || 0
+      if (targetState === 0) {
+        edgeStack.push(edge)
+        if (visit(edge.target)) return true
+        edgeStack.pop()
+      } else if (targetState === 1) {
+        const startIndex = nodeStack.lastIndexOf(edge.target)
+        if (startIndex < 0) throw probeFailure()
+        cycle = [...edgeStack.slice(startIndex), edge]
+        return true
+      }
+    }
+    nodeStack.pop()
+    state.set(node, 2)
+    return false
+  }
+
+  for (const node of [...nodes].sort(exactStringCompare)) {
+    if ((state.get(node) || 0) === 0 && visit(node)) break
+  }
+  return cycle
+}
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw probeFailure()
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+let output
+try {
+  if (!/^[0-9a-f]{5,64}$/u.test(expectedSnapshotPrefix)) throw probeFailure()
+
+  pool = new Pool(databaseConfig())
+  client = await pool.connect()
+  await client.query('BEGIN')
+  await client.query('SET TRANSACTION READ ONLY')
+
+  const readOnlyDatabase = { query: (...args) => client.query(...args) }
+  const persistence = createK9LifecyclePersistenceV2({
+    requireDatabase: async () => readOnlyDatabase,
+  })
+  const lifecycle = await persistence.readLifecycle()
+  if (!lifecycle) throw probeFailure()
+
+  const snapshot = normalizeK9SourceSnapshotV2(lifecycle.desired_snapshot)
+  if (lifecycle.desired_snapshot_id !== snapshot.source_snapshot_id
+    || !snapshot.source_snapshot_id.startsWith(expectedSnapshotPrefix)) {
+    throw probeFailure()
+  }
+
+  const metadata = lifecycle.desired_source_payloads?.METADATA
+  if (!metadata
+    || computeSha256(metadata) !== snapshot.metadata_hash
+    || !Array.isArray(metadata.collections?.glossary_relationships)) {
+    throw probeFailure()
+  }
+
+  const rawCanonicalEdges = metadata.collections.glossary_relationships
+    .map(canonicalEdge)
+    .filter(Boolean)
+  const cycle = findDirectedCycle(canonicalHierarchyEdges(rawCanonicalEdges))
+  if (!cycle?.length) throw probeFailure()
+
+  output = cycle.length > maxCycleOutputEdges
+    ? { failureClass: 'CYCLE_OUTPUT_BOUND_EXCEEDED', cycleLength: cycle.length, edges: [] }
+    : { failureClass: null, cycleLength: cycle.length, edges: cycle }
+} catch {
+  output = {
+    failureClass: 'PROBE_FAILED',
+    cycleLength: 0,
+    edges: [],
+  }
+} finally {
+  if (client) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+  if (pool) await pool.end().catch(() => undefined)
+}
+
+const edgeFields = output.edges.map((edge, index) => (
+  `|edge${index + 1}_type=${edge.type}`
+  + `|edge${index + 1}_source_urn=${encodeOutputField(edge.originalSource)}`
+  + `|edge${index + 1}_target_urn=${encodeOutputField(edge.originalTarget)}`
+)).join('')
+process.stdout.write(
+  `${outputPrefix}`
+  + (output.failureClass ? `|class=${output.failureClass}` : '')
+  + `|cycle_length=${output.cycleLength}${edgeFields}\n`,
+)
+NODE
+)
+probe_status=$?
+
+evidence_lines=$(printf '%s\n' "$probe_output" | sed -n "/^${OUTPUT_PREFIX}|/p")
+first_line=$(printf '%s\n' "$evidence_lines" | sed -n '1p')
+second_line=$(printf '%s\n' "$evidence_lines" | sed -n '2p')
+
+if [ "$probe_status" -ne 0 ] || [ -z "$first_line" ] || [ -n "$second_line" ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+printf '%s\n' "$first_line"
