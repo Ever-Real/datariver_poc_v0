@@ -1,4 +1,5 @@
 /* global Buffer, structuredClone */
+import { createHash } from 'node:crypto'
 import { canonicalStringify, computeSha256 } from './poc-knowledge-k9-contracts.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
@@ -12,9 +13,57 @@ export const K9_LEGACY_ADOPTION_CONTRACT_V2 = 'DATARIVER_K9_LEGACY_ADOPTION_V2'
 export const K9_SOURCE_PAYLOAD_KINDS_V2 = Object.freeze([
   'INVENTORY', 'LINEAGE', 'METADATA', 'DANGLING_STATE',
 ])
+export const K9_SOURCE_PAYLOAD_MANIFEST_CONTRACT_V1 = 'DATARIVER_K9_SOURCE_PAYLOAD_MANIFEST_V1'
+export const K9_SOURCE_PAYLOAD_CHUNK_ENCODING_V1 = 'CANONICAL_JSON_UTF8_CHUNKS_V1'
+export const K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1 = 1_048_576
+export const K9_SOURCE_PAYLOAD_CHUNK_INSERT_BATCH_V1 = 16
+export const K9_SOURCE_PAYLOAD_MAX_BYTES_V2 = 1_073_741_824
+export const K9_SOURCE_PERSISTENCE_SUBSTAGES_V2 = Object.freeze([
+  'SOURCE_RECEIPT_VALIDATE',
+  'SNAPSHOT_NORMALIZE',
+  'INVENTORY_PAYLOAD_NORMALIZE',
+  'LINEAGE_PAYLOAD_NORMALIZE',
+  'METADATA_PAYLOAD_NORMALIZE',
+  'DANGLING_PAYLOAD_NORMALIZE',
+  'SNAPSHOT_INSERT',
+  'INVENTORY_PAYLOAD_INSERT',
+  'LINEAGE_PAYLOAD_INSERT',
+  'METADATA_PAYLOAD_INSERT',
+  'DANGLING_PAYLOAD_INSERT',
+  'SOURCE_EVIDENCE_STAGE',
+  'LIFECYCLE_HEAD_WRITE',
+  'TRANSACTION_COMMIT',
+  'LIFECYCLE_READBACK',
+  'SOURCE_PROJECTOR_RECEIPTS',
+])
 
 const HASH = /^[0-9a-f]{64}$/
 const TOKEN = /^[A-Z][A-Z0-9_]{0,79}$/
+const K9_SOURCE_PERSISTENCE_SUBSTAGE_SET = new Set(K9_SOURCE_PERSISTENCE_SUBSTAGES_V2)
+const K9_SOURCE_PERSISTENCE_DETAIL_CODES = new Set([
+  'K9_INVENTORY_PAYLOAD_NOT_NORMALIZED',
+  'K9_LIFECYCLE_IN_PROGRESS',
+  'K9_LIFECYCLE_STALE',
+  'K9_SOURCE_EVIDENCE_IN_PROGRESS',
+  'K9_SOURCE_EVIDENCE_INVALID',
+  'K9_SOURCE_EVIDENCE_STALE',
+  'K9_SOURCE_PAYLOAD_CONFLICT',
+  'K9_SOURCE_PAYLOAD_HASH_MISMATCH',
+  'K9_SOURCE_PAYLOAD_READBACK_MISMATCH',
+  'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
+  'K9_SOURCE_PAYLOADS_INVALID',
+  'K9_SOURCE_RECEIPT_INVALID',
+  'K9_SOURCE_RECEIPT_READBACK_MISMATCH',
+  'K9_SOURCE_SNAPSHOT_CONFLICT',
+  'K9_SOURCE_SNAPSHOT_HASH_MISMATCH',
+  'K9_SOURCE_SNAPSHOT_INVALID',
+  'K9_SOURCE_PERSISTENCE_SQL_FAILED',
+  'K9_SOURCE_PERSISTENCE_UNKNOWN',
+])
+const K9_SOURCE_PERSISTENCE_SQL_CLASSES = new Set([
+  'CHECK_CONSTRAINT', 'CONNECTION', 'CONSTRAINT', 'FK', 'NONE',
+  'PAYLOAD_CONSTRAINT', 'SNAPSHOT_CONSTRAINT', 'TIMEOUT', 'TRANSACTION',
+])
 
 export const K9_LIFECYCLE_SCHEMA_V6 = Object.freeze([
   `
@@ -321,6 +370,81 @@ export const K9_LIFECYCLE_SCHEMA_V6 = Object.freeze([
   `,
 ])
 
+// Additive V8 persistence only. Existing V6 monolithic payload rows remain readable;
+// every new payload uses one bounded manifest plus immutable content-addressed chunks.
+export const K9_SOURCE_PAYLOAD_CHUNK_SCHEMA_V8 = Object.freeze([
+  `
+    CREATE TABLE IF NOT EXISTS poc_k9_source_payload_chunks_v2 (
+      source_snapshot_id char(64) NOT NULL,
+      payload_kind varchar(32) NOT NULL,
+      chunk_number integer NOT NULL,
+      chunk_count integer NOT NULL,
+      payload_hash char(64) NOT NULL,
+      chunk_hash char(64) NOT NULL,
+      byte_count integer NOT NULL,
+      payload_chunk bytea NOT NULL,
+      recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      PRIMARY KEY (source_snapshot_id, payload_kind, chunk_number),
+      FOREIGN KEY (source_snapshot_id, payload_kind)
+        REFERENCES poc_k9_source_payloads_v2(source_snapshot_id, payload_kind),
+      CONSTRAINT ck_poc_k9_source_payload_chunk_v2_kind CHECK (
+        payload_kind IN ('INVENTORY', 'LINEAGE', 'METADATA', 'DANGLING_STATE')
+      ),
+      CONSTRAINT ck_poc_k9_source_payload_chunk_v2_hashes CHECK (
+        payload_hash ~ '^[0-9a-f]{64}$' AND chunk_hash ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT ck_poc_k9_source_payload_chunk_v2_bounds CHECK (
+        chunk_number BETWEEN 1 AND 1024
+        AND chunk_count BETWEEN 1 AND 1024
+        AND chunk_number <= chunk_count
+        AND byte_count BETWEEN 1 AND 1048576
+        AND octet_length(payload_chunk) = byte_count
+      )
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_k9_source_payload_chunks_v2_read
+      ON poc_k9_source_payload_chunks_v2
+      (source_snapshot_id, payload_kind, chunk_number, chunk_hash)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS poc_k9_source_staging_v2 (
+      lifecycle_key varchar(100) PRIMARY KEY,
+      source_snapshot_id char(64) NOT NULL
+        REFERENCES poc_k9_source_snapshots_v2(source_snapshot_id),
+      evidence_hash char(64) NOT NULL,
+      status varchar(16) NOT NULL,
+      version bigint NOT NULL DEFAULT 1,
+      verified_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      consumed_at timestamptz,
+      CONSTRAINT ck_poc_k9_source_staging_v2_hash CHECK (
+        evidence_hash ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT ck_poc_k9_source_staging_v2_state CHECK (
+        status IN ('VERIFIED', 'CONSUMED')
+        AND version > 0
+        AND ((status = 'VERIFIED' AND consumed_at IS NULL)
+          OR (status = 'CONSUMED' AND consumed_at IS NOT NULL))
+      )
+    )
+  `,
+  `
+    DO $block$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trg_poc_k9_source_payload_chunks_v2_immutable'
+          AND tgrelid = 'poc_k9_source_payload_chunks_v2'::regclass
+      ) THEN
+        CREATE TRIGGER trg_poc_k9_source_payload_chunks_v2_immutable
+          BEFORE UPDATE OR DELETE ON poc_k9_source_payload_chunks_v2
+          FOR EACH ROW EXECUTE FUNCTION poc_reject_k9_lifecycle_payload_mutation();
+      END IF;
+    END
+    $block$
+  `,
+])
+
 function lifecycleError(code, message) {
   return Object.assign(new Error(message), { code })
 }
@@ -367,6 +491,18 @@ function timestamp(value, name, nullable = false) {
 
 function jsonSize(value) {
   return Buffer.byteLength(canonicalStringify(value), 'utf8')
+}
+
+function sha256Bytes(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function sourcePayloadNormalizeSubstage(kind) {
+  return kind === 'DANGLING_STATE' ? 'DANGLING_PAYLOAD_NORMALIZE' : `${kind}_PAYLOAD_NORMALIZE`
+}
+
+function sourcePayloadInsertSubstage(kind) {
+  return kind === 'DANGLING_STATE' ? 'DANGLING_PAYLOAD_INSERT' : `${kind}_PAYLOAD_INSERT`
 }
 
 export function normalizeK9SourceSnapshotV2(value) {
@@ -469,10 +605,15 @@ export function normalizeK9SourcePayloadsV2(value, snapshotValue) {
     || !Array.isArray(inventory.items)
     || inventory.items.some((item, index, items) => !isObject(item)
       || (index > 0 && canonicalStringify(items[index - 1]).localeCompare(canonicalStringify(item)) > 0))) {
-    throw lifecycleError(
+    throw Object.assign(lifecycleError(
       'K9_INVENTORY_PAYLOAD_NOT_NORMALIZED',
       'The INVENTORY payload is not the normalized Catalog source bound by the snapshot.',
-    )
+    ), {
+      persistenceSubstage: 'INVENTORY_PAYLOAD_NORMALIZE',
+      payloadKind: 'INVENTORY',
+      payloadBytes: isObject(inventory) ? jsonSize(inventory) : 0,
+      configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+    })
   }
   const prohibitedSourceKey = (candidate) => {
     if (Array.isArray(candidate)) return candidate.some(prohibitedSourceKey)
@@ -488,19 +629,161 @@ export function normalizeK9SourcePayloadsV2(value, snapshotValue) {
     ))
   }
   if (prohibitedSourceKey(inventory)) {
-    throw lifecycleError('K9_INVENTORY_PAYLOAD_NOT_NORMALIZED', 'The INVENTORY payload retains operational or secret source fields.')
+    throw Object.assign(lifecycleError(
+      'K9_INVENTORY_PAYLOAD_NOT_NORMALIZED',
+      'The INVENTORY payload retains operational or secret source fields.',
+    ), {
+      persistenceSubstage: 'INVENTORY_PAYLOAD_NORMALIZE',
+      payloadKind: 'INVENTORY',
+      payloadBytes: jsonSize(inventory),
+      configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+    })
   }
   for (const kind of K9_SOURCE_PAYLOAD_KINDS_V2) {
+    const payloadBytes = (!isObject(payloads[kind]) && !Array.isArray(payloads[kind]))
+      ? 0 : jsonSize(payloads[kind])
+    if (payloadBytes > K9_SOURCE_PAYLOAD_MAX_BYTES_V2) {
+      throw Object.assign(lifecycleError(
+        'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
+        `The ${kind} payload exceeds the bounded K9 source persistence contract.`,
+      ), {
+        persistenceSubstage: sourcePayloadNormalizeSubstage(kind),
+        payloadKind: kind,
+        payloadBytes,
+        configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+      })
+    }
     if ((!isObject(payloads[kind]) && !Array.isArray(payloads[kind]))
-      || jsonSize(payloads[kind]) > 67_108_864
       || computeSha256(payloads[kind]) !== expected[kind]) {
-      throw lifecycleError(
+      throw Object.assign(lifecycleError(
         'K9_SOURCE_PAYLOAD_HASH_MISMATCH',
         `The ${kind} payload does not match the canonical K9 source snapshot.`,
-      )
+      ), {
+        persistenceSubstage: sourcePayloadNormalizeSubstage(kind),
+        payloadKind: kind,
+        payloadBytes,
+        configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+      })
     }
   }
   return Object.freeze(payloads)
+}
+
+export function encodeK9SourcePayloadChunksV2(kindValue, payload, expectedHash) {
+  const kind = boundedString(kindValue, 'payload_kind', 32)
+  if (!K9_SOURCE_PAYLOAD_KINDS_V2.includes(kind)
+    || (!isObject(payload) && !Array.isArray(payload))
+    || !HASH.test(expectedHash || '')) {
+    throw lifecycleError('K9_SOURCE_PAYLOADS_INVALID', 'The K9 source payload chunk input is invalid.')
+  }
+  const serialized = Buffer.from(canonicalStringify(payload), 'utf8')
+  if (serialized.byteLength > K9_SOURCE_PAYLOAD_MAX_BYTES_V2) {
+    throw Object.assign(lifecycleError(
+      'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
+      `The ${kind} payload exceeds the bounded K9 source persistence contract.`,
+    ), {
+      persistenceSubstage: sourcePayloadNormalizeSubstage(kind),
+      payloadKind: kind,
+      payloadBytes: serialized.byteLength,
+      configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+    })
+  }
+  if (sha256Bytes(serialized) !== expectedHash) {
+    throw Object.assign(lifecycleError(
+      'K9_SOURCE_PAYLOAD_HASH_MISMATCH',
+      `The ${kind} payload bytes do not match the canonical K9 source snapshot.`,
+    ), {
+      persistenceSubstage: sourcePayloadNormalizeSubstage(kind),
+      payloadKind: kind,
+      payloadBytes: serialized.byteLength,
+      configuredLimitBytes: K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+    })
+  }
+  const chunkCount = Math.max(1, Math.ceil(serialized.byteLength / K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1))
+  const chunks = Array.from({ length: chunkCount }, (_value, index) => {
+    const bytes = Buffer.from(serialized.subarray(
+      index * K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1,
+      Math.min((index + 1) * K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1, serialized.byteLength),
+    ))
+    return Object.freeze({
+      chunk_number: index + 1,
+      chunk_hash: sha256Bytes(bytes),
+      byte_count: bytes.byteLength,
+      bytes,
+    })
+  })
+  const manifest = Object.freeze({
+    contract: K9_SOURCE_PAYLOAD_MANIFEST_CONTRACT_V1,
+    encoding: K9_SOURCE_PAYLOAD_CHUNK_ENCODING_V1,
+    payload_kind: kind,
+    payload_hash: expectedHash,
+    total_bytes: serialized.byteLength,
+    chunk_size_bytes: K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1,
+    chunk_count: chunkCount,
+    chunk_hashes: Object.freeze(chunks.map((chunk) => chunk.chunk_hash)),
+  })
+  return Object.freeze({ manifest, chunks: Object.freeze(chunks), payload_bytes: serialized.byteLength })
+}
+
+function isK9SourcePayloadManifestV1(value) {
+  return exactKeys(value, [
+    'chunk_count', 'chunk_hashes', 'chunk_size_bytes', 'contract', 'encoding',
+    'payload_hash', 'payload_kind', 'total_bytes',
+  ]) && value.contract === K9_SOURCE_PAYLOAD_MANIFEST_CONTRACT_V1
+    && value.encoding === K9_SOURCE_PAYLOAD_CHUNK_ENCODING_V1
+    && K9_SOURCE_PAYLOAD_KINDS_V2.includes(value.payload_kind)
+    && HASH.test(value.payload_hash || '')
+    && Number.isSafeInteger(value.total_bytes) && value.total_bytes >= 2
+    && value.total_bytes <= K9_SOURCE_PAYLOAD_MAX_BYTES_V2
+    && value.chunk_size_bytes === K9_SOURCE_PAYLOAD_CHUNK_BYTES_V1
+    && Number.isSafeInteger(value.chunk_count) && value.chunk_count >= 1 && value.chunk_count <= 1024
+    && Array.isArray(value.chunk_hashes) && value.chunk_hashes.length === value.chunk_count
+    && value.chunk_hashes.every((item) => HASH.test(item || ''))
+}
+
+function decodeK9SourcePayloadV2(row, chunkRows) {
+  if (!isK9SourcePayloadManifestV1(row.payload)) {
+    if (chunkRows.length !== 0
+      || (!isObject(row.payload) && !Array.isArray(row.payload))
+      || computeSha256(row.payload) !== row.payload_hash) {
+      throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'Legacy K9 source payload evidence is invalid.')
+    }
+    return structuredClone(row.payload)
+  }
+  const manifest = row.payload
+  if (manifest.payload_kind !== row.payload_kind || manifest.payload_hash !== row.payload_hash
+    || chunkRows.length !== manifest.chunk_count) {
+    throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source payload manifest evidence is incomplete.')
+  }
+  const ordered = [...chunkRows].sort((left, right) => Number(left.chunk_number) - Number(right.chunk_number))
+  let totalBytes = 0
+  const chunks = ordered.map((chunk, index) => {
+    const bytes = Buffer.from(chunk.payload_chunk)
+    totalBytes += bytes.byteLength
+    if (Number(chunk.chunk_number) !== index + 1
+      || Number(chunk.chunk_count) !== manifest.chunk_count
+      || chunk.payload_hash !== manifest.payload_hash
+      || chunk.chunk_hash !== manifest.chunk_hashes[index]
+      || Number(chunk.byte_count) !== bytes.byteLength
+      || sha256Bytes(bytes) !== chunk.chunk_hash) {
+      throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source payload chunk evidence is invalid.')
+    }
+    return bytes
+  })
+  const serialized = Buffer.concat(chunks, totalBytes)
+  if (totalBytes !== manifest.total_bytes || sha256Bytes(serialized) !== manifest.payload_hash) {
+    throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source payload root evidence is invalid.')
+  }
+  let payload
+  try {
+    payload = JSON.parse(serialized.toString('utf8'))
+  } catch {
+    throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source payload canonical JSON is invalid.')
+  }
+  if (canonicalStringify(payload) !== serialized.toString('utf8') || computeSha256(payload) !== manifest.payload_hash) {
+    throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source payload canonical read-back did not match.')
+  }
+  return payload
 }
 
 function normalizeProgress(value) {
@@ -695,6 +978,127 @@ export async function applyK9LifecycleSchemaV6(client) {
   for (const statement of K9_LIFECYCLE_SCHEMA_V6) await client.query(statement)
 }
 
+export async function applyK9SourcePayloadChunkSchemaV8(client) {
+  for (const statement of K9_SOURCE_PAYLOAD_CHUNK_SCHEMA_V8) await client.query(statement)
+}
+
+const K9_SOURCE_PERSISTENCE_CONSTRAINTS = new Set([
+  'ck_poc_k9_source_snapshot_v2_contract',
+  'ck_poc_k9_source_snapshot_v2_hashes',
+  'ck_poc_k9_source_snapshot_v2_payload',
+  'ck_poc_k9_source_payload_v2_kind',
+  'ck_poc_k9_source_payload_v2_hash',
+  'ck_poc_k9_source_payload_v2_payload',
+  'ck_poc_k9_source_payload_chunk_v2_kind',
+  'ck_poc_k9_source_payload_chunk_v2_hashes',
+  'ck_poc_k9_source_payload_chunk_v2_bounds',
+  'ck_poc_k9_source_staging_v2_hash',
+  'ck_poc_k9_source_staging_v2_state',
+  'ck_poc_k9_snapshot_lifecycle_v2_state',
+  'poc_k9_snapshot_lifecycle_v2_active_snapshot_id_fkey',
+  'poc_k9_snapshot_lifecycle_v2_desired_snapshot_id_fkey',
+  'poc_k9_snapshot_lifecycle_v2_pkey',
+  'poc_k9_source_payload_chunks__source_snapshot_id_payload_k_fkey',
+  'poc_k9_source_payload_chunks_v2_pkey',
+  'poc_k9_source_payloads_v2_pkey',
+  'poc_k9_source_payloads_v2_source_snapshot_id_fkey',
+  'poc_k9_source_snapshots_v2_pkey',
+  'poc_k9_source_staging_v2_pkey',
+  'poc_k9_source_staging_v2_source_snapshot_id_fkey',
+])
+
+function sourcePersistenceSqlClass(error) {
+  const code = typeof error?.code === 'string' ? error.code : ''
+  const constraint = K9_SOURCE_PERSISTENCE_CONSTRAINTS.has(error?.constraint)
+    ? error.constraint : null
+  if (code.startsWith('08')) return 'CONNECTION'
+  if (code === '57014') return 'TIMEOUT'
+  if (code === '23503') return 'FK'
+  if (code === '23514') {
+    if (constraint?.includes('snapshot')) return 'SNAPSHOT_CONSTRAINT'
+    if (constraint?.includes('payload')) return 'PAYLOAD_CONSTRAINT'
+    return 'CHECK_CONSTRAINT'
+  }
+  if (code.startsWith('23')) return 'CONSTRAINT'
+  if (code.startsWith('40')) return 'TRANSACTION'
+  return 'NONE'
+}
+
+export function classifyK9SourcePersistenceFailureV2(error, {
+  substage,
+  payloadKind = 'NONE',
+  payloadBytes = 0,
+  configuredLimitBytes = 0,
+} = {}) {
+  if (error?.diagnostic?.code === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED') {
+    const existing = sanitizeK9SourcePersistenceDiagnosticV2(error.diagnostic)
+    if (existing) return existing
+  }
+  const sqlstateClass = sourcePersistenceSqlClass(error)
+  const detail = K9_SOURCE_PERSISTENCE_DETAIL_CODES.has(error?.code)
+    ? error.code
+    : sqlstateClass !== 'NONE' ? 'K9_SOURCE_PERSISTENCE_SQL_FAILED' : 'K9_SOURCE_PERSISTENCE_UNKNOWN'
+  return Object.freeze({
+    code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    stage: 'SOURCE_RECEIPT',
+    failure_detail_code: detail,
+    persistence_substage: K9_SOURCE_PERSISTENCE_SUBSTAGE_SET.has(substage)
+      ? substage : 'SOURCE_RECEIPT_VALIDATE',
+    payload_kind: K9_SOURCE_PAYLOAD_KINDS_V2.includes(payloadKind) ? payloadKind : 'NONE',
+    payload_bytes: Number.isSafeInteger(payloadBytes) && payloadBytes >= 0
+      && payloadBytes <= 2_147_483_647 ? payloadBytes : 0,
+    configured_limit_bytes: Number.isSafeInteger(configuredLimitBytes) && configuredLimitBytes >= 0
+      && configuredLimitBytes <= 2_147_483_647 ? configuredLimitBytes : 0,
+    sqlstate_class: sqlstateClass,
+    constraint_name: K9_SOURCE_PERSISTENCE_CONSTRAINTS.has(error?.constraint)
+      ? error.constraint.toUpperCase() : 'NONE',
+    retryable: !['K9_SOURCE_SNAPSHOT_INVALID', 'K9_SOURCE_SNAPSHOT_HASH_MISMATCH',
+      'K9_SOURCE_PAYLOADS_INVALID', 'K9_INVENTORY_PAYLOAD_NOT_NORMALIZED',
+      'K9_SOURCE_PAYLOAD_HASH_MISMATCH', 'K9_SOURCE_PAYLOAD_SIZE_LIMIT'].includes(detail),
+  })
+}
+
+export function sanitizeK9SourcePersistenceDiagnosticV2(value) {
+  if (value?.code !== 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED'
+    || value?.stage !== 'SOURCE_RECEIPT') return null
+  const constraint = String(value.constraint_name || '').toLowerCase()
+  return Object.freeze({
+    code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+    stage: 'SOURCE_RECEIPT',
+    failure_detail_code: K9_SOURCE_PERSISTENCE_DETAIL_CODES.has(value.failure_detail_code)
+      ? value.failure_detail_code : 'K9_SOURCE_PERSISTENCE_UNKNOWN',
+    persistence_substage: K9_SOURCE_PERSISTENCE_SUBSTAGE_SET.has(value.persistence_substage)
+      ? value.persistence_substage : 'SOURCE_RECEIPT_VALIDATE',
+    payload_kind: K9_SOURCE_PAYLOAD_KINDS_V2.includes(value.payload_kind)
+      ? value.payload_kind : 'NONE',
+    payload_bytes: Number.isSafeInteger(value.payload_bytes) && value.payload_bytes >= 0
+      && value.payload_bytes <= 2_147_483_647 ? value.payload_bytes : 0,
+    configured_limit_bytes: Number.isSafeInteger(value.configured_limit_bytes)
+      && value.configured_limit_bytes >= 0 && value.configured_limit_bytes <= 2_147_483_647
+      ? value.configured_limit_bytes : 0,
+    sqlstate_class: K9_SOURCE_PERSISTENCE_SQL_CLASSES.has(value.sqlstate_class)
+      ? value.sqlstate_class : 'NONE',
+    constraint_name: K9_SOURCE_PERSISTENCE_CONSTRAINTS.has(constraint)
+      ? constraint.toUpperCase() : 'NONE',
+    retryable: value.retryable === true,
+  })
+}
+
+function sourcePersistenceFailure(error, context) {
+  const diagnostic = classifyK9SourcePersistenceFailureV2(error, context)
+  return Object.assign(lifecycleError(diagnostic.code, 'K9 source receipt persistence failed.'), {
+    diagnostic,
+  })
+}
+
+async function persistenceBoundary(context, action) {
+  try {
+    return await action()
+  } catch (error) {
+    throw sourcePersistenceFailure(error, context)
+  }
+}
+
 function snapshotInsertValues(snapshot) {
   return [
     snapshot.source_snapshot_id, snapshot.contract_version, snapshot.source_fingerprint_id,
@@ -727,36 +1131,167 @@ async function insertSnapshot(client, snapshot) {
   return false
 }
 
-async function insertSourcePayloads(client, snapshot, payloads) {
-  const hashes = {
+function sourcePayloadHashes(snapshot) {
+  return {
     INVENTORY: snapshot.inventory_projection_hash,
     LINEAGE: snapshot.lineage_hash,
     METADATA: snapshot.metadata_hash,
     DANGLING_STATE: snapshot.dangling_state_hash,
   }
+}
+
+function sourceEvidenceHash(snapshot) {
+  return computeSha256({
+    contract: 'DATARIVER_K9_SOURCE_EVIDENCE_V1',
+    source_snapshot_id: snapshot.source_snapshot_id,
+    payload_hashes: sourcePayloadHashes(snapshot),
+  })
+}
+
+async function insertSourcePayloads(client, snapshot, payloads) {
+  const hashes = sourcePayloadHashes(snapshot)
   let created = false
   for (const kind of K9_SOURCE_PAYLOAD_KINDS_V2) {
-    const inserted = await client.query(`
+    let encoded
+    try {
+      encoded = encodeK9SourcePayloadChunksV2(kind, payloads[kind], hashes[kind])
+      const inserted = await client.query(`
       INSERT INTO poc_k9_source_payloads_v2 (
         source_snapshot_id, payload_kind, payload_hash, payload
       ) VALUES ($1, $2, $3, $4::jsonb)
       ON CONFLICT (source_snapshot_id, payload_kind) DO NOTHING
       RETURNING payload_kind
-    `, [snapshot.source_snapshot_id, kind, hashes[kind], JSON.stringify(payloads[kind])])
-    if (inserted.rows.length === 1) {
-      created = true
-      continue
-    }
-    const existing = await client.query(`
+      `, [snapshot.source_snapshot_id, kind, hashes[kind], JSON.stringify(encoded.manifest)])
+      if (inserted.rows.length === 1) {
+        created = true
+      } else {
+        const existing = await client.query(`
       SELECT payload_hash, payload FROM poc_k9_source_payloads_v2
       WHERE source_snapshot_id = $1 AND payload_kind = $2
-    `, [snapshot.source_snapshot_id, kind])
-    if (existing.rows.length !== 1 || existing.rows[0].payload_hash !== hashes[kind]
-      || canonicalStringify(existing.rows[0].payload) !== canonicalStringify(payloads[kind])) {
-      throw lifecycleError('K9_SOURCE_PAYLOAD_CONFLICT', 'Persisted K9 source payload evidence conflicts with its identity.')
+        `, [snapshot.source_snapshot_id, kind])
+        const exactManifest = existing.rows.length === 1
+          && existing.rows[0].payload_hash === hashes[kind]
+          && canonicalStringify(existing.rows[0].payload) === canonicalStringify(encoded.manifest)
+        const exactLegacyPayload = existing.rows.length === 1
+          && existing.rows[0].payload_hash === hashes[kind]
+          && canonicalStringify(existing.rows[0].payload) === canonicalStringify(payloads[kind])
+        if (!exactManifest && !exactLegacyPayload) {
+          throw lifecycleError('K9_SOURCE_PAYLOAD_CONFLICT', 'Persisted K9 source payload evidence conflicts with its identity.')
+        }
+        if (exactLegacyPayload) continue
+      }
+      for (let offset = 0; offset < encoded.chunks.length;
+        offset += K9_SOURCE_PAYLOAD_CHUNK_INSERT_BATCH_V1) {
+        const chunkBatch = encoded.chunks.slice(
+          offset, offset + K9_SOURCE_PAYLOAD_CHUNK_INSERT_BATCH_V1,
+        )
+        const chunkInsert = await client.query(`
+      INSERT INTO poc_k9_source_payload_chunks_v2 (
+        source_snapshot_id, payload_kind, chunk_number, chunk_count,
+        payload_hash, chunk_hash, byte_count, payload_chunk
+      )
+      SELECT $1, $2, value.chunk_number, $3, $4, value.chunk_hash,
+        value.byte_count, value.payload_chunk
+      FROM unnest($5::integer[], $6::char(64)[], $7::integer[], $8::bytea[])
+        AS value(chunk_number, chunk_hash, byte_count, payload_chunk)
+      ON CONFLICT (source_snapshot_id, payload_kind, chunk_number) DO NOTHING
+      RETURNING chunk_number
+      `, [
+          snapshot.source_snapshot_id,
+          kind,
+          encoded.manifest.chunk_count,
+          hashes[kind],
+          chunkBatch.map((chunk) => chunk.chunk_number),
+          chunkBatch.map((chunk) => chunk.chunk_hash),
+          chunkBatch.map((chunk) => chunk.byte_count),
+          chunkBatch.map((chunk) => chunk.bytes),
+        ])
+        if (chunkInsert.rows.length > 0) created = true
+      }
+      const storedChunks = await client.query(`
+      SELECT chunk_number, chunk_count, payload_hash, chunk_hash, byte_count, payload_chunk
+      FROM poc_k9_source_payload_chunks_v2
+      WHERE source_snapshot_id = $1 AND payload_kind = $2
+      ORDER BY chunk_number
+      `, [snapshot.source_snapshot_id, kind])
+      const readBack = decodeK9SourcePayloadV2({
+        payload_kind: kind,
+        payload_hash: hashes[kind],
+        payload: encoded.manifest,
+      }, storedChunks.rows)
+      if (canonicalStringify(readBack) !== canonicalStringify(payloads[kind])) {
+        throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'Persisted K9 source payload evidence did not read back exactly.')
+      }
+    } catch (error) {
+      throw sourcePersistenceFailure(error, {
+        substage: error?.persistenceSubstage || sourcePayloadInsertSubstage(kind),
+        payloadKind: error?.payloadKind || kind,
+        payloadBytes: error?.payloadBytes ?? encoded?.payload_bytes ?? 0,
+        configuredLimitBytes: error?.configuredLimitBytes ?? K9_SOURCE_PAYLOAD_MAX_BYTES_V2,
+      })
     }
   }
   return created
+}
+
+async function readSourcePayloadSets(database, sourceSnapshotIds) {
+  const ids = [...new Set(sourceSnapshotIds.filter((value) => HASH.test(value || '')))]
+  if (ids.length === 0) return new Map()
+  const payloadRows = await database.query(`
+    SELECT source_snapshot_id, payload_kind, payload_hash, payload
+    FROM poc_k9_source_payloads_v2
+    WHERE source_snapshot_id = ANY($1::char(64)[])
+    ORDER BY source_snapshot_id, payload_kind
+  `, [ids])
+  const chunkRows = await database.query(`
+    SELECT source_snapshot_id, payload_kind, chunk_number, chunk_count,
+      payload_hash, chunk_hash, byte_count, payload_chunk
+    FROM poc_k9_source_payload_chunks_v2
+    WHERE source_snapshot_id = ANY($1::char(64)[])
+    ORDER BY source_snapshot_id, payload_kind, chunk_number
+  `, [ids])
+  const result = new Map(ids.map((id) => [id, {}]))
+  for (const row of payloadRows.rows) {
+    const chunks = chunkRows.rows.filter((chunk) => (
+      chunk.source_snapshot_id === row.source_snapshot_id && chunk.payload_kind === row.payload_kind
+    ))
+    result.get(row.source_snapshot_id)[row.payload_kind] = decodeK9SourcePayloadV2(row, chunks)
+  }
+  return result
+}
+
+async function stageVerifiedSourceEvidence(client, lifecycleKey, snapshot) {
+  const evidenceHash = sourceEvidenceHash(snapshot)
+  const current = await client.query(
+    'SELECT * FROM poc_k9_source_staging_v2 WHERE lifecycle_key = $1 FOR UPDATE',
+    [lifecycleKey],
+  )
+  if (current.rows.length === 0) {
+    await client.query(`
+      INSERT INTO poc_k9_source_staging_v2 (
+        lifecycle_key, source_snapshot_id, evidence_hash, status
+      ) VALUES ($1, $2, $3, 'VERIFIED')
+    `, [lifecycleKey, snapshot.source_snapshot_id, evidenceHash])
+    return
+  }
+  const staged = current.rows[0]
+  if (staged.status === 'VERIFIED'
+    && (staged.source_snapshot_id !== snapshot.source_snapshot_id
+      || staged.evidence_hash !== evidenceHash)) {
+    throw lifecycleError('K9_SOURCE_EVIDENCE_IN_PROGRESS', 'Different verified K9 source evidence is awaiting lifecycle promotion.')
+  }
+  if (staged.status === 'VERIFIED') return
+  if (staged.source_snapshot_id === snapshot.source_snapshot_id
+    && staged.evidence_hash === evidenceHash) return
+  const updated = await client.query(`
+    UPDATE poc_k9_source_staging_v2
+    SET source_snapshot_id = $2, evidence_hash = $3, status = 'VERIFIED',
+      version = version + 1, verified_at = clock_timestamp(), consumed_at = NULL
+    WHERE lifecycle_key = $1 AND version = $4 AND status = 'CONSUMED'
+  `, [lifecycleKey, snapshot.source_snapshot_id, evidenceHash, staged.version])
+  if (updated.rowCount !== 1) {
+    throw lifecycleError('K9_SOURCE_EVIDENCE_STALE', 'The K9 source evidence staging pointer changed.')
+  }
 }
 
 function receiptInsertValues(receipt) {
@@ -873,20 +1408,112 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
   if (typeof requireDatabase !== 'function') throw new Error('K9 lifecycle persistence requires a database provider.')
 
   async function setDesiredSnapshot({ snapshot: snapshotValue, source_payloads: sourcePayloadsValue }, lifecycleKeyValue = K9_LIFECYCLE_KEY_V2) {
-    const snapshot = normalizeK9SourceSnapshotV2(snapshotValue)
-    const sourcePayloads = normalizeK9SourcePayloadsV2(sourcePayloadsValue, snapshot)
-    const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
-    const pool = await requireDatabase()
-    const client = await pool.connect()
+    let snapshot
     try {
+      snapshot = normalizeK9SourceSnapshotV2(snapshotValue)
+    } catch (error) {
+      throw sourcePersistenceFailure(error, {
+        substage: error?.code === 'K9_SOURCE_SNAPSHOT_INVALID'
+          ? 'SOURCE_RECEIPT_VALIDATE' : 'SNAPSHOT_NORMALIZE',
+        payloadBytes: isObject(snapshotValue) ? jsonSize(snapshotValue) : 0,
+        configuredLimitBytes: 131_072,
+      })
+    }
+    let sourcePayloads
+    try {
+      sourcePayloads = normalizeK9SourcePayloadsV2(sourcePayloadsValue, snapshot)
+    } catch (error) {
+      throw sourcePersistenceFailure(error, {
+        substage: error?.persistenceSubstage || (error?.code === 'K9_SOURCE_PAYLOADS_INVALID'
+          ? 'SOURCE_RECEIPT_VALIDATE' : 'SNAPSHOT_NORMALIZE'),
+        payloadKind: error?.payloadKind,
+        payloadBytes: error?.payloadBytes,
+        configuredLimitBytes: error?.configuredLimitBytes,
+      })
+    }
+    let lifecycleKey
+    try {
+      lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
+    } catch (error) {
+      throw sourcePersistenceFailure(error, { substage: 'SOURCE_RECEIPT_VALIDATE' })
+    }
+    let pool
+    try {
+      pool = await requireDatabase()
+    } catch (error) {
+      throw sourcePersistenceFailure(error, { substage: 'SNAPSHOT_INSERT' })
+    }
+    let client
+    try {
+      client = await pool.connect()
+    } catch (error) {
+      throw sourcePersistenceFailure(error, { substage: 'SNAPSHOT_INSERT' })
+    }
+    let created
+    let payloadsCreated
+    try {
+      // Phase one commits only immutable, fully read-back-verified source evidence.
+      // A verified staging pointer is not a lifecycle head and cannot make Source READY.
       await client.query('BEGIN')
-      const created = await insertSnapshot(client, snapshot)
-      const payloadsCreated = await insertSourcePayloads(client, snapshot, sourcePayloads)
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`k9-lifecycle-v2:${lifecycleKey}`])
+      created = await persistenceBoundary({
+        substage: 'SNAPSHOT_INSERT',
+        payloadBytes: jsonSize(snapshot),
+        configuredLimitBytes: 131_072,
+      }, () => insertSnapshot(client, snapshot))
+      payloadsCreated = await persistenceBoundary({ substage: 'INVENTORY_PAYLOAD_INSERT' }, () => (
+        insertSourcePayloads(client, snapshot, sourcePayloads)
+      ))
+      await persistenceBoundary({ substage: 'LIFECYCLE_READBACK' }, async () => {
+        const persisted = await readSourcePayloadSets(client, [snapshot.source_snapshot_id])
+        const payloadSet = persisted.get(snapshot.source_snapshot_id)
+        if (!payloadSet || K9_SOURCE_PAYLOAD_KINDS_V2.some((kind) => (
+          canonicalStringify(payloadSet[kind]) !== canonicalStringify(sourcePayloads[kind])
+        ))) {
+          throw lifecycleError('K9_SOURCE_PAYLOAD_READBACK_MISMATCH', 'K9 source evidence read-back was incomplete.')
+        }
+      })
+      await persistenceBoundary({ substage: 'SOURCE_EVIDENCE_STAGE' }, () => (
+        stageVerifiedSourceEvidence(client, lifecycleKey, snapshot)
+      ))
+      await persistenceBoundary({ substage: 'TRANSACTION_COMMIT' }, () => client.query('COMMIT'))
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      client.release()
+      throw sourcePersistenceFailure(error, { substage: 'SNAPSHOT_INSERT' })
+    }
+
+    try {
+      // Phase two moves the mutable desired head only after evidence is durable.
+      await client.query('BEGIN')
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`k9-lifecycle-v2:${lifecycleKey}`])
+      const staged = await persistenceBoundary({ substage: 'LIFECYCLE_HEAD_WRITE' }, () => client.query(
+        'SELECT * FROM poc_k9_source_staging_v2 WHERE lifecycle_key = $1 FOR UPDATE',
+        [lifecycleKey],
+      ))
       const current = await client.query(
         'SELECT * FROM poc_k9_snapshot_lifecycle_v2 WHERE lifecycle_key = $1 FOR UPDATE',
         [lifecycleKey],
       )
+      const evidenceMatches = staged.rows.length === 1
+        && staged.rows[0].source_snapshot_id === snapshot.source_snapshot_id
+        && staged.rows[0].evidence_hash === sourceEvidenceHash(snapshot)
+      if (evidenceMatches && staged.rows[0].status === 'CONSUMED'
+        && current.rows.length === 1
+        && current.rows[0].desired_snapshot_id === snapshot.source_snapshot_id) {
+        await persistenceBoundary({ substage: 'TRANSACTION_COMMIT' }, () => client.query('COMMIT'))
+        return {
+          created, payloadsCreated, lifecycleKey,
+          sourceSnapshotId: snapshot.source_snapshot_id,
+          version: Number(current.rows[0].version),
+        }
+      }
+      if (!evidenceMatches || staged.rows[0].status !== 'VERIFIED') {
+        throw sourcePersistenceFailure(
+          lifecycleError('K9_SOURCE_EVIDENCE_INVALID', 'Verified K9 source evidence is unavailable for head promotion.'),
+          { substage: 'LIFECYCLE_HEAD_WRITE' },
+        )
+      }
       let version
       if (current.rows.length === 0) {
         const inserted = await client.query(`
@@ -911,11 +1538,20 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         if (updated.rows.length !== 1) throw lifecycleError('K9_LIFECYCLE_STALE', 'The K9 lifecycle head changed.')
         version = Number(updated.rows[0].version)
       }
-      await client.query('COMMIT')
+      const consumed = await client.query(`
+        UPDATE poc_k9_source_staging_v2
+        SET status = 'CONSUMED', version = version + 1, consumed_at = clock_timestamp()
+        WHERE lifecycle_key = $1 AND status = 'VERIFIED'
+          AND source_snapshot_id = $2 AND evidence_hash = $3
+      `, [lifecycleKey, snapshot.source_snapshot_id, sourceEvidenceHash(snapshot)])
+      if (consumed.rowCount !== 1) {
+        throw lifecycleError('K9_SOURCE_EVIDENCE_STALE', 'The K9 source evidence staging pointer changed before promotion.')
+      }
+      await persistenceBoundary({ substage: 'TRANSACTION_COMMIT' }, () => client.query('COMMIT'))
       return { created, payloadsCreated, lifecycleKey, sourceSnapshotId: snapshot.source_snapshot_id, version }
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined)
-      throw error
+      throw sourcePersistenceFailure(error, { substage: 'LIFECYCLE_HEAD_WRITE' })
     } finally {
       client.release()
     }
@@ -1424,15 +2060,11 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         WHERE source_snapshot_id = $1 AND status = 'READY'
         ORDER BY projector, attempt_number DESC, sequence DESC, receipt_id DESC
       `, [result.rows[0].active_snapshot_id])
-    const payloadRows = await pool.query(`
-      SELECT source_snapshot_id, payload_kind, payload
-      FROM poc_k9_source_payloads_v2
-      WHERE source_snapshot_id IN ($1, $2)
-      ORDER BY source_snapshot_id, payload_kind
-    `, [result.rows[0].desired_snapshot_id, result.rows[0].active_snapshot_id])
-    const payloadsFor = (sourceSnapshotId) => Object.fromEntries(payloadRows.rows
-      .filter((row) => row.source_snapshot_id === sourceSnapshotId)
-      .map((row) => [row.payload_kind, row.payload]))
+    const payloadSets = await readSourcePayloadSets(pool, [
+      result.rows[0].desired_snapshot_id,
+      result.rows[0].active_snapshot_id,
+    ])
+    const payloadsFor = (sourceSnapshotId) => payloadSets.get(sourceSnapshotId) || {}
     return {
       ...result.rows[0],
       desired_projector_receipts: desiredReceipts.rows.map((row) => row.receipt),
@@ -1443,6 +2075,44 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
     }
   }
 
+  async function readStagedSourceEvidence(lifecycleKeyValue = K9_LIFECYCLE_KEY_V2) {
+    const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
+    const pool = await requireDatabase()
+    const result = await pool.query(`
+      SELECT stage.source_snapshot_id, stage.evidence_hash, snapshot.snapshot
+      FROM poc_k9_source_staging_v2 AS stage
+      JOIN poc_k9_source_snapshots_v2 AS snapshot
+        ON snapshot.source_snapshot_id = stage.source_snapshot_id
+      WHERE stage.lifecycle_key = $1 AND stage.status = 'VERIFIED'
+    `, [lifecycleKey])
+    if (!result.rows[0]) return null
+    const row = result.rows[0]
+    const snapshot = normalizeK9SourceSnapshotV2(row.snapshot)
+    if (row.source_snapshot_id !== snapshot.source_snapshot_id
+      || row.evidence_hash !== sourceEvidenceHash(snapshot)) {
+      throw lifecycleError('K9_SOURCE_EVIDENCE_INVALID', 'The staged K9 source evidence identity is invalid.')
+    }
+    const payloadSets = await readSourcePayloadSets(pool, [snapshot.source_snapshot_id])
+    const payloads = payloadSets.get(snapshot.source_snapshot_id) || {}
+    const normalized = normalizeK9SourcePayloadsV2({
+      inventory: payloads.INVENTORY,
+      lineage: payloads.LINEAGE,
+      metadata: payloads.METADATA,
+      dangling_state: payloads.DANGLING_STATE,
+    }, snapshot)
+    return Object.freeze({
+      status: 'PENDING',
+      source_snapshot_id: snapshot.source_snapshot_id,
+      source_snapshot: snapshot,
+      source_payloads: Object.freeze({
+        inventory: normalized.INVENTORY,
+        lineage: normalized.LINEAGE,
+        metadata: normalized.METADATA,
+        dangling_state: normalized.DANGLING_STATE,
+      }),
+    })
+  }
+
   return Object.freeze({
     setDesiredSnapshot,
     appendProjectorReceipt,
@@ -1451,5 +2121,6 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
     stageSemanticBatch,
     activateSemanticSnapshot,
     readLifecycle,
+    readStagedSourceEvidence,
   })
 }

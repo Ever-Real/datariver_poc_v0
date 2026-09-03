@@ -1,8 +1,10 @@
 import { canonicalStringify, computeSha256 } from './poc-knowledge-k9-contracts.mjs'
 import {
+  classifyK9SourcePersistenceFailureV2,
   K9_PROJECTOR_RECEIPT_CONTRACT_V2,
   K9_PROJECTORS_V2,
   normalizeK9ProjectorReceiptV2,
+  sanitizeK9SourcePersistenceDiagnosticV2,
 } from './poc-k9-lifecycle-persistence.mjs'
 import { evaluateK9V2AggregateReadiness } from './poc-k9-lifecycle-v2.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
@@ -12,6 +14,16 @@ const TOKEN = /^[A-Z][A-Z0-9_]{0,79}$/u
 
 function runtimeError(code, message) {
   return Object.assign(new Error(message), { code })
+}
+
+function sourceReceiptPersistenceError(error, substage) {
+  const sanitized = sanitizeK9SourcePersistenceDiagnosticV2(error?.diagnostic)
+  const diagnostic = sanitized
+    ? sanitized
+    : classifyK9SourcePersistenceFailureV2(error, { substage })
+  return Object.assign(runtimeError(diagnostic.code, 'The K9 source receipt could not be persisted.'), {
+    diagnostic,
+  })
 }
 
 function exactHash(value, name) {
@@ -318,6 +330,10 @@ export function createK9V2LifecycleReceiptPort({ lifecycle, clock = () => new Da
 
   return Object.freeze({
     async readSourceCaptureReceipt() {
+      if (typeof lifecycle.readStagedSourceEvidence === 'function') {
+        const staged = await lifecycle.readStagedSourceEvidence()
+        if (staged) return staged
+      }
       const state = await lifecycle.readLifecycle()
       if (!state) return null
       return sourceEnvelope(state, receiptFor(state, 'SOURCE'))
@@ -326,17 +342,36 @@ export function createK9V2LifecycleReceiptPort({ lifecycle, clock = () => new Da
     async writeSourceCaptureReceipt(receipt) {
       const sourceSnapshotId = exactHash(receipt?.source_snapshot_id, 'source_snapshot_id')
       if (receipt?.status !== 'READY' || receipt?.source_snapshot?.source_snapshot_id !== sourceSnapshotId) {
-        throw runtimeError('K9_SOURCE_RECEIPT_INVALID', 'The captured K9 source receipt is invalid.')
+        throw sourceReceiptPersistenceError(
+          runtimeError('K9_SOURCE_RECEIPT_INVALID', 'The captured K9 source receipt is invalid.'),
+          'SOURCE_RECEIPT_VALIDATE',
+        )
       }
-      await lifecycle.setDesiredSnapshot({
-        snapshot: receipt.source_snapshot,
-        source_payloads: receipt.source_payloads,
-      })
-      const state = await lifecycle.readLifecycle()
+      try {
+        await lifecycle.setDesiredSnapshot({
+          snapshot: receipt.source_snapshot,
+          source_payloads: receipt.source_payloads,
+        })
+      } catch (error) {
+        throw sourceReceiptPersistenceError(error, 'LIFECYCLE_HEAD_WRITE')
+      }
+      let state
+      try {
+        state = await lifecycle.readLifecycle()
+      } catch (error) {
+        throw sourceReceiptPersistenceError(error, 'LIFECYCLE_READBACK')
+      }
       if (!state || state.desired_snapshot_id !== sourceSnapshotId) {
-        throw runtimeError('K9_SOURCE_RECEIPT_PERSISTENCE_FAILED', 'The K9 desired source snapshot was not durable.')
+        throw sourceReceiptPersistenceError(
+          Object.assign(runtimeError('K9_SOURCE_RECEIPT_READBACK_MISMATCH', 'The K9 desired source snapshot was not durable.'), {}),
+          'LIFECYCLE_READBACK',
+        )
       }
-      await appendTerminalSourceReceipts(lifecycle, state, sourceSnapshotId, clock)
+      try {
+        await appendTerminalSourceReceipts(lifecycle, state, sourceSnapshotId, clock)
+      } catch (error) {
+        throw sourceReceiptPersistenceError(error, 'SOURCE_PROJECTOR_RECEIPTS')
+      }
     },
 
     async readProjectorDesiredReceipt(projectorIdValue) {

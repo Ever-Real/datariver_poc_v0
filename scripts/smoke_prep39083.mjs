@@ -11,6 +11,7 @@ import {
   sanitizeK9LineageSourceProfile,
 } from '../frontend/poc-k9-lineage-collection.mjs'
 import { K9_V2_FAILURE_CODES } from '../frontend/poc-k9-lifecycle-v2.mjs'
+import { sanitizeK9SourcePersistenceDiagnosticV2 } from '../frontend/poc-k9-lifecycle-persistence.mjs'
 
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([
@@ -753,15 +754,48 @@ async function main() {
           const boundedAttempt = (attempt) => {
             if (!attempt || !['RUNNING', 'SUCCESS', 'FAILURE'].includes(attempt.status)) return null
             const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+            const persistence = attempt.reason === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED'
+              ? sanitizeK9SourcePersistenceDiagnosticV2({
+                  code: attempt.reason,
+                  stage: attempt.failure_stage,
+                  failure_detail_code: attempt.failure_detail_code,
+                  persistence_substage: attempt.persistence_substage,
+                  payload_kind: attempt.payload_kind,
+                  payload_bytes: attempt.payload_bytes,
+                  configured_limit_bytes: attempt.configured_limit_bytes,
+                  sqlstate_class: attempt.sqlstate_class,
+                  constraint_name: attempt.constraint_name,
+                  retryable: attempt.retryable,
+                }) || sanitizeK9SourcePersistenceDiagnosticV2({
+                  code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+                  stage: 'SOURCE_RECEIPT',
+                  failure_detail_code: 'K9_SOURCE_PERSISTENCE_UNKNOWN',
+                  persistence_substage: 'SOURCE_RECEIPT_VALIDATE',
+                  payload_kind: 'NONE',
+                  payload_bytes: 0,
+                  configured_limit_bytes: 0,
+                  sqlstate_class: 'NONE',
+                  constraint_name: 'NONE',
+                  retryable: true,
+                })
+              : null
             return {
               status: attempt.status,
               ...(safeK9Token(attempt.stage) ? { stage: attempt.stage } : {}),
               ...(safeK9Token(attempt.detail) ? { detail: attempt.detail } : {}),
               ...(safeK9Token(attempt.reason) ? { reason: attempt.reason } : {}),
-              ...(safeK9Token(attempt.failure_stage)
-                ? { failure_stage: attempt.failure_stage } : {}),
-              ...(safeK9Token(attempt.failure_detail_code)
-                ? { failure_detail_code: attempt.failure_detail_code } : {}),
+              ...(persistence
+                ? { failure_stage: persistence.stage }
+                : safeK9Token(attempt.failure_stage)
+                  ? { failure_stage: attempt.failure_stage } : {}),
+              ...(persistence
+                ? { failure_detail_code: persistence.failure_detail_code }
+                : safeK9Token(attempt.failure_detail_code)
+                  ? { failure_detail_code: attempt.failure_detail_code } : {}),
+              ...(persistence ? Object.fromEntries([
+                'persistence_substage', 'payload_kind', 'sqlstate_class', 'constraint_name',
+                'payload_bytes', 'configured_limit_bytes',
+              ].map((field) => [field, persistence[field]])) : {}),
               completed: count(attempt.completed),
               total: count(attempt.total),
               candidate_number: count(attempt.candidate_number),
@@ -787,10 +821,11 @@ async function main() {
           const schedulerStatus = items
             .map((item) => item?.scheduler_status)
             .find((value) => ['RUNNING', 'SCHEDULED', 'ON_DEMAND', 'DISABLED'].includes(value))
+          const boundedLastCompletedAttempt = boundedAttempt(lastCompletedAttempt)
           report.k9_scheduler = {
             status: currentAttempt ? 'RUNNING' : (schedulerStatus || 'UNKNOWN'),
             current_attempt: boundedAttempt(currentAttempt),
-            last_completed_attempt: boundedAttempt(lastCompletedAttempt),
+            last_completed_attempt: boundedLastCompletedAttempt,
           }
           report.k9_historical_asset_error = historicalAssetError
           const runningProjector = k9V2RunningProjector(lifecycle)
@@ -912,12 +947,27 @@ async function main() {
               },
             )
           }
-          const completedV2Failure = lastCompletedAttempt?.status === 'FAILURE'
-            && k9V2FailureCodes.has(lastCompletedAttempt.reason)
-            && safeK9Token(lastCompletedAttempt.failure_stage)
-            && safeK9Token(lastCompletedAttempt.failure_detail_code)
-            ? lastCompletedAttempt : null
+          const completedV2Failure = boundedLastCompletedAttempt?.status === 'FAILURE'
+            && k9V2FailureCodes.has(boundedLastCompletedAttempt.reason)
+            && safeK9Token(boundedLastCompletedAttempt.failure_stage)
+            && safeK9Token(boundedLastCompletedAttempt.failure_detail_code)
+            ? boundedLastCompletedAttempt : null
           if (completedV2Failure) {
+            const persistenceDiagnostic = completedV2Failure.reason
+              === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED'
+              ? sanitizeK9SourcePersistenceDiagnosticV2({
+                  code: completedV2Failure.reason,
+                  stage: completedV2Failure.failure_stage,
+                  failure_detail_code: completedV2Failure.failure_detail_code,
+                  persistence_substage: completedV2Failure.persistence_substage,
+                  payload_kind: completedV2Failure.payload_kind,
+                  payload_bytes: completedV2Failure.payload_bytes,
+                  configured_limit_bytes: completedV2Failure.configured_limit_bytes,
+                  sqlstate_class: completedV2Failure.sqlstate_class,
+                  constraint_name: completedV2Failure.constraint_name,
+                  retryable: completedV2Failure.retryable,
+                })
+              : null
             throw smokeFailure(
               'K9_INITIAL_REFRESH',
               'PREP_SMOKE_K9_REFRESH_FAILED',
@@ -933,6 +983,10 @@ async function main() {
                 attempt_observed_at: safeK9Timestamp(completedV2Failure.completed_at)
                   ? completedV2Failure.completed_at : null,
                 source_receipt_present: lifecycle.source?.status !== 'NOT_STARTED',
+                ...(persistenceDiagnostic ? Object.fromEntries([
+                  'persistence_substage', 'payload_kind', 'payload_bytes',
+                  'configured_limit_bytes', 'sqlstate_class', 'constraint_name',
+                ].map((field) => [field, persistenceDiagnostic[field]])) : {}),
               },
             )
           }

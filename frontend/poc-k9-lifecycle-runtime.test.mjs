@@ -124,6 +124,47 @@ test('source receipt port durably resumes immutable capture and promotes only fo
   assert.equal(lifecycle.state.status, 'READY')
 })
 
+test('verified unheaded source evidence outranks an older lifecycle head for zero-provider resume', async () => {
+  const lifecycle = fakeLifecycle()
+  await lifecycle.setDesiredSnapshot({
+    snapshot: { source_snapshot_id: 'b'.repeat(64) },
+    source_payloads: { inventory: { old: true }, lineage: {}, metadata: {}, dangling_state: {} },
+  })
+  lifecycle.readStagedSourceEvidence = async () => ({ ...sourceReceipt(), status: 'PENDING' })
+  const port = createK9V2LifecycleReceiptPort({ lifecycle })
+  const staged = await port.readSourceCaptureReceipt()
+  assert.equal(staged.status, 'PENDING')
+  assert.equal(staged.source_snapshot_id, snapshotId)
+  assert.deepEqual(staged.source_payloads.inventory, {})
+})
+
+test('source receipt port rejects unowned persistence codes at its direct boundary', async () => {
+  const lifecycle = fakeLifecycle()
+  lifecycle.setDesiredSnapshot = async () => {
+    throw Object.assign(new Error('private token and urn:li:dataset:private'), {
+      code: 'PRIVATE_SECRET_CODE', constraint: 'private_secret_constraint',
+    })
+  }
+  const port = createK9V2LifecycleReceiptPort({ lifecycle })
+  await assert.rejects(port.writeSourceCaptureReceipt(sourceReceipt()), (error) => {
+    assert.deepEqual(error.diagnostic, {
+      code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      stage: 'SOURCE_RECEIPT',
+      failure_detail_code: 'K9_SOURCE_PERSISTENCE_UNKNOWN',
+      persistence_substage: 'LIFECYCLE_HEAD_WRITE',
+      payload_kind: 'NONE',
+      payload_bytes: 0,
+      configured_limit_bytes: 0,
+      sqlstate_class: 'NONE',
+      constraint_name: 'NONE',
+      retryable: true,
+    })
+    assert.equal(JSON.stringify(error.diagnostic).includes('PRIVATE'), false)
+    assert.equal(JSON.stringify(error.diagnostic).includes('urn:li:'), false)
+    return true
+  })
+})
+
 test('durable projector records bounded failure, retries only itself, and exposes READY as active before aggregate promotion', async () => {
   const lifecycle = fakeLifecycle()
   const now = clock()

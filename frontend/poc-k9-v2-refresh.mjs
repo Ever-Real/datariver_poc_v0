@@ -2,6 +2,7 @@ import {
   createK9V2LifecycleOrchestrator,
   K9_V2_FAILURE_DIAGNOSTICS,
 } from './poc-k9-lifecycle-v2.mjs'
+import { sanitizeK9SourcePersistenceDiagnosticV2 } from './poc-k9-lifecycle-persistence.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 import { sanitizeK9LineageSourceProfile } from './poc-k9-lineage-collection.mjs'
 
@@ -12,6 +13,9 @@ const aggregateFailure = K9_V2_FAILURE_DIAGNOSTICS.AGGREGATE_PROMOTION_FAILED
 
 function boundedDiagnostic(value, fallback = aggregateFailure) {
   if (!value || !TOKEN.test(value.code || '') || !TOKEN.test(value.stage || '')) return fallback
+  if (value.code === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED') {
+    return sanitizeK9SourcePersistenceDiagnosticV2(value) || fallback
+  }
   const bounded = {
     code: value.code,
     stage: value.stage,
@@ -28,7 +32,7 @@ function boundedDiagnostic(value, fallback = aggregateFailure) {
   }
   for (const field of [
     'batch_number', 'batch_total', 'batch_requested_nodes', 'batch_requested_edges',
-    'batch_written_nodes', 'batch_written_edges',
+    'batch_written_nodes', 'batch_written_edges', 'payload_bytes', 'configured_limit_bytes',
   ]) {
     if (Object.hasOwn(value, field)) {
       bounded[field] = Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : 0

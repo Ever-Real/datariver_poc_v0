@@ -9312,6 +9312,11 @@ export function managedK9SchedulerReadModel(
         code: durableReason,
         stage: durableAttempt.failure_stage,
         failure_detail_code: durableAttempt.failure_detail_code,
+        ...Object.fromEntries([
+          'persistence_substage', 'payload_kind', 'payload_bytes',
+          'configured_limit_bytes', 'sqlstate_class', 'constraint_name',
+        ].filter((field) => Object.hasOwn(durableAttempt || {}, field))
+          .map((field) => [field, durableAttempt[field]])),
       })
     : null
   const schedulerLastAttempt = durableStatus ? {
@@ -9337,6 +9342,11 @@ export function managedK9SchedulerReadModel(
     ...(durableV2Diagnostic ? {
       failure_stage: durableV2Diagnostic.stage,
       failure_detail_code: durableV2Diagnostic.failure_detail_code,
+      ...Object.fromEntries([
+        'persistence_substage', 'payload_kind', 'payload_bytes',
+        'configured_limit_bytes', 'sqlstate_class', 'constraint_name',
+      ].filter((field) => Object.hasOwn(durableV2Diagnostic, field))
+        .map((field) => [field, durableV2Diagnostic[field]])),
     } : {}),
   } : null
   const refreshRunning = activeRefreshAttempt?.status === 'RUNNING'
@@ -14043,6 +14053,7 @@ export async function startPocServer({ stateStore } = {}) {
   if (k9SchedulerConfig.requested) {
     const lifecycle = Object.freeze({
       readLifecycle: (...args) => pocStateStore.readK9SnapshotLifecycleV2(...args),
+      readStagedSourceEvidence: (...args) => pocStateStore.readK9StagedSourceEvidenceV2(...args),
       setDesiredSnapshot: (...args) => pocStateStore.setK9DesiredSourceSnapshotV2(...args),
       appendProjectorReceipt: (...args) => pocStateStore.appendK9ProjectorReceiptV2(...args),
       promoteActiveSnapshot: (...args) => pocStateStore.promoteK9ActiveSourceSnapshotV2(...args),

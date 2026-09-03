@@ -208,14 +208,24 @@ test('V2 trigger preserves each bounded pre-snapshot receipt failure boundary', 
     },
     {
       name: 'source persist', expected: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      expectedDetail: 'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
       captureSource: async () => source(),
       receipts: {
         async readSourceCaptureReceipt() { return null },
-        async writeSourceCaptureReceipt() { throw new Error('private persistence') },
+        async writeSourceCaptureReceipt() {
+          throw Object.assign(new Error('private persistence'), { diagnostic: {
+            code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED', stage: 'SOURCE_RECEIPT',
+            failure_detail_code: 'K9_SOURCE_PAYLOAD_SIZE_LIMIT',
+            persistence_substage: 'METADATA_PAYLOAD_NORMALIZE', payload_kind: 'METADATA',
+            payload_bytes: 67_108_865, configured_limit_bytes: 67_108_864,
+            sqlstate_class: 'NONE', constraint_name: 'NONE', retryable: false,
+          } })
+        },
       },
     },
     {
       name: 'source readback', expected: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      expectedDetail: 'K9_SOURCE_RECEIPT_READBACK_MISMATCH',
       captureSource: async () => source(),
       receipts: (() => {
         let written = false
@@ -226,6 +236,25 @@ test('V2 trigger preserves each bounded pre-snapshot receipt failure boundary', 
           async writeSourceCaptureReceipt() { written = true },
         }
       })(),
+    },
+    {
+      name: 'source persist untrusted diagnostic',
+      expected: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED',
+      expectedDetail: 'K9_SOURCE_PERSISTENCE_UNKNOWN',
+      captureSource: async () => source(),
+      receipts: {
+        async readSourceCaptureReceipt() { return null },
+        async writeSourceCaptureReceipt() {
+          throw Object.assign(new Error('private persistence'), { diagnostic: {
+            code: 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED', stage: 'SOURCE_RECEIPT',
+            failure_detail_code: 'PRIVATE_DETAIL', persistence_substage: 'PRIVATE_STAGE',
+            payload_kind: 'PRIVATE_KIND', payload_bytes: -1,
+            configured_limit_bytes: Number.MAX_SAFE_INTEGER,
+            sqlstate_class: 'PRIVATE_SQL', constraint_name: 'PRIVATE_SECRET',
+            retryable: true, raw_payload: 'urn:li:dataset:private',
+          } })
+        },
+      },
     },
   ]
 
@@ -245,7 +274,25 @@ test('V2 trigger preserves each bounded pre-snapshot receipt failure boundary', 
     const result = await trigger()
     assert.equal(result.status, 'FAILURE', value.name)
     assert.equal(result.failureCode, value.expected, value.name)
-    assert.equal(result.failureDetailCode, value.expected, value.name)
+    assert.equal(result.failureDetailCode, value.expectedDetail || value.expected, value.name)
+    if (value.name === 'source persist') {
+      assert.equal(result.diagnostic.persistence_substage, 'METADATA_PAYLOAD_NORMALIZE')
+      assert.equal(result.diagnostic.payload_kind, 'METADATA')
+      assert.equal(result.diagnostic.payload_bytes, 67_108_865)
+      assert.equal(result.diagnostic.configured_limit_bytes, 67_108_864)
+    }
+    if (value.name === 'source readback') {
+      assert.equal(result.diagnostic.persistence_substage, 'LIFECYCLE_READBACK')
+      assert.equal(result.diagnostic.payload_kind, 'NONE')
+    }
+    if (value.name === 'source persist untrusted diagnostic') {
+      assert.equal(result.diagnostic.persistence_substage, 'SOURCE_RECEIPT_VALIDATE')
+      assert.equal(result.diagnostic.payload_kind, 'NONE')
+      assert.equal(result.diagnostic.payload_bytes, 0)
+      assert.equal(result.diagnostic.configured_limit_bytes, 0)
+      assert.equal(result.diagnostic.sqlstate_class, 'NONE')
+      assert.equal(result.diagnostic.constraint_name, 'NONE')
+    }
     assert.equal(JSON.stringify(result).includes('private'), false, value.name)
     assert.equal(JSON.stringify(result).includes('urn:li:'), false, value.name)
   }
