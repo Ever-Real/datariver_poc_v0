@@ -1,3 +1,4 @@
+/* global structuredClone */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
@@ -17,7 +18,7 @@ function authorizationHeader() {
     : {}
 }
 
-function realNeo4jAdapter() {
+function realNeo4jAdapter(observed = null) {
   return {
     async run(statement, parameters = {}) {
       const response = await globalThis.fetch(`${neo4jUrl}/db/neo4j/tx/commit`, {
@@ -28,7 +29,14 @@ function realNeo4jAdapter() {
       assert.equal(response.status, 200)
       const payload = await response.json()
       assert.deepEqual(payload.errors, [])
-      return (payload.results?.[0]?.data || []).map((item) => item.row)
+      const rows = (payload.results?.[0]?.data || []).map((item) => item.row)
+      if (observed && statement.includes('RETURN n.id AS id')) {
+        observed.node_ids = rows.map((row) => row[0])
+      }
+      if (observed && statement.includes('RETURN source.id AS source')) {
+        observed.edge_ids = rows.map((row) => [row[0], row[1], row[2]])
+      }
+      return rows
     },
   }
 }
@@ -66,23 +74,31 @@ realNeo4jTest('persisted V2 Lineage and Metadata projections pass the exact Neo4
     workspaceId: process.env.POC_K9_WORKSPACE_ID,
   }
   const stateStore = stateStoreFixture()
-  const neo4j = realNeo4jAdapter()
+  const observed = {}
+  const neo4j = realNeo4jAdapter(observed)
   const managedGraphs = createK9ManagedGraphs({
     stateStore, neo4j, classificationCeiling: 'INTERNAL',
   })
   await managedGraphs.bootstrapK9Policies(authContext)
-  const first = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,graph_probe_a,PROD)'
-  const second = 'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,graph_probe_b,PROD)'
+  const ids = [
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a%id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a-id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a.id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a_id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,Aid,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,aid,PROD)',
+  ]
   const sourcePayload = {
     direction: 'BOTH',
     depth: 1,
     truncated: false,
-    nodes: [
-      { id: first, classification: 'INTERNAL', properties: { name: 'A' } },
-      { id: second, classification: 'INTERNAL', properties: { name: 'B' } },
-    ],
+    nodes: ids.map((id, index) => ({
+      id, classification: 'INTERNAL', properties: { name: `synthetic-${index}` },
+    })),
     column_nodes: [],
-    edges: [{ source_asset_id: first, target_asset_id: second }],
+    edges: ids.slice(1).map((target, index) => ({
+      source_asset_id: ids[index], target_asset_id: target,
+    })),
     completeness_metadata: { complete: true },
   }
   const metadataPayload = {
@@ -114,9 +130,14 @@ realNeo4jTest('persisted V2 Lineage and Metadata projections pass the exact Neo4
   }
   const pointers = []
   try {
+    const expectedLineage = managedGraphs.mapLineage({
+      ...sourcePayload,
+      source_snapshot: { source_snapshot_id: sourceSnapshot.source_snapshot_id },
+    })
     const lineageResult = await managedGraphs.publishPersistedProjection(authContext, {
       projector_id: 'LINEAGE', source_snapshot: sourceSnapshot, source_payload: sourcePayload,
     })
+    const lineageObserved = structuredClone(observed)
     const metadataResult = await managedGraphs.publishPersistedProjection(authContext, {
       projector_id: 'METADATA', source_snapshot: sourceSnapshot, source_payload: metadataPayload,
     })
@@ -137,6 +158,13 @@ realNeo4jTest('persisted V2 Lineage and Metadata projections pass the exact Neo4
     assert.deepEqual(metadataRows, [[sourceSnapshot.source_snapshot_id]])
     assert.equal(stateStore.runs.length, 2)
     assert.equal(stateStore.runs.at(-1).status, 'RUN')
+    assert.equal(lineageObserved.node_ids.length, expectedLineage.nodes.length)
+    assert.equal(lineageObserved.edge_ids.length, expectedLineage.edges.length)
+    assert.notDeepEqual(lineageObserved.node_ids, expectedLineage.nodes.map((node) => node.id))
+    assert.notDeepEqual(
+      lineageObserved.edge_ids,
+      expectedLineage.edges.map((edge) => [edge.source, edge.target, edge.type]),
+    )
   } finally {
     for (const pointer of pointers) {
       await neo4j.run('MATCH (n) WHERE n.namespace = $namespace DETACH DELETE n', {
