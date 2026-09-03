@@ -1,16 +1,16 @@
 #!/bin/sh
 set -u
 
-# Read-only, single-output diagnostic for the exact canonical two-edge glossary
-# hierarchy cycle in persisted PREP K9 V2 METADATA evidence. No provider, Neo4j,
-# Redis, MCL, or Knowledge Studio call is made.
+# Read-only, single-output diagnostic for the exact canonical glossary hierarchy
+# cycle in persisted PREP K9 V2 METADATA evidence. No provider, Neo4j, Redis,
+# MCL, or Knowledge Studio call is made.
 
 EXPECTED_PRODUCT='f3e1e2e1306c0309888c657658757d530391aa6a'
 EXPECTED_SNAPSHOT_PREFIX='1d058'
-OUTPUT_PREFIX='GLOSSARY_CYCLE_TARGET'
+OUTPUT_PREFIX='GLOSSARY_CANONICAL_CYCLE'
 
 emit_shell_failure() {
-  printf '%s\n' "${OUTPUT_PREFIX}|edge1_type=PROBE_FAILED|edge1_source_urn=NONE|edge1_target_urn=NONE|edge2_type=PROBE_FAILED|edge2_source_urn=NONE|edge2_target_urn=NONE"
+  printf '%s\n' "${OUTPUT_PREFIX}|class=PROBE_FAILED|cycle_length=0"
 }
 
 exact_id=''
@@ -71,7 +71,8 @@ import {
 
 const { Pool } = pg
 const expectedSnapshotPrefix = process.env.DATARIVER_GLOSSARY_CYCLE_SNAPSHOT_PREFIX || ''
-const outputPrefix = 'GLOSSARY_CYCLE_TARGET'
+const outputPrefix = 'GLOSSARY_CANONICAL_CYCLE'
+const maxCycleOutputEdges = 8
 let pool
 let client
 
@@ -96,9 +97,11 @@ function hierarchyType(value) {
 }
 
 function safeGlossaryUrn(value) {
-  return (isTermUrn(value) || isNodeUrn(value)) && !value.includes('|') && !value.includes('=')
-    ? value
-    : null
+  return isTermUrn(value) || isNodeUrn(value) ? value : null
+}
+
+function encodeOutputField(value) {
+  return value.replaceAll('%', '%25').replaceAll('|', '%7C').replaceAll('=', '%3D')
 }
 
 function exactStringCompare(left, right) {
@@ -122,34 +125,55 @@ function canonicalEdge(relation) {
   })
 }
 
-function findCanonicalTwoEdgeCycle(edges) {
-  const byDirection = new Map()
+function canonicalHierarchyEdges(edges) {
+  const canonical = new Map()
   for (const edge of edges) {
     const key = `${edge.source}\u0000${edge.target}`
-    if (!byDirection.has(key)) byDirection.set(key, [])
-    byDirection.get(key).push(edge)
+    if (!canonical.has(key)) canonical.set(key, edge)
   }
-  for (const candidates of byDirection.values()) {
-    candidates.sort((left, right) => (
-      exactStringCompare(left.type, right.type)
-      || exactStringCompare(left.originalSource, right.originalSource)
-      || exactStringCompare(left.originalTarget, right.originalTarget)
-    ))
+  return [...canonical.values()]
+}
+
+function findDirectedCycle(edges) {
+  const adjacency = new Map()
+  const nodes = new Set()
+  for (const edge of edges) {
+    nodes.add(edge.source)
+    nodes.add(edge.target)
+    if (!adjacency.has(edge.source)) adjacency.set(edge.source, [])
+    adjacency.get(edge.source).push(edge)
   }
 
-  const ordered = [...edges].sort((left, right) => (
-    exactStringCompare(left.source, right.source)
-    || exactStringCompare(left.target, right.target)
-    || exactStringCompare(left.type, right.type)
-    || exactStringCompare(left.originalSource, right.originalSource)
-    || exactStringCompare(left.originalTarget, right.originalTarget)
-  ))
-  for (const edge of ordered) {
-    if (edge.source === edge.target) continue
-    const reverse = byDirection.get(`${edge.target}\u0000${edge.source}`)?.[0]
-    if (reverse) return [edge, reverse]
+  const state = new Map()
+  const nodeStack = []
+  const edgeStack = []
+  let cycle = null
+
+  function visit(node) {
+    state.set(node, 1)
+    nodeStack.push(node)
+    for (const edge of adjacency.get(node) || []) {
+      const targetState = state.get(edge.target) || 0
+      if (targetState === 0) {
+        edgeStack.push(edge)
+        if (visit(edge.target)) return true
+        edgeStack.pop()
+      } else if (targetState === 1) {
+        const startIndex = nodeStack.lastIndexOf(edge.target)
+        if (startIndex < 0) throw probeFailure()
+        cycle = [...edgeStack.slice(startIndex), edge]
+        return true
+      }
+    }
+    nodeStack.pop()
+    state.set(node, 2)
+    return false
   }
-  return null
+
+  for (const node of [...nodes].sort(exactStringCompare)) {
+    if ((state.get(node) || 0) === 0 && visit(node)) break
+  }
+  return cycle
 }
 
 function databaseConfig() {
@@ -197,28 +221,20 @@ try {
     throw probeFailure()
   }
 
-  const canonicalEdges = metadata.collections.glossary_relationships
+  const rawCanonicalEdges = metadata.collections.glossary_relationships
     .map(canonicalEdge)
     .filter(Boolean)
-  const cycle = findCanonicalTwoEdgeCycle(canonicalEdges)
-  if (!cycle || cycle.length !== 2) throw probeFailure()
+  const cycle = findDirectedCycle(canonicalHierarchyEdges(rawCanonicalEdges))
+  if (!cycle?.length) throw probeFailure()
 
-  output = {
-    edge1Type: cycle[0].type,
-    edge1SourceUrn: cycle[0].originalSource,
-    edge1TargetUrn: cycle[0].originalTarget,
-    edge2Type: cycle[1].type,
-    edge2SourceUrn: cycle[1].originalSource,
-    edge2TargetUrn: cycle[1].originalTarget,
-  }
+  output = cycle.length > maxCycleOutputEdges
+    ? { failureClass: 'CYCLE_OUTPUT_BOUND_EXCEEDED', cycleLength: cycle.length, edges: [] }
+    : { failureClass: null, cycleLength: cycle.length, edges: cycle }
 } catch {
   output = {
-    edge1Type: 'PROBE_FAILED',
-    edge1SourceUrn: 'NONE',
-    edge1TargetUrn: 'NONE',
-    edge2Type: 'PROBE_FAILED',
-    edge2SourceUrn: 'NONE',
-    edge2TargetUrn: 'NONE',
+    failureClass: 'PROBE_FAILED',
+    cycleLength: 0,
+    edges: [],
   }
 } finally {
   if (client) {
@@ -228,13 +244,15 @@ try {
   if (pool) await pool.end().catch(() => undefined)
 }
 
+const edgeFields = output.edges.map((edge, index) => (
+  `|edge${index + 1}_type=${edge.type}`
+  + `|edge${index + 1}_source_urn=${encodeOutputField(edge.originalSource)}`
+  + `|edge${index + 1}_target_urn=${encodeOutputField(edge.originalTarget)}`
+)).join('')
 process.stdout.write(
-  `${outputPrefix}|edge1_type=${output.edge1Type}`
-  + `|edge1_source_urn=${output.edge1SourceUrn}`
-  + `|edge1_target_urn=${output.edge1TargetUrn}`
-  + `|edge2_type=${output.edge2Type}`
-  + `|edge2_source_urn=${output.edge2SourceUrn}`
-  + `|edge2_target_urn=${output.edge2TargetUrn}\n`,
+  `${outputPrefix}`
+  + (output.failureClass ? `|class=${output.failureClass}` : '')
+  + `|cycle_length=${output.cycleLength}${edgeFields}\n`,
 )
 NODE
 )
