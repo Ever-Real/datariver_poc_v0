@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
     "prep39083_product_artifact", ROOT / "scripts" / "prep39083_product_artifact.py"
