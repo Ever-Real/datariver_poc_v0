@@ -265,9 +265,7 @@ def test_owned_process_accepts_legacy_command_only_for_legacy_state(
     )
     monkeypatch.setattr(module, "_process_command", lambda _pid: command_without_ubatch)
 
-    assert module._owned_process(
-        4242, model="op/model:q4", model_blob=blob.resolve(), ubatch=None
-    )
+    assert module._owned_process(4242, model="op/model:q4", model_blob=blob.resolve(), ubatch=None)
     assert not module._owned_process(
         4242, model="op/model:q4", model_blob=blob.resolve(), ubatch=1024
     )
@@ -291,9 +289,7 @@ def test_owned_process_accepts_command_with_matching_ubatch(
     )
     monkeypatch.setattr(module, "_process_command", lambda _pid: command_with_ubatch)
 
-    assert module._owned_process(
-        4242, model="op/model:q4", model_blob=blob.resolve(), ubatch=1024
-    )
+    assert module._owned_process(4242, model="op/model:q4", model_blob=blob.resolve(), ubatch=1024)
 
 
 def test_stop_accepts_the_exact_legacy_owned_process(

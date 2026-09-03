@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
@@ -17,8 +17,8 @@ SPEC.loader.exec_module(MODULE)
 PRODUCT = "1" * 40
 
 
-def inspection(**overrides):
-    document = {
+def inspection(**overrides: Any) -> list[dict[str, Any]]:
+    document: dict[str, Any] = {
         "Os": "linux",
         "Architecture": "amd64",
         "Descriptor": {
@@ -40,16 +40,18 @@ def inspection(**overrides):
     return [document]
 
 
-def test_build_command_is_pinned_to_the_canonical_product_dockerfile():
+def test_build_command_is_pinned_to_the_canonical_product_dockerfile() -> None:
     command = MODULE.canonical_build_command(PRODUCT)
     dockerfile = command[command.index("--file") + 1]
     assert dockerfile.endswith("deploy/poc/Dockerfile.example")
     assert not dockerfile.endswith("frontend/Dockerfile")
-    assert ["--platform", "linux/amd64"] == command[command.index("--platform"):command.index("--platform") + 2]
+    assert ["--platform", "linux/amd64"] == command[
+        command.index("--platform") : command.index("--platform") + 2
+    ]
     assert f"POC_SOURCE_COMMIT={PRODUCT}" in command
 
 
-def test_accepts_the_node_product_runtime_contract():
+def test_accepts_the_node_product_runtime_contract() -> None:
     observed = MODULE.validate_runtime_inspection(inspection(), PRODUCT)
     assert observed["Config"]["Cmd"] == ["node", "poc-server.mjs"]
 
@@ -61,9 +63,13 @@ def test_accepts_the_node_product_runtime_contract():
         inspection(Config_Cmd=["nginx", "-g", "daemon off;"]),
         inspection(Config_Labels={"org.opencontainers.image.revision": "3" * 40}),
         inspection(Architecture="arm64"),
-        inspection(Descriptor={"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "bad"}),
+        inspection(
+            Descriptor={"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "bad"}
+        ),
     ],
 )
-def test_rejects_frontend_only_or_mismatched_runtime_contract(document):
+def test_rejects_frontend_only_or_mismatched_runtime_contract(
+    document: list[dict[str, Any]],
+) -> None:
     with pytest.raises(MODULE.ProductArtifactError):
         MODULE.validate_runtime_inspection(document, PRODUCT)

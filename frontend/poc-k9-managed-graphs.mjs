@@ -313,6 +313,48 @@ export function projectionDiffMetrics(previousRelease, nodes, edges) {
   }
 }
 
+function canonicalGraphDocumentMap(documents, identityOf) {
+  if (!Array.isArray(documents)) return null
+  const result = new Map()
+  for (const document of documents) {
+    const identity = identityOf(document)
+    if (typeof identity !== 'string' || !identity || result.has(identity)) return null
+    result.set(identity, canonicalStringify(document))
+  }
+  return result
+}
+
+function graphDocumentsEqualByIdentity(expected, observed, identityOf) {
+  if (!Array.isArray(expected) || !Array.isArray(observed) || expected.length !== observed.length) {
+    return false
+  }
+  const expectedByIdentity = canonicalGraphDocumentMap(expected, identityOf)
+  const observedByIdentity = canonicalGraphDocumentMap(observed, identityOf)
+  if (!expectedByIdentity || !observedByIdentity || expectedByIdentity.size !== observedByIdentity.size) {
+    return false
+  }
+  for (const [identity, expectedDocument] of expectedByIdentity) {
+    if (observedByIdentity.get(identity) !== expectedDocument) return false
+  }
+  return true
+}
+
+function graphReadBackMatches(expectedNodes, expectedEdges, observedNodes, observedEdges) {
+  return graphDocumentsEqualByIdentity(
+    expectedNodes,
+    observedNodes,
+    (node) => typeof node?.id === 'string' ? node.id : null,
+  ) && graphDocumentsEqualByIdentity(
+    expectedEdges,
+    observedEdges,
+    (edge) => typeof edge?.source === 'string'
+        && typeof edge?.target === 'string'
+        && typeof edge?.type === 'string'
+      ? canonicalStringify([edge.source, edge.target, edge.type])
+      : null,
+  )
+}
+
 export function buildK9GlossaryScrollVariables(scrollId) {
   return {
     input: {
@@ -796,8 +838,7 @@ export function createK9ManagedGraphs({ stateStore, neo4j, schedule, classificat
       const readBackNodes = verifyNodes.map(function(r) { return { id: r[0], type: r[1], classification: r[2], properties: JSON.parse(r[3]) } })
       const readBackEdges = verifyEdges.map(function(r) { return { source: r[0], target: r[1], type: r[2], properties: JSON.parse(r[3]) } })
 
-      if (computeSha256(readBackNodes) !== computeSha256(mappedData.nodes) ||
-          computeSha256(readBackEdges) !== computeSha256(mappedData.edges)) {
+      if (!graphReadBackMatches(mappedData.nodes, mappedData.edges, readBackNodes, readBackEdges)) {
         projectionState.failure_detail_code = 'READBACK_HASH_MISMATCH'
         throw new Error('Neo4j verification failed: read-back did not match staging expectations')
       }

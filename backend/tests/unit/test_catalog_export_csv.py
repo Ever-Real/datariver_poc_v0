@@ -47,9 +47,7 @@ def test_catalog_export_csv_has_fixed_schema_utf8_and_rfc4180_escaping() -> None
     chunks = list(iter_catalog_export_csv([_row()]))
 
     assert CSV_SAFETY_VERSION == "csv-safe-v1"
-    assert chunks[0] == b"\xef\xbb\xbf" + (
-        ",".join(CATALOG_EXPORT_CSV_HEADERS) + "\r\n"
-    ).encode()
+    assert chunks[0] == b"\xef\xbb\xbf" + (",".join(CATALOG_EXPORT_CSV_HEADERS) + "\r\n").encode()
     assert all(chunk.endswith(b"\r\n") for chunk in chunks)
     assert len(chunks) == 2
     assert _parse(chunks) == [

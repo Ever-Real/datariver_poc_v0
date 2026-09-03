@@ -102,28 +102,34 @@ def test_release_bridge_keeps_previous_snapshot_and_selected_product_as_ancestor
     )
 
     assert _git(repository, "branch", "--show-current") == prepare.RELEASE_REF
-    assert subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
-        [  # noqa: S607 - Git is the tested release dependency.
-            "git",
-            "merge-base",
-            "--is-ancestor",
-            metadata,
-            bridge,
-        ],
-        cwd=repository,
-        check=False,
-    ).returncode == 0
-    assert subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
-        [  # noqa: S607 - Git is the tested release dependency.
-            "git",
-            "merge-base",
-            "--is-ancestor",
-            product,
-            bridge,
-        ],
-        cwd=repository,
-        check=False,
-    ).returncode == 0
+    assert (
+        subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
+            [  # noqa: S607 - Git is the tested release dependency.
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                metadata,
+                bridge,
+            ],
+            cwd=repository,
+            check=False,
+        ).returncode
+        == 0
+    )
+    assert (
+        subprocess.run(  # noqa: S603 - test-owned fixed Git argv.
+            [  # noqa: S607 - Git is the tested release dependency.
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                product,
+                bridge,
+            ],
+            cwd=repository,
+            check=False,
+        ).returncode
+        == 0
+    )
     assert _git(repository, "rev-parse", f"{bridge}^{{tree}}") == _git(
         repository,
         "rev-parse",

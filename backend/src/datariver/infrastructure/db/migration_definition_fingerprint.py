@@ -103,10 +103,14 @@ def read_relation_definition_fingerprint_v1(
     connection: Connection,
     relation: str,
 ) -> RelationDefinitionFingerprintV1:
-    row = connection.execute(
-        RELATION_DEFINITION_FINGERPRINT_SQL_V1,
-        {"relation": relation},
-    ).mappings().one()
+    row = (
+        connection.execute(
+            RELATION_DEFINITION_FINGERPRINT_SQL_V1,
+            {"relation": relation},
+        )
+        .mappings()
+        .one()
+    )
     return RelationDefinitionFingerprintV1(
         constraints=str(row["constraints"]),
         indexes=str(row["indexes"]),

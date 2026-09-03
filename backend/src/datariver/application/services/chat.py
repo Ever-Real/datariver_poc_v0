@@ -748,8 +748,7 @@ class ChatService:
                         catalog_search_query=catalog_search_query,
                         catalog_search_fields=(
                             catalog_search_scope.search_fields
-                            if catalog_search_scope is not None
-                            and catalog_search_query is not None
+                            if catalog_search_scope is not None and catalog_search_query is not None
                             else ()
                         ),
                         truncated=(
@@ -760,9 +759,7 @@ class ChatService:
                 # wider candidate window has already passed the route's authorization checks;
                 # only this request-bounded prefix may reach composition or citation validation.
                 answer_context_count = (
-                    min(reranked_count, maximum_evidence)
-                    if reranker_invoked
-                    else maximum_evidence
+                    min(reranked_count, maximum_evidence) if reranker_invoked else maximum_evidence
                 )
                 ranked_evidence = ranked_evidence[:answer_context_count]
                 rankings = rankings[:answer_context_count]
@@ -936,21 +933,22 @@ class ChatService:
                             pre_validation_answer = answer
                             pre_validation_citations = cited_evidence
                             if discovery is not None:
-                                answer, validated_discovery = (
-                                    await self._final_reauthorize_citations(
-                                        answer=pre_validation_answer,
-                                        evidence=discovery.items,
-                                        initial_access=access,
-                                        required_external_stages=required_external_stages,
-                                        workspace_id=workspace_id,
-                                        subject=subject,
-                                        environment=environment,
-                                        request_id=f"{request_id}:discovery-final",
-                                        parent_resource_id=session_id or workspace_id,
-                                        question=retrieval_question,
-                                        requested_graph_id=requested_graph_id,
-                                        initial_graph_scope=graph_scope,
-                                    )
+                                (
+                                    answer,
+                                    validated_discovery,
+                                ) = await self._final_reauthorize_citations(
+                                    answer=pre_validation_answer,
+                                    evidence=discovery.items,
+                                    initial_access=access,
+                                    required_external_stages=required_external_stages,
+                                    workspace_id=workspace_id,
+                                    subject=subject,
+                                    environment=environment,
+                                    request_id=f"{request_id}:discovery-final",
+                                    parent_resource_id=session_id or workspace_id,
+                                    question=retrieval_question,
+                                    requested_graph_id=requested_graph_id,
+                                    initial_graph_scope=graph_scope,
                                 )
                                 validated_discovery_ids = {
                                     item.chunk_id for item in validated_discovery
@@ -963,25 +961,10 @@ class ChatService:
                                     cited_evidence = pre_validation_citations
                                 else:
                                     discovery = None
-                                    answer, cited_evidence = (
-                                        await self._final_reauthorize_citations(
-                                            answer=pre_validation_answer,
-                                            evidence=pre_validation_citations,
-                                            initial_access=access,
-                                            required_external_stages=required_external_stages,
-                                            workspace_id=workspace_id,
-                                            subject=subject,
-                                            environment=environment,
-                                            request_id=request_id,
-                                            parent_resource_id=session_id or workspace_id,
-                                            question=retrieval_question,
-                                            requested_graph_id=requested_graph_id,
-                                            initial_graph_scope=graph_scope,
-                                        )
-                                    )
-                            else:
-                                answer, cited_evidence = (
-                                    await self._final_reauthorize_citations(
+                                    (
+                                        answer,
+                                        cited_evidence,
+                                    ) = await self._final_reauthorize_citations(
                                         answer=pre_validation_answer,
                                         evidence=pre_validation_citations,
                                         initial_access=access,
@@ -995,6 +978,20 @@ class ChatService:
                                         requested_graph_id=requested_graph_id,
                                         initial_graph_scope=graph_scope,
                                     )
+                            else:
+                                answer, cited_evidence = await self._final_reauthorize_citations(
+                                    answer=pre_validation_answer,
+                                    evidence=pre_validation_citations,
+                                    initial_access=access,
+                                    required_external_stages=required_external_stages,
+                                    workspace_id=workspace_id,
+                                    subject=subject,
+                                    environment=environment,
+                                    request_id=request_id,
+                                    parent_resource_id=session_id or workspace_id,
+                                    question=retrieval_question,
+                                    requested_graph_id=requested_graph_id,
+                                    initial_graph_scope=graph_scope,
                                 )
                             if cited_evidence:
                                 workflow.append(

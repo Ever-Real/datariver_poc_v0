@@ -1,4 +1,4 @@
-/* global process */
+/* global process, structuredClone */
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -50,6 +50,87 @@ function createBaseStateStore() {
 function createBaseNeo4j() {
   return {
     run: mock.fn(async () => [])
+  }
+}
+
+function createRoundTripNeo4j({ mutateNodes, mutateEdges } = {}) {
+  const neo4j = createBaseNeo4j()
+  const storedNodes = []
+  const storedEdges = []
+  let releaseMarker = null
+  neo4j.run.mock.mockImplementation(async (query, params) => {
+    if (query.includes('UNWIND $nodes AS node')) {
+      storedNodes.push(...structuredClone(params.nodes))
+      return []
+    }
+    if (query.includes('UNWIND $edges AS edge')) {
+      storedEdges.push(...structuredClone(params.edges))
+      return []
+    }
+    if (query.includes('RETURN n.id AS id')) {
+      const nodes = mutateNodes ? mutateNodes(structuredClone(storedNodes)) : storedNodes
+      return nodes.map((node) => [node.id, node.type, node.classification, node.properties])
+    }
+    if (query.includes('RETURN source.id AS source')) {
+      const edges = mutateEdges ? mutateEdges(structuredClone(storedEdges)) : storedEdges
+      return edges.map((edge) => [edge.source, edge.target, edge.type, edge.properties])
+    }
+    if (query.startsWith('CREATE (n:K9Node:K9Release')) {
+      releaseMarker = [params.hash, params.policy]
+      return []
+    }
+    if (query.includes('MATCH (n:K9Release)')) return releaseMarker ? [releaseMarker] : []
+    return []
+  })
+  return neo4j
+}
+
+function persistedLineageFixture() {
+  const ids = [
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a%id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a-id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a.id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,a_id,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,Aid,PROD)',
+    'TABLE:urn:li:dataset:(urn:li:dataPlatform:test,aid,PROD)',
+  ]
+  const sourcePayload = {
+    direction: 'BOTH', depth: 1, truncated: false,
+    nodes: ids.map((id, index) => ({
+      id, classification: 'INTERNAL', properties: { name: `synthetic-${index}` },
+    })),
+    column_nodes: [],
+    edges: ids.slice(1).map((target, index) => ({
+      source_asset_id: ids[index], target_asset_id: target,
+    })),
+    completeness_metadata: { complete: true },
+  }
+  return {
+    sourcePayload,
+    sourceSnapshot: {
+      source_snapshot_id: '3'.repeat(64),
+      lineage_hash: computeSha256(sourcePayload),
+      metadata_hash: '4'.repeat(64),
+      authority_pin: validV2AuthorityPin,
+    },
+  }
+}
+
+async function publishPersistedLineage(neo4j) {
+  const stateStore = createBaseStateStore()
+  let policies = []
+  stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+  stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+    policies.find((item) => item.graph_id === graphId) || null
+  ))
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+  await k9.bootstrapK9Policies(authCtx)
+  const { sourcePayload, sourceSnapshot } = persistedLineageFixture()
+  return {
+    result: await k9.publishPersistedProjection(authCtx, {
+      projector_id: 'LINEAGE', source_snapshot: sourceSnapshot, source_payload: sourcePayload,
+    }),
+    stateStore,
   }
 }
 
@@ -166,6 +247,77 @@ test('persisted V2 graph projection bridges the additive authorization fingerpri
   assert.equal(result.sourceSnapshotId, sourceSnapshot.source_snapshot_id)
   assert.equal(stateStore.executeK9Transaction.mock.calls.length, 1)
   assert.equal(stateStore.finalizeK9RunFailure.mock.calls.length, 0)
+})
+
+test('persisted graph read-back equality is independent of provider row ordering', async () => {
+  const neo4j = createRoundTripNeo4j({
+    mutateNodes: (nodes) => nodes.reverse(),
+    mutateEdges: (edges) => edges.reverse(),
+  })
+
+  const { result, stateStore } = await publishPersistedLineage(neo4j)
+
+  assert.equal(result.status, 'RUN')
+  assert.equal(stateStore.executeK9Transaction.mock.calls.length, 1)
+  assert.equal(stateStore.finalizeK9RunFailure.mock.calls.length, 0)
+})
+
+test('persisted graph read-back still rejects missing, extra, changed and duplicate content', async (t) => {
+  const nodeMutations = [
+    ['missing node', (nodes) => nodes.slice(1)],
+    ['extra node', (nodes) => [...nodes, { ...nodes[0], id: `${nodes[0].id}-extra` }]],
+    ['changed node classification', (nodes) => [{ ...nodes[0], classification: 'CONFIDENTIAL' }, ...nodes.slice(1)]],
+    ['changed node properties', (nodes) => [{ ...nodes[0], properties: '{"changed":true}' }, ...nodes.slice(1)]],
+    ['duplicate node identity', (nodes) => [...nodes, structuredClone(nodes[0])]],
+  ]
+  const edgeMutations = [
+    ['missing edge', (edges) => edges.slice(1)],
+    ['extra edge', (edges) => [...edges, { ...edges[0], source: edges[0].target, target: edges[0].source }]],
+    ['changed edge type', (edges) => [{ ...edges[0], type: 'rel.changed' }, ...edges.slice(1)]],
+    ['changed edge properties', (edges) => [{ ...edges[0], properties: '{"changed":true}' }, ...edges.slice(1)]],
+    ['duplicate edge identity', (edges) => [...edges, structuredClone(edges[0])]],
+  ]
+
+  for (const [name, mutateNodes] of nodeMutations) {
+    await t.test(name, async () => {
+      const { result, stateStore } = await publishPersistedLineage(createRoundTripNeo4j({ mutateNodes }))
+      assert.equal(result.status, 'FAILURE')
+      assert.equal(result.diagnostic.failure_detail_code, 'READBACK_HASH_MISMATCH')
+      assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
+    })
+  }
+  for (const [name, mutateEdges] of edgeMutations) {
+    await t.test(name, async () => {
+      const { result, stateStore } = await publishPersistedLineage(createRoundTripNeo4j({ mutateEdges }))
+      assert.equal(result.status, 'FAILURE')
+      assert.equal(result.diagnostic.failure_detail_code, 'READBACK_HASH_MISMATCH')
+      assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
+    })
+  }
+})
+
+test('persisted graph projection rejects a dangling endpoint before staging promotion', async () => {
+  const neo4j = createRoundTripNeo4j()
+  const stateStore = createBaseStateStore()
+  let policies = []
+  stateStore.ensureK9Policies.mock.mockImplementation(async (value) => { policies = value })
+  stateStore.getK9Policy.mock.mockImplementation(async (graphId) => (
+    policies.find((item) => item.graph_id === graphId) || null
+  ))
+  const k9 = createK9ManagedGraphs({ stateStore, neo4j, classificationCeiling: 'INTERNAL' })
+  await k9.bootstrapK9Policies(authCtx)
+  const { sourcePayload, sourceSnapshot } = persistedLineageFixture()
+  sourcePayload.nodes = sourcePayload.nodes.slice(1)
+  sourceSnapshot.lineage_hash = computeSha256(sourcePayload)
+
+  const result = await k9.publishPersistedProjection(authCtx, {
+    projector_id: 'LINEAGE', source_snapshot: sourceSnapshot, source_payload: sourcePayload,
+  })
+
+  assert.equal(result.status, 'FAILURE')
+  assert.equal(result.diagnostic.failure_detail_code, 'GRAPH_MAPPING_FAILED')
+  assert.equal(stateStore.executeK9Transaction.mock.calls.length, 0)
+  assert.equal(neo4j.run.mock.calls.some((call) => call.arguments[0].includes('UNWIND $nodes')), false)
 })
 
 test('persisted V2 authority mismatch fails before graph materialization with a bounded binding diagnostic', async () => {

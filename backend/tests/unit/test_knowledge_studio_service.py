@@ -1746,6 +1746,7 @@ async def test_create_managed_draft_applies_fixed_fields() -> None:
 @pytest.mark.asyncio
 async def test_create_managed_draft_rejects_unknown_intent() -> None:
     from uuid import uuid4
+
     with pytest.raises(ValidationError):
         domain_id = uuid4()
         await service(SimpleNamespace()).create_managed_draft(

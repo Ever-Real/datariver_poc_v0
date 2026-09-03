@@ -10,7 +10,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -348,7 +348,7 @@ await store.close()
             script,
         ]
     )
-    return json.loads(output.splitlines()[-1])
+    return cast(dict[str, Any], json.loads(output.splitlines()[-1]))
 
 
 def _k9_profile(runner: Any, prefix: list[str]) -> dict[str, Any]:
@@ -382,7 +382,7 @@ await store.close()
     assert all(item["result"] in {"RUN", "NO_OP"} and item["active"] for item in values)
     profiles = [item["profile"] for item in values if item["profile"]]
     assert profiles
-    return profiles[0]
+    return cast(dict[str, Any], profiles[0])
 
 
 def _cleanup_exact_project(
