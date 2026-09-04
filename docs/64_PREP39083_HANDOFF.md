@@ -14,7 +14,8 @@ normal updates use:
 The deployer reads `deploy/prep39083/transport.json`, fetches its exact immutable artifact branch,
 reconstructs and validates the archive atomically, and then enters the existing exact-OCI doctor
 and deployment gates. Operators no longer enter Product, artifact branch, chunk or checksum values.
-`./scripts/prep39083 status` is the safe post-disconnection and failure summary. Historical manual
+`./scripts/prep39083 status` is the safe post-disconnection and failure summary;
+`./scripts/prep39083 status --compact` emits one bounded identity/readiness line. Historical manual
 artifact branches and the older `main` flow remain evidence/backward compatibility, not the normal
 operator path.
 
@@ -108,7 +109,11 @@ The deploy command performs source validation, environment/proxy merge, native a
 manifest/platform/revision inspection, read-only external-provider
 preflight, deployment-attempt ownership, local service health, idempotent schema initialization,
 DB credential verification, admin/requested-service bootstrap, web health, staged feature-aware
-authenticated smoke and final 39080 re-observation. The same command
+authenticated smoke and final 39080 re-observation. A host-global Compose-project lock serializes
+separate clones. A proven foreign-checkout predecessor Web is adopted by force-recreating only Web
+after exact receipt/ancestry/volume/network checks. Before smoke, tracked/runtime/Compose/container/
+OCI Product identity and Compose ownership must agree; the applied identity is monitored throughout
+smoke and recorded in the attempt receipt. The same command
 handles a clean host, an accepted running or stopped stack, an exact-release rerun and a safely
 provable failed first install. A failed smoke is resumed by the same command without deleting or
 resetting its owned state. It never runs `down -v`, deletes a volume or widens authorization.

@@ -23,7 +23,8 @@ The regular PREP operator path is now only:
 `deploy` retrieves and verifies the pinned chunks without merging the artifact branch, then runs
 the existing doctor, no-build deployment, migration and smoke gates. At any time, including after
 a disconnected terminal, `./scripts/prep39083 status` reports the receipt phase and exact next
-action. The historical `main` promotion procedure below remains available as a separately approved
+action; `./scripts/prep39083 status --compact` reports bounded target/runtime ownership and lane
+state. The historical `main` promotion procedure below remains available as a separately approved
 control and is not performed by the PREP release command.
 
 ## Repeatable operator loop
@@ -97,10 +98,14 @@ completed generation. No PREP setting disables this contract.
    child manifest digest, config digest, platform and revision in the Handoff.
 2. Git: handoff-only release identity/docs, source-check, commit and push to `origin/dev`; then
    fast-forward `origin/main` to that exact verified Handoff without rebuilding or modifying it.
-3. PREP deploy: native amd64, target-state classification, separate runtime proxy policy, exact
+3. PREP deploy: native amd64, target-state classification, host-global Compose-project lock,
+   safe receipt/ancestry/volume/network-gated foreign-Web adoption, separate runtime proxy policy, exact
    archive checksum/content verification, exact Product image load/inspection, read-only provider
    preflight, attempt receipt, isolated Compose, idempotent
-   bootstrap and staged bounded smoke. A failed smoke resumes through the same command. Managed
+   bootstrap, post-Web tracked/runtime/Compose/container/OCI identity equality, and staged bounded
+   smoke bound to that serving Product. The applied container identity is monitored through smoke;
+   a foreign replacement invalidates the result rather than becoming a K9 failure. A failed smoke
+   leaves the verified incomplete Product running and resumes through the same command. Managed
    Assets and semantic index are strict built-in READY gates. MCL discovery/checkpoint readiness is
    also required; optional Airflow/MinIO capabilities report DEFERRED without adding containers.
    Startup catch-up repeats bounded MCL batches under the existing single-owner lock until the

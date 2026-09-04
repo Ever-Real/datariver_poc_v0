@@ -562,6 +562,7 @@ const passwordFile = argument('--password-file')
 const output = argument('--output')
 const failureOutput = argument('--failure-output')
 const progressOutput = argument('--progress-output', '')
+const smokeProductSha = argument('--smoke-product-sha', '')
 const glossaryTermUrn = String(argument('--glossary-term-urn', '') || '').trim()
 const k9Mode = String(argument('--k9-mode', 'required')).trim().toUpperCase()
 const readinessTimeoutMs = boundedMilliseconds(
@@ -570,11 +571,12 @@ const readinessTimeoutMs = boundedMilliseconds(
 
 async function main() {
   const started = processStarted
-  if (!requestOrigin || !username || !passwordFile || !output) {
+  if (!requestOrigin || !username || !passwordFile || !output
+    || !/^[0-9a-f]{40}$/.test(smokeProductSha)) {
     throw smokeFailure(
       'INPUT',
       'PREP_SMOKE_INPUT_INVALID',
-      'Required: --request-origin, --username, --password-file, and --output',
+      'Required: bounded request, credential, output and serving Product inputs',
     )
   }
   if (!['REQUIRED', 'DEFERRED'].includes(k9Mode)) {
@@ -634,6 +636,7 @@ async function main() {
 
   const report = {
     contract: 'DATARIVER_PREP39083_SMOKE_V2',
+    smoke_product_sha: smokeProductSha,
     generated_at: new Date().toISOString(),
     origin: transportOrigin,
     request_origin: requestOrigin,
@@ -1314,6 +1317,7 @@ async function main() {
 main().catch(async (error) => {
   const failure = {
     contract: 'DATARIVER_PREP39083_SMOKE_FAILURE_V2',
+    smoke_product_sha: /^[0-9a-f]{40}$/.test(smokeProductSha) ? smokeProductSha : null,
     stage: error?.stage || 'UNKNOWN',
     classification: error?.classification || 'PREP_SMOKE_UNKNOWN_FAILED',
     status_class: Number.isInteger(error?.status) ? `${Math.floor(error.status / 100)}xx` : null,

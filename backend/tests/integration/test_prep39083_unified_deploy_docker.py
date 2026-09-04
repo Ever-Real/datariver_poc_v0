@@ -210,6 +210,225 @@ def _archive_existing_product(runner: Any, product: str, target: Path) -> Any:
     not _ENABLED,
     reason="explicit isolated PREP39083 Docker integration is required",
 )
+def test_foreign_checkout_web_adoption_identity_fence_and_failure_preservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = f"datariver-prep39083-owner-{uuid4().hex[:10]}"
+    old_product = f"{uuid4().hex}{uuid4().hex[:8]}"
+    target_product = f"{uuid4().hex}{uuid4().hex[:8]}"
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    checkout_a.mkdir()
+    checkout_b.mkdir()
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM python:3.12.12-slim-bookworm\n"
+        "ARG PRODUCT\n"
+        "LABEL org.opencontainers.image.revision=$PRODUCT\n"
+        'CMD ["python", "-c", "import time; time.sleep(3600)"]\n',
+        encoding="utf-8",
+    )
+    runner = deploy.Runner(environment=deploy.child_environment({}))
+    for product in (old_product, target_product):
+        runner.run(
+            [
+                "docker",
+                "build",
+                "--pull=false",
+                "--build-arg",
+                f"PRODUCT={product}",
+                "--tag",
+                f"datariver-poc:{product}",
+                "--file",
+                dockerfile,
+                tmp_path,
+            ]
+        )
+    compose = (
+        "services:\n"
+        "  web:\n"
+        "    image: datariver-poc:${POC_IMAGE_TAG}\n"
+        '    command: ["python", "-c", "import time; time.sleep(3600)"]\n'
+        "    networks: [services]\n"
+        "  state:\n"
+        "    image: python:3.12.12-slim-bookworm\n"
+        '    command: ["python", "-c", "import time; time.sleep(3600)"]\n'
+        "    volumes:\n"
+        "      - pgvector-data:/state/pg\n"
+        "      - neo4j-data:/state/neo4j\n"
+        "      - neo4j-logs:/state/logs\n"
+        "    networks: [services]\n"
+        "networks:\n"
+        "  services:\n"
+        f"    name: {project}-services\n"
+        "volumes:\n"
+        "  pgvector-data:\n"
+        f"    name: {project}_pgvector-data\n"
+        "  neo4j-data:\n"
+        f"    name: {project}_neo4j-data\n"
+        "  neo4j-logs:\n"
+        f"    name: {project}_neo4j-logs\n"
+    )
+    for checkout in (checkout_a, checkout_b):
+        (checkout / "base.yaml").write_text(compose, encoding="utf-8")
+        (checkout / "artifact.yaml").write_text("services: {}\n", encoding="utf-8")
+    env_a = checkout_a / "runtime.env"
+    env_b = checkout_b / "runtime.env"
+    _private_env(env_a, {"POC_IMAGE_TAG": old_product})
+    _private_env(env_b, {"POC_IMAGE_TAG": target_product})
+    prefix_a = [
+        "docker",
+        "compose",
+        "--project-name",
+        project,
+        "--env-file",
+        os.fspath(env_a),
+        "--file",
+        os.fspath(checkout_a / "base.yaml"),
+        "--file",
+        os.fspath(checkout_a / "artifact.yaml"),
+    ]
+    prefix_b = [
+        "docker",
+        "compose",
+        "--project-name",
+        project,
+        "--env-file",
+        os.fspath(env_b),
+        "--file",
+        os.fspath(checkout_b / "base.yaml"),
+        "--file",
+        os.fspath(checkout_b / "artifact.yaml"),
+    ]
+    release = deploy.ReleaseIdentity(target_product, "b" * 40, "linux/amd64", 39083, project)
+    runtime = {
+        "POC_IMAGE_TAG": target_product,
+        "POC_SOURCE_COMMIT": target_product,
+        "PREP_RELEASE_PRODUCT_SHA": target_product,
+        "PREP_RELEASE_EVIDENCE_SHA": release.evidence_sha,
+    }
+    bundle = deploy.EnvironmentBundle(
+        {}, {}, runtime, runtime, (), deploy.TargetState.EXISTING_OWNED_INCOMPLETE, "REQUIRED"
+    )
+    attempt_path = tmp_path / "deploy-attempt.json"
+    secret_file = tmp_path / "generated.env"
+    _private_env(secret_file, {"SECRET": "preserved"})
+    secret_before = secret_file.read_bytes()
+    monkeypatch.setattr(deploy, "ROOT", checkout_b)
+    monkeypatch.setattr(deploy, "BASE_COMPOSE", checkout_b / "base.yaml")
+    monkeypatch.setattr(deploy, "PREP_ARTIFACT_COMPOSE", checkout_b / "artifact.yaml")
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
+    monkeypatch.setattr(deploy, "_git_is_ancestor", lambda *_a, **_k: True)
+    host_lock = None
+    try:
+        runner.run([*prefix_a, "up", "-d", "state", "web"])
+        host_lock = deploy.host_project_deployment_lock(project, root=tmp_path / "host-locks")
+        host_lock.__enter__()
+        with pytest.raises(deploy.PrepError) as concurrent:
+            with deploy.host_project_deployment_lock(project, root=tmp_path / "host-locks"):
+                pass
+        assert concurrent.value.code == "PREP_HOST_PROJECT_DEPLOY_ALREADY_ACTIVE"
+        state_container_before = runner.output([*prefix_a, "ps", "-q", "state"])
+        volume_names = deploy.canonical_volume_identities(release)
+        volume_ids_before = {
+            name: runner.output(["docker", "volume", "inspect", "--format", "{{.Name}}", name])
+            for name in volume_names
+        }
+        old_identity = deploy.inspect_running_web_identity(runner, release)
+        assert old_identity is not None
+        assert old_identity.oci_revision == old_product
+        assert old_identity.working_dir_same is False
+        config = {
+            "services": {"web": {"image": f"datariver-poc:{target_product}"}},
+            "volumes": {
+                "pgvector-data": {"name": f"{project}_pgvector-data"},
+                "neo4j-data": {"name": f"{project}_neo4j-data"},
+                "neo4j-logs": {"name": f"{project}_neo4j-logs"},
+            },
+            "networks": {"services": {"name": f"{project}-services"}},
+        }
+        inventory = deploy.TargetInventory(
+            False,
+            False,
+            True,
+            True,
+            (deploy.TargetContainer(old_identity.container_id, "web", True),),
+            tuple(
+                deploy.TargetVolume(name, logical)
+                for name, logical in zip(
+                    volume_names, deploy.PREP_VOLUME_LOGICAL_NAMES, strict=True
+                )
+            ),
+            (f"{project}-services",),
+        )
+        previous = {"product_sha": target_product, "resumed_from_product_sha": old_product}
+        assert (
+            deploy.prove_foreign_web_owner_adoptable(runner, release, inventory, config, previous)
+            is True
+        )
+        runner.run([*prefix_b, "up", "-d", "--no-recreate", "state"])
+        assert runner.output([*prefix_b, "ps", "-q", "state"]) == state_container_before
+        runner.run(
+            deploy.web_start_command(
+                prefix_b,
+                deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+                force_recreate=True,
+            )
+        )
+        applied = deploy.verify_applied_web_identity(runner, release, bundle, prefix_b, config)
+        assert applied.oci_revision == target_product
+        assert applied.working_dir_same is True
+        assert applied.config_files_same is True
+        receipt_runtime = {
+            "POC_MCP_SERVICE_TOKEN": "mcp-secret",
+            "POC_POSTGRES_PASSWORD": "pg-secret",
+            "NEO4J_PASSWORD": "neo4j-secret",
+        }
+        receipt_bundle = replace(bundle, runtime=receipt_runtime)
+        receipt = deploy.write_attempt_receipt(
+            release,
+            "c" * 40,
+            receipt_bundle,
+            volume_names,
+            phase="PREPARED",
+            foreign_owner_adopted=True,
+        )
+        receipt = deploy.advance_attempt_identity(receipt, "applied_product_sha", target_product)
+        receipt = deploy.advance_attempt_identity(receipt, "smoke_product_sha", target_product)
+        receipt = deploy.advance_attempt_identity(
+            receipt, "post_failure_product_sha", target_product
+        )
+        receipt = deploy.advance_attempt_phase(receipt, "SMOKE_FAILED")
+        assert receipt["target_product_sha"] == target_product
+        assert receipt["applied_product_sha"] == target_product
+        assert receipt["smoke_product_sha"] == target_product
+        assert receipt["post_failure_product_sha"] == target_product
+        assert receipt["foreign_owner_adopted"] is True
+        assert receipt["rollback_attempted"] is False
+        assert receipt["rollback_completed"] is False
+        assert secret_file.read_bytes() == secret_before
+        assert {
+            name: runner.output(["docker", "volume", "inspect", "--format", "{{.Name}}", name])
+            for name in volume_names
+        } == volume_ids_before
+
+        runner.run([*prefix_a, "up", "-d", "--no-deps", "--force-recreate", "web"])
+        with pytest.raises(deploy.PrepError) as replaced_runtime:
+            deploy.verify_web_runtime_stable(runner, release, applied)
+        assert replaced_runtime.value.code == "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED"
+    finally:
+        if host_lock is not None:
+            host_lock.__exit__(None, None, None)
+        runner.run([*prefix_b, "down", "--volumes", "--remove-orphans"], check=False)
+        runner.run(["docker", "image", "rm", f"datariver-poc:{old_product}"], check=False)
+        runner.run(["docker", "image", "rm", f"datariver-poc:{target_product}"], check=False)
+
+
+@pytest.mark.skipif(
+    not _ENABLED,
+    reason="explicit isolated PREP39083 Docker integration is required",
+)
 def test_doctor_bootstraps_only_exact_image_and_runs_matrix_without_product_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -424,7 +643,7 @@ def test_unified_state_machine_and_non_destructive_failed_install_recovery(
                 deploy.compose_volume_identities(config),
                 phase="PREPARED",
             )
-            deploy.advance_attempt_phase(receipt, "SMOKE_FAILED")
+            deploy.advance_attempt_phase(receipt, "STATE_SERVICES_READY")
 
         owned_incomplete = deploy.inspect_target_inventory(
             runner,
