@@ -1,17 +1,17 @@
 #!/bin/sh
 set -u
 
-# Diagnostic-only compatibility matrix for the exact Product 5e6 Semantic provider path.
+# Diagnostic-only batch RCA for the exact Product 5e6 Semantic provider path.
 # The probe runs inside the one canonical PREP web container, uses the Product-owned
 # provider transport and endpoint construction, and reads the durable Y Semantic state
 # in one rolled-back READ ONLY transaction. It never persists returned vectors.
 
 EXPECTED_PRODUCT='5e6db1604f4d007d6522e69d36fa2572d8e05bf5'
 EXPECTED_SNAPSHOT='791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
-OUTPUT_PREFIX='SEMANTIC_PROVIDER_MATRIX'
+OUTPUT_PREFIX='SEMANTIC_PROVIDER_RCA'
 
 emit_shell_failure() {
-  printf '%s\n' "${OUTPUT_PREFIX}|models=UNAVAILABLE|synthetic1=UNAVAILABLE|actual1=UNAVAILABLE|batch32=UNAVAILABLE|batch_count=0|batch_bytes=0|max_doc_bytes=0|vector_contract=UNAVAILABLE"
+  printf '%s\n' "${OUTPUT_PREFIX}|batch32=UNAVAILABLE|synthetic32=SKIPPED|max_actual1=SKIPPED|left16=SKIPPED|right16=SKIPPED|largest_pass_count=0|smallest_fail_count=0|fail_batch_bytes=0|max_doc_bytes=0|verdict=AMBIGUOUS_PROVIDER_BATCH_REJECTION"
 }
 
 exact_id=''
@@ -62,14 +62,15 @@ import { createProviderTransport, llmEndpoint } from './poc-provider-transport.m
 
 const { Pool } = pg
 const EXPECTED_SNAPSHOT = '791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
-const OUTPUT_PREFIX = 'SEMANTIC_PROVIDER_MATRIX'
+const OUTPUT_PREFIX = 'SEMANTIC_PROVIDER_RCA'
 const LIFECYCLE_KEY = 'managed-k9-v2'
 const SEMANTIC_BATCH_SIZE = 32
-const DOCTOR_TIMEOUT_MS = 15_000
+const MAX_PROVIDER_REQUESTS = 10
 const HASH = /^[0-9a-f]{64}$/u
 
 let pool
 let transport
+let providerRequestCount = 0
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex')
@@ -153,12 +154,6 @@ function byteBucket(value) {
   return 'BYTES_OVER_200000'
 }
 
-function modelLabel(result) {
-  if (result.kind === 'PASS') return 'PASS_2XX'
-  if (result.kind === 'HTTP') return `FAIL_${result.classification}`
-  return result.classification
-}
-
 function embeddingLabel(result, bucket = null) {
   const status = result.kind === 'PASS'
     ? 'PASS_2XX'
@@ -175,21 +170,6 @@ async function providerFetch(url, options, timeoutMs) {
     redirect: 'error',
     signal: AbortSignal.timeout(timeoutMs),
   })
-}
-
-async function modelsProbe(provider) {
-  try {
-    const response = await providerFetch(llmEndpoint(provider, '/models'), {
-      headers: { Authorization: `Bearer ${provider.token}` },
-    }, DOCTOR_TIMEOUT_MS)
-    const classification = statusClass(response.status)
-    await response.body?.cancel().catch(() => undefined)
-    return response.ok
-      ? { kind: 'PASS', classification }
-      : { kind: 'HTTP', classification }
-  } catch (error) {
-    return { kind: 'TRANSPORT', classification: transportFailure(error) }
-  }
 }
 
 async function embeddingProbe(provider, input, timeoutMs, expectedDimension) {
@@ -229,6 +209,16 @@ async function embeddingProbe(provider, input, timeoutMs, expectedDimension) {
   } catch {
     return { kind: 'CONTRACT', classification: 'CONTRACT', vectorContract: 'FAIL' }
   }
+}
+
+async function boundedEmbeddingProbe(provider, input, timeoutMs, expectedDimension) {
+  if (providerRequestCount >= MAX_PROVIDER_REQUESTS) return null
+  providerRequestCount += 1
+  return embeddingProbe(provider, input, timeoutMs, expectedDimension)
+}
+
+function embeddingPassed(result) {
+  return result?.kind === 'PASS' && result.vectorContract === 'PASS'
 }
 
 function validSemanticRows({ manifest, documents, batches, staged }) {
@@ -387,37 +377,88 @@ async function readPendingSemantic(provider) {
   }
 }
 
-function matrixLine({ models, synthetic, actual, batch, batchDocuments, batchBytes }) {
-  const maximumDocumentBytes = batchDocuments.reduce(
-    (maximum, document) => Math.max(
-      maximum, Buffer.byteLength(document.content_text, 'utf8'),
-    ), 0,
+function providerRejected(result) {
+  return result?.kind === 'CONTRACT'
+    || (result?.kind === 'HTTP' && ['400', '413', '422'].includes(result.classification))
+}
+
+function noteActualResult(state, result, count) {
+  if (embeddingPassed(result)) {
+    state.largestPassCount = Math.max(state.largestPassCount, count)
+  } else if (providerRejected(result)) {
+    state.smallestFailCount = state.smallestFailCount === 0
+      ? count
+      : Math.min(state.smallestFailCount, count)
+  }
+}
+
+async function classifyFailedSubset({
+  provider, documents, timeoutMs, expectedDimension, state,
+}) {
+  if (documents.length === 1) return 'SINGLE_DOCUMENT_PROVIDER_REJECTION'
+  if (MAX_PROVIDER_REQUESTS - providerRequestCount < 2) {
+    return 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+  }
+
+  const midpoint = Math.ceil(documents.length / 2)
+  const left = documents.slice(0, midpoint)
+  const right = documents.slice(midpoint)
+  const leftResult = await boundedEmbeddingProbe(
+    provider, left.map((document) => document.content_text),
+    timeoutMs, expectedDimension,
   )
-  const actualBucket = actual
-    ? byteBucket(Buffer.byteLength(batchDocuments[0]?.content_text || '', 'utf8'))
-    : null
-  const vectorResults = [synthetic, actual, batch].filter(Boolean)
-  const vectorContract = vectorResults.some((result) => result.vectorContract === 'FAIL')
-    ? 'FAIL'
-    : vectorResults.length === 3
-      && vectorResults.every((result) => result.vectorContract === 'PASS')
-      ? 'PASS'
-      : 'UNAVAILABLE'
+  const rightResult = await boundedEmbeddingProbe(
+    provider, right.map((document) => document.content_text),
+    timeoutMs, expectedDimension,
+  )
+  if (!leftResult || !rightResult) return 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+
+  noteActualResult(state, leftResult, left.length)
+  noteActualResult(state, rightResult, right.length)
+  if (embeddingPassed(leftResult) && embeddingPassed(rightResult)) {
+    return 'AGGREGATE_BATCH_LIMIT'
+  }
+  if ((!embeddingPassed(leftResult) && !providerRejected(leftResult))
+    || (!embeddingPassed(rightResult) && !providerRejected(rightResult))) {
+    return 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+  }
+
+  const failedDocuments = providerRejected(leftResult) ? left : right
+  if (failedDocuments.length === 1) return 'SINGLE_DOCUMENT_PROVIDER_REJECTION'
+  return classifyFailedSubset({
+    provider,
+    documents: failedDocuments,
+    timeoutMs,
+    expectedDimension,
+    state,
+  })
+}
+
+function requestBytes(provider, documents) {
+  return Buffer.byteLength(JSON.stringify({
+    model: provider.model,
+    input: documents.map((document) => document.content_text),
+  }), 'utf8')
+}
+
+function rcaLine(state) {
   return [
     OUTPUT_PREFIX,
-    `models=${modelLabel(models)}`,
-    `synthetic1=${embeddingLabel(synthetic)}`,
-    `actual1=${actual ? embeddingLabel(actual, actualBucket) : 'UNAVAILABLE'}`,
-    `batch32=${batch ? embeddingLabel(batch) : 'UNAVAILABLE'}`,
-    `batch_count=${batchDocuments.length}`,
-    `batch_bytes=${batchBytes}`,
-    `max_doc_bytes=${maximumDocumentBytes}`,
-    `vector_contract=${vectorContract}`,
+    `batch32=${state.batch32}`,
+    `synthetic32=${state.synthetic32}`,
+    `max_actual1=${state.maxActual1}`,
+    `left16=${state.left16}`,
+    `right16=${state.right16}`,
+    `largest_pass_count=${state.largestPassCount}`,
+    `smallest_fail_count=${state.smallestFailCount}`,
+    `fail_batch_bytes=${state.failBatchBytes}`,
+    `max_doc_bytes=${state.maxDocumentBytes}`,
+    `verdict=${state.verdict}`,
   ].join('|')
 }
 
 function unavailableLine() {
-  return `${OUTPUT_PREFIX}|models=UNAVAILABLE|synthetic1=UNAVAILABLE|actual1=UNAVAILABLE|batch32=UNAVAILABLE|batch_count=0|batch_bytes=0|max_doc_bytes=0|vector_contract=UNAVAILABLE`
+  return `${OUTPUT_PREFIX}|batch32=UNAVAILABLE|synthetic32=SKIPPED|max_actual1=SKIPPED|left16=SKIPPED|right16=SKIPPED|largest_pass_count=0|smallest_fail_count=0|fail_batch_bytes=0|max_doc_bytes=0|verdict=AMBIGUOUS_PROVIDER_BATCH_REJECTION`
 }
 
 try {
@@ -426,40 +467,108 @@ try {
   transport = createProviderTransport(process.env)
   pool = new Pool(databaseConfig())
 
-  const models = await modelsProbe(provider)
-  const synthetic = await embeddingProbe(
-    provider,
-    ['datariver-semantic-contract-probe'],
-    timeoutMs,
-    undefined,
-  )
   const semantic = await readPendingSemantic(provider)
   const batchDocuments = semantic?.pending.slice(0, SEMANTIC_BATCH_SIZE) || []
-  const actual = batchDocuments.length > 0
-    ? await embeddingProbe(
+  if (batchDocuments.length !== SEMANTIC_BATCH_SIZE) {
+    console.log(unavailableLine())
+  } else {
+    const state = {
+      batch32: 'UNAVAILABLE',
+      synthetic32: 'SKIPPED',
+      maxActual1: 'SKIPPED',
+      left16: 'SKIPPED',
+      right16: 'SKIPPED',
+      largestPassCount: 0,
+      smallestFailCount: 0,
+      failBatchBytes: requestBytes(provider, batchDocuments),
+      maxDocumentBytes: Math.max(...batchDocuments.map(
+        (document) => Buffer.byteLength(document.content_text, 'utf8'),
+      )),
+      verdict: 'AMBIGUOUS_PROVIDER_BATCH_REJECTION',
+    }
+
+    const batchResult = await boundedEmbeddingProbe(
+      provider,
+      batchDocuments.map((document) => document.content_text),
+      timeoutMs,
+      semantic.expectedDimension,
+    )
+    state.batch32 = batchResult ? embeddingLabel(batchResult) : 'UNAVAILABLE'
+    noteActualResult(state, batchResult, SEMANTIC_BATCH_SIZE)
+    if (embeddingPassed(batchResult)) {
+      state.verdict = 'TRANSIENT_PROVIDER_FAILURE'
+    } else if (!providerRejected(batchResult)) {
+      state.verdict = 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+    } else {
+      const syntheticResult = await boundedEmbeddingProbe(
         provider,
-        [batchDocuments[0].content_text],
+        Array.from(
+          { length: SEMANTIC_BATCH_SIZE },
+          (_, index) => `datariver-semantic-cardinality-probe-${String(index + 1).padStart(2, '0')}`,
+        ),
         timeoutMs,
         semantic.expectedDimension,
       )
-    : null
-  const batch = batchDocuments.length > 0
-    ? await embeddingProbe(
-        provider,
-        batchDocuments.map((document) => document.content_text),
-        timeoutMs,
-        semantic.expectedDimension,
-      )
-    : null
-  const batchBytes = batchDocuments.length > 0
-    ? Buffer.byteLength(JSON.stringify({
-        model: provider.model,
-        input: batchDocuments.map((document) => document.content_text),
-      }), 'utf8')
-    : 0
-  console.log(matrixLine({
-    models, synthetic, actual, batch, batchDocuments, batchBytes,
-  }))
+      state.synthetic32 = syntheticResult ? embeddingLabel(syntheticResult) : 'UNAVAILABLE'
+      if (syntheticResult?.kind === 'HTTP' && syntheticResult.classification === '400') {
+        state.verdict = 'BATCH_CARDINALITY_LIMIT'
+      } else if (!embeddingPassed(syntheticResult)) {
+        state.verdict = 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+      } else {
+        const largestDocument = batchDocuments.reduce((largest, document) => (
+          Buffer.byteLength(document.content_text, 'utf8')
+            > Buffer.byteLength(largest.content_text, 'utf8') ? document : largest
+        ))
+        const maximumResult = await boundedEmbeddingProbe(
+          provider,
+          [largestDocument.content_text],
+          timeoutMs,
+          semantic.expectedDimension,
+        )
+        state.maxActual1 = maximumResult
+          ? embeddingLabel(maximumResult, byteBucket(state.maxDocumentBytes))
+          : 'UNAVAILABLE'
+        noteActualResult(state, maximumResult, 1)
+        if (providerRejected(maximumResult)) {
+          state.verdict = 'SINGLE_DOCUMENT_PROVIDER_REJECTION'
+        } else if (!embeddingPassed(maximumResult)) {
+          state.verdict = 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+        } else {
+          const left = batchDocuments.slice(0, SEMANTIC_BATCH_SIZE / 2)
+          const right = batchDocuments.slice(SEMANTIC_BATCH_SIZE / 2)
+          const leftResult = await boundedEmbeddingProbe(
+            provider, left.map((document) => document.content_text),
+            timeoutMs, semantic.expectedDimension,
+          )
+          const rightResult = await boundedEmbeddingProbe(
+            provider, right.map((document) => document.content_text),
+            timeoutMs, semantic.expectedDimension,
+          )
+          state.left16 = leftResult ? embeddingLabel(leftResult) : 'UNAVAILABLE'
+          state.right16 = rightResult ? embeddingLabel(rightResult) : 'UNAVAILABLE'
+          noteActualResult(state, leftResult, left.length)
+          noteActualResult(state, rightResult, right.length)
+          if (!leftResult || !rightResult
+            || (!embeddingPassed(leftResult) && !providerRejected(leftResult))
+            || (!embeddingPassed(rightResult) && !providerRejected(rightResult))) {
+            state.verdict = 'AMBIGUOUS_PROVIDER_BATCH_REJECTION'
+          } else if (embeddingPassed(leftResult) && embeddingPassed(rightResult)) {
+            state.verdict = 'AGGREGATE_BATCH_LIMIT'
+          } else {
+            const failedDocuments = providerRejected(leftResult) ? left : right
+            state.verdict = await classifyFailedSubset({
+              provider,
+              documents: failedDocuments,
+              timeoutMs,
+              expectedDimension: semantic.expectedDimension,
+              state,
+            })
+          }
+        }
+      }
+    }
+    console.log(rcaLine(state))
+  }
 } catch {
   console.log(unavailableLine())
 } finally {
