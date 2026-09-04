@@ -271,8 +271,10 @@ def test_foreign_checkout_web_adoption_identity_fence_and_failure_preservation(
         f"    name: {project}_neo4j-logs\n"
     )
     for checkout in (checkout_a, checkout_b):
-        (checkout / "base.yaml").write_text(compose, encoding="utf-8")
-        (checkout / "artifact.yaml").write_text("services: {}\n", encoding="utf-8")
+        (checkout / "deploy/poc").mkdir(parents=True)
+        (checkout / "deploy/prep39083").mkdir(parents=True)
+        (checkout / "deploy/poc/base.yaml").write_text(compose, encoding="utf-8")
+        (checkout / "deploy/prep39083/artifact.yaml").write_text("services: {}\n", encoding="utf-8")
     env_a = checkout_a / "runtime.env"
     env_b = checkout_b / "runtime.env"
     _private_env(env_a, {"POC_IMAGE_TAG": old_product})
@@ -285,22 +287,11 @@ def test_foreign_checkout_web_adoption_identity_fence_and_failure_preservation(
         "--env-file",
         os.fspath(env_a),
         "--file",
-        os.fspath(checkout_a / "base.yaml"),
+        os.fspath(checkout_a / "deploy/poc/base.yaml"),
         "--file",
-        os.fspath(checkout_a / "artifact.yaml"),
+        os.fspath(checkout_a / "deploy/prep39083/artifact.yaml"),
     ]
-    prefix_b = [
-        "docker",
-        "compose",
-        "--project-name",
-        project,
-        "--env-file",
-        os.fspath(env_b),
-        "--file",
-        os.fspath(checkout_b / "base.yaml"),
-        "--file",
-        os.fspath(checkout_b / "artifact.yaml"),
-    ]
+    prefix_b: list[str] = []
     release = deploy.ReleaseIdentity(target_product, "b" * 40, "linux/amd64", 39083, project)
     runtime = {
         "POC_IMAGE_TAG": target_product,
@@ -316,10 +307,15 @@ def test_foreign_checkout_web_adoption_identity_fence_and_failure_preservation(
     _private_env(secret_file, {"SECRET": "preserved"})
     secret_before = secret_file.read_bytes()
     monkeypatch.setattr(deploy, "ROOT", checkout_b)
-    monkeypatch.setattr(deploy, "BASE_COMPOSE", checkout_b / "base.yaml")
-    monkeypatch.setattr(deploy, "PREP_ARTIFACT_COMPOSE", checkout_b / "artifact.yaml")
+    monkeypatch.setattr(deploy, "BASE_COMPOSE", checkout_b / "deploy/poc/base.yaml")
+    monkeypatch.setattr(
+        deploy,
+        "PREP_ARTIFACT_COMPOSE",
+        checkout_b / "deploy/prep39083/artifact.yaml",
+    )
     monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
     monkeypatch.setattr(deploy, "_git_is_ancestor", lambda *_a, **_k: True)
+    prefix_b = deploy.compose_prefix(release, env_b)
     host_lock = None
     try:
         runner.run([*prefix_a, "up", "-d", "state", "web"])
@@ -339,6 +335,18 @@ def test_foreign_checkout_web_adoption_identity_fence_and_failure_preservation(
         assert old_identity is not None
         assert old_identity.oci_revision == old_product
         assert old_identity.working_dir_same is False
+        assert runner.output(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}',
+                old_identity.container_id,
+            ]
+        ) == os.fspath((checkout_a / "deploy/poc").resolve())
+        assert prefix_b[prefix_b.index("--project-directory") + 1] == os.fspath(
+            (checkout_b / "deploy/poc").resolve()
+        )
         config = {
             "services": {"web": {"image": f"datariver-poc:{target_product}"}},
             "volumes": {

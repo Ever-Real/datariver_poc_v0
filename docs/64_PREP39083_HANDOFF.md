@@ -123,8 +123,10 @@ commands inherit only the reviewed host execution keys (`PATH`, bounded user/tem
 Docker engine/context/TLS configuration) plus the canonical effective environment rendered from
 the tracked contract, target-owned files, and `release.json`. Ambient `POC_*`, `DATAHUB_*`,
 `LLM_*`, `AIRFLOW_*`, `MINIO_*`, `S3_*`, `GRAFANA_*`, database, `COMPOSE_*`, and
-`DOCKER_DEFAULT_PLATFORM` values are ignored. Compose is invoked with an explicit project, file,
-and private env file. Before either doctor or deploy loads an image, the resolved project, exact
+`DOCKER_DEFAULT_PLATFORM` values are ignored. Compose is invoked with an explicit project, private
+env file, exact file set and the first Compose file's `deploy/poc` directory as its explicit
+project directory. This preserves Docker Compose's default relative-path semantics. Before either
+doctor or deploy loads an image, the resolved project, exact
 Product tag/revision, archive checksum, child manifest, linux/amd64 platform, Web/state port
 bindings, no-build policy, and canonical provider environment are verified without printing their
 values. Missing or mismatched artifacts fail closed; there is no build or pull fallback.

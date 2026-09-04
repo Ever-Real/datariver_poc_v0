@@ -245,12 +245,23 @@ SUPPORTED_POSTGRES_SCHEMA_FAILURE_CODES = frozenset(
 class PrepError(RuntimeError):
     """One sanitized, operator-correctable PREP deployment failure."""
 
-    def __init__(self, step: str, code: str, reason: str, action: str) -> None:
+    def __init__(
+        self,
+        step: str,
+        code: str,
+        reason: str,
+        action: str,
+        *,
+        mismatch_fields: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.step = step
         self.code = code
         self.reason = reason
         self.action = action
+        if mismatch_fields is not None and not re.fullmatch(r"[NEQCOWFH]+", mismatch_fields):
+            raise ValueError("invalid bounded runtime identity mismatch fields")
+        self.mismatch_fields = mismatch_fields
 
 
 class CommandFailure(RuntimeError):
@@ -1257,12 +1268,19 @@ def child_environment(
     return environment
 
 
+def canonical_compose_project_directory() -> Path:
+    """Return Compose's canonical first-file project directory explicitly."""
+    return BASE_COMPOSE.parent.resolve()
+
+
 def compose_prefix(release: ReleaseIdentity, env_file: Path) -> list[str]:
     return [
         "docker",
         "compose",
         "--project-name",
         release.project,
+        "--project-directory",
+        os.fspath(canonical_compose_project_directory()),
         "--env-file",
         os.fspath(env_file),
         "--file",
@@ -1399,6 +1417,7 @@ def inspect_running_web_identity(
             "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
             "The Compose project does not own exactly one running canonical Web container.",
             "Stop competing PREP controllers; preserve state and rerun the canonical deploy.",
+            mismatch_fields="N",
         )
     container_id = rows[0][0]
     try:
@@ -1417,6 +1436,7 @@ def inspect_running_web_identity(
             "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
             "The running Web identity cannot be proven from bounded Docker metadata.",
             "Preserve state and rerun from the canonical release checkout.",
+            mismatch_fields="N",
         ) from error
     if (
         labels.get("com.docker.compose.project") != release.project
@@ -1431,6 +1451,7 @@ def inspect_running_web_identity(
             "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
             "The running Web has no exact Compose-owned identity.",
             "Preserve state and rerun from the canonical release checkout.",
+            mismatch_fields="C",
         )
     revision = image_labels.get("org.opencontainers.image.revision")
     if not isinstance(revision, str) or not SHA_PATTERN.fullmatch(revision):
@@ -1439,6 +1460,7 @@ def inspect_running_web_identity(
             "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
             "The running Web image has no exact OCI Product revision.",
             "Load only the approved archive and rerun the canonical deploy.",
+            mismatch_fields="O",
         )
     return WebRuntimeIdentity(
         container_id=container_id,
@@ -1452,7 +1474,7 @@ def inspect_running_web_identity(
         ),
         working_dir_same=_path_relation(
             labels.get("com.docker.compose.project.working_dir"),
-            ROOT,
+            canonical_compose_project_directory(),
         ),
         config_files_same=_config_files_relation(
             labels.get("com.docker.compose.project.config_files"),
@@ -1478,21 +1500,23 @@ def verify_applied_web_identity(
         )
         and bundle.effective.get("PREP_RELEASE_EVIDENCE_SHA") == release.evidence_sha
     )
-    exact = (
-        env_matches
-        and expected_image == f"datariver-poc:{release.product_sha}"
-        and identity.config_image == expected_image
-        and identity.oci_revision == release.product_sha
-        and identity.working_dir_same is True
-        and identity.config_files_same is True
-        and (expected_config_hash is None or identity.config_hash == expected_config_hash)
-    )
-    if not exact:
+    checks = {
+        "E": env_matches,
+        "Q": expected_image == f"datariver-poc:{release.product_sha}",
+        "C": identity.config_image == expected_image,
+        "O": identity.oci_revision == release.product_sha,
+        "W": identity.working_dir_same is True,
+        "F": identity.config_files_same is True,
+        "H": expected_config_hash is None or identity.config_hash == expected_config_hash,
+    }
+    mismatches = "".join(field for field in "EQCOWFH" if not checks[field])
+    if mismatches:
         raise PrepError(
             "RUNTIME_PRODUCT_APPLY",
             "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
             "The applied Web does not match the tracked environment, Compose and OCI Product.",
             "Stop before smoke; preserve state and reconcile the canonical Compose owner.",
+            mismatch_fields=mismatches,
         )
     return identity
 
@@ -2328,6 +2352,8 @@ def write_last_command(
                 "next_action": error.action,
             }
         )
+        if error.mismatch_fields is not None:
+            payload["mismatch_fields"] = error.mismatch_fields
     _atomic_json(LAST_COMMAND, payload)
 
 
@@ -5339,6 +5365,8 @@ def prepare_operational_bundle(
 
 
 def fail(error: PrepError) -> NoReturn:
+    if error.mismatch_fields is not None:
+        print(f"APPLY_FAIL|F={error.mismatch_fields}", file=sys.stderr)
     print("FAILED", file=sys.stderr)
     print(f"Step: {error.step}", file=sys.stderr)
     print(f"Code: {error.code}", file=sys.stderr)

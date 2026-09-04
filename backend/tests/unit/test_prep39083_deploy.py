@@ -135,6 +135,56 @@ def test_host_global_project_lock_rejects_unsafe_stale_owner(tmp_path: Path) -> 
     assert captured.value.code == "PREP_HOST_PROJECT_LOCK_UNPROVEN"
 
 
+def test_compose_prefix_pins_the_first_compose_file_project_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout-a"
+    base = checkout / "deploy/poc/base.yaml"
+    artifact = checkout / "deploy/prep39083/artifact.yaml"
+    base.parent.mkdir(parents=True)
+    artifact.parent.mkdir(parents=True)
+    base.write_text("services: {}\n", encoding="utf-8")
+    artifact.write_text("services: {}\n", encoding="utf-8")
+    env_file = checkout / "runtime.env"
+    env_file.write_text("POC_IMAGE_TAG=test\n", encoding="utf-8")
+    monkeypatch.setattr(deploy, "BASE_COMPOSE", base)
+    monkeypatch.setattr(deploy, "PREP_ARTIFACT_COMPOSE", artifact)
+
+    canonical = base.parent.resolve()
+    prefix = deploy.compose_prefix(_release(), env_file)
+
+    assert deploy.canonical_compose_project_directory() == canonical
+    assert prefix[prefix.index("--project-directory") + 1] == os.fspath(canonical)
+    assert prefix[prefix.index("--file") + 1] == os.fspath(base)
+    assert deploy._path_relation(os.fspath(canonical), canonical) is True
+    assert deploy._path_relation(os.fspath(checkout.resolve()), canonical) is False
+
+
+def test_apply_mismatch_fields_are_bounded_persisted_and_printed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    last_command = tmp_path / "last-command.json"
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last_command)
+    error = deploy.PrepError(
+        "RUNTIME_PRODUCT_APPLY",
+        "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+        "The applied Web identity did not match.",
+        "Preserve state.",
+        mismatch_fields="WF",
+    )
+
+    deploy.write_last_command("deploy", "FAILED", error=error)
+    persisted = json.loads(last_command.read_text(encoding="utf-8"))
+    assert persisted["mismatch_fields"] == "WF"
+    with pytest.raises(SystemExit) as captured:
+        deploy.fail(error)
+    assert captured.value.code == 2
+    assert "APPLY_FAIL|F=WF" in capsys.readouterr().err
+
+
 def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3049,6 +3099,19 @@ def test_post_up_identity_gate_and_runtime_stability_are_exact(
         == exact
     )
     deploy.verify_web_runtime_stable(cast(Any, object()), release, exact)
+
+    wrong_project_directory = replace(exact, working_dir_same=False)
+    monkeypatch.setattr(
+        deploy,
+        "inspect_running_web_identity",
+        lambda *_a, **_k: wrong_project_directory,
+    )
+    with pytest.raises(deploy.PrepError) as mismatch:
+        deploy.verify_applied_web_identity(
+            cast(Any, object()), release, bundle, ["docker", "compose"], config
+        )
+    assert mismatch.value.code == "PREP_RUNTIME_PRODUCT_NOT_APPLIED"
+    assert mismatch.value.mismatch_fields == "W"
 
     replaced = replace(exact, container_id="replacement")
     monkeypatch.setattr(deploy, "inspect_running_web_identity", lambda *_a, **_k: replaced)
