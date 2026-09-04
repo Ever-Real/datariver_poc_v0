@@ -1,0 +1,732 @@
+#!/usr/bin/env python3
+"""Emit one bounded PREP runtime-identity discriminator without changing state."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+SHA = re.compile(r"^[0-9a-f]{40}$")
+IMAGE = re.compile(r"(?:^|/)datariver-poc:([0-9a-f]{40})$")
+CONFIG_HASH = re.compile(r"^[0-9a-f]{64}$")
+DEPLOY_LOG = re.compile(r"^(\d{8}T\d{6}Z)-deploy-\d+\.log$")
+SAFE_IDENTITY_KEYS = (
+    "POC_IMAGE_TAG",
+    "POC_SOURCE_COMMIT",
+    "PREP_RELEASE_PRODUCT_SHA",
+    "PREP_RELEASE_EVIDENCE_SHA",
+)
+WEB_ENTERED_MARKER = "Start exact Product web service and verify internal and host health"
+WEB_COMPLETE_MARKER = "Run authenticated provider, managed-graph and GENERAL smoke"
+ARTIFACT_ENTERED_MARKER = "Verify and load the checksum-pinned linux/amd64 Product artifact"
+ARTIFACT_COMPLETE_MARKER = "Run read-only external provider preflight before persistent mutation"
+POST_WEB_PHASES = {"WEB_READY", "SMOKE_RUNNING", "SMOKE_FAILED", "ACCEPTED"}
+
+
+def repository_root() -> Path:
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("git unavailable")
+    result = subprocess.run(  # noqa: S603 - fixed git argv, never a shell command.
+        [git, "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        raise RuntimeError("repository unavailable")
+    return Path(value).resolve()
+
+
+ROOT = repository_root()
+DEPLOYMENT = ROOT / "deploy" / "prep39083"
+RUNTIME = ROOT / "runtime" / "prep39083"
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int | None
+    stdout: str
+
+
+@dataclass(frozen=True)
+class DeployBoundary:
+    timestamp: float | None
+    contradiction: bool
+    log_path: Path | None
+    last_command: Mapping[str, Any] | None
+    attempt: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class Markers:
+    artifact_entered: bool
+    artifact_completed: bool
+    web_entered: bool
+    web_completed: bool
+    smoke_entered: bool
+    smoke_failed: bool
+    smoke_passed: bool
+
+
+def load_deployer() -> Any:
+    scripts = ROOT / "scripts"
+    sys.path.insert(0, os.fspath(scripts))
+    spec = importlib.util.spec_from_file_location(
+        "prep39083_runtime_identity_deployer",
+        scripts / "prep39083_deploy.py",
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("deployer unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def command(
+    arguments: Sequence[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> CommandResult:
+    executable = shutil.which(arguments[0])
+    if executable is None:
+        return CommandResult(None, "")
+    result = subprocess.run(  # noqa: S603 - fixed internal argv, never a shell command.
+        [executable, *arguments[1:]],
+        cwd=ROOT,
+        env=dict(environment) if environment is not None else None,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return CommandResult(result.returncode, result.stdout.strip())
+
+
+def parse_time(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def image_product(value: Any) -> str | None:
+    match = IMAGE.search(value.strip()) if isinstance(value, str) else None
+    return match.group(1) if match else None
+
+
+def compose_config_hash(value: str) -> str | None:
+    for line in value.splitlines():
+        parts = line.strip().split()
+        candidate = parts[-1] if parts and parts[0] in {"web", "web:"} else None
+        if len(parts) == 1:
+            candidate = parts[0]
+        if candidate and CONFIG_HASH.fullmatch(candidate):
+            return candidate
+    return None
+
+
+def relation_to_root(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "U"
+    try:
+        return "S" if Path(value.strip()).resolve() == ROOT else "O"
+    except OSError:
+        return "U"
+
+
+def config_files_relation(value: Any, deployer: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "U"
+    try:
+        observed = {Path(item.strip()).resolve() for item in value.split(",") if item.strip()}
+        expected = {deployer.BASE_COMPOSE.resolve(), deployer.PREP_ARTIFACT_COMPOSE.resolve()}
+    except OSError:
+        return "U"
+    return "S" if observed == expected else "O"
+
+
+def latest_deploy_log() -> tuple[Path | None, float | None]:
+    candidates: list[tuple[float, Path]] = []
+    for path in (RUNTIME / "logs").glob("*-deploy-*.log"):
+        match = DEPLOY_LOG.fullmatch(path.name)
+        if not match or not path.is_file() or path.is_symlink():
+            continue
+        try:
+            stamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=UTC
+            )
+        except ValueError:
+            continue
+        candidates.append((stamp.timestamp(), path))
+    if not candidates:
+        return None, None
+    timestamp, path = max(candidates, key=lambda item: (item[0], item[1].name))
+    return path, timestamp
+
+
+def deploy_boundary() -> DeployBoundary:
+    log_path, log_time = latest_deploy_log()
+    last = optional_json(RUNTIME / "last-command.json")
+    attempt = optional_json(RUNTIME / "deploy-attempt.json")
+    last_time = (
+        parse_time(last.get("updated_at"))
+        if last and last.get("action") == "deploy"
+        else None
+    )
+    attempt_time = parse_time(attempt.get("updated_at")) if attempt else None
+    timestamp = log_time if log_time is not None else last_time
+    if timestamp is None:
+        timestamp = attempt_time
+
+    contradiction = False
+    if log_time is not None and last_time is not None and last_time + 1 < log_time:
+        contradiction = True
+    if last_time is not None and attempt_time is not None and attempt_time > last_time + 1:
+        contradiction = True
+    if timestamp is not None and timestamp > time.time() + 1:
+        contradiction = True
+    return DeployBoundary(timestamp, contradiction, log_path, last, attempt)
+
+
+def deploy_markers(path: Path | None) -> Markers:
+    values = {
+        "artifact_entered": False,
+        "artifact_completed": False,
+        "web_entered": False,
+        "web_completed": False,
+        "smoke_entered": False,
+        "smoke_failed": False,
+        "smoke_passed": False,
+    }
+    if path is None:
+        return Markers(**values)
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            for raw_line in stream:
+                line = raw_line.strip()
+                if line.endswith(ARTIFACT_ENTERED_MARKER):
+                    values["artifact_entered"] = True
+                elif line.endswith(ARTIFACT_COMPLETE_MARKER):
+                    values["artifact_completed"] = True
+                elif line.endswith(WEB_ENTERED_MARKER):
+                    values["web_entered"] = True
+                elif line.endswith(WEB_COMPLETE_MARKER):
+                    values["web_completed"] = True
+                    values["smoke_entered"] = True
+                elif line.startswith("[SMOKE 1/6]"):
+                    values["smoke_entered"] = True
+                elif line == "PREP39083 DEPLOYMENT READY":
+                    values["smoke_passed"] = True
+                elif line == "FAILED":
+                    values["smoke_failed"] = values["smoke_entered"]
+    except OSError:
+        return Markers(**{key: False for key in values})
+    return Markers(**values)
+
+
+def docker_image_document(reference: str) -> tuple[str, Mapping[str, Any] | None]:
+    result = command(["docker", "image", "inspect", reference])
+    if result.returncode == 0:
+        try:
+            values = json.loads(result.stdout)
+            value = values[0]
+        except (IndexError, TypeError, json.JSONDecodeError):
+            return "U", None
+        return ("1", value) if isinstance(value, dict) else ("U", None)
+    daemon = command(["docker", "info", "--format", "{{.ServerVersion}}"])
+    return ("0", None) if daemon.returncode == 0 else ("U", None)
+
+
+def image_revision(document: Mapping[str, Any] | None) -> str | None:
+    config = document.get("Config") if isinstance(document, Mapping) else None
+    labels = config.get("Labels") if isinstance(config, Mapping) else None
+    revision = (
+        labels.get("org.opencontainers.image.revision")
+        if isinstance(labels, Mapping)
+        else None
+    )
+    return revision if isinstance(revision, str) and SHA.fullmatch(revision) else None
+
+
+def inspect_containers(project: str, deployer: Any) -> list[dict[str, Any]]:
+    listed = command(
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--filter",
+            "label=com.docker.compose.service=web",
+            "--format",
+            "{{.ID}}",
+        ]
+    )
+    ids = listed.stdout.splitlines() if listed.returncode == 0 else []
+    if not ids:
+        return []
+    inspected_result = command(["docker", "inspect", *ids])
+    if inspected_result.returncode != 0:
+        return []
+    try:
+        inspected = json.loads(inspected_result.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(inspected, list):
+        return []
+
+    image_ids = {
+        str(item.get("Image"))
+        for item in inspected
+        if isinstance(item, dict) and item.get("Image")
+    }
+    revisions: dict[str, str] = {}
+    for image_id in image_ids:
+        _, document = docker_image_document(image_id)
+        revision = image_revision(document)
+        if revision:
+            revisions[image_id] = revision
+
+    containers: list[dict[str, Any]] = []
+    for item in inspected:
+        if not isinstance(item, dict):
+            continue
+        config = item.get("Config") if isinstance(item.get("Config"), dict) else {}
+        labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
+        if labels.get("com.docker.compose.oneoff") != "False" or str(
+            labels.get("com.docker.compose.container-number")
+        ) != "1":
+            continue
+        state = item.get("State") if isinstance(item.get("State"), dict) else {}
+        image_id = str(item.get("Image") or "")
+        containers.append(
+            {
+                "running": state.get("Running") is True,
+                "created": parse_time(item.get("Created")),
+                "started": parse_time(state.get("StartedAt")),
+                "config_product": image_product(config.get("Image")),
+                "revision": revisions.get(image_id),
+                "working_relation": relation_to_root(
+                    labels.get("com.docker.compose.project.working_dir")
+                ),
+                "config_relation": config_files_relation(
+                    labels.get("com.docker.compose.project.config_files"), deployer
+                ),
+                "config_hash": labels.get("com.docker.compose.config-hash")
+                if CONFIG_HASH.fullmatch(str(labels.get("com.docker.compose.config-hash") or ""))
+                else None,
+            }
+        )
+    return containers
+
+
+def event_evidence(
+    project: str,
+    boundary: float | None,
+    deployer: Any,
+) -> tuple[bool, list[dict[str, Any]]]:
+    if boundary is None:
+        return False, []
+    result = command(
+        [
+            "docker",
+            "events",
+            "--since",
+            str(max(0, int(boundary))),
+            "--until",
+            str(int(time.time()) + 1),
+            "--filter",
+            "type=container",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--filter",
+            "label=com.docker.compose.service=web",
+            "--format",
+            "{{json .}}",
+        ]
+    )
+    if result.returncode != 0:
+        return False, []
+    events: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        try:
+            value = json.loads(line)
+            actor = value.get("Actor") if isinstance(value, dict) else None
+            attributes = actor.get("Attributes") if isinstance(actor, dict) else None
+            action = value.get("Action") if isinstance(value, dict) else None
+            timestamp = value.get("time") if isinstance(value, dict) else None
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        if not isinstance(attributes, dict) or action not in {"create", "start"}:
+            continue
+        event_time = float(timestamp) if isinstance(timestamp, (int, float)) else None
+        if event_time is None or event_time < boundary:
+            continue
+        events.append(
+            {
+                "time": event_time,
+                "product": image_product(attributes.get("image")),
+                "working_relation": relation_to_root(
+                    attributes.get("com.docker.compose.project.working_dir")
+                ),
+                "config_relation": config_files_relation(
+                    attributes.get("com.docker.compose.project.config_files"), deployer
+                ),
+                "config_hash": attributes.get("com.docker.compose.config-hash")
+                if CONFIG_HASH.fullmatch(
+                    str(attributes.get("com.docker.compose.config-hash") or "")
+                )
+                else None,
+            }
+        )
+    return bool(result.stdout.strip()), events
+
+
+def explicit_smoke_product(*documents: Mapping[str, Any] | None) -> str | None:
+    for document in documents:
+        if not document:
+            continue
+        for key in ("smoke_product_sha", "runtime_product_sha"):
+            value = document.get(key)
+            if isinstance(value, str) and SHA.fullmatch(value):
+                return value
+    return None
+
+
+def flag_exact(value: str | None, expected: str) -> str:
+    if value is None:
+        return "U"
+    return "1" if value == expected else "0"
+
+
+def emit(
+    classification: str,
+    *,
+    environment: str = "U",
+    compose: str = "U",
+    image: str = "U",
+    running: str = "U",
+    working: str = "U",
+    target_after: str = "U",
+    old_after: str = "U",
+    web_up: str = "U",
+    smoke: str = "U",
+    smoke_product: str = "U",
+) -> None:
+    print(
+        f"RID2|D={classification}|E={environment}|Q={compose}|I={image}|R={running}"
+        f"|W={working}|A={target_after}|O={old_after}|U={web_up}|S={smoke}"
+        f"|P={smoke_product}"
+    )
+
+
+def main() -> None:
+    deployer = load_deployer()
+    release = deployer.load_release_identity()
+    target = release.product_sha if SHA.fullmatch(release.product_sha) else None
+    transport = optional_json(DEPLOYMENT / "transport.json")
+    if (
+        target is None
+        or not transport
+        or transport.get("product_sha") != target
+        or release.web_artifact is None
+        or release.web_artifact.product_sha != target
+        or release.web_artifact.oci_revision != target
+    ):
+        emit("D7")
+        return
+
+    try:
+        runtime_values = deployer.read_env_file(
+            DEPLOYMENT / ".env.prep.runtime",
+            private=True,
+            label=".env.prep.runtime",
+        )
+    except Exception:
+        runtime_values = {}
+    product_values = [runtime_values.get(key, "").strip() for key in SAFE_IDENTITY_KEYS[:3]]
+    evidence_value = runtime_values.get(SAFE_IDENTITY_KEYS[3], "").strip()
+    env_available = all(SHA.fullmatch(value) for value in (*product_values, evidence_value))
+    environment_flag = (
+        "1"
+        if env_available
+        and all(value == target for value in product_values)
+        and evidence_value == release.evidence_sha
+        else "0"
+        if env_available
+        else "U"
+    )
+
+    compose_product: str | None = None
+    desired_config_hash: str | None = None
+    try:
+        bundle = deployer.reconcile_environment(
+            release,
+            target_state=deployer.TargetState.EXISTING_OWNED_INCOMPLETE,
+            persist_runtime=False,
+        )
+        effective = dict(bundle.effective)
+        for key in SAFE_IDENTITY_KEYS:
+            if runtime_values.get(key):
+                effective[key] = runtime_values[key]
+        compose_environment = deployer.child_environment(effective)
+        prefix = [
+            "docker",
+            "compose",
+            "--project-name",
+            release.project,
+            "--file",
+            os.fspath(deployer.BASE_COMPOSE),
+            "--file",
+            os.fspath(deployer.PREP_ARTIFACT_COMPOSE),
+        ]
+        config = deployer.compose_config(
+            deployer.Runner(environment=compose_environment), prefix
+        )
+        compose_product = image_product(deployer.resolve_web_image(config))
+        hash_result = command(
+            [*prefix, "config", "--hash", "web"], environment=compose_environment
+        )
+        desired_config_hash = (
+            compose_config_hash(hash_result.stdout) if hash_result.returncode == 0 else None
+        )
+    except Exception:
+        compose_product = None
+    compose_flag = flag_exact(compose_product, target)
+
+    target_image_reference = f"datariver-poc:{target}"
+    image_presence, target_image = docker_image_document(target_image_reference)
+    target_image_exact = bool(
+        target_image
+        and image_revision(target_image) == target
+        and target_image_reference in (target_image.get("RepoTags") or [])
+    )
+    image_flag = (
+        "1" if target_image_exact else "0"
+    ) if image_presence == "1" else image_presence
+
+    boundary = deploy_boundary()
+    markers = deploy_markers(boundary.log_path)
+    containers = inspect_containers(release.project, deployer)
+    running_containers = [item for item in containers if item["running"]]
+    current = running_containers[0] if len(running_containers) == 1 else None
+    running_revision = current.get("revision") if current else None
+    running_flag = flag_exact(running_revision, target)
+    running_config_exact = bool(current and current.get("config_product") == target)
+    working_flag = current.get("working_relation", "U") if current else "U"
+    config_relation = current.get("config_relation", "U") if current else "U"
+    current_config_hash = current.get("config_hash") if current else None
+    current_config_hash_exact = bool(
+        desired_config_hash
+        and current_config_hash
+        and current_config_hash == desired_config_hash
+    )
+    ownership_other = working_flag == "O" or config_relation == "O"
+    try:
+        status_product = deployer.status_source_identity(release).get("running_web_product")
+    except Exception:
+        status_product = None
+    status_reader_defect = bool(
+        running_flag == "1"
+        and running_config_exact
+        and isinstance(status_product, str)
+        and SHA.fullmatch(status_product)
+        and status_product != target
+    )
+
+    events_retained, events = event_evidence(release.project, boundary.timestamp, deployer)
+    target_evidence: list[dict[str, Any]] = [
+        item
+        for item in containers
+        if item.get("revision") == target
+        and boundary.timestamp is not None
+        and any(
+            value is not None and value >= boundary.timestamp
+            for value in (item.get("created"), item.get("started"))
+        )
+    ]
+    target_evidence.extend(item for item in events if item.get("product") == target)
+    target_times = sorted(
+        value
+        for item in target_evidence
+        for value in (item.get("time"), item.get("created"), item.get("started"))
+        if isinstance(value, (int, float))
+    )
+    if target_times:
+        target_after = "1"
+    elif boundary.timestamp is not None and events_retained:
+        target_after = "0"
+    elif markers.web_entered and not markers.web_completed:
+        target_after = "0"
+    else:
+        target_after = "U"
+
+    old_product = running_revision if running_revision and running_revision != target else None
+    old_evidence: list[dict[str, Any]] = []
+    if old_product and target_times:
+        old_evidence.extend(
+            item
+            for item in containers
+            if item.get("revision") == old_product
+            and any(
+                value is not None and value > max(target_times)
+                for value in (item.get("created"), item.get("started"))
+            )
+        )
+        old_evidence.extend(
+            item
+            for item in events
+            if item.get("product") == old_product and item.get("time", 0) > max(target_times)
+        )
+    old_times = sorted(
+        value
+        for item in old_evidence
+        for value in (item.get("time"), item.get("created"), item.get("started"))
+        if isinstance(value, (int, float))
+    )
+    old_after = (
+        "1" if old_times else "0" if target_after == "1" and events_retained else "U"
+    )
+
+    web_up = (
+        "1"
+        if markers.web_completed
+        else "0"
+        if markers.web_entered
+        else "U"
+    )
+    smoke_entered = "1" if markers.smoke_entered else "0" if web_up == "1" else "U"
+    smoke_product_value = explicit_smoke_product(
+        optional_json(RUNTIME / "smoke.json"),
+        optional_json(RUNTIME / "smoke-failure.json"),
+    )
+    smoke_product_flag = flag_exact(smoke_product_value, target)
+
+    last_failed_at = None
+    if (
+        boundary.last_command
+        and boundary.last_command.get("action") == "deploy"
+        and boundary.last_command.get("result") == "FAILED"
+    ):
+        last_failed_at = parse_time(boundary.last_command.get("updated_at"))
+    same_root_target = bool(
+        target_evidence
+        and all(
+            item.get("working_relation") == "S" and item.get("config_relation") == "S"
+            and (
+                desired_config_hash is None
+                or item.get("config_hash") == desired_config_hash
+            )
+            for item in target_evidence
+        )
+    )
+    same_root_old = bool(
+        old_evidence
+        and all(
+            item.get("working_relation") == "S" and item.get("config_relation") == "S"
+            for item in old_evidence
+        )
+    )
+    same_root_post_failure = bool(
+        target_after == "1"
+        and old_after == "1"
+        and same_root_target
+        and same_root_old
+        and last_failed_at is not None
+        and any(value >= last_failed_at for value in old_times)
+    )
+    attempt_time = (
+        parse_time(boundary.attempt.get("updated_at")) if boundary.attempt else None
+    )
+    attempt_is_current = bool(
+        boundary.timestamp is not None
+        and attempt_time is not None
+        and attempt_time + 1 >= boundary.timestamp
+    )
+    attempt_conflict = bool(
+        attempt_is_current
+        and (
+            boundary.attempt.get("product_sha") != target
+            or (
+                markers.web_completed
+                and boundary.attempt.get("phase") not in POST_WEB_PHASES
+            )
+        )
+    )
+    marker_conflict = bool(
+        (markers.artifact_completed and not markers.artifact_entered)
+        or (markers.web_completed and not markers.web_entered)
+        or (markers.smoke_entered and not markers.web_completed)
+        or (markers.smoke_passed and markers.smoke_failed)
+    )
+
+    if boundary.contradiction or attempt_conflict or marker_conflict:
+        classification = "D7"
+    elif status_reader_defect:
+        classification = "D6"
+    elif (
+        running_flag == "1"
+        and running_config_exact
+        and (desired_config_hash is None or current_config_hash_exact)
+    ):
+        classification = "D0"
+    elif running_flag == "0" and ownership_other:
+        classification = "D4"
+    elif environment_flag == "0" or compose_flag == "0":
+        classification = "D1"
+    elif environment_flag == compose_flag == "1" and image_flag == "0":
+        classification = "D2"
+    elif target_after == "1" and old_after == "1" and ownership_other:
+        classification = "D4"
+    elif target_after == "1" and old_after == "1" and same_root_post_failure:
+        classification = "D5"
+    elif environment_flag == compose_flag == image_flag == "1" and web_up == "0":
+        classification = "D3"
+    else:
+        classification = "D7"
+
+    emit(
+        classification,
+        environment=environment_flag,
+        compose=compose_flag,
+        image=image_flag,
+        running=running_flag,
+        working=working_flag,
+        target_after=target_after,
+        old_after=old_after,
+        web_up=web_up,
+        smoke=smoke_entered,
+        smoke_product=smoke_product_flag,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        emit("D7")

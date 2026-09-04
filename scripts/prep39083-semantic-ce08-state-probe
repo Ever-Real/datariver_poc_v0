@@ -1,0 +1,451 @@
+#!/bin/sh
+set -u
+
+# Zero-provider discriminator for the exact ce08 PREP Web runtime. It reads only
+# Product identity plus K9/Semantic PostgreSQL state. The single database
+# transaction is REPEATABLE READ, READ ONLY and is always rolled back.
+
+EXPECTED_PRODUCT='ce0855b417acc8e462cc9438bb158f81e34389c9'
+EXPECTED_SNAPSHOT='791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+OUTPUT_PREFIX='SEMANTIC_CE08_STATE'
+
+emit_identity_result() {
+  runtime_product=$1
+  verdict=$2
+  printf '%s\n' "${OUTPUT_PREFIX}|runtime_product=${runtime_product}|desired=UNAVAILABLE|active=UNAVAILABLE|latest_semantic_attempt=UNAVAILABLE|latest_semantic_status=UNAVAILABLE|latest_semantic_code=UNAVAILABLE|latest_semantic_after_ce08_start=UNAVAILABLE|previous_semantic_attempt=UNAVAILABLE|previous_semantic_status=UNAVAILABLE|previous_semantic_code=UNAVAILABLE|scheduler_last_status=UNAVAILABLE|scheduler_last_reason=UNAVAILABLE|scheduler_last_after_ce08_start=UNAVAILABLE|y_manifest_count=UNAVAILABLE|current_manifest_count=UNAVAILABLE|legacy_manifest_count=UNAVAILABLE|other_manifest_count=UNAVAILABLE|current_desired_docs=UNAVAILABLE|current_batches=UNAVAILABLE|current_staged_docs=UNAVAILABLE|legacy_desired_docs=UNAVAILABLE|legacy_batches=UNAVAILABLE|legacy_staged_docs=UNAVAILABLE|current_manifest_consistency=UNAVAILABLE|legacy_manifest_consistency=UNAVAILABLE|state_stage=PRODUCT_IDENTITY|verdict=${verdict}"
+}
+
+canonical_id=''
+canonical_revision=''
+canonical_started_at=''
+canonical_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+  if [ "$oneoff" != 'False' ] || [ "$container_number" != '1' ]; then
+    continue
+  fi
+  canonical_count=$((canonical_count + 1))
+  canonical_id=$candidate
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  canonical_revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  canonical_started_at=$(docker inspect \
+    --format '{{.State.StartedAt}}' "$candidate" 2>/dev/null || true)
+done
+
+if [ "$canonical_count" -ne 1 ] || [ -z "$canonical_revision" ] \
+  || [ -z "$canonical_started_at" ]; then
+  emit_identity_result 'UNAVAILABLE' 'RUNTIME_PRODUCT_UNAVAILABLE'
+  exit 2
+fi
+
+if [ "$canonical_revision" != "$EXPECTED_PRODUCT" ]; then
+  emit_identity_result 'OTHER' 'RUNTIME_PRODUCT_MISMATCH'
+  exit 0
+fi
+
+probe_output=$(
+  docker exec -i \
+    -e "PREP39083_PROBE_WEB_STARTED_AT=$canonical_started_at" \
+    "$canonical_id" node --max-old-space-size=1024 --input-type=module 2>/dev/null <<'NODE'
+import { createHash } from 'node:crypto'
+import pg from 'pg'
+
+/* global URL, process */
+
+import { k9SemanticMaterializationHash } from './poc-k9-semantic-input.mjs'
+
+const { Pool } = pg
+const EXPECTED_SNAPSHOT = '791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+const OUTPUT_PREFIX = 'SEMANTIC_CE08_STATE'
+const LIFECYCLE_KEY = 'managed-k9-v2'
+const SCHEDULER_SCOPE = 'k9-scheduler-v1:datariver:poc:k9-scheduler:v1'
+const HASH = /^[0-9a-f]{64}$/u
+const TOKEN = /^[A-Z][A-Z0-9_]{0,127}$/u
+const TERMINAL_STATUSES = new Set(['READY', 'FAILED'])
+const SCHEDULER_STATUSES = new Set(['SUCCESS', 'FAILURE'])
+
+let pool
+let client
+let stateStage = 'PRODUCT_IDENTITY'
+const output = {
+  runtimeProduct: 'CE08',
+  desired: 'UNAVAILABLE',
+  active: 'UNAVAILABLE',
+  latestSemanticAttempt: 'UNAVAILABLE',
+  latestSemanticStatus: 'UNAVAILABLE',
+  latestSemanticCode: 'UNAVAILABLE',
+  latestSemanticAfterStart: 'UNAVAILABLE',
+  previousSemanticAttempt: 'UNAVAILABLE',
+  previousSemanticStatus: 'UNAVAILABLE',
+  previousSemanticCode: 'UNAVAILABLE',
+  schedulerLastStatus: 'UNAVAILABLE',
+  schedulerLastReason: 'UNAVAILABLE',
+  schedulerLastAfterStart: 'UNAVAILABLE',
+  yManifestCount: 'UNAVAILABLE',
+  currentManifestCount: 'UNAVAILABLE',
+  legacyManifestCount: 'UNAVAILABLE',
+  otherManifestCount: 'UNAVAILABLE',
+  currentDesiredDocs: 'UNAVAILABLE',
+  currentBatches: 'UNAVAILABLE',
+  currentStagedDocs: 'UNAVAILABLE',
+  legacyDesiredDocs: 'UNAVAILABLE',
+  legacyBatches: 'UNAVAILABLE',
+  legacyStagedDocs: 'UNAVAILABLE',
+  currentManifestConsistency: 'UNAVAILABLE',
+  legacyManifestConsistency: 'UNAVAILABLE',
+  verdict: 'CE08_STATE_DISCRIMINATOR_INCONCLUSIVE',
+}
+
+class StateFailure extends Error {
+  constructor(stage) {
+    super('The bounded ce08 Semantic state discriminator failed closed.')
+    this.name = 'StateFailure'
+    this.stage = stage
+  }
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function optionalUrl(name) {
+  const raw = process.env[name]?.trim()
+  if (!raw) throw new StateFailure('BINDING_DERIVATION')
+  const value = new URL(raw)
+  if (!['http:', 'https:'].includes(value.protocol)
+    || value.username || value.password || value.hash) {
+    throw new StateFailure('BINDING_DERIVATION')
+  }
+  return value.toString().replace(/\/$/u, '')
+}
+
+function bindingHashes() {
+  const embeddingUrl = optionalUrl('LLM_EMBEDDING_URL')
+  const model = process.env.LLM_EMBEDDING_MODEL?.trim()
+  if (!model) throw new StateFailure('BINDING_DERIVATION')
+  const source = sha256(optionalUrl('DATAHUB_GMS_URL')).slice(0, 16)
+  const outputHash = sha256(canonicalJson({
+    source,
+    endpoint: embeddingUrl,
+    model,
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+  }))
+  return Object.freeze({
+    legacy: outputHash,
+    current: k9SemanticMaterializationHash(outputHash),
+  })
+}
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw new StateFailure('LIFECYCLE')
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+function timestamp(value, stage) {
+  const parsed = Date.parse(value instanceof Date ? value.toISOString() : String(value || ''))
+  if (!Number.isFinite(parsed)) throw new StateFailure(stage)
+  return parsed
+}
+
+function afterStart(value, startedAt, stage) {
+  return timestamp(value, stage) >= startedAt ? 'YES' : 'NO'
+}
+
+function semanticTerminal(row) {
+  if (!row || !Number.isSafeInteger(Number(row.attempt_number))
+    || Number(row.attempt_number) < 1 || !TERMINAL_STATUSES.has(row.status)) {
+    throw new StateFailure('SEMANTIC_RECEIPTS')
+  }
+  const code = row.status === 'FAILED' ? row.diagnostic?.code : null
+  if ((row.status === 'FAILED' && !TOKEN.test(code || ''))
+    || (row.status === 'READY' && row.diagnostic !== null)) {
+    throw new StateFailure('SEMANTIC_RECEIPTS')
+  }
+  timestamp(row.recorded_at, 'SEMANTIC_RECEIPTS')
+  return Object.freeze({
+    attempt: Number(row.attempt_number),
+    status: row.status,
+    code: code || 'NONE',
+    recordedAt: row.recorded_at,
+  })
+}
+
+function schedulerAttempt(value) {
+  if (value === undefined || value === null) {
+    return Object.freeze({ status: 'NONE', reason: 'NONE', completedAt: null })
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !SCHEDULER_STATUSES.has(value.status)) throw new StateFailure('SCHEDULER')
+  const reason = value.status === 'FAILURE' ? value.reason : 'NONE'
+  if (value.status === 'FAILURE' && !TOKEN.test(reason || '')) {
+    throw new StateFailure('SCHEDULER')
+  }
+  timestamp(value.completed_at, 'SCHEDULER')
+  return Object.freeze({ status: value.status, reason, completedAt: value.completed_at })
+}
+
+function manifestConsistency(manifestCount, declaredCount, actualCount) {
+  if (manifestCount === 0) return 'ABSENT'
+  return manifestCount === 1 && Number(declaredCount) === actualCount ? 'PASS' : 'FAIL'
+}
+
+function outputLine() {
+  return [
+    OUTPUT_PREFIX,
+    `runtime_product=${output.runtimeProduct}`,
+    `desired=${output.desired}`,
+    `active=${output.active}`,
+    `latest_semantic_attempt=${output.latestSemanticAttempt}`,
+    `latest_semantic_status=${output.latestSemanticStatus}`,
+    `latest_semantic_code=${output.latestSemanticCode}`,
+    `latest_semantic_after_ce08_start=${output.latestSemanticAfterStart}`,
+    `previous_semantic_attempt=${output.previousSemanticAttempt}`,
+    `previous_semantic_status=${output.previousSemanticStatus}`,
+    `previous_semantic_code=${output.previousSemanticCode}`,
+    `scheduler_last_status=${output.schedulerLastStatus}`,
+    `scheduler_last_reason=${output.schedulerLastReason}`,
+    `scheduler_last_after_ce08_start=${output.schedulerLastAfterStart}`,
+    `y_manifest_count=${output.yManifestCount}`,
+    `current_manifest_count=${output.currentManifestCount}`,
+    `legacy_manifest_count=${output.legacyManifestCount}`,
+    `other_manifest_count=${output.otherManifestCount}`,
+    `current_desired_docs=${output.currentDesiredDocs}`,
+    `current_batches=${output.currentBatches}`,
+    `current_staged_docs=${output.currentStagedDocs}`,
+    `legacy_desired_docs=${output.legacyDesiredDocs}`,
+    `legacy_batches=${output.legacyBatches}`,
+    `legacy_staged_docs=${output.legacyStagedDocs}`,
+    `current_manifest_consistency=${output.currentManifestConsistency}`,
+    `legacy_manifest_consistency=${output.legacyManifestConsistency}`,
+    `state_stage=${stateStage}`,
+    `verdict=${output.verdict}`,
+  ].join('|')
+}
+
+function decideVerdict({ latest, scheduler, manifests, webStartedAt }) {
+  if (output.desired !== 'Y') return 'CE08_DESIRED_SNAPSHOT_MISMATCH'
+  const latestAfterStart = latest
+    ? timestamp(latest.recordedAt, 'SEMANTIC_RECEIPTS') >= webStartedAt : false
+  const schedulerAfterStart = scheduler.completedAt
+    ? timestamp(scheduler.completedAt, 'SCHEDULER') >= webStartedAt : false
+  const currentAbsent = manifests.current.length === 0
+  if (output.yManifestCount > 0 && manifests.current.length === 0
+    && manifests.legacy.length === 0) return 'CE08_BINDING_DERIVATION_MISMATCH_PROVEN'
+  if (latestAfterStart && latest
+    && latest.code !== 'K9_SEMANTIC_PROVIDER_HTTP_FAILED') {
+    return 'SMOKE_STALE_SEMANTIC_DIAGNOSTIC_PROVEN'
+  }
+  if (latestAfterStart && latest?.code === 'K9_SEMANTIC_PROVIDER_HTTP_FAILED'
+    && currentAbsent) return 'CE08_HTTP_WITHOUT_MANIFEST_CONTRADICTION_PROVEN'
+  if (latestAfterStart && manifests.current.length === 1) {
+    return 'CE08_SEMANTIC_ATTEMPT_CONFIRMED'
+  }
+  if (latest && !latestAfterStart && currentAbsent
+    && scheduler.status === 'FAILURE' && schedulerAfterStart) {
+    return 'STALE_SEMANTIC_FAILURE_REPLAY_PROVEN'
+  }
+  return 'CE08_STATE_DISCRIMINATOR_INCONCLUSIVE'
+}
+
+try {
+  const webStartedAt = timestamp(
+    process.env.PREP39083_PROBE_WEB_STARTED_AT,
+    'PRODUCT_IDENTITY',
+  )
+  pool = new Pool(databaseConfig())
+  client = await pool.connect()
+  await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+
+  stateStage = 'LIFECYCLE'
+  const lifecycleResult = await client.query(`
+    SELECT desired_snapshot_id, active_snapshot_id
+    FROM poc_k9_snapshot_lifecycle_v2
+    WHERE lifecycle_key = $1
+  `, [LIFECYCLE_KEY])
+  if (lifecycleResult.rows.length !== 1) throw new StateFailure('LIFECYCLE')
+  const lifecycle = lifecycleResult.rows[0]
+  if (!HASH.test(lifecycle.desired_snapshot_id || '')
+    || (lifecycle.active_snapshot_id !== null
+      && !HASH.test(lifecycle.active_snapshot_id || ''))) {
+    throw new StateFailure('LIFECYCLE')
+  }
+  output.desired = lifecycle.desired_snapshot_id === EXPECTED_SNAPSHOT ? 'Y' : 'OTHER'
+  output.active = lifecycle.active_snapshot_id === null
+    ? 'NONE' : lifecycle.active_snapshot_id === EXPECTED_SNAPSHOT ? 'Y' : 'OTHER'
+
+  stateStage = 'SEMANTIC_RECEIPTS'
+  const receiptResult = await client.query(`
+    WITH terminal_receipts AS (
+      SELECT attempt_number, sequence, receipt_id, status, diagnostic, recorded_at,
+        row_number() OVER (
+          PARTITION BY attempt_number
+          ORDER BY sequence DESC, receipt_id DESC
+        ) AS receipt_rank
+      FROM poc_k9_projector_receipts_v2
+      WHERE source_snapshot_id = $1 AND projector = 'SEMANTIC'
+        AND status IN ('READY', 'FAILED')
+    )
+    SELECT attempt_number, sequence, receipt_id, status, diagnostic, recorded_at
+    FROM terminal_receipts
+    WHERE receipt_rank = 1
+    ORDER BY attempt_number DESC, sequence DESC, receipt_id DESC
+    LIMIT 3
+  `, [EXPECTED_SNAPSHOT])
+  const semanticAttempts = receiptResult.rows.map(semanticTerminal)
+  const latest = semanticAttempts[0] || null
+  const previous = semanticAttempts[1] || null
+  output.latestSemanticAttempt = latest?.attempt ?? 0
+  output.latestSemanticStatus = latest?.status ?? 'NONE'
+  output.latestSemanticCode = latest?.code ?? 'NONE'
+  output.latestSemanticAfterStart = latest
+    ? afterStart(latest.recordedAt, webStartedAt, 'SEMANTIC_RECEIPTS') : 'UNAVAILABLE'
+  output.previousSemanticAttempt = previous?.attempt ?? 0
+  output.previousSemanticStatus = previous?.status ?? 'NONE'
+  output.previousSemanticCode = previous?.code ?? 'NONE'
+
+  stateStage = 'SCHEDULER'
+  const schedulerResult = await client.query(
+    'SELECT value FROM poc_state WHERE scope = $1',
+    [SCHEDULER_SCOPE],
+  )
+  if (schedulerResult.rows.length > 1) throw new StateFailure('SCHEDULER')
+  const scheduler = schedulerAttempt(schedulerResult.rows[0]?.value?.last_attempt)
+  output.schedulerLastStatus = scheduler.status
+  output.schedulerLastReason = scheduler.reason
+  output.schedulerLastAfterStart = scheduler.completedAt
+    ? afterStart(scheduler.completedAt, webStartedAt, 'SCHEDULER') : 'UNAVAILABLE'
+
+  stateStage = 'MANIFEST_DISCOVERY'
+  const manifestsResult = await client.query(`
+    SELECT binding_hash, desired_count
+    FROM poc_k9_semantic_manifests_v2
+    WHERE source_snapshot_id = $1
+    ORDER BY binding_hash
+  `, [EXPECTED_SNAPSHOT])
+  if (manifestsResult.rows.some((row) => (
+    !HASH.test(row.binding_hash || '')
+    || !Number.isSafeInteger(Number(row.desired_count))
+    || Number(row.desired_count) < 0
+  ))) throw new StateFailure('MANIFEST_DISCOVERY')
+  output.yManifestCount = manifestsResult.rows.length
+
+  stateStage = 'BINDING_DERIVATION'
+  const bindings = bindingHashes()
+  const manifests = {
+    current: manifestsResult.rows.filter((row) => row.binding_hash === bindings.current),
+    legacy: manifestsResult.rows.filter((row) => row.binding_hash === bindings.legacy),
+  }
+  output.currentManifestCount = manifests.current.length
+  output.legacyManifestCount = manifests.legacy.length
+  output.otherManifestCount = manifestsResult.rows.length
+    - manifests.current.length - manifests.legacy.length
+
+  stateStage = 'CURRENT_MANIFEST'
+  const currentCounts = await client.query(`
+    SELECT
+      (SELECT count(*)::integer FROM poc_k9_semantic_desired_documents_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS desired_docs,
+      (SELECT count(*)::integer FROM poc_k9_semantic_batches_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS batches,
+      (SELECT count(*)::integer FROM poc_k9_semantic_staging_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS staged_docs
+  `, [EXPECTED_SNAPSHOT, bindings.current])
+  if (currentCounts.rows.length !== 1) throw new StateFailure('CURRENT_MANIFEST')
+  output.currentDesiredDocs = Number(currentCounts.rows[0].desired_docs)
+  output.currentBatches = Number(currentCounts.rows[0].batches)
+  output.currentStagedDocs = Number(currentCounts.rows[0].staged_docs)
+  output.currentManifestConsistency = manifestConsistency(
+    manifests.current.length,
+    manifests.current[0]?.desired_count,
+    output.currentDesiredDocs,
+  )
+
+  stateStage = 'LEGACY_MANIFEST'
+  const legacyCounts = await client.query(`
+    SELECT
+      (SELECT count(*)::integer FROM poc_k9_semantic_desired_documents_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS desired_docs,
+      (SELECT count(*)::integer FROM poc_k9_semantic_batches_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS batches,
+      (SELECT count(*)::integer FROM poc_k9_semantic_staging_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2) AS staged_docs
+  `, [EXPECTED_SNAPSHOT, bindings.legacy])
+  if (legacyCounts.rows.length !== 1) throw new StateFailure('LEGACY_MANIFEST')
+  output.legacyDesiredDocs = Number(legacyCounts.rows[0].desired_docs)
+  output.legacyBatches = Number(legacyCounts.rows[0].batches)
+  output.legacyStagedDocs = Number(legacyCounts.rows[0].staged_docs)
+  output.legacyManifestConsistency = manifestConsistency(
+    manifests.legacy.length,
+    manifests.legacy[0]?.desired_count,
+    output.legacyDesiredDocs,
+  )
+
+  if ([
+    output.currentDesiredDocs, output.currentBatches, output.currentStagedDocs,
+    output.legacyDesiredDocs, output.legacyBatches, output.legacyStagedDocs,
+  ].some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new StateFailure('STAGING')
+  }
+
+  stateStage = 'PASS'
+  output.verdict = decideVerdict({ latest, scheduler, manifests, webStartedAt })
+} catch (error) {
+  stateStage = error instanceof StateFailure ? error.stage : stateStage
+  output.verdict = `CE08_STATE_PROBE_FAILED_${stateStage}`
+  process.exitCode = 2
+} finally {
+  if (client) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+  if (pool) await pool.end().catch(() => undefined)
+}
+
+process.stdout.write(`${outputLine()}\n`)
+NODE
+)
+probe_status=$?
+
+evidence_lines=$(printf '%s\n' "$probe_output" | sed -n "/^${OUTPUT_PREFIX}|/p")
+first_line=$(printf '%s\n' "$evidence_lines" | sed -n '1p')
+second_line=$(printf '%s\n' "$evidence_lines" | sed -n '2p')
+
+if [ -z "$first_line" ] || [ -n "$second_line" ]; then
+  emit_identity_result 'UNAVAILABLE' 'RUNTIME_PRODUCT_UNAVAILABLE'
+  exit 2
+fi
+
+printf '%s\n' "$first_line"
+exit "$probe_status"

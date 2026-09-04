@@ -1,0 +1,568 @@
+#!/bin/sh
+set -u
+
+# Read-only Semantic provider HTTP RCA for the exact ce08 Product. The probe runs
+# inside the canonical PREP Web container so provider URL/model/token/proxy/CA and
+# timeout inputs are identical to runtime. PostgreSQL evidence is read in one
+# rolled-back REPEATABLE READ, READ ONLY transaction. No vector is persisted.
+
+EXPECTED_PRODUCT='ce0855b417acc8e462cc9438bb158f81e34389c9'
+EXPECTED_SNAPSHOT='791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+OUTPUT_PREFIX='SEMANTIC_CE08_HTTP_RCA'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|staged_docs=0|staged_batches=0|legacy_reuse=UNAVAILABLE|pending_docs=0|provider_calls=0|last_request_inputs=0|last_request_bytes=0|last_max_input_bytes=0|last_bisection_depth=0|final_http=CONTRACT|bounded_single_400=NO|first_pending_batch=FAIL|verdict=SEMANTIC_PROVIDER_RCA_UNAVAILABLE"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i "$exact_id" \
+    node --max-old-space-size=2048 --input-type=module 2>/dev/null <<'NODE'
+import { createHash } from 'node:crypto'
+import pg from 'pg'
+
+/* global AbortSignal, Buffer, URL, console, process */
+
+import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import {
+  K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+  K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
+  K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1,
+  K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+  k9SemanticInputPlan,
+  k9SemanticMaterializationHash,
+} from './poc-k9-semantic-input.mjs'
+import { validateEmbeddingVectors } from './poc-k9-semantic-projector.mjs'
+import { parseLlmProviderTimeoutMs } from './poc-llm-timeout.mjs'
+import { createProviderTransport, llmEndpoint } from './poc-provider-transport.mjs'
+
+const { Pool } = pg
+const EXPECTED_SNAPSHOT = '791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+const OUTPUT_PREFIX = 'SEMANTIC_CE08_HTTP_RCA'
+const LIFECYCLE_KEY = 'managed-k9-v2'
+const DOCUMENT_BATCH_SIZE = 32
+const MAX_PROVIDER_REQUESTS = 12
+const HASH = /^[0-9a-f]{64}$/u
+
+let pool
+let transport
+let providerCalls = 0
+let observedState
+let lastRequest = Object.freeze({
+  inputs: 0, bytes: 0, maximumInputBytes: 0, depth: 0, classification: 'CONTRACT',
+})
+let boundedSingle400 = false
+
+class ProbeFailure extends Error {
+  constructor(kind = 'SEMANTIC_PROVIDER_RCA_UNAVAILABLE', detail) {
+    super('The bounded Semantic provider probe could not prove its requested contract.')
+    this.name = 'ProbeFailure'
+    this.kind = kind
+    this.detail = detail
+  }
+}
+
+class TerminalProviderFailure extends Error {
+  constructor(classification, inputCount, depth) {
+    super('The bounded Semantic provider request reached a terminal result.')
+    this.name = 'TerminalProviderFailure'
+    this.classification = classification
+    this.inputCount = inputCount
+    this.depth = depth
+  }
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function optionalUrl(name) {
+  const raw = process.env[name]?.trim()
+  if (!raw) throw new ProbeFailure()
+  const value = new URL(raw)
+  if (!['http:', 'https:'].includes(value.protocol)
+    || value.username || value.password || value.hash) throw new ProbeFailure()
+  return value.toString().replace(/\/$/u, '')
+}
+
+function embeddingProvider() {
+  const url = optionalUrl('LLM_EMBEDDING_URL')
+  const model = process.env.LLM_EMBEDDING_MODEL?.trim()
+  const token = process.env.LLM_EMBEDDING_TOKEN?.trim()
+  if (!model || !token) throw new ProbeFailure()
+  return Object.freeze({ url, model, token })
+}
+
+function outputBindingHash(provider) {
+  const source = sha256(optionalUrl('DATAHUB_GMS_URL')).slice(0, 16)
+  return sha256(canonicalJson({
+    source,
+    endpoint: provider.url,
+    model: provider.model,
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+  }))
+}
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw new ProbeFailure()
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+function httpClass(status) {
+  if (Number.isInteger(status) && status >= 200 && status <= 299) return '200_299'
+  if ([400, 401, 403, 404, 413, 422, 429].includes(status)) return String(status)
+  if (Number.isInteger(status) && status >= 500 && status <= 599) return '500_599'
+  return 'OTHER'
+}
+
+function transportClass(error) {
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase()
+  return error?.name === 'TimeoutError' || error?.name === 'AbortError'
+    || code.includes('TIMEOUT') ? 'TIMEOUT' : 'CONNECTIVITY'
+}
+
+function firstPendingVerdict(classification) {
+  if (classification === '429') return 'SEMANTIC_PROVIDER_RATE_LIMIT_PROVEN'
+  if (classification === '500_599') return 'SEMANTIC_PROVIDER_TRANSIENT_HTTP_PROVEN'
+  if (classification === '413') return 'SEMANTIC_PROVIDER_AGGREGATE_REQUEST_SIZE_LIMIT_PROVEN'
+  if (classification === '422') return 'SEMANTIC_PROVIDER_BOUNDED_INPUT_VALIDATION_REJECTION'
+  if (classification === '401' || classification === '403') {
+    return 'SEMANTIC_PROVIDER_AUTH_FAILURE_PROVEN'
+  }
+  if (classification === '404') return 'SEMANTIC_PROVIDER_ENDPOINT_NOT_FOUND_PROVEN'
+  if (classification === 'TIMEOUT') return 'SEMANTIC_PROVIDER_TIMEOUT_PROVEN'
+  if (classification === 'CONNECTIVITY') return 'SEMANTIC_PROVIDER_CONNECTIVITY_FAILURE_PROVEN'
+  if (classification === 'CONTRACT') return 'SEMANTIC_PROVIDER_RESPONSE_CONTRACT_FAILURE_PROVEN'
+  return 'SEMANTIC_PROVIDER_OTHER_HTTP_PROVEN'
+}
+
+function unavailableLine(state = {}) {
+  return [
+    OUTPUT_PREFIX,
+    `staged_docs=${state.stagedDocs ?? 0}`,
+    `staged_batches=${state.stagedBatches ?? 0}`,
+    `legacy_reuse=${state.legacyReuse ?? 'UNAVAILABLE'}`,
+    `pending_docs=${state.pendingDocs ?? 0}`,
+    `provider_calls=${providerCalls}`,
+    `last_request_inputs=${lastRequest.inputs}`,
+    `last_request_bytes=${lastRequest.bytes}`,
+    `last_max_input_bytes=${lastRequest.maximumInputBytes}`,
+    `last_bisection_depth=${lastRequest.depth}`,
+    `final_http=${lastRequest.classification}`,
+    `bounded_single_400=${boundedSingle400 ? 'YES' : 'NO'}`,
+    'first_pending_batch=FAIL',
+    `verdict=${state.verdict ?? 'SEMANTIC_PROVIDER_RCA_UNAVAILABLE'}`,
+  ].join('|')
+}
+
+function resultLine(state, firstPendingBatch, verdict) {
+  return [
+    OUTPUT_PREFIX,
+    `staged_docs=${state.stagedDocs}`,
+    `staged_batches=${state.stagedBatches}`,
+    `legacy_reuse=${state.legacyReuse}`,
+    `pending_docs=${state.pendingDocs}`,
+    `provider_calls=${providerCalls}`,
+    `last_request_inputs=${lastRequest.inputs}`,
+    `last_request_bytes=${lastRequest.bytes}`,
+    `last_max_input_bytes=${lastRequest.maximumInputBytes}`,
+    `last_bisection_depth=${lastRequest.depth}`,
+    `final_http=${lastRequest.classification}`,
+    `bounded_single_400=${boundedSingle400 ? 'YES' : 'NO'}`,
+    `first_pending_batch=${firstPendingBatch}`,
+    `verdict=${verdict}`,
+  ].join('|')
+}
+
+function validManifest(manifest, documents, materializationHash) {
+  if (!manifest || manifest.source_snapshot_id !== EXPECTED_SNAPSHOT
+    || manifest.binding_hash !== materializationHash
+    || !HASH.test(manifest.manifest_hash || '')
+    || Number(manifest.desired_count) !== documents.length) return false
+  if (documents.some((document) => (
+    document.source_snapshot_id !== EXPECTED_SNAPSHOT
+    || document.binding_hash !== materializationHash
+    || typeof document.document_id !== 'string' || !document.document_id
+    || typeof document.asset_urn !== 'string' || !document.asset_urn
+    || !HASH.test(document.source_hash || '')
+    || typeof document.content_text !== 'string' || !document.content_text
+    || !document.metadata || typeof document.metadata !== 'object'
+    || Array.isArray(document.metadata)
+  ))) return false
+  return computeSha256({
+    source_snapshot_id: EXPECTED_SNAPSHOT,
+    binding_hash: materializationHash,
+    documents: documents.map((document) => ({
+      document_id: document.document_id,
+      asset_urn: document.asset_urn,
+      source_hash: document.source_hash,
+      content_text: document.content_text,
+      metadata: document.metadata,
+    })),
+  }) === manifest.manifest_hash
+}
+
+function uniqueHashMap(rows) {
+  const result = new Map()
+  for (const row of rows) {
+    if (typeof row.document_id !== 'string' || !HASH.test(row.source_hash || '')
+      || result.has(row.document_id)) throw new ProbeFailure()
+    result.set(row.document_id, row.source_hash)
+  }
+  return result
+}
+
+async function readPendingState(provider) {
+  const outputHash = outputBindingHash(provider)
+  const materializationHash = k9SemanticMaterializationHash(outputHash)
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    const lifecycle = await client.query(`
+      SELECT desired_snapshot_id
+      FROM poc_k9_snapshot_lifecycle_v2
+      WHERE lifecycle_key = $1
+    `, [LIFECYCLE_KEY])
+    if (lifecycle.rows.length !== 1
+      || lifecycle.rows[0].desired_snapshot_id !== EXPECTED_SNAPSHOT) throw new ProbeFailure()
+
+    const manifestResult = await client.query(`
+      SELECT source_snapshot_id, binding_hash, desired_count, manifest_hash
+      FROM poc_k9_semantic_manifests_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+    `, [EXPECTED_SNAPSHOT, materializationHash])
+    const documentsResult = await client.query(`
+      SELECT source_snapshot_id, binding_hash, document_id, asset_urn,
+        source_hash, content_text, metadata
+      FROM poc_k9_semantic_desired_documents_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+    `, [EXPECTED_SNAPSHOT, materializationHash])
+    const documents = documentsResult.rows.sort(
+      (left, right) => left.document_id.localeCompare(right.document_id),
+    )
+    if (!validManifest(manifestResult.rows[0], documents, materializationHash)) {
+      throw new ProbeFailure()
+    }
+
+    const pointerResult = await client.query(
+      'SELECT value FROM poc_state WHERE scope = $1',
+      [`catalog-embedding-active-v1:${outputHash}`],
+    )
+    const pointer = pointerResult.rows[0]?.value
+    let activeRows = []
+    if (pointer?.binding_hash === outputHash
+      && typeof pointer.source_generation === 'string') {
+      const activeResult = await client.query(`
+        SELECT asset_urn AS document_id, source_hash
+        FROM poc_catalog_embedding
+        WHERE binding_hash = $1 AND source_generation = $2
+        ORDER BY asset_urn
+      `, [outputHash, pointer.source_generation])
+      activeRows = activeResult.rows
+    }
+    const legacyResult = await client.query(`
+      SELECT document_id, source_hash
+      FROM poc_k9_semantic_staging_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number, document_id
+    `, [EXPECTED_SNAPSHOT, outputHash])
+    const batchesResult = await client.query(`
+      SELECT batch_number, batch_total, document_count
+      FROM poc_k9_semantic_batches_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number
+    `, [EXPECTED_SNAPSHOT, materializationHash])
+    const stagedResult = await client.query(`
+      SELECT document_id, source_hash, batch_number,
+        vector_dims(embedding)::integer AS vector_dimension
+      FROM poc_k9_semantic_staging_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number, document_id
+    `, [EXPECTED_SNAPSHOT, materializationHash])
+
+    const activeHashes = uniqueHashMap(activeRows)
+    const legacyHashes = uniqueHashMap(legacyResult.rows)
+    const stagedHashes = uniqueHashMap(stagedResult.rows)
+    const desiredHashes = new Map(documents.map((document) => (
+      [document.document_id, document.source_hash]
+    )))
+    const stagedDocumentsByBatch = new Map()
+    for (const row of stagedResult.rows) {
+      const batchNumber = Number(row.batch_number)
+      stagedDocumentsByBatch.set(
+        batchNumber,
+        (stagedDocumentsByBatch.get(batchNumber) || 0) + 1,
+      )
+    }
+    const activeUsesCurrentContract = pointer?.semantic_input_contract
+        === K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1
+      && pointer?.materialization_hash === materializationHash
+      && pointer?.pooling_contract === K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1
+    const plannedDocuments = documents.map((document) => ({
+      ...document,
+      inputPlan: k9SemanticInputPlan(document.content_text),
+    }))
+    const reusableHashes = new Map()
+    let legacyReuse = 0
+    for (const document of plannedDocuments) {
+      const activeMatches = activeHashes.get(document.document_id) === document.source_hash
+      const legacyMatches = legacyHashes.get(document.document_id) === document.source_hash
+      if (legacyMatches && document.inputPlan.legacy_compatible) legacyReuse += 1
+      if ((activeMatches && (activeUsesCurrentContract || document.inputPlan.legacy_compatible))
+        || (legacyMatches && document.inputPlan.legacy_compatible)) {
+        reusableHashes.set(document.document_id, document.source_hash)
+      }
+    }
+    const changedDocuments = plannedDocuments.filter((document) => (
+      reusableHashes.get(document.document_id) !== document.source_hash
+    ))
+    const stagedPrefix = changedDocuments.filter((document) => (
+      stagedHashes.get(document.document_id) === document.source_hash
+    ))
+    const alreadyStaged = stagedPrefix.length
+    const pending = changedDocuments.slice(alreadyStaged)
+    const batchTotal = Math.ceil(changedDocuments.length / DOCUMENT_BATCH_SIZE)
+    const stagedBatchCount = batchesResult.rows.length
+    const reportedBatchTotal = stagedBatchCount === 0
+      ? 0 : Number(batchesResult.rows[0].batch_total)
+    const stagedBatchTotal = alreadyStaged === 0 && reportedBatchTotal === 0
+      ? batchTotal : reportedBatchTotal
+    const expectedStagedKeys = new Set(stagedPrefix.map((document) => document.document_id))
+    const stagedPrefixValid = changedDocuments.slice(0, alreadyStaged).every((document) => (
+      expectedStagedKeys.has(document.document_id)
+    ))
+    const vectorDimension = stagedResult.rows.length === 0
+      ? undefined : Number(stagedResult.rows[0].vector_dimension)
+    if (!stagedPrefixValid || stagedHashes.size !== alreadyStaged
+      || (pending.length > 0 && alreadyStaged % DOCUMENT_BATCH_SIZE !== 0)
+      || stagedBatchCount > batchTotal || stagedBatchTotal !== batchTotal
+      || batchesResult.rows.some((batch, index) => (
+        Number(batch.batch_number) !== index + 1
+        || Number(batch.batch_total) !== stagedBatchTotal
+        || Number(batch.document_count) !== (stagedDocumentsByBatch.get(index + 1) || 0)
+      ))
+      || stagedResult.rows.some((row) => (
+        Number(row.vector_dimension) !== vectorDimension
+        || desiredHashes.get(row.document_id) !== row.source_hash
+      ))) throw new ProbeFailure()
+
+    return Object.freeze({
+      pending: Object.freeze(pending),
+      expectedDimension: vectorDimension,
+      stagedDocs: stagedResult.rows.length,
+      stagedBatches: stagedBatchCount,
+      legacyReuse,
+      pendingDocs: pending.length,
+    })
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+}
+
+async function providerRequest(provider, inputs, timeoutMs, expectedDimension, depth) {
+  if (providerCalls >= MAX_PROVIDER_REQUESTS) {
+    throw new ProbeFailure('SEMANTIC_PROVIDER_REQUEST_BUDGET_EXHAUSTED')
+  }
+  if (!Array.isArray(inputs) || inputs.length < 1
+    || inputs.length > K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1
+    || inputs.some((input) => typeof input !== 'string' || !input
+      || Buffer.byteLength(input, 'utf8') > K9_SEMANTIC_MAX_SEGMENT_BYTES_V1)) {
+    throw new ProbeFailure()
+  }
+  const body = JSON.stringify({ model: provider.model, input: inputs })
+  const telemetry = {
+    inputs: inputs.length,
+    bytes: Buffer.byteLength(body, 'utf8'),
+    maximumInputBytes: Math.max(...inputs.map((input) => Buffer.byteLength(input, 'utf8'))),
+    depth,
+    classification: 'CONNECTIVITY',
+  }
+  providerCalls += 1
+  let response
+  try {
+    response = await transport.fetch(llmEndpoint(provider, '/embeddings'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.token}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    telemetry.classification = transportClass(error)
+    lastRequest = Object.freeze(telemetry)
+    throw new TerminalProviderFailure(telemetry.classification, inputs.length, depth)
+  }
+  telemetry.classification = httpClass(response.status)
+  lastRequest = Object.freeze(telemetry)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    return Object.freeze({ classification: telemetry.classification })
+  }
+  let payload
+  try {
+    payload = await response.json()
+  } catch {
+    lastRequest = Object.freeze({ ...telemetry, classification: 'CONTRACT' })
+    throw new TerminalProviderFailure('CONTRACT', inputs.length, depth)
+  }
+  try {
+    const validated = validateEmbeddingVectors(payload, inputs.length, expectedDimension)
+    lastRequest = Object.freeze({ ...telemetry, classification: '200_299' })
+    return Object.freeze({
+      classification: '200_299',
+      dimension: validated.dimension,
+    })
+  } catch {
+    lastRequest = Object.freeze({ ...telemetry, classification: 'CONTRACT' })
+    throw new TerminalProviderFailure('CONTRACT', inputs.length, depth)
+  }
+}
+
+async function replayProviderPlanner(provider, inputs, timeoutMs, expectedDimension, depth = 0) {
+  const result = await providerRequest(provider, inputs, timeoutMs, expectedDimension, depth)
+  if (result.classification === '200_299') return result.dimension
+  if (result.classification !== '400') {
+    throw new TerminalProviderFailure(result.classification, inputs.length, depth)
+  }
+  if (inputs.length === 1) {
+    boundedSingle400 = true
+    throw new TerminalProviderFailure('400', 1, depth)
+  }
+  const midpoint = Math.ceil(inputs.length / 2)
+  const leftDimension = await replayProviderPlanner(
+    provider, inputs.slice(0, midpoint), timeoutMs, expectedDimension, depth + 1,
+  )
+  return replayProviderPlanner(
+    provider, inputs.slice(midpoint), timeoutMs, leftDimension, depth + 1,
+  )
+}
+
+try {
+  const provider = embeddingProvider()
+  const timeoutMs = parseLlmProviderTimeoutMs(process.env.POC_LLM_TIMEOUT_MS)
+  transport = createProviderTransport(process.env)
+  pool = new Pool(databaseConfig())
+  const state = await readPendingState(provider)
+  observedState = state
+  const firstDocumentBatch = state.pending.slice(0, DOCUMENT_BATCH_SIZE)
+  if (firstDocumentBatch.length === 0) throw new ProbeFailure()
+
+  const providerInputs = firstDocumentBatch.flatMap(
+    (document) => document.inputPlan.segments,
+  )
+  let expectedDimension = state.expectedDimension
+  for (let offset = 0; offset < providerInputs.length;
+    offset += K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1) {
+    const inputBatch = providerInputs.slice(
+      offset, offset + K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1,
+    )
+    expectedDimension = await replayProviderPlanner(
+      provider, inputBatch, timeoutMs, expectedDimension,
+    )
+  }
+  console.log(resultLine(
+    state,
+    'PASS',
+    'SEMANTIC_PROVIDER_TRANSIENT_FAILURE_PROVEN',
+  ))
+} catch (error) {
+  if (error instanceof TerminalProviderFailure) {
+    const verdict = error.classification === '400' && error.inputCount === 1
+      ? 'SEMANTIC_SEGMENT_ENVELOPE_INSUFFICIENT_PROVEN'
+      : firstPendingVerdict(error.classification)
+    console.log(observedState
+      ? resultLine(observedState, 'FAIL', verdict)
+      : unavailableLine({ verdict }))
+  } else if (error instanceof ProbeFailure
+    && error.kind === 'SEMANTIC_PROVIDER_REQUEST_BUDGET_EXHAUSTED') {
+    console.log(unavailableLine({
+      ...observedState,
+      verdict: error.kind,
+    }))
+  } else {
+    console.log(unavailableLine({
+      ...observedState,
+      verdict: error?.kind,
+    }))
+    process.exitCode = 2
+  }
+} finally {
+  await Promise.allSettled([pool?.end(), transport?.close()])
+}
+NODE
+)
+probe_status=$?
+
+case "$probe_output" in
+  "${OUTPUT_PREFIX}|"*) ;;
+  *)
+    emit_shell_failure
+    exit 2
+    ;;
+esac
+
+case "$probe_output" in
+  *'
+'*)
+    emit_shell_failure
+    exit 2
+    ;;
+esac
+
+printf '%s\n' "$probe_output"
+exit "$probe_status"

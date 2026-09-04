@@ -110,6 +110,31 @@ def test_stateful_lock_rejects_concurrent_owner_and_ignores_stale_metadata(
     assert deploy.deploy_lock_active(lock) is False
 
 
+def test_host_global_project_lock_is_checkout_independent_and_exclusive(tmp_path: Path) -> None:
+    first = deploy.host_project_lock_path("datariver-prep39083", root=tmp_path)
+    second = deploy.host_project_lock_path("datariver-prep39083", root=tmp_path)
+    other = deploy.host_project_lock_path("another-project", root=tmp_path)
+    assert first == second
+    assert first != other
+    assert "prep39083" not in first.name
+
+    with deploy.host_project_deployment_lock("datariver-prep39083", root=tmp_path):
+        with pytest.raises(deploy.PrepError) as captured:
+            with deploy.host_project_deployment_lock("datariver-prep39083", root=tmp_path):
+                pass
+        assert captured.value.code == "PREP_HOST_PROJECT_DEPLOY_ALREADY_ACTIVE"
+
+
+def test_host_global_project_lock_rejects_unsafe_stale_owner(tmp_path: Path) -> None:
+    path = deploy.host_project_lock_path("datariver-prep39083", root=tmp_path)
+    path.write_text("stale", encoding="utf-8")
+    path.chmod(0o644)
+    with pytest.raises(deploy.PrepError) as captured:
+        with deploy.host_project_deployment_lock("datariver-prep39083", root=tmp_path):
+            pass
+    assert captured.value.code == "PREP_HOST_PROJECT_LOCK_UNPROVEN"
+
+
 def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -205,6 +230,90 @@ def test_status_summarizes_owned_failed_attempt_without_environment_or_logs(
     assert "Elapsed: 60000 ms" in output
     assert "Diagnostic profile: glossary=2500/2501; direct=250/1387" in output
     assert "Exact next action: Run ./scripts/prep39083 deploy to resume." in output
+
+
+def test_status_runtime_replacement_outweighs_preserved_k9_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    attempt = tmp_path / "deploy-attempt.json"
+    last = tmp_path / "last-command.json"
+    smoke_failure = tmp_path / "smoke-failure.json"
+    attempt.write_text(json.dumps({"phase": "SMOKE_FAILED"}), encoding="utf-8")
+    last.write_text(
+        json.dumps(
+            {
+                "result": "FAILED",
+                "step": "RUNTIME_STABILITY",
+                "code": "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+                "next_action": "Stop the competing controller.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    smoke_failure.write_text(
+        json.dumps(
+            {
+                "stage": "K9_INITIAL_REFRESH",
+                "diagnostic": {
+                    "product_error_code": "K9_SEMANTIC_PROVIDER_HTTP_FAILED",
+                    "failure_stage": "PROVIDER",
+                    "failure_detail_code": "K9_SEMANTIC_PROVIDER_HTTP_FAILED",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt)
+    monkeypatch.setattr(deploy, "ACCEPTED_MARKER", tmp_path / "accepted.json")
+    monkeypatch.setattr(deploy, "LAST_COMMAND", last)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", smoke_failure)
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", tmp_path / "smoke.json")
+    monkeypatch.setattr(deploy, "K9_PROGRESS", tmp_path / "progress.json")
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK", tmp_path / "deploy.lock")
+    monkeypatch.setattr(
+        deploy,
+        "Runner",
+        lambda environment=None: type(
+            "NoWebRunner",
+            (),
+            {"run": lambda self, args, check=False: subprocess.CompletedProcess(args, 0, "", "")},
+        )(),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda *_a, **_k: {
+            "checkout_branch": deploy.PREP_RELEASE_BRANCH,
+            "checkout_head": "c" * 40,
+            "tracked_release_snapshot": "c" * 40,
+            "dedicated_release_head": "c" * 40,
+            "remote_tracking_release_head": "c" * 40,
+            "tracked_release_product": "a" * 40,
+            "running_web_image": "NONE",
+            "running_web_product": "NONE",
+            "last_sync_target": "c" * 40,
+            "last_sync_product": "a" * 40,
+            "sync_receipt_state": "CURRENT",
+            "source_synced": True,
+            "runtime_matches": True,
+        },
+    )
+
+    deploy.status(_release())
+
+    output = capsys.readouterr().out
+    assert "Code: PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED" in output
+    assert "K9: UNKNOWN" in output
+    assert "K9_SEMANTIC_PROVIDER_HTTP_FAILED" not in output
+    assert output.rstrip().endswith(
+        "SHARE_SUMMARY|result=FAILED"
+        "|code=PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED"
+        "|stage=RUNTIME_STABILITY"
+        "|detail=PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED"
+        "|substage=NONE|kind=NONE|bytes=0|limit=0"
+    )
 
 
 def test_status_renders_bounded_source_persistence_substage_and_one_line_share_summary(
@@ -424,6 +533,153 @@ def test_status_runtime_only_mismatch_never_claims_no_action(
     assert "Identity action: ./scripts/prep39083 deploy" in output
     assert "Exact next action: Run ./scripts/prep39083 deploy to reconcile" in output
     assert "No action required" not in output
+
+
+def test_compact_status_reports_target_runtime_owner_and_lanes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    smoke = tmp_path / "smoke.json"
+    smoke.write_text(
+        json.dumps(
+            {
+                "smoke_product_sha": "a" * 40,
+                "readiness": {
+                    "K9": {"status": "PASS"},
+                    "MCL": {"status": "DEGRADED_GAP"},
+                    "GENERAL": {"status": "PASS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(
+        deploy,
+        "_attempt_receipt",
+        lambda *_a, **_k: {
+            "contract": deploy.ATTEMPT_CONTRACT_V3,
+            "target_product_sha": "a" * 40,
+            "smoke_product_sha": "a" * 40,
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "status_source_identity",
+        lambda *_a, **_k: {"source_synced": True},
+    )
+    monkeypatch.setattr(
+        deploy,
+        "inspect_running_web_identity",
+        lambda *_a, **_k: deploy.WebRuntimeIdentity(
+            "container",
+            f"datariver-poc:{'a' * 40}",
+            "sha256:image",
+            "a" * 40,
+            "f" * 64,
+            True,
+            True,
+        ),
+    )
+    deploy.compact_status(_release())
+    assert capsys.readouterr().out.strip() == "P|T=1|R=1|W=S|K=R|M=D|G=R"
+
+
+def test_compact_status_rejects_stale_smoke_from_another_product(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    smoke = tmp_path / "smoke.json"
+    smoke.write_text(
+        json.dumps(
+            {
+                "smoke_product_sha": "b" * 40,
+                "readiness": {
+                    "K9": {"status": "PASS"},
+                    "MCL": {"status": "PASS"},
+                    "GENERAL": {"status": "PASS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(deploy, "status_source_identity", lambda *_a, **_k: {"source_synced": True})
+    monkeypatch.setattr(
+        deploy,
+        "_attempt_receipt",
+        lambda *_a, **_k: {
+            "contract": deploy.ATTEMPT_CONTRACT_V3,
+            "target_product_sha": "a" * 40,
+            "smoke_product_sha": "a" * 40,
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "inspect_running_web_identity",
+        lambda *_a, **_k: deploy.WebRuntimeIdentity(
+            "container",
+            f"datariver-poc:{'a' * 40}",
+            "sha256:image",
+            "a" * 40,
+            "f" * 64,
+            True,
+            True,
+        ),
+    )
+
+    deploy.compact_status(_release())
+    assert capsys.readouterr().out.strip() == "P|T=1|R=1|W=S|K=U|M=U|G=U"
+
+
+def test_compact_status_rejects_same_product_smoke_from_foreign_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    smoke = tmp_path / "smoke.json"
+    smoke.write_text(
+        json.dumps(
+            {
+                "smoke_product_sha": "a" * 40,
+                "readiness": {
+                    "K9": {"status": "PASS"},
+                    "MCL": {"status": "PASS"},
+                    "GENERAL": {"status": "PASS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "SMOKE_REPORT", smoke)
+    monkeypatch.setattr(deploy, "status_source_identity", lambda *_a, **_k: {"source_synced": True})
+    monkeypatch.setattr(
+        deploy,
+        "_attempt_receipt",
+        lambda *_a, **_k: {
+            "contract": deploy.ATTEMPT_CONTRACT_V3,
+            "target_product_sha": "a" * 40,
+            "smoke_product_sha": "a" * 40,
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "inspect_running_web_identity",
+        lambda *_a, **_k: deploy.WebRuntimeIdentity(
+            "container",
+            f"datariver-poc:{'a' * 40}",
+            "sha256:image",
+            "a" * 40,
+            "f" * 64,
+            False,
+            False,
+        ),
+    )
+
+    deploy.compact_status(_release())
+    assert capsys.readouterr().out.strip() == "P|T=1|R=1|W=O|K=U|M=U|G=U"
 
 
 def test_status_renders_bounded_graph_projector_failure(
@@ -2261,6 +2517,19 @@ def test_accepted_marker_v2_is_atomic_and_binds_owned_attempt(
 ) -> None:
     runtime = _runtime_values()
     receipt = _accepted_receipt(runtime)
+    receipt.update(
+        {
+            "contract": deploy.ATTEMPT_CONTRACT_V3,
+            "target_product_sha": receipt["product_sha"],
+            "applied_product_sha": receipt["product_sha"],
+            "smoke_product_sha": receipt["product_sha"],
+            "post_failure_product_sha": None,
+            "foreign_owner_adopted": False,
+            "rollback_attempted": False,
+            "rollback_completed": False,
+            "phase": "SMOKE_RUNNING",
+        }
+    )
     marker_path = tmp_path / "accepted.json"
     monkeypatch.setattr(deploy, "ACCEPTED_MARKER", marker_path)
 
@@ -2355,13 +2624,20 @@ def test_attempt_receipt_is_atomic_secret_free_and_phase_progresses(
     assert stat.S_IMODE(attempt.stat().st_mode) == 0o600
     payload = attempt.read_text(encoding="utf-8")
     assert "secret-must-not-be-recorded" not in payload
-    assert receipt["contract"] == deploy.ATTEMPT_CONTRACT_V2
+    assert receipt["contract"] == deploy.ATTEMPT_CONTRACT_V3
+    assert receipt["target_product_sha"] == receipt["product_sha"]
+    assert receipt["applied_product_sha"] is None
+    assert receipt["smoke_product_sha"] is None
+    assert receipt["post_failure_product_sha"] is None
+    assert receipt["foreign_owner_adopted"] is False
+    assert receipt["rollback_attempted"] is False
+    assert receipt["rollback_completed"] is False
     assert receipt["ownership_fingerprint"] in payload
     assert "runtime_env_fingerprint" not in receipt
     assert deploy._attempt_receipt(attempt) == receipt
-    advanced = deploy.advance_attempt_phase(receipt, "SMOKE_FAILED")
-    assert advanced["phase"] == "SMOKE_FAILED"
-    assert json.loads(attempt.read_text())["phase"] == "SMOKE_FAILED"
+    advanced = deploy.advance_attempt_phase(receipt, "STATE_SERVICES_READY")
+    assert advanced["phase"] == "STATE_SERVICES_READY"
+    assert json.loads(attempt.read_text())["phase"] == "STATE_SERVICES_READY"
 
 
 def test_ownership_fingerprint_excludes_fixed_release_configuration() -> None:
@@ -2479,7 +2755,7 @@ def test_legacy_v1_receipt_migrates_after_runtime_already_has_descendant_fixed_v
         phase="PREPARED",
         previous=validated,
     )
-    assert migrated["contract"] == deploy.ATTEMPT_CONTRACT_V2
+    assert migrated["contract"] == deploy.ATTEMPT_CONTRACT_V3
     assert migrated["migrated_from_contract"] == deploy.ATTEMPT_CONTRACT_V1
     assert migrated["resumed_from_product_sha"] == receipt["product_sha"]
 
@@ -2599,9 +2875,9 @@ def test_deployer_never_destroys_accepted_persistent_volumes() -> None:
     assert '"up", "-d", "--wait", "pgvector", "neo4j", "redis"' in source
     assert 'command = [*prefix, "up", "-d", "--no-build", "--wait"]' in source
     assert 'command.extend(["--force-recreate", "--no-deps"])' in source
-    assert "runner.run(web_start_command(prefix, bundle.target_state))" in source
+    assert "web_start_command(" in source
     assert source.index('"pgvector", "neo4j", "redis"') < source.index(
-        "runner.run(web_start_command(prefix, bundle.target_state))",
+        "web_start_command(\n                    prefix",
     )
     assert "snapshot_39080" in source
     assert "ALTER ROLE" in source
@@ -2637,6 +2913,241 @@ def test_web_start_recreates_only_an_owned_incomplete_attempt_for_v2_resume() ->
         "web",
     ]
     assert accepted == [*prefix, "up", "-d", "--no-build", "--wait", "web"]
+
+
+def test_foreign_owner_adoption_preserves_state_service_containers() -> None:
+    prefix = ["docker", "compose", "--project-name", "datariver-poc"]
+    assert deploy.state_services_start_command(prefix, preserve_existing=False) == [
+        *prefix,
+        "up",
+        "-d",
+        "--wait",
+        "pgvector",
+        "neo4j",
+        "redis",
+    ]
+    assert deploy.state_services_start_command(prefix, preserve_existing=True) == [
+        *prefix,
+        "up",
+        "-d",
+        "--no-recreate",
+        "--wait",
+        "pgvector",
+        "neo4j",
+        "redis",
+    ]
+
+
+def test_foreign_owner_adoption_requires_known_ancestor_and_exact_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_product = "9" * 40
+    release = _release()
+    identity = deploy.WebRuntimeIdentity(
+        "container",
+        f"datariver-poc:{old_product}",
+        "sha256:image",
+        old_product,
+        "f" * 64,
+        False,
+        False,
+    )
+    monkeypatch.setattr(deploy, "inspect_running_web_identity", lambda *_a, **_k: identity)
+    monkeypatch.setattr(deploy, "_git_is_ancestor", lambda *_a, **_k: True)
+    volumes = tuple(
+        deploy.TargetVolume(name, logical)
+        for name, logical in zip(
+            deploy.canonical_volume_identities(release),
+            deploy.PREP_VOLUME_LOGICAL_NAMES,
+            strict=True,
+        )
+    )
+    inventory = deploy.TargetInventory(
+        False,
+        False,
+        True,
+        True,
+        (deploy.TargetContainer("container", "web", True),),
+        volumes,
+        (f"{release.project}-services",),
+        True,
+        True,
+        {"product_sha": release.product_sha, "resumed_from_product_sha": old_product},
+    )
+    config = {
+        "volumes": {
+            logical: {"name": name}
+            for name, logical in zip(
+                deploy.canonical_volume_identities(release),
+                deploy.PREP_VOLUME_LOGICAL_NAMES,
+                strict=True,
+            )
+        },
+        "networks": {"services": {"name": f"{release.project}-services"}},
+    }
+    assert (
+        deploy.prove_foreign_web_owner_adoptable(
+            cast(Any, object()),
+            release,
+            inventory,
+            config,
+            cast(dict[str, Any], inventory.attempt_receipt),
+        )
+        is True
+    )
+
+    inventory = replace(
+        inventory,
+        attempt_receipt={"product_sha": release.product_sha},
+        accepted_marker=None,
+    )
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.prove_foreign_web_owner_adoptable(
+            cast(Any, object()),
+            release,
+            inventory,
+            config,
+            cast(dict[str, Any], inventory.attempt_receipt),
+        )
+    assert captured.value.code == "PREP_FOREIGN_COMPOSE_OWNER_UNPROVEN"
+
+
+def test_post_up_identity_gate_and_runtime_stability_are_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release()
+    bundle = deploy.EnvironmentBundle(
+        {},
+        {},
+        {},
+        {
+            "POC_IMAGE_TAG": release.product_sha,
+            "POC_SOURCE_COMMIT": release.product_sha,
+            "PREP_RELEASE_PRODUCT_SHA": release.product_sha,
+            "PREP_RELEASE_EVIDENCE_SHA": release.evidence_sha,
+        },
+        (),
+        deploy.TargetState.EXISTING_OWNED_INCOMPLETE,
+        "REQUIRED",
+    )
+    exact = deploy.WebRuntimeIdentity(
+        "container",
+        f"datariver-poc:{release.product_sha}",
+        "sha256:image",
+        release.product_sha,
+        "f" * 64,
+        True,
+        True,
+    )
+    monkeypatch.setattr(deploy, "desired_web_config_hash", lambda *_a: "f" * 64)
+    monkeypatch.setattr(deploy, "inspect_running_web_identity", lambda *_a, **_k: exact)
+    config = {"services": {"web": {"image": f"datariver-poc:{release.product_sha}"}}}
+    assert (
+        deploy.verify_applied_web_identity(
+            cast(Any, object()), release, bundle, ["docker", "compose"], config
+        )
+        == exact
+    )
+    deploy.verify_web_runtime_stable(cast(Any, object()), release, exact)
+
+    replaced = replace(exact, container_id="replacement")
+    monkeypatch.setattr(deploy, "inspect_running_web_identity", lambda *_a, **_k: replaced)
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.verify_web_runtime_stable(cast(Any, object()), release, exact)
+    assert captured.value.code == "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED"
+
+
+def test_monitored_smoke_process_aborts_on_runtime_replacement() -> None:
+    runner = deploy.Runner(environment=deploy.child_environment({}))
+    checks = 0
+
+    def replacement() -> None:
+        nonlocal checks
+        checks += 1
+        raise deploy.PrepError(
+            "RUNTIME_STABILITY",
+            "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+            "replacement",
+            "stop",
+        )
+
+    with pytest.raises(deploy.PrepError) as captured:
+        runner.run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            visible=True,
+            monitor=replacement,
+            monitor_interval_seconds=0.01,
+        )
+    assert checks == 1
+    assert captured.value.code == "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED"
+
+
+def test_attempt_identity_chain_is_forward_only_and_secret_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_path = tmp_path / "deploy-attempt.json"
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
+    runtime = _runtime_values()
+    bundle = deploy.EnvironmentBundle(
+        {}, {}, runtime, runtime, (), deploy.TargetState.EXISTING_OWNED_INCOMPLETE, "REQUIRED"
+    )
+    receipt = deploy.write_attempt_receipt(
+        _release(),
+        "c" * 40,
+        bundle,
+        deploy.canonical_volume_identities(_release()),
+        phase="PREPARED",
+        foreign_owner_adopted=True,
+    )
+    receipt = deploy.advance_attempt_identity(receipt, "applied_product_sha", "a" * 40)
+    receipt = deploy.advance_attempt_identity(receipt, "smoke_product_sha", "a" * 40)
+    receipt = deploy.advance_attempt_phase(receipt, "SMOKE_RUNNING")
+    receipt = deploy.advance_attempt_identity(receipt, "post_failure_product_sha", "a" * 40)
+    assert receipt["target_product_sha"] == "a" * 40
+    assert receipt["foreign_owner_adopted"] is True
+    assert receipt["rollback_attempted"] is False
+    assert receipt["rollback_completed"] is False
+    assert deploy._attempt_receipt(attempt_path) == receipt
+    with pytest.raises(ValueError):
+        deploy.advance_attempt_identity(receipt, "post_failure_product_sha", "d" * 40)
+
+
+def test_attempt_v3_identity_chain_rejects_wrong_order_and_malformed_accepted_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_path = tmp_path / "deploy-attempt.json"
+    monkeypatch.setattr(deploy, "ATTEMPT_RECEIPT", attempt_path)
+    runtime = _runtime_values()
+    bundle = deploy.EnvironmentBundle(
+        {}, {}, runtime, runtime, (), deploy.TargetState.EXISTING_OWNED_INCOMPLETE, "REQUIRED"
+    )
+    receipt = deploy.write_attempt_receipt(
+        _release(),
+        "c" * 40,
+        bundle,
+        deploy.canonical_volume_identities(_release()),
+        phase="PREPARED",
+    )
+
+    with pytest.raises(ValueError):
+        deploy.advance_attempt_identity(receipt, "smoke_product_sha", "a" * 40)
+    with pytest.raises(ValueError):
+        deploy.advance_attempt_identity(receipt, "applied_product_sha", "b" * 40)
+
+    applied = deploy.advance_attempt_identity(receipt, "applied_product_sha", "a" * 40)
+    smoke = deploy.advance_attempt_identity(applied, "smoke_product_sha", "a" * 40)
+    malformed = {**smoke, "phase": "ACCEPTED", "smoke_product_sha": None}
+    attempt_path.write_text(json.dumps(malformed), encoding="utf-8")
+    assert deploy._attempt_receipt(attempt_path) is None
+
+    malformed = {**smoke, "phase": "SMOKE_RUNNING", "applied_product_sha": "b" * 40}
+    attempt_path.write_text(json.dumps(malformed), encoding="utf-8")
+    assert deploy._attempt_receipt(attempt_path) is None
+
+    accepted = deploy.advance_attempt_phase(smoke, "ACCEPTED")
+    assert deploy._attempt_receipt(attempt_path) == accepted
 
 
 class FailFastPreflightRunner:
@@ -3026,6 +3537,7 @@ def test_deploy_wrapper_preserves_bounded_inventory_smoke_classification(
                     {
                         "contract": "DATARIVER_PREP39083_SMOKE_FAILURE_V1",
                         "classification": classification,
+                        "smoke_product_sha": "a" * 40,
                     },
                 ),
                 encoding="utf-8",
@@ -3041,6 +3553,7 @@ def test_deploy_wrapper_preserves_bounded_inventory_smoke_classification(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
+            smoke_product_sha="a" * 40,
         )
 
     assert captured.value.step == "AUTHENTICATED_SMOKE"
@@ -3076,14 +3589,46 @@ def test_smoke_uses_loopback_transport_and_canonical_request_origin(
         "bounded-test-password",
         request_origin=canonical_origin,
         k9_mode="REQUIRED",
+        smoke_product_sha="a" * 40,
         glossary_term_urn="urn:li:glossaryTerm:configured-fixture",
     )
 
     assert runner.arguments[runner.arguments.index("--origin") + 1] == ("http://127.0.0.1:39083")
     assert runner.arguments[runner.arguments.index("--request-origin") + 1] == canonical_origin
+    assert runner.arguments[runner.arguments.index("--smoke-product-sha") + 1] == "a" * 40
     assert runner.arguments[runner.arguments.index("--glossary-term-urn") + 1] == (
         "urn:li:glossaryTerm:configured-fixture"
     )
+
+
+def test_smoke_failure_without_serving_product_binding_is_non_actionable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    failure = runtime_root / "smoke-failure.json"
+    monkeypatch.setattr(deploy, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(deploy, "SMOKE_FAILURE", failure)
+
+    class UnboundFailureRunner:
+        def run(self, _arguments: object, **_keywords: object) -> None:
+            failure.write_text(
+                json.dumps({"classification": "PREP_SMOKE_SEMANTIC_INDEX_NOT_READY"}),
+                encoding="utf-8",
+            )
+            raise deploy.CommandFailure(["node"], subprocess.CompletedProcess(["node"], 2, "", ""))
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.run_smoke(
+            UnboundFailureRunner(),
+            _release(),
+            "admin",
+            "bounded-test-password",
+            request_origin="http://17.20.30.40:39083",
+            k9_mode="REQUIRED",
+            smoke_product_sha="a" * 40,
+        )
+    assert captured.value.code == "PREP_SMOKE_RUNTIME_PRODUCT_UNBOUND"
 
 
 def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
@@ -3099,7 +3644,12 @@ def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
         def run(self, arguments: object, **_keywords: object) -> None:
             del arguments
             smoke_failure.write_text(
-                json.dumps({"classification": "PREP_SMOKE_ADMIN_ORIGIN_FAILED"}),
+                json.dumps(
+                    {
+                        "classification": "PREP_SMOKE_ADMIN_ORIGIN_FAILED",
+                        "smoke_product_sha": "a" * 40,
+                    }
+                ),
                 encoding="utf-8",
             )
             raise deploy.CommandFailure(
@@ -3115,6 +3665,7 @@ def test_deploy_wrapper_distinguishes_admin_origin_from_password_failure(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="REQUIRED",
+            smoke_product_sha="a" * 40,
         )
 
     assert captured.value.code == "PREP_SMOKE_ADMIN_ORIGIN_FAILED"
@@ -3149,7 +3700,7 @@ def test_deploy_wrapper_projects_precise_post_preflight_smoke_stage(
         def run(self, arguments: object, **_keywords: object) -> None:
             del arguments
             smoke_failure.write_text(
-                json.dumps({"classification": classification}),
+                json.dumps({"classification": classification, "smoke_product_sha": "a" * 40}),
                 encoding="utf-8",
             )
             raise deploy.CommandFailure(
@@ -3165,6 +3716,7 @@ def test_deploy_wrapper_projects_precise_post_preflight_smoke_stage(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="REQUIRED",
+            smoke_product_sha="a" * 40,
         )
     assert captured.value.code == classification
     assert captured.value.step == step
@@ -3183,7 +3735,12 @@ def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
         def run(self, arguments: object, **_keywords: object) -> None:
             del arguments
             smoke_failure.write_text(
-                json.dumps({"classification": "PREP_DATAHUB_INVENTORY_UNTRUSTED_FAILED"}),
+                json.dumps(
+                    {
+                        "classification": "PREP_DATAHUB_INVENTORY_UNTRUSTED_FAILED",
+                        "smoke_product_sha": "a" * 40,
+                    }
+                ),
                 encoding="utf-8",
             )
             completed = subprocess.CompletedProcess(["node"], 2, "", "")
@@ -3197,6 +3754,7 @@ def test_deploy_wrapper_rejects_untrusted_inventory_shaped_classification(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
+            smoke_product_sha="a" * 40,
         )
 
     assert captured.value.code == "PREP_SMOKE_UNKNOWN_FAILED"
@@ -3220,7 +3778,7 @@ def test_deploy_wrapper_preserves_bounded_general_provider_smoke_classification(
         def run(self, arguments: object, **_keywords: object) -> None:
             del arguments
             smoke_failure.write_text(
-                json.dumps({"classification": classification}),
+                json.dumps({"classification": classification, "smoke_product_sha": "a" * 40}),
                 encoding="utf-8",
             )
             completed = subprocess.CompletedProcess(["node"], 2, "", "")
@@ -3234,6 +3792,7 @@ def test_deploy_wrapper_preserves_bounded_general_provider_smoke_classification(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
+            smoke_product_sha="a" * 40,
         )
 
     assert captured.value.code == classification
@@ -3253,7 +3812,10 @@ def test_deploy_wrapper_rejects_untrusted_general_provider_classification(
             del arguments
             smoke_failure.write_text(
                 json.dumps(
-                    {"classification": "PREP_SMOKE_GENERAL_PROVIDER_UNTRUSTED_FAILED"},
+                    {
+                        "classification": "PREP_SMOKE_GENERAL_PROVIDER_UNTRUSTED_FAILED",
+                        "smoke_product_sha": "a" * 40,
+                    },
                 ),
                 encoding="utf-8",
             )
@@ -3268,6 +3830,7 @@ def test_deploy_wrapper_rejects_untrusted_general_provider_classification(
             "bounded-test-password",
             request_origin="http://17.20.30.40:39083",
             k9_mode="DEFERRED",
+            smoke_product_sha="a" * 40,
         )
 
     assert captured.value.code == "PREP_SMOKE_UNKNOWN_FAILED"

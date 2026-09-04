@@ -64,6 +64,7 @@ SMOKE_FAILURE = RUNTIME_ROOT / "smoke-failure.json"
 SMOKE_REPORT = RUNTIME_ROOT / "smoke.json"
 K9_PROGRESS = RUNTIME_ROOT / "k9-progress.json"
 DEPLOY_LOCK = RUNTIME_ROOT / "deploy.lock"
+HOST_DEPLOY_LOCK_ROOT = Path("/var/tmp")  # noqa: S108 - shared host scope; opened safely below.
 LAST_COMMAND = RUNTIME_ROOT / "last-command.json"
 SYNC_RECEIPT = RUNTIME_ROOT / "source-sync.json"
 COMMAND_LOGS = RUNTIME_ROOT / "logs"
@@ -284,17 +285,45 @@ class Runner:
         cwd: Path = ROOT,
         input_text: str | None = None,
         visible: bool = False,
+        monitor: Callable[[], None] | None = None,
+        monitor_interval_seconds: float = 5.0,
     ) -> subprocess.CompletedProcess[str]:
         command = [os.fspath(value) for value in arguments]
-        completed = subprocess.run(  # noqa: S603 - argv only, no shell interpolation.
-            command,
-            cwd=cwd,
-            env=self.environment,
-            check=False,
-            capture_output=not visible,
-            text=True,
-            input=input_text,
-        )
+        if monitor is None:
+            completed = subprocess.run(  # noqa: S603 - argv only, no shell interpolation.
+                command,
+                cwd=cwd,
+                env=self.environment,
+                check=False,
+                capture_output=not visible,
+                text=True,
+                input=input_text,
+            )
+        else:
+            if input_text is not None or not visible:
+                raise ValueError("monitored commands must use inherited output and no stdin")
+            process = subprocess.Popen(  # noqa: S603 - argv only, no shell interpolation.
+                command,
+                cwd=cwd,
+                env=self.environment,
+                text=True,
+            )
+            try:
+                while True:
+                    try:
+                        returncode = process.wait(timeout=monitor_interval_seconds)
+                        break
+                    except subprocess.TimeoutExpired:
+                        monitor()
+            except BaseException:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise
+            completed = subprocess.CompletedProcess(command, returncode, "", "")
         if check and completed.returncode != 0:
             raise CommandFailure(command, completed)
         return completed
@@ -402,6 +431,17 @@ class DeploymentPreparation:
     inventory: TargetInventory
     before_39080: tuple[str, ...]
     previous_attempt: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class WebRuntimeIdentity:
+    container_id: str
+    config_image: str
+    image_id: str
+    oci_revision: str
+    config_hash: str | None
+    working_dir_same: bool | None
+    config_files_same: bool | None
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -674,13 +714,44 @@ ATTEMPT_PHASES = frozenset(
 )
 ATTEMPT_CONTRACT_V1 = "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V1"
 ATTEMPT_CONTRACT_V2 = "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V2"
+ATTEMPT_CONTRACT_V3 = "DATARIVER_PREP39083_DEPLOY_ATTEMPT_V3"
 OWNERSHIP_FINGERPRINT_CONTRACT = "DATARIVER_PREP39083_TARGET_OWNERSHIP_V2"
+RUNTIME_ATTRIBUTION_FAILURE_CODES = frozenset(
+    {
+        "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+        "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+        "PREP_SMOKE_RUNTIME_PRODUCT_UNBOUND",
+    }
+)
 TARGET_OWNERSHIP_SECRET_KEYS = (
     "NEO4J_PASSWORD",
     "POC_MCP_SERVICE_TOKEN",
     "POC_POSTGRES_PASSWORD",
 )
 PREP_VOLUME_LOGICAL_NAMES = ("neo4j-data", "neo4j-logs", "pgvector-data")
+
+
+def _attempt_v3_identity_chain_valid(value: Mapping[str, Any]) -> bool:
+    target = value.get("target_product_sha")
+    applied = value.get("applied_product_sha")
+    smoke = value.get("smoke_product_sha")
+    post_failure = value.get("post_failure_product_sha")
+    phase = value.get("phase")
+    if target != value.get("product_sha"):
+        return False
+    if applied is not None and applied != target:
+        return False
+    if smoke is not None and (applied != target or smoke != target):
+        return False
+    if post_failure is not None and smoke != target:
+        return False
+    if phase in {"SMOKE_RUNNING", "SMOKE_FAILED", "ACCEPTED"} and smoke != target:
+        return False
+    if phase == "ACCEPTED" and post_failure is not None:
+        return False
+    return not (
+        value.get("rollback_completed") is True and value.get("rollback_attempted") is not True
+    )
 
 
 def _attempt_receipt(path: Path) -> dict[str, Any] | None:
@@ -698,14 +769,14 @@ def _attempt_receipt(path: Path) -> dict[str, Any] | None:
         and bool(re.fullmatch(r"[0-9a-f]{64}", value["runtime_env_fingerprint"]))
         if contract == ATTEMPT_CONTRACT_V1
         else (
-            contract == ATTEMPT_CONTRACT_V2
+            contract in {ATTEMPT_CONTRACT_V2, ATTEMPT_CONTRACT_V3}
             and value.get("ownership_fingerprint_contract") == OWNERSHIP_FINGERPRINT_CONTRACT
             and isinstance(value.get("ownership_fingerprint"), str)
             and bool(re.fullmatch(r"[0-9a-f]{64}", value["ownership_fingerprint"]))
         )
     )
     valid = (
-        contract in {ATTEMPT_CONTRACT_V1, ATTEMPT_CONTRACT_V2}
+        contract in {ATTEMPT_CONTRACT_V1, ATTEMPT_CONTRACT_V2, ATTEMPT_CONTRACT_V3}
         and all(
             isinstance(value.get(key), str) and SHA_PATTERN.fullmatch(value[key])
             for key in ("product_sha", "evidence_sha", "handoff_commit")
@@ -720,6 +791,28 @@ def _attempt_receipt(path: Path) -> dict[str, Any] | None:
         and fingerprint_valid
         and isinstance(value.get("volume_identities"), list)
         and all(isinstance(item, str) and item for item in value["volume_identities"])
+        and (
+            contract != ATTEMPT_CONTRACT_V3
+            or (
+                _attempt_v3_identity_chain_valid(value)
+                and all(
+                    item is None or (isinstance(item, str) and bool(SHA_PATTERN.fullmatch(item)))
+                    for item in (
+                        value.get("applied_product_sha"),
+                        value.get("smoke_product_sha"),
+                        value.get("post_failure_product_sha"),
+                    )
+                )
+                and all(
+                    isinstance(value.get(key), bool)
+                    for key in (
+                        "foreign_owner_adopted",
+                        "rollback_attempted",
+                        "rollback_completed",
+                    )
+                )
+            )
+        )
     )
     return value if valid else None
 
@@ -1179,11 +1272,28 @@ def compose_prefix(release: ReleaseIdentity, env_file: Path) -> list[str]:
     ]
 
 
-def web_start_command(prefix: Sequence[str], target_state: TargetState) -> list[str]:
+def web_start_command(
+    prefix: Sequence[str],
+    target_state: TargetState,
+    *,
+    force_recreate: bool = False,
+) -> list[str]:
     command = [*prefix, "up", "-d", "--no-build", "--wait"]
-    if target_state is TargetState.EXISTING_OWNED_INCOMPLETE:
+    if target_state is TargetState.EXISTING_OWNED_INCOMPLETE or force_recreate:
         command.extend(["--force-recreate", "--no-deps"])
     return [*command, "web"]
+
+
+def state_services_start_command(
+    prefix: Sequence[str],
+    *,
+    preserve_existing: bool,
+) -> list[str]:
+    command = [*prefix, "up", "-d"]
+    if preserve_existing:
+        command.append("--no-recreate")
+    command.extend(["--wait", "pgvector", "neo4j", "redis"])
+    return command
 
 
 def resolve_web_image(config: Mapping[str, Any]) -> str:
@@ -1198,6 +1308,208 @@ def resolve_web_image(config: Mapping[str, Any]) -> str:
             "Restore release.json and canonical Compose; no IMAGE_REF shell variable is used.",
         )
     return image.strip()
+
+
+def compose_network_identities(config: Mapping[str, Any]) -> tuple[str, ...]:
+    networks = config.get("networks")
+    if not isinstance(networks, dict):
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_NETWORK_IDENTITY_INVALID",
+            "Compose omitted the canonical network identity.",
+            "Restore the tracked Compose contract and retry.",
+        )
+    names = tuple(
+        sorted(
+            str(value.get("name"))
+            for value in networks.values()
+            if isinstance(value, dict) and value.get("name")
+        )
+    )
+    if len(names) != 1:
+        raise PrepError(
+            "COMPOSE_CONFIG",
+            "PREP_COMPOSE_NETWORK_IDENTITY_INVALID",
+            "Compose does not resolve one canonical network identity.",
+            "Restore the tracked Compose contract and retry.",
+        )
+    return names
+
+
+def desired_web_config_hash(runner: Runner, prefix: Sequence[str]) -> str | None:
+    completed = runner.run([*prefix, "config", "--hash", "web"], check=False)
+    if completed.returncode != 0:
+        return None
+    tokens = completed.stdout.strip().split()
+    candidate = tokens[-1] if tokens else ""
+    return candidate if re.fullmatch(r"[0-9a-f]{64}", candidate) else None
+
+
+def _path_relation(value: object, expected: Path) -> bool | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return Path(value).resolve() == expected.resolve()
+    except OSError:
+        return None
+
+
+def _config_files_relation(value: object) -> bool | None:
+    if not isinstance(value, str) or not value:
+        return None
+    files = [item.strip() for item in value.split(",") if item.strip()]
+    if not files:
+        return None
+    try:
+        actual = {Path(item).resolve() for item in files}
+        expected = {BASE_COMPOSE.resolve(), PREP_ARTIFACT_COMPOSE.resolve()}
+    except OSError:
+        return None
+    return actual == expected
+
+
+def inspect_running_web_identity(
+    runner: Runner,
+    release: ReleaseIdentity,
+    *,
+    required: bool = True,
+) -> WebRuntimeIdentity | None:
+    rows = []
+    for line in runner.output(
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={release.project}",
+            "--filter",
+            "label=com.docker.compose.service=web",
+            "--format",
+            "{{.ID}}\t{{.State}}",
+        ]
+    ).splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0]:
+            rows.append((parts[0], parts[1]))
+    if not required and (not rows or (len(rows) == 1 and rows[0][1] != "running")):
+        return None
+    if len(rows) != 1 or rows[0][1] != "running":
+        raise PrepError(
+            "RUNTIME_PRODUCT_APPLY",
+            "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+            "The Compose project does not own exactly one running canonical Web container.",
+            "Stop competing PREP controllers; preserve state and rerun the canonical deploy.",
+        )
+    container_id = rows[0][0]
+    try:
+        documents = json.loads(runner.output(["docker", "inspect", container_id]))
+        document = documents[0]
+        config = document["Config"]
+        labels = config.get("Labels") or {}
+        image_id = document["Image"]
+        networks = document["NetworkSettings"]["Networks"]
+        mounts = document.get("Mounts", [])
+        images = json.loads(runner.output(["docker", "image", "inspect", image_id]))
+        image_labels = images[0].get("Config", {}).get("Labels") or {}
+    except (CommandFailure, json.JSONDecodeError, IndexError, KeyError, TypeError) as error:
+        raise PrepError(
+            "RUNTIME_PRODUCT_APPLY",
+            "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+            "The running Web identity cannot be proven from bounded Docker metadata.",
+            "Preserve state and rerun from the canonical release checkout.",
+        ) from error
+    if (
+        labels.get("com.docker.compose.project") != release.project
+        or labels.get("com.docker.compose.service") != "web"
+        or not isinstance(config.get("Image"), str)
+        or not isinstance(image_id, str)
+        or not isinstance(networks, dict)
+        or not isinstance(mounts, list)
+    ):
+        raise PrepError(
+            "RUNTIME_PRODUCT_APPLY",
+            "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+            "The running Web has no exact Compose-owned identity.",
+            "Preserve state and rerun from the canonical release checkout.",
+        )
+    revision = image_labels.get("org.opencontainers.image.revision")
+    if not isinstance(revision, str) or not SHA_PATTERN.fullmatch(revision):
+        raise PrepError(
+            "RUNTIME_PRODUCT_APPLY",
+            "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+            "The running Web image has no exact OCI Product revision.",
+            "Load only the approved archive and rerun the canonical deploy.",
+        )
+    return WebRuntimeIdentity(
+        container_id=container_id,
+        config_image=config["Image"],
+        image_id=image_id,
+        oci_revision=revision,
+        config_hash=(
+            labels.get("com.docker.compose.config-hash")
+            if isinstance(labels.get("com.docker.compose.config-hash"), str)
+            else None
+        ),
+        working_dir_same=_path_relation(
+            labels.get("com.docker.compose.project.working_dir"),
+            ROOT,
+        ),
+        config_files_same=_config_files_relation(
+            labels.get("com.docker.compose.project.config_files"),
+        ),
+    )
+
+
+def verify_applied_web_identity(
+    runner: Runner,
+    release: ReleaseIdentity,
+    bundle: EnvironmentBundle,
+    prefix: Sequence[str],
+    config: Mapping[str, Any],
+) -> WebRuntimeIdentity:
+    expected_image = resolve_web_image(config)
+    expected_config_hash = desired_web_config_hash(runner, prefix)
+    identity = inspect_running_web_identity(runner, release)
+    assert identity is not None
+    env_matches = (
+        all(
+            bundle.effective.get(key) == release.product_sha
+            for key in ("POC_IMAGE_TAG", "POC_SOURCE_COMMIT", "PREP_RELEASE_PRODUCT_SHA")
+        )
+        and bundle.effective.get("PREP_RELEASE_EVIDENCE_SHA") == release.evidence_sha
+    )
+    exact = (
+        env_matches
+        and expected_image == f"datariver-poc:{release.product_sha}"
+        and identity.config_image == expected_image
+        and identity.oci_revision == release.product_sha
+        and identity.working_dir_same is True
+        and identity.config_files_same is True
+        and (expected_config_hash is None or identity.config_hash == expected_config_hash)
+    )
+    if not exact:
+        raise PrepError(
+            "RUNTIME_PRODUCT_APPLY",
+            "PREP_RUNTIME_PRODUCT_NOT_APPLIED",
+            "The applied Web does not match the tracked environment, Compose and OCI Product.",
+            "Stop before smoke; preserve state and reconcile the canonical Compose owner.",
+        )
+    return identity
+
+
+def verify_web_runtime_stable(
+    runner: Runner,
+    release: ReleaseIdentity,
+    expected: WebRuntimeIdentity,
+) -> None:
+    current = inspect_running_web_identity(runner, release)
+    if current != expected:
+        raise PrepError(
+            "RUNTIME_STABILITY",
+            "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+            "The applied Web identity changed while authenticated smoke was running.",
+            "Stop competing Compose controllers; do not attribute this result to K9.",
+        )
 
 
 def _compose_service(config: Mapping[str, Any], service: str) -> Mapping[str, Any]:
@@ -1912,6 +2224,75 @@ def deployment_lock(action: str) -> Iterator[None]:
             os.close(descriptor)
 
 
+def host_project_lock_path(project: str, *, root: Path = HOST_DEPLOY_LOCK_ROOT) -> Path:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", project):
+        raise ValueError("invalid Compose project identity")
+    digest = hashlib.sha256(project.encode("utf-8")).hexdigest()[:16]
+    return root / f"datariver-compose-{digest}.lock"
+
+
+@contextmanager
+def host_project_deployment_lock(
+    project: str,
+    *,
+    root: Path = HOST_DEPLOY_LOCK_ROOT,
+) -> Iterator[None]:
+    """Serialize one Compose project across repository clones on this host."""
+    path = host_project_lock_path(project, root=root)
+    descriptor: int | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise OSError("unsafe host deployment lock")
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise PrepError(
+            "DEPLOY_LOCK",
+            "PREP_HOST_PROJECT_LOCK_UNPROVEN",
+            "The host-global Compose project lock cannot be proven private and owned.",
+            "Stop other PREP controllers and restore the host-global lock ownership.",
+        ) from error
+    try:
+        assert descriptor is not None
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise PrepError(
+                "DEPLOY_LOCK",
+                "PREP_HOST_PROJECT_DEPLOY_ALREADY_ACTIVE",
+                "Another checkout or controller owns the Compose project deployment lock.",
+                "Wait for the active PREP operation; do not start a competing deploy.",
+            ) from error
+        payload = json.dumps(
+            {
+                "contract": "DATARIVER_PREP39083_HOST_PROJECT_LOCK_V1",
+                "project_hash": hashlib.sha256(project.encode("utf-8")).hexdigest(),
+                "pid": os.getpid(),
+                "started_at": datetime.now(UTC).isoformat(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
 def deploy_lock_active(path: Path = DEPLOY_LOCK) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -2052,6 +2433,56 @@ def canonical_volume_identities(release: ReleaseIdentity) -> tuple[str, ...]:
     return tuple(sorted(f"{release.project}_{name}" for name in PREP_VOLUME_LOGICAL_NAMES))
 
 
+def prove_foreign_web_owner_adoptable(
+    runner: Runner,
+    release: ReleaseIdentity,
+    inventory: TargetInventory,
+    config: Mapping[str, Any],
+    previous_attempt: Mapping[str, Any] | None,
+) -> bool:
+    """Prove a foreign-checkout Web is one known predecessor before takeover."""
+    current = inspect_running_web_identity(runner, release, required=False)
+    if current is None:
+        return False
+    foreign = current.working_dir_same is False or current.config_files_same is False
+    if not foreign:
+        if current.working_dir_same is not True or current.config_files_same is not True:
+            raise PrepError(
+                "FOREIGN_OWNER_ADOPTION",
+                "PREP_FOREIGN_COMPOSE_OWNER_UNPROVEN",
+                "The running Web Compose owner cannot be proven canonical or foreign.",
+                "Preserve state and stop all competing PREP controllers.",
+            )
+        return False
+    known_products: set[str] = set()
+    for receipt in (previous_attempt, inventory.accepted_marker):
+        if isinstance(receipt, Mapping):
+            for key in ("product_sha", "resumed_from_product_sha"):
+                candidate = receipt.get(key)
+                if isinstance(candidate, str) and SHA_PATTERN.fullmatch(candidate):
+                    known_products.add(candidate)
+    image_match = re.fullmatch(r"datariver-poc:([0-9a-f]{40})", current.config_image)
+    current_product = image_match.group(1) if image_match else None
+    expected_volumes = set(compose_volume_identities(config))
+    expected_networks = set(compose_network_identities(config))
+    proven = (
+        current_product == current.oci_revision
+        and current_product in known_products
+        and _git_is_ancestor(runner, str(current_product), release.product_sha)
+        and {volume.name for volume in inventory.volumes} == expected_volumes
+        and set(inventory.networks) == expected_networks
+        and len([item for item in inventory.containers if item.service == "web"]) == 1
+    )
+    if not proven:
+        raise PrepError(
+            "FOREIGN_OWNER_ADOPTION",
+            "PREP_FOREIGN_COMPOSE_OWNER_UNPROVEN",
+            "The foreign-checkout Web is not a proven owned predecessor of this release.",
+            "Preserve all state and establish canonical project ownership before deployment.",
+        )
+    return True
+
+
 def _historical_env_contract(runner: Runner, handoff: str) -> dict[str, Any]:
     try:
         raw = runner.output(
@@ -2116,13 +2547,21 @@ def write_attempt_receipt(
     *,
     phase: str,
     previous: Mapping[str, Any] | None = None,
+    foreign_owner_adopted: bool = False,
 ) -> dict[str, Any]:
     if phase not in ATTEMPT_PHASES:
         raise ValueError("invalid deployment attempt phase")
     now = datetime.now(UTC).isoformat()
     payload: dict[str, Any] = {
-        "contract": ATTEMPT_CONTRACT_V2,
+        "contract": ATTEMPT_CONTRACT_V3,
         "product_sha": release.product_sha,
+        "target_product_sha": release.product_sha,
+        "applied_product_sha": None,
+        "smoke_product_sha": None,
+        "post_failure_product_sha": None,
+        "foreign_owner_adopted": foreign_owner_adopted,
+        "rollback_attempted": False,
+        "rollback_completed": False,
         "evidence_sha": release.evidence_sha,
         "handoff_commit": handoff,
         "project": release.project,
@@ -2134,12 +2573,19 @@ def write_attempt_receipt(
         "volume_identities": sorted(set(volume_identities)),
         "k9_mode": bundle.k9_mode,
         "phase": phase,
-        "started_at": previous.get("started_at", now) if previous else now,
+        "started_at": now,
         "updated_at": now,
     }
+    if previous:
+        payload["previous_attempt"] = {
+            "product_sha": previous.get("product_sha"),
+            "phase": previous.get("phase"),
+            "started_at": previous.get("started_at"),
+            "updated_at": previous.get("updated_at"),
+        }
     if previous and previous.get("product_sha") != release.product_sha:
         payload["resumed_from_product_sha"] = previous.get("product_sha")
-    if previous and previous.get("contract") != ATTEMPT_CONTRACT_V2:
+    if previous and previous.get("contract") != ATTEMPT_CONTRACT_V3:
         payload["migrated_from_contract"] = previous.get("contract")
     _atomic_json(ATTEMPT_RECEIPT, payload)
     return payload
@@ -2150,6 +2596,42 @@ def advance_attempt_phase(receipt: Mapping[str, Any], phase: str) -> dict[str, A
         raise ValueError("invalid deployment attempt phase")
     payload = dict(receipt)
     payload["phase"] = phase
+    if payload.get("contract") == ATTEMPT_CONTRACT_V3 and not _attempt_v3_identity_chain_valid(
+        payload
+    ):
+        raise ValueError("invalid deployment attempt identity chain for phase")
+    payload["updated_at"] = datetime.now(UTC).isoformat()
+    _atomic_json(ATTEMPT_RECEIPT, payload)
+    return payload
+
+
+def advance_attempt_identity(
+    receipt: Mapping[str, Any],
+    field: str,
+    product_sha: str,
+) -> dict[str, Any]:
+    if field not in {
+        "applied_product_sha",
+        "smoke_product_sha",
+        "post_failure_product_sha",
+    } or not SHA_PATTERN.fullmatch(product_sha):
+        raise ValueError("invalid deployment attempt identity transition")
+    if receipt.get("contract") != ATTEMPT_CONTRACT_V3:
+        raise ValueError("deployment attempt identity requires V3")
+    target_product = receipt.get("target_product_sha")
+    if field in {"applied_product_sha", "smoke_product_sha"} and product_sha != target_product:
+        raise ValueError("deployment attempt Product does not match its target")
+    if field == "smoke_product_sha" and receipt.get("applied_product_sha") != target_product:
+        raise ValueError("smoke Product requires an applied target Product")
+    if field == "post_failure_product_sha" and receipt.get("smoke_product_sha") != target_product:
+        raise ValueError("post-failure Product requires a smoke-bound target Product")
+    payload = dict(receipt)
+    existing = payload.get(field)
+    if existing not in {None, product_sha}:
+        raise ValueError("deployment attempt identity is immutable")
+    payload[field] = product_sha
+    if not _attempt_v3_identity_chain_valid(payload):
+        raise ValueError("invalid deployment attempt identity chain")
     payload["updated_at"] = datetime.now(UTC).isoformat()
     _atomic_json(ATTEMPT_RECEIPT, payload)
     return payload
@@ -3320,8 +3802,17 @@ def run_smoke(
     *,
     request_origin: str,
     k9_mode: str,
+    smoke_product_sha: str,
+    runtime_guard: Callable[[], None] | None = None,
     glossary_term_urn: str = "",
 ) -> None:
+    if not SHA_PATTERN.fullmatch(smoke_product_sha):
+        raise PrepError(
+            "AUTHENTICATED_SMOKE",
+            "PREP_SMOKE_RUNTIME_PRODUCT_UNBOUND",
+            "Authenticated smoke is not bound to one exact serving Product.",
+            "Apply and verify the tracked Web Product before smoke.",
+        )
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     output = RUNTIME_ROOT / "smoke.json"
     if output.exists():
@@ -3353,15 +3844,27 @@ def run_smoke(
                 SMOKE_FAILURE,
                 "--progress-output",
                 K9_PROGRESS,
+                "--smoke-product-sha",
+                smoke_product_sha,
             ]
             if glossary_term_urn.strip():
                 command.extend(["--glossary-term-urn", glossary_term_urn.strip()])
-            runner.run(command, visible=True)
+            if runtime_guard is None:
+                runner.run(command, visible=True)
+            else:
+                runner.run(command, visible=True, monitor=runtime_guard)
         except CommandFailure as error:
             try:
                 failure = _read_json(SMOKE_FAILURE, "sanitized smoke failure")
             except PrepError:
                 failure = {}
+            if failure.get("smoke_product_sha") != smoke_product_sha:
+                raise PrepError(
+                    "AUTHENTICATED_SMOKE",
+                    "PREP_SMOKE_RUNTIME_PRODUCT_UNBOUND",
+                    "The failed smoke report is not bound to the verified serving Product.",
+                    "Preserve state and rerun only after the runtime identity is exact.",
+                ) from error
             code = str(failure.get("classification", "PREP_SMOKE_UNKNOWN_FAILED"))
             if (
                 code not in SUPPORTED_DATAHUB_INVENTORY_FAILURE_CODES
@@ -3418,6 +3921,26 @@ def write_accepted_marker(
     target_state: TargetState,
     k9_mode: str,
 ) -> None:
+    if (
+        attempt.get("contract") != ATTEMPT_CONTRACT_V3
+        or attempt.get("phase") != "SMOKE_RUNNING"
+        or not _attempt_v3_identity_chain_valid(attempt)
+        or attempt.get("target_product_sha") != release.product_sha
+        or attempt.get("applied_product_sha") != release.product_sha
+        or attempt.get("smoke_product_sha") != release.product_sha
+        or attempt.get("post_failure_product_sha") is not None
+    ):
+        _accepted_state_failure(
+            "PREP_ACCEPTED_STATE_IDENTITY_CHAIN_UNPROVEN",
+            "The accepted marker is not paired with one exact target/applied/smoke Product chain.",
+        )
+    attempt_volumes = attempt.get("volume_identities")
+    bounded_volumes = (
+        [str(item) for item in attempt_volumes]
+        if isinstance(attempt_volumes, list)
+        and all(isinstance(item, str) for item in attempt_volumes)
+        else []
+    )
     payload = {
         "contract": ACCEPTED_CONTRACT_V2,
         "product_sha": release.product_sha,
@@ -3430,14 +3953,14 @@ def write_accepted_marker(
         "k9_mode": k9_mode,
         "ownership_fingerprint_contract": OWNERSHIP_FINGERPRINT_CONTRACT,
         "ownership_fingerprint": attempt.get("ownership_fingerprint"),
-        "volume_identities": sorted(set(attempt.get("volume_identities", ()))),
+        "volume_identities": sorted(set(bounded_volumes)),
         "accepted_at": datetime.now(UTC).isoformat(),
     }
     if (
         payload["ownership_fingerprint_contract"] != attempt.get("ownership_fingerprint_contract")
         or not isinstance(payload["ownership_fingerprint"], str)
         or not re.fullmatch(r"[0-9a-f]{64}", payload["ownership_fingerprint"])
-        or set(payload["volume_identities"]) != set(canonical_volume_identities(release))
+        or set(bounded_volumes) != set(canonical_volume_identities(release))
     ):
         _accepted_state_failure(
             "PREP_ACCEPTED_STATE_OWNERSHIP_UNPROVEN",
@@ -3470,6 +3993,7 @@ def deploy(
     source = preparation.source
     before_39080 = preparation.before_39080
     smoke_report: dict[str, Any] = {}
+    foreign_owner_adopted = False
     for warning in bundle.warnings:
         print(f"WARNING: {warning}", flush=True)
 
@@ -3502,6 +4026,15 @@ def deploy(
         )
 
         previous_attempt = preparation.previous_attempt
+        foreign_owner_adopted = prove_foreign_web_owner_adoptable(
+            runner,
+            release,
+            preparation.inventory,
+            config,
+            previous_attempt,
+        )
+        if foreign_owner_adopted:
+            runner.note("FOREIGN_OWNER_ADOPTION: proven predecessor Web will be replaced")
         with typed_deploy_gate(
             "TARGET_STATE",
             "PREP_TARGET_STATE_RECONCILIATION_FAILED",
@@ -3568,6 +4101,7 @@ def deploy(
                 final_volumes,
                 phase="PREPARED",
                 previous=previous_attempt,
+                foreign_owner_adopted=foreign_owner_adopted,
             )
         if (
             bundle.target_state is TargetState.FAILED_FIRST_INSTALL_RECOVERABLE
@@ -3583,7 +4117,12 @@ def deploy(
             "PREP_STATE_SERVICES_FAILED",
             "PostgreSQL, Neo4j or Redis did not reach the bounded healthy state.",
         ):
-            runner.run([*prefix, "up", "-d", "--wait", "pgvector", "neo4j", "redis"])
+            runner.run(
+                state_services_start_command(
+                    prefix,
+                    preserve_existing=foreign_owner_adopted,
+                )
+            )
             attempt = advance_attempt_phase(attempt, "STATE_SERVICES_READY")
         runner.note("Apply idempotent state initialization and inspect target-local identities")
         with typed_deploy_gate(
@@ -3610,8 +4149,27 @@ def deploy(
             # container running. Recreate only that stateless service so startup
             # resumes persisted V2 projector receipts; state services and volumes
             # remain untouched. Accepted reruns continue to reuse the healthy Web.
-            runner.run(web_start_command(prefix, bundle.target_state))
+            runner.run(
+                web_start_command(
+                    prefix,
+                    bundle.target_state,
+                    force_recreate=foreign_owner_adopted,
+                )
+            )
             web_id = runner.output([*prefix, "ps", "-q", "web"])
+        applied_identity = verify_applied_web_identity(
+            runner,
+            release,
+            bundle,
+            prefix,
+            config,
+        )
+        attempt = advance_attempt_identity(
+            attempt,
+            "applied_product_sha",
+            applied_identity.oci_revision,
+        )
+        print("APPLY|T=1|E=1|Q=1|I=1|R=1|W=S", flush=True)
         if (
             not web_id
             or runner.output(
@@ -3652,6 +4210,13 @@ def deploy(
             ) from error
         attempt = advance_attempt_phase(attempt, "WEB_READY")
         runner.note("Run authenticated provider, managed-graph and GENERAL smoke")
+        verify_web_runtime_stable(runner, release, applied_identity)
+        attempt = advance_attempt_identity(
+            attempt,
+            "smoke_product_sha",
+            applied_identity.oci_revision,
+        )
+        print("SMOKE|P=1", flush=True)
         attempt = advance_attempt_phase(attempt, "SMOKE_RUNNING")
         try:
             with typed_deploy_gate(
@@ -3666,11 +4231,48 @@ def deploy(
                     password,
                     request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
                     k9_mode=bundle.k9_mode,
+                    smoke_product_sha=applied_identity.oci_revision,
+                    runtime_guard=lambda: verify_web_runtime_stable(
+                        runner,
+                        release,
+                        applied_identity,
+                    ),
                     glossary_term_urn=bundle.effective.get("PREP_GLOSSARY_TERM_URN", ""),
                 )
+                verify_web_runtime_stable(runner, release, applied_identity)
                 smoke_report = _read_json(RUNTIME_ROOT / "smoke.json", "authenticated smoke report")
-        except PrepError:
-            advance_attempt_phase(attempt, "SMOKE_FAILED")
+                if smoke_report.get("smoke_product_sha") != applied_identity.oci_revision:
+                    raise PrepError(
+                        "AUTHENTICATED_SMOKE",
+                        "PREP_SMOKE_RUNTIME_PRODUCT_UNBOUND",
+                        "The smoke report is not bound to the verified serving Product.",
+                        "Preserve state and rerun only after the runtime identity is exact.",
+                    )
+        except PrepError as smoke_error:
+            try:
+                post_failure = inspect_running_web_identity(runner, release)
+            except PrepError as identity_error:
+                advance_attempt_phase(attempt, "SMOKE_FAILED")
+                raise PrepError(
+                    "RUNTIME_STABILITY",
+                    "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+                    "The Web identity became unprovable during failed smoke handling.",
+                    "Stop competing controllers; do not attribute the result to K9.",
+                ) from identity_error
+            assert post_failure is not None
+            attempt = advance_attempt_identity(
+                attempt,
+                "post_failure_product_sha",
+                post_failure.oci_revision,
+            )
+            attempt = advance_attempt_phase(attempt, "SMOKE_FAILED")
+            if post_failure != applied_identity:
+                raise PrepError(
+                    "RUNTIME_STABILITY",
+                    "PREP_FOREIGN_COMPOSE_REPLACEMENT_DETECTED",
+                    "The Web Product or Compose owner changed during failed smoke handling.",
+                    "Stop competing controllers; do not attribute the result to K9.",
+                ) from smoke_error
             raise
         after_39080 = snapshot_39080(runner)
         if after_39080 != before_39080:
@@ -3951,7 +4553,7 @@ def status(release: ReleaseIdentity) -> None:
     accepted = _optional_json(ACCEPTED_MARKER)
     last = _optional_json(LAST_COMMAND)
     smoke_failure = _optional_json(SMOKE_FAILURE)
-    smoke_report = _optional_json(SMOKE_REPORT)
+    smoke_report = _optional_json(SMOKE_REPORT) or {}
     k9_progress = _optional_json(K9_PROGRESS)
     phase = str(attempt.get("phase", "NONE")) if attempt else "NONE"
     accepted_product = str(accepted.get("product_sha", "NONE")) if accepted else "NONE"
@@ -3959,6 +4561,9 @@ def status(release: ReleaseIdentity) -> None:
     last_result = str(last.get("result", phase)) if last else phase
     failed_step = str(last.get("step", "NONE")) if last_result == "FAILED" and last else "NONE"
     code = str(last.get("code", "NONE")) if last_result == "FAILED" and last else "NONE"
+    runtime_attribution_failed = (
+        last_result == "FAILED" and code in RUNTIME_ATTRIBUTION_FAILURE_CODES
+    )
     if active:
         next_action = "Wait for the active command; run ./scripts/prep39083 status again."
     elif last_result == "FAILED" and last:
@@ -4007,6 +4612,15 @@ def status(release: ReleaseIdentity) -> None:
         or lifecycle.get("contract") != "DATARIVER_K9_LIFECYCLE_STATUS_V2"
     ):
         lifecycle = {}
+    if runtime_attribution_failed:
+        # A runtime replacement/unbound Product makes the captured child smoke
+        # historical and non-actionable. Preserve its file as evidence, but do
+        # not attribute its K9/provider diagnostic to this deploy result.
+        failed_stage = ""
+        smoke_diagnostic = {}
+        readiness = {}
+        lifecycle = {}
+        smoke_report = {}
     scheduler_summary = smoke_report.get("k9_scheduler", {}) if smoke_report else {}
     if not isinstance(scheduler_summary, dict):
         scheduler_summary = {}
@@ -4050,7 +4664,7 @@ def status(release: ReleaseIdentity) -> None:
         valid = (
             isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2_147_483_647
         )
-        return value if valid else 0
+        return value if isinstance(value, int) and not isinstance(value, bool) and valid else 0
 
     def bounded_persistence_diagnostic(value: Mapping[str, object]) -> dict[str, object]:
         if value.get("product_error_code") != "K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED":
@@ -4142,12 +4756,16 @@ def status(release: ReleaseIdentity) -> None:
     )
     persistence_diagnostic = bounded_persistence_diagnostic(smoke_diagnostic)
     displayed_k9_stage = (
-        "SOURCE_RECEIPT"
+        failed_step
+        if runtime_attribution_failed
+        else "SOURCE_RECEIPT"
         if persistence_diagnostic
         else smoke_diagnostic.get("failure_stage", failed_stage or "UNKNOWN")
     )
     displayed_k9_detail = (
-        persistence_diagnostic["failure_detail_code"]
+        code
+        if runtime_attribution_failed
+        else persistence_diagnostic["failure_detail_code"]
         if persistence_diagnostic
         else smoke_diagnostic.get("failure_detail_code", code)
     )
@@ -4167,6 +4785,20 @@ def status(release: ReleaseIdentity) -> None:
     print(f"Target state: {target_state}")
     print(f"Deploy active: {'YES' if active else 'NO'}")
     print(f"Deploy phase: {phase}")
+    if attempt and attempt.get("contract") == ATTEMPT_CONTRACT_V3:
+        print(f"Target Product: {attempt.get('target_product_sha') or 'NONE'}")
+        print(f"Applied Product: {attempt.get('applied_product_sha') or 'NONE'}")
+        print(f"Smoke Product: {attempt.get('smoke_product_sha') or 'NONE'}")
+        print(f"Post-failure Product: {attempt.get('post_failure_product_sha') or 'NONE'}")
+        print(
+            "Foreign owner adopted: "
+            f"{'YES' if attempt.get('foreign_owner_adopted') is True else 'NO'}"
+        )
+        print(
+            "Rollback: "
+            f"attempted={'YES' if attempt.get('rollback_attempted') is True else 'NO'}; "
+            f"completed={'YES' if attempt.get('rollback_completed') is True else 'NO'}"
+        )
     print(f"Last result: {last_result}")
     print(f"Last failed step: {failed_step}")
     print(f"Code: {code}")
@@ -4485,7 +5117,10 @@ def status(release: ReleaseIdentity) -> None:
         )
     elif last_result == "FAILED":
         summary_code = bounded_summary_token(
-            smoke_diagnostic.get("product_error_code", code), "UNKNOWN"
+            code
+            if runtime_attribution_failed
+            else smoke_diagnostic.get("product_error_code", code),
+            "UNKNOWN",
         )
         summary_stage = bounded_summary_token(displayed_k9_stage, "UNKNOWN")
         summary_detail = bounded_summary_token(displayed_k9_detail, "UNKNOWN")
@@ -4499,6 +5134,57 @@ def status(release: ReleaseIdentity) -> None:
             f"|bytes={bounded_summary_count(persistence_diagnostic.get('payload_bytes'))}"
             f"|limit={bounded_summary_count(persistence_diagnostic.get('configured_limit_bytes'))}"
         )
+
+
+def compact_status(release: ReleaseIdentity) -> None:
+    runner = Runner(environment=child_environment({}))
+    source = status_source_identity(release, runner=runner)
+    smoke_report = _optional_json(SMOKE_REPORT) or {}
+    attempt = _attempt_receipt(ATTEMPT_RECEIPT)
+    runtime = inspect_running_web_identity(runner, release, required=False)
+    smoke_bound = bool(
+        runtime
+        and runtime.oci_revision == release.product_sha
+        and runtime.working_dir_same is True
+        and runtime.config_files_same is True
+        and smoke_report.get("smoke_product_sha") == runtime.oci_revision
+        and attempt
+        and attempt.get("contract") == ATTEMPT_CONTRACT_V3
+        and attempt.get("target_product_sha") == release.product_sha
+        and attempt.get("smoke_product_sha") == runtime.oci_revision
+    )
+    readiness = smoke_report.get("readiness", {}) if smoke_bound else {}
+    if not isinstance(readiness, dict):
+        readiness = {}
+    target = "1" if source.get("source_synced") is True else "0"
+    running = "1" if runtime and runtime.oci_revision == release.product_sha else "0"
+    owner = (
+        "S"
+        if runtime and runtime.working_dir_same is True and runtime.config_files_same is True
+        else "O"
+        if runtime and (runtime.working_dir_same is False or runtime.config_files_same is False)
+        else "U"
+    )
+
+    def lane(name: str) -> str:
+        if (
+            smoke_bound
+            and name == "MCL"
+            and smoke_report.get("mcl_history_completeness") == "DEGRADED_GAP"
+        ):
+            return "D"
+        value = readiness.get(name, {})
+        state = value.get("status") if isinstance(value, dict) else None
+        states = {
+            "PASS": "R",
+            "DEGRADED_GAP": "D",
+            "FAILED": "F",
+            "PENDING": "P",
+            "DEFERRED": "D",
+        }
+        return states.get(state, "U") if isinstance(state, str) else "U"
+
+    print(f"P|T={target}|R={running}|W={owner}|K={lane('K9')}|M={lane('MCL')}|G={lane('GENERAL')}")
 
 
 def logs(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
@@ -4521,7 +5207,16 @@ def logs(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
 def smoke(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
     runner = Runner(environment=child_environment(bundle.effective))
     with private_effective_environment(bundle.effective) as env_file:
-        inspected = inspect_bootstrap(runner, compose_prefix(release, env_file))
+        prefix = compose_prefix(release, env_file)
+        config = compose_config(runner, prefix)
+        inspected = inspect_bootstrap(runner, prefix)
+        runtime_identity = verify_applied_web_identity(
+            runner,
+            release,
+            bundle,
+            prefix,
+            config,
+        )
     username = _choose_existing_administrator(inspected)
     password = getpass.getpass(f"Password for {username} (smoke only): ")
     run_smoke(
@@ -4531,6 +5226,8 @@ def smoke(release: ReleaseIdentity, bundle: EnvironmentBundle) -> None:
         password,
         request_origin=bundle.effective["POC_PUBLIC_ORIGIN"],
         k9_mode=bundle.k9_mode,
+        smoke_product_sha=runtime_identity.oci_revision,
+        runtime_guard=lambda: verify_web_runtime_stable(runner, release, runtime_identity),
         glossary_term_urn=bundle.effective.get("PREP_GLOSSARY_TERM_URN", ""),
     )
     print("PREP39083 SMOKE PASS")
@@ -4578,6 +5275,11 @@ def parse_arguments() -> argparse.Namespace:
         "--source-correction-recapture",
         action="store_true",
         help="recapture corrected K9 provider source for one owned incomplete deployment",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="render one bounded deployment-owned status line",
     )
     return parser.parse_args()
 
@@ -4643,15 +5345,20 @@ def fail(error: PrepError) -> NoReturn:
 
 def execute(arguments: argparse.Namespace) -> None:
     try:
-        source_correction_recapture = bool(
-            getattr(arguments, "source_correction_recapture", False)
-        )
+        source_correction_recapture = bool(getattr(arguments, "source_correction_recapture", False))
         if source_correction_recapture and arguments.action != "deploy":
             raise PrepError(
                 "SOURCE_CORRECTION",
                 "PREP_SOURCE_CORRECTION_RECAPTURE_ACTION_INVALID",
                 "Source-correction recapture is supported only by deploy.",
                 "Use ./scripts/prep39083 deploy --source-correction-recapture.",
+            )
+        if bool(getattr(arguments, "compact", False)) and arguments.action != "status":
+            raise PrepError(
+                "STATUS",
+                "PREP_COMPACT_STATUS_ACTION_INVALID",
+                "Compact status is supported only by the status action.",
+                "Use ./scripts/prep39083 status --compact.",
             )
         if arguments.action == "sync":
             with deployment_lock("sync"):
@@ -4664,25 +5371,29 @@ def execute(arguments: argparse.Namespace) -> None:
             return
         release = load_release_identity()
         if arguments.action == "status":
-            status(release)
+            compact_status(release) if arguments.compact else status(release)
             return
         if arguments.action == "deploy":
             with deployment_lock("deploy"):
-                source_identity = verify_deploy_source_identity(release)
-                if source_identity["sync_receipt_state"] == "LEGACY_PASS_ADOPTABLE":
-                    write_source_sync_receipt(
-                        source_identity["head"],
+                with host_project_deployment_lock(
+                    release.project,
+                    root=HOST_DEPLOY_LOCK_ROOT,
+                ):
+                    source_identity = verify_deploy_source_identity(release)
+                    if source_identity["sync_receipt_state"] == "LEGACY_PASS_ADOPTABLE":
+                        write_source_sync_receipt(
+                            source_identity["head"],
+                            release,
+                            create_only=True,
+                        )
+                    retrieval = ensure_git_transport_artifact(release)
+                    print(f"Artifact retrieval: {retrieval}", flush=True)
+                    bundle, preparation = prepare_deployment(
                         release,
-                        create_only=True,
+                        source_correction_recapture=source_correction_recapture,
                     )
-                retrieval = ensure_git_transport_artifact(release)
-                print(f"Artifact retrieval: {retrieval}", flush=True)
-                bundle, preparation = prepare_deployment(
-                    release,
-                    source_correction_recapture=source_correction_recapture,
-                )
-                deploy(release, bundle, preparation)
-                write_last_command("deploy", "ACCEPTED")
+                    deploy(release, bundle, preparation)
+                    write_last_command("deploy", "ACCEPTED")
             return
         if arguments.action == "doctor":
             with deployment_lock("doctor"):
@@ -4707,7 +5418,7 @@ def execute(arguments: argparse.Namespace) -> None:
             pass
         fail(error)
     except CommandFailure:
-        error = PrepError(
+        command_error = PrepError(
             "COMMAND_EXECUTION",
             "PREP_COMMAND_FAILED",
             "A bounded deployment command failed without completing its gate.",
@@ -4715,34 +5426,34 @@ def execute(arguments: argparse.Namespace) -> None:
             "output were suppressed.",
         )
         try:
-            write_last_command(arguments.action, "FAILED", error=error)
+            write_last_command(arguments.action, "FAILED", error=command_error)
         except OSError:
             pass
-        fail(error)
+        fail(command_error)
     except (EOFError, KeyboardInterrupt):
-        error = PrepError(
+        input_error = PrepError(
             "OPERATOR_INPUT",
             "PREP_OPERATOR_INPUT_CANCELLED",
             "Interactive operator input was cancelled.",
             "Rerun ./scripts/prep39083 deploy when the administrator input is available.",
         )
         try:
-            write_last_command(arguments.action, "FAILED", error=error)
+            write_last_command(arguments.action, "FAILED", error=input_error)
         except OSError:
             pass
-        fail(error)
+        fail(input_error)
     except (OSError, ValueError):
-        error = PrepError(
+        unexpected_error = PrepError(
             "UNEXPECTED",
             "PREP_DEPLOYMENT_FAILED",
             "The one-command deployment could not complete its bounded contract.",
             "Run ./scripts/prep39083 doctor; no persistent state was intentionally deleted.",
         )
         try:
-            write_last_command(arguments.action, "FAILED", error=error)
+            write_last_command(arguments.action, "FAILED", error=unexpected_error)
         except OSError:
             pass
-        fail(error)
+        fail(unexpected_error)
 
 
 def main() -> None:

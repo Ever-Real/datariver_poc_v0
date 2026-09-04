@@ -10,6 +10,7 @@ import test from 'node:test'
 const script = resolve(import.meta.dirname, 'smoke_prep39083.mjs')
 const canonicalIntranetOrigin = 'http://17.20.30.40:39083'
 const sourceSnapshotId = 'a'.repeat(64)
+const smokeProductSha = 'b'.repeat(40)
 
 test('PREP K9 readiness timeout remains exactly 1200 seconds', async () => {
   const source = await readFile(script, 'utf8')
@@ -168,6 +169,7 @@ async function fixture(k9Mode, {
       '--output', output,
       '--failure-output', failureOutput,
       '--progress-output', progressOutput,
+      '--smoke-product-sha', smokeProductSha,
     ]
     if (glossaryTermUrn) argumentsList.push('--glossary-term-urn', glossaryTermUrn)
     const child = spawn(process.execPath, argumentsList, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -189,6 +191,7 @@ test('PREP smoke separates loopback transport from the canonical intranet reques
   const result = await fixture('deferred')
   assert.equal(result.completed.code, 0, result.completed.stderr)
   assert.equal(result.report.origin, result.transportOrigin)
+  assert.equal(result.report.smoke_product_sha, smokeProductSha)
   assert.equal(result.report.request_origin, canonicalIntranetOrigin)
   assert.deepEqual(result.observed.loginOrigins, [canonicalIntranetOrigin])
   assert.deepEqual(result.observed.chatOrigins, [canonicalIntranetOrigin])
