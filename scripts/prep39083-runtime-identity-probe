@@ -150,11 +150,12 @@ def compose_config_hash(value: str) -> str | None:
     return None
 
 
-def relation_to_root(value: Any) -> str:
+def relation_to_project_directory(value: Any, deployer: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         return "U"
     try:
-        return "S" if Path(value.strip()).resolve() == ROOT else "O"
+        expected = deployer.canonical_compose_project_directory()
+        return "S" if Path(value.strip()).resolve() == expected else "O"
     except OSError:
         return "U"
 
@@ -331,8 +332,8 @@ def inspect_containers(project: str, deployer: Any) -> list[dict[str, Any]]:
                 "started": parse_time(state.get("StartedAt")),
                 "config_product": image_product(config.get("Image")),
                 "revision": revisions.get(image_id),
-                "working_relation": relation_to_root(
-                    labels.get("com.docker.compose.project.working_dir")
+                "working_relation": relation_to_project_directory(
+                    labels.get("com.docker.compose.project.working_dir"), deployer
                 ),
                 "config_relation": config_files_relation(
                     labels.get("com.docker.compose.project.config_files"), deployer
@@ -391,8 +392,8 @@ def event_evidence(
             {
                 "time": event_time,
                 "product": image_product(attributes.get("image")),
-                "working_relation": relation_to_root(
-                    attributes.get("com.docker.compose.project.working_dir")
+                "working_relation": relation_to_project_directory(
+                    attributes.get("com.docker.compose.project.working_dir"), deployer
                 ),
                 "config_relation": config_files_relation(
                     attributes.get("com.docker.compose.project.config_files"), deployer
@@ -500,6 +501,8 @@ def main() -> None:
             "compose",
             "--project-name",
             release.project,
+            "--project-directory",
+            os.fspath(deployer.canonical_compose_project_directory()),
             "--file",
             os.fspath(deployer.BASE_COMPOSE),
             "--file",

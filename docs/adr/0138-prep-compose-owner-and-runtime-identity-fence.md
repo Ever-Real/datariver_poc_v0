@@ -7,14 +7,21 @@
 ## Context
 
 Repository-local deployment locks do not serialize separate clones or worktrees that control the
-same host-wide Compose project. Actual PREP evidence showed a tracked target image and effective
-Compose configuration for one Product while the sole running Web belonged to another checkout and
-still carried a predecessor Product revision. No evidence proved that the target Web ever started.
-Without a post-apply identity gate, authenticated smoke could then attribute a Product failure to
-the tracked release instead of the Web that actually served it.
+same host-wide Compose project. Initial PREP evidence showed a tracked target image and effective
+Compose configuration for one Product while the running Web still carried a predecessor Product
+revision. Its working-directory label was initially misclassified as foreign by comparing
+Compose's first-file project directory with the repository root. No evidence proved either a
+foreign owner or that the target Web ever started. Without a correct post-apply identity gate,
+authenticated smoke could attribute a Product failure to a tracked release instead of the Web that
+actually served it.
 
 ## Decision
 
+- Compose's canonical project directory is the resolved parent of the first Compose file,
+  `BASE_COMPOSE.parent` (`deploy/poc`), not the repository root. Every canonical invocation pins
+  that existing default explicitly with `--project-directory`; this preserves all relative-resource
+  semantics. Owner inspection compares the Docker label with that same directory and the exact
+  two-file Compose set.
 - Stateful deploy acquires a kernel advisory lock derived only from the Compose project in a
   host-global directory. The existing checkout-local lock remains a secondary operator guard.
   Kernel ownership, not PID metadata, is authoritative; unsafe ownership or a concurrent holder
@@ -45,3 +52,7 @@ receipts and MCL checkpoints are unchanged by ownership adoption. A normal desce
 reuse completed lifecycle evidence and resume only incomplete work. A controller that bypasses the
 project lock is detected by the runtime stability fence before its replacement can be attributed
 to the candidate Product.
+
+The earlier Actual PREP `W=O` classification that compared the Compose working-directory label to
+the repository root is invalidated. It does not prove that a foreign checkout owned that Web. The
+host-global lock and fail-closed adoption capability remain preventive controls.
