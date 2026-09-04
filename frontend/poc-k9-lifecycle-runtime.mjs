@@ -17,6 +17,17 @@ function runtimeError(code, message) {
 }
 
 function sourceReceiptPersistenceError(error, substage) {
+  if (error?.code === 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT') {
+    const diagnostic = Object.freeze({
+      code: 'K9_V2_SOURCE_CORRECTION_EXECUTION_CONFLICT',
+      stage: 'SOURCE_CORRECTION',
+      failure_detail_code: 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT',
+      retryable: false,
+    })
+    return Object.assign(runtimeError(diagnostic.code, 'The K9 source-correction execution conflicts with durable state.'), {
+      diagnostic,
+    })
+  }
   const sanitized = sanitizeK9SourcePersistenceDiagnosticV2(error?.diagnostic)
   const diagnostic = sanitized
     ? sanitized
@@ -339,7 +350,7 @@ export function createK9V2LifecycleReceiptPort({ lifecycle, clock = () => new Da
       return sourceEnvelope(state, receiptFor(state, 'SOURCE'))
     },
 
-    async writeSourceCaptureReceipt(receipt) {
+    async writeSourceCaptureReceipt(receipt, sourceCorrectionExecution = null) {
       const sourceSnapshotId = exactHash(receipt?.source_snapshot_id, 'source_snapshot_id')
       if (receipt?.status !== 'READY' || receipt?.source_snapshot?.source_snapshot_id !== sourceSnapshotId) {
         throw sourceReceiptPersistenceError(
@@ -351,7 +362,7 @@ export function createK9V2LifecycleReceiptPort({ lifecycle, clock = () => new Da
         await lifecycle.setDesiredSnapshot({
           snapshot: receipt.source_snapshot,
           source_payloads: receipt.source_payloads,
-        })
+        }, undefined, sourceCorrectionExecution)
       } catch (error) {
         throw sourceReceiptPersistenceError(error, 'LIFECYCLE_HEAD_WRITE')
       }

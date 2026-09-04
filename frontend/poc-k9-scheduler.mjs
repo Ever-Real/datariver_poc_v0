@@ -724,16 +724,18 @@ export function createPocK9Scheduler({
     bootstrapLifecycleV2,
     expectedSourceSnapshotId,
     executionId,
+    successorSourceSnapshotId,
   ) => stateStore.runK9Scheduler({
     lockName: config.lockName,
     scheduledFor: scheduledFor.toISOString(),
     trigger,
     ...(bootstrapLifecycleV2 ? { bootstrapLifecycleV2: true } : {}),
     ...(reconciliationGeneration ? { reconciliationGeneration } : {}),
-    ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' ? {
+    ...(executionId ? {
       lifecycleMode,
       executionId,
       expectedSourceSnapshotId,
+      ...(successorSourceSnapshotId ? { successorSourceSnapshotId } : {}),
     } : {}),
   }, async () => {
     return await triggerK9Refresh({
@@ -741,6 +743,13 @@ export function createPocK9Scheduler({
       workspaceId: config.workspaceId,
       lifecycleMode,
       ...(expectedSourceSnapshotId ? { expectedSourceSnapshotId } : {}),
+      ...(executionId ? {
+        sourceCorrectionExecution: {
+          executionId,
+          expectedSourceSnapshotId,
+          ...(successorSourceSnapshotId ? { successorSourceSnapshotId } : {}),
+        },
+      } : {}),
     })
   })
 
@@ -766,8 +775,22 @@ export function createPocK9Scheduler({
       && (typeof executionId !== 'string' || !/^[0-9a-f]{64}$/u.test(executionId))) {
       throw new Error('The K9 scheduler execution identity is invalid.')
     }
-    if ((lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE')
-      !== (executionId !== null && expectedSourceSnapshotId !== null)) {
+    const successorSourceSnapshotId = options.successorSourceSnapshotId == null
+      ? null
+      : options.successorSourceSnapshotId
+    if (successorSourceSnapshotId !== null
+      && (typeof successorSourceSnapshotId !== 'string'
+        || !/^[0-9a-f]{64}$/u.test(successorSourceSnapshotId))) {
+      throw new Error('The K9 source-correction successor identity is invalid.')
+    }
+    const sourceCorrectionExecution = executionId !== null
+      || expectedSourceSnapshotId !== null
+      || successorSourceSnapshotId !== null
+    const validSourceCorrectionExecution = executionId !== null
+      && expectedSourceSnapshotId !== null
+      && ((lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' && successorSourceSnapshotId === null)
+        || (lifecycleMode === 'RESUME' && successorSourceSnapshotId !== null))
+    if (sourceCorrectionExecution !== validSourceCorrectionExecution) {
       throw new Error('The K9 source-correction execution identity is incomplete.')
     }
     const reconciliationGeneration = options.reconciliationGeneration == null
@@ -780,12 +803,13 @@ export function createPocK9Scheduler({
     }
 
     if (activeRun) {
-      const activeSourceCorrection = activeAttempt?.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
-      const requestedSourceCorrection = lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+      const activeSourceCorrection = typeof activeAttempt?.execution_id === 'string'
+      const requestedSourceCorrection = sourceCorrectionExecution
       const sameSourceCorrectionExecution = activeSourceCorrection
         && requestedSourceCorrection
         && activeAttempt?.execution_id === executionId
         && activeAttempt?.expected_source_snapshot_id === expectedSourceSnapshotId
+        && (activeAttempt?.successor_source_snapshot_id || null) === successorSourceSnapshotId
       if ((activeSourceCorrection || requestedSourceCorrection) && !sameSourceCorrectionExecution) {
         const error = new Error('A K9 source-correction execution cannot join another active run.')
         error.code = 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT'
@@ -801,10 +825,13 @@ export function createPocK9Scheduler({
       trigger: triggerType,
       started_at: startedAt,
       observed_at: startedAt,
-      ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' ? {
+      ...(sourceCorrectionExecution ? {
         lifecycle_mode: lifecycleMode,
         execution_id: executionId,
         expected_source_snapshot_id: expectedSourceSnapshotId,
+        source_correction_phase: successorSourceSnapshotId ? 'SUCCESSOR_BOUND' : 'CLAIMED',
+        ...(successorSourceSnapshotId
+          ? { successor_source_snapshot_id: successorSourceSnapshotId } : {}),
       } : {}),
     })
     activeRun = execute(
@@ -815,6 +842,7 @@ export function createPocK9Scheduler({
       bootstrapLifecycleV2,
       expectedSourceSnapshotId,
       executionId,
+      successorSourceSnapshotId,
     ).finally(() => {
       activeRun = undefined
       activeAttempt = undefined
@@ -911,29 +939,55 @@ export function createPocK9Scheduler({
       )
       let lifecycleMode = 'REFRESH'
       let expectedSourceSnapshotId = null
+      let successorSourceSnapshotId = null
+      let sourceCorrectionExecutionId = null
       let bootstrapLifecycleV2 = false
       if (typeof stateStore.readK9SnapshotLifecycleV2 === 'function') {
         bootstrapLifecycleV2 = await stateStore.readK9SnapshotLifecycleV2() === null
       }
+      let schedulerReceipt = null
       if (typeof stateStore.readK9SchedulerReceipt === 'function') {
-        const receipt = await stateStore.readK9SchedulerReceipt(config.lockName)
-        const lastAttempt = receipt?.value?.last_attempt
+        schedulerReceipt = await stateStore.readK9SchedulerReceipt(config.lockName)
+        const lastAttempt = schedulerReceipt?.value?.last_attempt
         if (!bootstrapLifecycleV2
           && lastAttempt?.status === 'FAILURE'
           && lastAttempt.scheduled_for === scheduledFor.toISOString()) {
           lifecycleMode = 'RESUME'
         }
       }
-      if (config.sourceCorrectionRequestId) {
+      const lastSourceCorrectionAttempt = schedulerReceipt?.value?.last_source_correction_attempt
+      const restartSourceCorrectionId = !config.sourceCorrectionRequestId
+        && lastSourceCorrectionAttempt?.status === 'FAILURE'
+        && lastSourceCorrectionAttempt?.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
+        && lastSourceCorrectionAttempt?.reason === 'K9_V2_SOURCE_RECEIPT_INVALID'
+        && /^[0-9a-f]{64}$/u.test(lastSourceCorrectionAttempt?.execution_id || '')
+        ? lastSourceCorrectionAttempt.execution_id
+        : null
+      const requestedSourceCorrectionId = config.sourceCorrectionRequestId
+        || restartSourceCorrectionId
+      let sourceCorrection = null
+      if (requestedSourceCorrectionId) {
         if (typeof stateStore.claimK9SourceCorrectionRecaptureV2 !== 'function') {
           throw new Error('The K9 source-correction persistence claim is unavailable.')
         }
-        const claim = await stateStore.claimK9SourceCorrectionRecaptureV2(
-          config.sourceCorrectionRequestId,
+        sourceCorrection = await stateStore.claimK9SourceCorrectionRecaptureV2(
+          requestedSourceCorrectionId,
         )
-        if (['CLAIMED', 'ALREADY_CLAIMED'].includes(claim?.status)) {
+      } else if (typeof stateStore.findPendingK9SourceCorrectionRecaptureV2 === 'function') {
+        sourceCorrection = await stateStore.findPendingK9SourceCorrectionRecaptureV2()
+      }
+      if (sourceCorrection) {
+        sourceCorrectionExecutionId = sourceCorrection.requestId || requestedSourceCorrectionId
+        if (!/^[0-9a-f]{64}$/u.test(sourceCorrectionExecutionId || '')) {
+          throw new Error('The K9 source-correction persistence execution is invalid.')
+        }
+        if (['CLAIMED', 'ALREADY_CLAIMED'].includes(sourceCorrection.status)) {
           lifecycleMode = 'SOURCE_CORRECTION_RECAPTURE'
-          expectedSourceSnapshotId = claim.expectedSourceSnapshotId
+          expectedSourceSnapshotId = sourceCorrection.expectedSourceSnapshotId
+        } else if (sourceCorrection.status === 'SUCCESSOR_BOUND') {
+          lifecycleMode = 'RESUME'
+          expectedSourceSnapshotId = sourceCorrection.expectedSourceSnapshotId
+          successorSourceSnapshotId = sourceCorrection.successorSourceSnapshotId
         } else {
           throw new Error('The K9 source-correction persistence claim is invalid.')
         }
@@ -951,8 +1005,10 @@ export function createPocK9Scheduler({
         // A new boundary remains an explicit REFRESH so DataHub drift is found.
         lifecycleMode,
         expectedSourceSnapshotId,
-        ...(lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
-          ? { executionId: config.sourceCorrectionRequestId } : {}),
+        ...(sourceCorrectionExecutionId ? {
+          executionId: sourceCorrectionExecutionId,
+          ...(successorSourceSnapshotId ? { successorSourceSnapshotId } : {}),
+        } : {}),
         bootstrapLifecycleV2,
         reconciliationGeneration,
       }).catch(onError)

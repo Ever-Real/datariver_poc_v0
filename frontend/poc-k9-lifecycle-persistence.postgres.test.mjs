@@ -121,7 +121,7 @@ function prepScaleLargeSourceEnvelope() {
 }
 
 function receipt({ snapshotId, projector, status, attemptNumber, sequence, previous = null }) {
-  const attemptId = computeSha256({ projector, attemptNumber })
+  const attemptId = computeSha256({ snapshotId, projector, attemptNumber })
   const document = {
     contract: 'DATARIVER_K9_PROJECTOR_RECEIPT_V2',
     source_snapshot_id: snapshotId,
@@ -131,7 +131,7 @@ function receipt({ snapshotId, projector, status, attemptNumber, sequence, previ
     attempt_number: attemptNumber,
     sequence,
     previous_receipt_id: previous?.receipt_id ?? null,
-    idempotency_key_hash: computeSha256({ projector, attemptNumber, sequence }),
+    idempotency_key_hash: computeSha256({ snapshotId, projector, attemptNumber, sequence }),
     progress: { phase: `${projector}_PROJECT`, completed_units: status === 'PENDING' ? 0 : status === 'RUNNING' ? 5 : 10, total_units: 10 },
     diagnostic: status === 'FAILED'
       ? { code: `${projector}_FAILED`, stage: projector, detail_hash: computeSha256({ projector, failed: true }) }
@@ -850,6 +850,11 @@ test('source-correction claim and scheduler execution are one-shot while failed 
       assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
         status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
       })
+      assert.deepEqual(await store.findPendingK9SourceCorrectionRecaptureV2(), {
+        requestId,
+        status: 'ALREADY_CLAIMED',
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
 
       let recaptureInvocations = 0
       const executionCommand = {
@@ -885,7 +890,10 @@ test('source-correction claim and scheduler execution are one-shot while failed 
         schedulerReceipt.value.last_attempt,
       )
 
-      await store.setK9DesiredSourceSnapshotV2(sourceY)
+      await store.setK9DesiredSourceSnapshotV2(sourceY, undefined, {
+        executionId: requestId,
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
       const after = await store.readK9SnapshotLifecycleV2()
       assert.equal(after.status, 'PENDING')
       assert.equal(after.desired_snapshot_id, sourceY.snapshot.source_snapshot_id)
@@ -899,12 +907,192 @@ test('source-correction claim and scheduler execution are one-shot while failed 
         WHERE source_snapshot_id = $1
       `, [sourceX.snapshot.source_snapshot_id])).rows[0].count, 6)
       assert.deepEqual(await store.claimK9SourceCorrectionRecaptureV2(requestId), {
-        status: 'ALREADY_CLAIMED', expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+        status: 'SUCCESSOR_BOUND',
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+        successorSourceSnapshotId: sourceY.snapshot.source_snapshot_id,
       })
+      assert.equal(await store.findPendingK9SourceCorrectionRecaptureV2(), null)
       await assert.rejects(
         store.claimK9SourceCorrectionRecaptureV2('8'.repeat(64)),
         { code: 'K9_SOURCE_CORRECTION_NOT_APPLICABLE' },
       )
+    } finally {
+      await store.close()
+    }
+  })
+  await pool.end()
+}))
+
+test('legacy unbound successor is adopted only from the exact invalid-receipt restart evidence', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_source_successor_restart', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 3 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const store = createPocStateStore({ databasePool: pool })
+    try {
+      const sourceX = sourceEnvelope('6', 'provider-before-correction')
+      const sourceY = sourceEnvelope('7', 'provider-after-correction')
+      await store.setK9DesiredSourceSnapshotV2(sourceX)
+      let sourcePrevious = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['READY', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'SOURCE', status, attemptNumber: 1, sequence,
+          previous: sourcePrevious,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        sourcePrevious = next
+      }
+      let metadataPrevious = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['FAILED', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'METADATA', status, attemptNumber: 1, sequence,
+          previous: metadataPrevious,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        metadataPrevious = next
+      }
+      const requestId = '8'.repeat(64)
+      assert.equal(
+        (await store.claimK9SourceCorrectionRecaptureV2(requestId)).status,
+        'CLAIMED',
+      )
+
+      // Reproduce Product 7c: Y was promoted without a durable request -> successor binding.
+      await store.setK9DesiredSourceSnapshotV2(sourceY)
+      sourcePrevious = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['READY', 3]]) {
+        const next = receipt({
+          snapshotId: sourceY.snapshot.source_snapshot_id,
+          projector: 'SOURCE', status, attemptNumber: 1, sequence,
+          previous: sourcePrevious,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        sourcePrevious = next
+      }
+      await assert.rejects(
+        store.claimK9SourceCorrectionRecaptureV2(requestId),
+        { code: 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT' },
+      )
+      const schedulerCommand = {
+        lockName: 'datariver:poc:k9-scheduler:v1',
+        scheduledFor: '2026-09-01T17:00:00.000Z',
+        trigger: 'scheduled',
+        lifecycleMode: 'SOURCE_CORRECTION_RECAPTURE',
+        executionId: requestId,
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      }
+      await store.runK9Scheduler(schedulerCommand, async () => ({
+        status: 'FAILURE',
+        failureCode: 'K9_V2_SOURCE_RECEIPT_INVALID',
+        diagnostic: {
+          code: 'K9_V2_SOURCE_RECEIPT_INVALID', stage: 'SOURCE_RECEIPT', retryable: false,
+        },
+      }))
+
+      const recovered = await store.claimK9SourceCorrectionRecaptureV2(requestId)
+      assert.deepEqual(recovered, {
+        status: 'SUCCESSOR_BOUND',
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+        successorSourceSnapshotId: sourceY.snapshot.source_snapshot_id,
+      })
+      const binding = await pool.query(`
+        SELECT value, version FROM poc_state
+        WHERE scope = $1
+      `, [`k9-source-correction-successor-v1:${requestId}`])
+      assert.equal(binding.rows.length, 1)
+      assert.equal(Number(binding.rows[0].version), 1)
+      assert.equal(binding.rows[0].value.binding_mode, 'LEGACY_ADOPTION')
+      assert.equal(binding.rows[0].value.expected_source_snapshot_id, sourceX.snapshot.source_snapshot_id)
+      assert.equal(binding.rows[0].value.successor_source_snapshot_id, sourceY.snapshot.source_snapshot_id)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_source_snapshots_v2',
+      )).rows[0].count, 2)
+      assert.equal((await pool.query(`
+        SELECT count(*)::integer AS count FROM poc_k9_projector_receipts_v2
+        WHERE source_snapshot_id = $1
+      `, [sourceX.snapshot.source_snapshot_id])).rows[0].count, 6)
+    } finally {
+      await store.close()
+    }
+  })
+  await pool.end()
+}))
+
+test('source-correction successor binding and desired-head transition roll back atomically', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_successor_atomicity', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 3 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const store = createPocStateStore({ databasePool: pool })
+    try {
+      const sourceX = sourceEnvelope('8', 'atomic-before')
+      const sourceY = sourceEnvelope('9', 'atomic-after')
+      await store.setK9DesiredSourceSnapshotV2(sourceX)
+      let previous = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['READY', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'SOURCE', status, attemptNumber: 1, sequence, previous,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        previous = next
+      }
+      previous = null
+      for (const [status, sequence] of [['PENDING', 1], ['RUNNING', 2], ['FAILED', 3]]) {
+        const next = receipt({
+          snapshotId: sourceX.snapshot.source_snapshot_id,
+          projector: 'METADATA', status, attemptNumber: 1, sequence, previous,
+        })
+        await store.appendK9ProjectorReceiptV2(next)
+        previous = next
+      }
+      const requestId = '9'.repeat(64)
+      await store.claimK9SourceCorrectionRecaptureV2(requestId)
+      await pool.query(`
+        CREATE FUNCTION reject_k9_successor_binding() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.scope LIKE 'k9-source-correction-successor-v1:%' THEN
+            RAISE EXCEPTION 'reject successor binding';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER trg_reject_k9_successor_binding
+          BEFORE INSERT ON poc_state
+          FOR EACH ROW EXECUTE FUNCTION reject_k9_successor_binding();
+      `)
+
+      await assert.rejects(store.setK9DesiredSourceSnapshotV2(sourceY, undefined, {
+        executionId: requestId,
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      }))
+      const lifecycle = await store.readK9SnapshotLifecycleV2()
+      assert.equal(lifecycle.desired_snapshot_id, sourceX.snapshot.source_snapshot_id)
+      assert.equal(lifecycle.status, 'FAILED')
+      assert.equal((await pool.query(`
+        SELECT count(*)::integer AS count FROM poc_state
+        WHERE scope = $1
+      `, [`k9-source-correction-successor-v1:${requestId}`])).rows[0].count, 0)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_source_snapshots_v2',
+      )).rows[0].count, 2)
+      await pool.query(`
+        DROP TRIGGER trg_reject_k9_successor_binding ON poc_state;
+        DROP FUNCTION reject_k9_successor_binding();
+      `)
+      await store.setK9DesiredSourceSnapshotV2(sourceY, undefined, {
+        executionId: requestId,
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+      })
+      assert.deepEqual(await store.findPendingK9SourceCorrectionRecaptureV2(), {
+        requestId,
+        status: 'SUCCESSOR_BOUND',
+        expectedSourceSnapshotId: sourceX.snapshot.source_snapshot_id,
+        successorSourceSnapshotId: sourceY.snapshot.source_snapshot_id,
+      })
     } finally {
       await store.close()
     }

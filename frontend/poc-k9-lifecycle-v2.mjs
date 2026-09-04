@@ -41,6 +41,11 @@ export const K9_V2_FAILURE_DIAGNOSTICS = Object.freeze({
   SOURCE_CORRECTION_NO_CHANGE: Object.freeze({
     code: 'K9_V2_SOURCE_CORRECTION_NO_CHANGE', stage: 'SOURCE_CAPTURE', retryable: false,
   }),
+  SOURCE_CORRECTION_EXECUTION_CONFLICT: Object.freeze({
+    code: 'K9_V2_SOURCE_CORRECTION_EXECUTION_CONFLICT',
+    stage: 'SOURCE_CORRECTION',
+    retryable: false,
+  }),
   SOURCE_RECEIPT_INVALID: Object.freeze({
     code: 'K9_V2_SOURCE_RECEIPT_INVALID', stage: 'SOURCE_RECEIPT', retryable: false,
   }),
@@ -363,6 +368,7 @@ async function captureOrReuseSource(captureSource, receipts, {
   currentReceipt,
   reuseCurrent = false,
   requireChangedFrom = null,
+  sourceCorrectionExecution = null,
 } = {}) {
   if (currentReceipt === undefined) currentReceipt = await readSource(receipts)
   const current = sourceReceiptState(currentReceipt)
@@ -389,11 +395,14 @@ async function captureOrReuseSource(captureSource, receipts, {
     throw new LifecycleFailure(frozenDiagnostic(diagnostics.SOURCE_CORRECTION_NO_CHANGE))
   }
   try {
-    await receipts.writeSourceCaptureReceipt(capturedReceipt)
+    await receipts.writeSourceCaptureReceipt(capturedReceipt, sourceCorrectionExecution)
   } catch (error) {
     const persisted = sanitizeK9V2FailureDiagnostic(error?.diagnostic)
     throw new LifecycleFailure(
-      persisted?.code === diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.code
+      [
+        diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED.code,
+        diagnostics.SOURCE_CORRECTION_EXECUTION_CONFLICT.code,
+      ].includes(persisted?.code)
         ? persisted : frozenDiagnostic(diagnostics.SOURCE_RECEIPT_PERSISTENCE_FAILED),
     )
   }
@@ -513,18 +522,34 @@ export function createK9V2LifecycleOrchestrator({
   }
 
   return Object.freeze({
-    async run({ sourceRunMode = 'REFRESH', expectedSourceSnapshotId = null } = {}) {
+    async run({
+      sourceRunMode = 'REFRESH',
+      expectedSourceSnapshotId = null,
+      sourceCorrectionExecution = null,
+    } = {}) {
       let source
       const projectorOutcomes = {}
       const failures = []
       try {
+        if (sourceRunMode === 'SOURCE_CORRECTION_RECAPTURE'
+          && (!hashPattern.test(sourceCorrectionExecution?.executionId || '')
+            || !hashPattern.test(sourceCorrectionExecution?.expectedSourceSnapshotId || '')
+            || sourceCorrectionExecution.expectedSourceSnapshotId !== expectedSourceSnapshotId)) {
+          throw new LifecycleFailure(frozenDiagnostic(
+            diagnostics.SOURCE_CORRECTION_EXECUTION_CONFLICT,
+          ))
+        }
         transition({ stage: 'SOURCE', status: 'RUNNING' })
         const disposition = await sourceRunDisposition(
           receipts,
           sourceRunMode,
           expectedSourceSnapshotId,
         )
-        source = await captureOrReuseSource(captureSource, receipts, disposition)
+        source = await captureOrReuseSource(captureSource, receipts, {
+          ...disposition,
+          ...(sourceRunMode === 'SOURCE_CORRECTION_RECAPTURE'
+            ? { sourceCorrectionExecution } : {}),
+        })
         transition({ stage: 'SOURCE', status: 'READY', outcome: source.outcome })
 
         for (const projectorId of K9_V2_PROJECTOR_IDS) {

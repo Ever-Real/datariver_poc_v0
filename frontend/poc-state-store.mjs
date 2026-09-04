@@ -3599,8 +3599,17 @@ export function createPocStateStore({ databasePool } = {}) {
     const expectedSourceSnapshotId = command.expectedSourceSnapshotId == null
       ? null
       : requireSha256(command.expectedSourceSnapshotId, 'expectedSourceSnapshotId')
-    const sourceCorrectionExecution = lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
-    if (sourceCorrectionExecution !== (executionId !== null && expectedSourceSnapshotId !== null)) {
+    const successorSourceSnapshotId = command.successorSourceSnapshotId == null
+      ? null
+      : requireSha256(command.successorSourceSnapshotId, 'successorSourceSnapshotId')
+    const sourceCorrectionExecution = executionId !== null
+      || expectedSourceSnapshotId !== null
+      || successorSourceSnapshotId !== null
+    const validSourceCorrectionExecution = executionId !== null
+      && expectedSourceSnapshotId !== null
+      && ((lifecycleMode === 'SOURCE_CORRECTION_RECAPTURE' && successorSourceSnapshotId === null)
+        || (lifecycleMode === 'RESUME' && successorSourceSnapshotId !== null))
+    if (sourceCorrectionExecution !== validSourceCorrectionExecution) {
       throw new Error('The POC K9 source-correction execution identity is invalid.')
     }
     if (command.bootstrapLifecycleV2 !== undefined && command.bootstrapLifecycleV2 !== true) {
@@ -3634,6 +3643,8 @@ export function createPocStateStore({ databasePool } = {}) {
         && lastSourceCorrectionAttempt?.lifecycle_mode === lifecycleMode
         && lastSourceCorrectionAttempt?.execution_id === executionId
         && lastSourceCorrectionAttempt?.expected_source_snapshot_id === expectedSourceSnapshotId
+        && (lastSourceCorrectionAttempt?.successor_source_snapshot_id || null)
+          === successorSourceSnapshotId
       if (sameSourceCorrectionExecution
         && ['SUCCESS', 'FAILURE'].includes(lastSourceCorrectionAttempt?.status)) {
         return { status: 'already_completed', scheduledFor }
@@ -3668,6 +3679,9 @@ export function createPocStateStore({ databasePool } = {}) {
         lifecycle_mode: lifecycleMode,
         execution_id: executionId,
         expected_source_snapshot_id: expectedSourceSnapshotId,
+        source_correction_phase: successorSourceSnapshotId ? 'SUCCESSOR_BOUND' : 'CLAIMED',
+        ...(successorSourceSnapshotId
+          ? { successor_source_snapshot_id: successorSourceSnapshotId } : {}),
       } : {}
 
       if (result && result.status === 'FAILURE') {
@@ -4069,6 +4083,8 @@ export function createPocStateStore({ databasePool } = {}) {
     executeK9Transaction,
     runK9Scheduler,
     claimK9SourceCorrectionRecaptureV2: k9LifecyclePersistence.claimSourceCorrectionRecapture,
+    findPendingK9SourceCorrectionRecaptureV2:
+      k9LifecyclePersistence.findPendingSourceCorrectionRecapture,
     setK9DesiredSourceSnapshotV2: k9LifecyclePersistence.setDesiredSnapshot,
     appendK9ProjectorReceiptV2: k9LifecyclePersistence.appendProjectorReceipt,
     promoteK9ActiveSourceSnapshotV2: k9LifecyclePersistence.promoteActiveSnapshot,

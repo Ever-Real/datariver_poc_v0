@@ -11,6 +11,7 @@ export const K9_LIFECYCLE_STATES_V2 = Object.freeze(['PENDING', 'RUNNING', 'READ
 export const K9_LEGACY_ADOPTION_SCOPE_V2 = 'k9-lifecycle-adoption-v2'
 export const K9_LEGACY_ADOPTION_CONTRACT_V2 = 'DATARIVER_K9_LEGACY_ADOPTION_V2'
 export const K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1 = 'DATARIVER_K9_SOURCE_CORRECTION_CLAIM_V1'
+export const K9_SOURCE_CORRECTION_SUCCESSOR_CONTRACT_V1 = 'DATARIVER_K9_SOURCE_CORRECTION_SUCCESSOR_V1'
 export const K9_SOURCE_PAYLOAD_KINDS_V2 = Object.freeze([
   'INVENTORY', 'LINEAGE', 'METADATA', 'DANGLING_STATE',
 ])
@@ -65,6 +66,76 @@ const K9_SOURCE_PERSISTENCE_SQL_CLASSES = new Set([
   'CHECK_CONSTRAINT', 'CONNECTION', 'CONSTRAINT', 'FK', 'NONE',
   'PAYLOAD_CONSTRAINT', 'SNAPSHOT_CONSTRAINT', 'TIMEOUT', 'TRANSACTION',
 ])
+
+function sourceCorrectionClaimScope(requestId) {
+  return `k9-source-correction-claim-v1:${requestId}`
+}
+
+function sourceCorrectionSuccessorScope(requestId) {
+  return `k9-source-correction-successor-v1:${requestId}`
+}
+
+function normalizeSourceCorrectionExecution(value) {
+  if (value == null) return null
+  if (!isObject(value)) {
+    throw lifecycleError(
+      'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT',
+      'The source-correction execution binding is invalid.',
+    )
+  }
+  return Object.freeze({
+    requestId: hash(value.executionId, 'sourceCorrectionExecution.executionId'),
+    expectedSourceSnapshotId: hash(
+      value.expectedSourceSnapshotId,
+      'sourceCorrectionExecution.expectedSourceSnapshotId',
+    ),
+  })
+}
+
+function normalizeSourceCorrectionClaim(value, requestId) {
+  if (value?.contract !== K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1
+    || value?.request_id_hash !== requestId
+    || !HASH.test(value?.expected_source_snapshot_id || '')
+    || value?.status !== 'CLAIMED') {
+    throw lifecycleError(
+      'K9_SOURCE_CORRECTION_CLAIM_CONFLICT',
+      'The source-correction recapture claim is invalid.',
+    )
+  }
+  return value
+}
+
+function normalizeSourceCorrectionSuccessor(value, requestId, expectedSourceSnapshotId) {
+  if (value?.contract !== K9_SOURCE_CORRECTION_SUCCESSOR_CONTRACT_V1
+    || value?.request_id_hash !== requestId
+    || value?.expected_source_snapshot_id !== expectedSourceSnapshotId
+    || !HASH.test(value?.successor_source_snapshot_id || '')
+    || value.successor_source_snapshot_id === expectedSourceSnapshotId
+    || !['ATOMIC', 'LEGACY_ADOPTION'].includes(value?.binding_mode)
+    || value?.status !== 'SUCCESSOR_BOUND') {
+    throw lifecycleError(
+      'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT',
+      'The source-correction successor binding is invalid.',
+    )
+  }
+  return value
+}
+
+function sourceCorrectionSuccessorDocument({
+  requestId,
+  expectedSourceSnapshotId,
+  successorSourceSnapshotId,
+  bindingMode,
+}) {
+  return Object.freeze({
+    contract: K9_SOURCE_CORRECTION_SUCCESSOR_CONTRACT_V1,
+    request_id_hash: requestId,
+    expected_source_snapshot_id: expectedSourceSnapshotId,
+    successor_source_snapshot_id: successorSourceSnapshotId,
+    binding_mode: bindingMode,
+    status: 'SUCCESSOR_BOUND',
+  })
+}
 
 export const K9_LIFECYCLE_SCHEMA_V6 = Object.freeze([
   `
@@ -1414,7 +1485,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
   ) {
     const requestId = hash(requestIdValue, 'requestId')
     const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
-    const scope = `k9-source-correction-claim-v1:${requestId}`
+    const scope = sourceCorrectionClaimScope(requestId)
     const pool = await requireDatabase()
     const client = await pool.connect()
     try {
@@ -1428,19 +1499,87 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
       )
       if (existing.rows.length) {
         const value = existing.rows[0]?.value
-        if (existing.rows.length !== 1 || Number(existing.rows[0]?.version) !== 1
-          || value?.contract !== K9_SOURCE_CORRECTION_CLAIM_CONTRACT_V1
-          || value?.request_id_hash !== requestId
-          || !HASH.test(value?.expected_source_snapshot_id || '')) {
-          throw lifecycleError(
-            'K9_SOURCE_CORRECTION_CLAIM_CONFLICT',
-            'The source-correction recapture claim is invalid.',
+        if (existing.rows.length !== 1 || Number(existing.rows[0]?.version) !== 1) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_CLAIM_CONFLICT', 'The source-correction recapture claim is invalid.')
+        }
+        const claim = normalizeSourceCorrectionClaim(value, requestId)
+        const bindingResult = await client.query(
+          'SELECT value, version FROM poc_state WHERE scope = $1 FOR UPDATE',
+          [sourceCorrectionSuccessorScope(requestId)],
+        )
+        const head = await client.query(
+          'SELECT * FROM poc_k9_snapshot_lifecycle_v2 WHERE lifecycle_key = $1 FOR UPDATE',
+          [lifecycleKey],
+        )
+        if (head.rows.length !== 1 || !HASH.test(head.rows[0]?.desired_snapshot_id || '')) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction lifecycle head is unavailable.')
+        }
+        if (bindingResult.rows.length) {
+          if (bindingResult.rows.length !== 1 || Number(bindingResult.rows[0]?.version) !== 1) {
+            throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction successor binding is invalid.')
+          }
+          const binding = normalizeSourceCorrectionSuccessor(
+            bindingResult.rows[0].value,
+            requestId,
+            claim.expected_source_snapshot_id,
           )
+          if (head.rows[0].desired_snapshot_id !== binding.successor_source_snapshot_id) {
+            throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The live K9 desired head conflicts with the bound source-correction successor.')
+          }
+          await client.query('COMMIT')
+          return Object.freeze({
+            status: 'SUCCESSOR_BOUND',
+            expectedSourceSnapshotId: claim.expected_source_snapshot_id,
+            successorSourceSnapshotId: binding.successor_source_snapshot_id,
+          })
+        }
+        if (head.rows[0].desired_snapshot_id !== claim.expected_source_snapshot_id) {
+          // Product 7c could commit Y before this binding contract existed. Adopt only its
+          // exact scheduler-proven restart failure; an unrelated desired head stays a conflict.
+          const scheduler = await client.query(`
+            SELECT value FROM poc_state
+            WHERE scope LIKE 'k9-scheduler-v1:%'
+              AND value #>> '{last_source_correction_attempt,execution_id}' = $1
+              AND value #>> '{last_source_correction_attempt,expected_source_snapshot_id}' = $2
+              AND value #>> '{last_source_correction_attempt,lifecycle_mode}' = 'SOURCE_CORRECTION_RECAPTURE'
+              AND value #>> '{last_source_correction_attempt,status}' = 'FAILURE'
+              AND value #>> '{last_source_correction_attempt,reason}' = 'K9_V2_SOURCE_RECEIPT_INVALID'
+          `, [requestId, claim.expected_source_snapshot_id])
+          const source = await client.query(`
+            SELECT status FROM poc_k9_projector_receipts_v2
+            WHERE source_snapshot_id = $1 AND projector = 'SOURCE'
+            ORDER BY attempt_number DESC, sequence DESC, receipt_id DESC LIMIT 1
+          `, [head.rows[0].desired_snapshot_id])
+          if (scheduler.rows.length !== 1 || source.rows[0]?.status !== 'READY') {
+            throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The live K9 desired head is not a provable legacy source-correction successor.')
+          }
+          const binding = sourceCorrectionSuccessorDocument({
+            requestId,
+            expectedSourceSnapshotId: claim.expected_source_snapshot_id,
+            successorSourceSnapshotId: head.rows[0].desired_snapshot_id,
+            bindingMode: 'LEGACY_ADOPTION',
+          })
+          const adopted = await client.query(`
+            INSERT INTO poc_state (scope, value, version)
+            VALUES ($1, $2::jsonb, 1)
+            ON CONFLICT (scope) DO NOTHING
+            RETURNING value, version
+          `, [sourceCorrectionSuccessorScope(requestId), JSON.stringify(binding)])
+          if (adopted.rows.length !== 1
+            || canonicalStringify(adopted.rows[0].value) !== canonicalStringify(binding)) {
+            throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The legacy source-correction successor could not be bound exactly once.')
+          }
+          await client.query('COMMIT')
+          return Object.freeze({
+            status: 'SUCCESSOR_BOUND',
+            expectedSourceSnapshotId: claim.expected_source_snapshot_id,
+            successorSourceSnapshotId: binding.successor_source_snapshot_id,
+          })
         }
         await client.query('COMMIT')
         return Object.freeze({
           status: 'ALREADY_CLAIMED',
-          expectedSourceSnapshotId: value.expected_source_snapshot_id,
+          expectedSourceSnapshotId: claim.expected_source_snapshot_id,
         })
       }
 
@@ -1502,7 +1641,100 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
     }
   }
 
-  async function setDesiredSnapshot({ snapshot: snapshotValue, source_payloads: sourcePayloadsValue }, lifecycleKeyValue = K9_LIFECYCLE_KEY_V2) {
+  async function findPendingSourceCorrectionRecapture(
+    lifecycleKeyValue = K9_LIFECYCLE_KEY_V2,
+  ) {
+    const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
+    const pool = await requireDatabase()
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN READ ONLY')
+      const head = await client.query(
+        'SELECT * FROM poc_k9_snapshot_lifecycle_v2 WHERE lifecycle_key = $1',
+        [lifecycleKey],
+      )
+      if (head.rows.length !== 1 || !HASH.test(head.rows[0]?.desired_snapshot_id || '')) {
+        await client.query('ROLLBACK')
+        return null
+      }
+      const persisted = await client.query(`
+        SELECT scope, value, version FROM poc_state
+        WHERE scope LIKE 'k9-source-correction-claim-v1:%'
+           OR scope LIKE 'k9-source-correction-successor-v1:%'
+        ORDER BY scope
+      `)
+      const schedulerReceipts = await client.query(`
+        SELECT value FROM poc_state
+        WHERE scope LIKE 'k9-scheduler-v1:%'
+      `)
+      const terminalExecutionIds = new Set(schedulerReceipts.rows
+        .map((row) => row.value?.last_source_correction_attempt)
+        .filter((attempt) => ['SUCCESS', 'FAILURE'].includes(attempt?.status)
+          && HASH.test(attempt?.execution_id || ''))
+        .map((attempt) => attempt.execution_id))
+      const bindings = new Map(persisted.rows
+        .filter((row) => row.scope.startsWith('k9-source-correction-successor-v1:'))
+        .map((row) => [row.scope.slice('k9-source-correction-successor-v1:'.length), row]))
+      const claimedCandidates = []
+      const boundCandidates = []
+      for (const row of persisted.rows.filter((item) => item.scope.startsWith('k9-source-correction-claim-v1:'))) {
+        const requestId = row.scope.slice('k9-source-correction-claim-v1:'.length)
+        if (!HASH.test(requestId) || Number(row.version) !== 1) continue
+        if (terminalExecutionIds.has(requestId)) continue
+        let claim
+        try {
+          claim = normalizeSourceCorrectionClaim(row.value, requestId)
+        } catch {
+          continue
+        }
+        const boundRow = bindings.get(requestId)
+        if (boundRow) {
+          if (Number(boundRow.version) !== 1) continue
+          let binding
+          try {
+            binding = normalizeSourceCorrectionSuccessor(
+              boundRow.value,
+              requestId,
+              claim.expected_source_snapshot_id,
+            )
+          } catch {
+            continue
+          }
+          if (binding.successor_source_snapshot_id === head.rows[0].desired_snapshot_id) {
+            boundCandidates.push({
+              requestId,
+              status: 'SUCCESSOR_BOUND',
+              expectedSourceSnapshotId: claim.expected_source_snapshot_id,
+              successorSourceSnapshotId: binding.successor_source_snapshot_id,
+            })
+          }
+        } else if (claim.expected_source_snapshot_id === head.rows[0].desired_snapshot_id) {
+          claimedCandidates.push({
+            requestId,
+            status: 'ALREADY_CLAIMED',
+            expectedSourceSnapshotId: claim.expected_source_snapshot_id,
+          })
+        }
+      }
+      await client.query('ROLLBACK')
+      const candidates = claimedCandidates.length > 0 ? claimedCandidates : boundCandidates
+      if (candidates.length > 1) {
+        throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'Multiple source-correction executions target the live desired head.')
+      }
+      return candidates[0] ? Object.freeze(candidates[0]) : null
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async function setDesiredSnapshot(
+    { snapshot: snapshotValue, source_payloads: sourcePayloadsValue },
+    lifecycleKeyValue = K9_LIFECYCLE_KEY_V2,
+    sourceCorrectionExecutionValue = null,
+  ) {
     let snapshot
     try {
       snapshot = normalizeK9SourceSnapshotV2(snapshotValue)
@@ -1527,9 +1759,12 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
       })
     }
     let lifecycleKey
+    let sourceCorrectionExecution
     try {
       lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
+      sourceCorrectionExecution = normalizeSourceCorrectionExecution(sourceCorrectionExecutionValue)
     } catch (error) {
+      if (error?.code === 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT') throw error
       throw sourcePersistenceFailure(error, { substage: 'SOURCE_RECEIPT_VALIDATE' })
     }
     let pool
@@ -1590,12 +1825,54 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         'SELECT * FROM poc_k9_snapshot_lifecycle_v2 WHERE lifecycle_key = $1 FOR UPDATE',
         [lifecycleKey],
       )
+      let sourceCorrectionBinding = null
+      let sourceCorrectionBindingExists = false
+      if (sourceCorrectionExecution) {
+        const claimResult = await client.query(
+          'SELECT value, version FROM poc_state WHERE scope = $1 FOR UPDATE',
+          [sourceCorrectionClaimScope(sourceCorrectionExecution.requestId)],
+        )
+        if (claimResult.rows.length !== 1 || Number(claimResult.rows[0]?.version) !== 1) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction claim is unavailable during successor binding.')
+        }
+        const claim = normalizeSourceCorrectionClaim(
+          claimResult.rows[0].value,
+          sourceCorrectionExecution.requestId,
+        )
+        if (claim.expected_source_snapshot_id !== sourceCorrectionExecution.expectedSourceSnapshotId
+          || snapshot.source_snapshot_id === sourceCorrectionExecution.expectedSourceSnapshotId) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction successor identity conflicts with its immutable claim.')
+        }
+        sourceCorrectionBinding = sourceCorrectionSuccessorDocument({
+          requestId: sourceCorrectionExecution.requestId,
+          expectedSourceSnapshotId: sourceCorrectionExecution.expectedSourceSnapshotId,
+          successorSourceSnapshotId: snapshot.source_snapshot_id,
+          bindingMode: 'ATOMIC',
+        })
+        const existingBinding = await client.query(
+          'SELECT value, version FROM poc_state WHERE scope = $1 FOR UPDATE',
+          [sourceCorrectionSuccessorScope(sourceCorrectionExecution.requestId)],
+        )
+        sourceCorrectionBindingExists = existingBinding.rows.length === 1
+        if (existingBinding.rows.length) {
+          if (existingBinding.rows.length !== 1 || Number(existingBinding.rows[0]?.version) !== 1
+            || canonicalStringify(existingBinding.rows[0].value) !== canonicalStringify(sourceCorrectionBinding)) {
+            throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction request is already bound to another successor.')
+          }
+        } else if (current.rows.length !== 1
+          || current.rows[0].desired_snapshot_id !== sourceCorrectionExecution.expectedSourceSnapshotId) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction predecessor is no longer the live desired head.')
+        }
+      }
       const evidenceMatches = staged.rows.length === 1
         && staged.rows[0].source_snapshot_id === snapshot.source_snapshot_id
         && staged.rows[0].evidence_hash === sourceEvidenceHash(snapshot)
       if (evidenceMatches && staged.rows[0].status === 'CONSUMED'
         && current.rows.length === 1
         && current.rows[0].desired_snapshot_id === snapshot.source_snapshot_id) {
+        if (sourceCorrectionExecution && !sourceCorrectionBindingExists) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction successor binding is unavailable.')
+        }
         await persistenceBoundary({ substage: 'TRANSACTION_COMMIT' }, () => client.query('COMMIT'))
         return {
           created, payloadsCreated, lifecycleKey,
@@ -1633,6 +1910,22 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         if (updated.rows.length !== 1) throw lifecycleError('K9_LIFECYCLE_STALE', 'The K9 lifecycle head changed.')
         version = Number(updated.rows[0].version)
       }
+      if (sourceCorrectionBinding && !sourceCorrectionBindingExists) {
+        const bindingInsert = await client.query(`
+          INSERT INTO poc_state (scope, value, version)
+          VALUES ($1, $2::jsonb, 1)
+          ON CONFLICT (scope) DO NOTHING
+          RETURNING value, version
+        `, [
+          sourceCorrectionSuccessorScope(sourceCorrectionExecution.requestId),
+          JSON.stringify(sourceCorrectionBinding),
+        ])
+        if (bindingInsert.rows.length !== 1
+          || Number(bindingInsert.rows[0]?.version) !== 1
+          || canonicalStringify(bindingInsert.rows[0]?.value) !== canonicalStringify(sourceCorrectionBinding)) {
+          throw lifecycleError('K9_SOURCE_CORRECTION_EXECUTION_CONFLICT', 'The source-correction successor could not be bound exactly once.')
+        }
+      }
       const consumed = await client.query(`
         UPDATE poc_k9_source_staging_v2
         SET status = 'CONSUMED', version = version + 1, consumed_at = clock_timestamp()
@@ -1646,6 +1939,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
       return { created, payloadsCreated, lifecycleKey, sourceSnapshotId: snapshot.source_snapshot_id, version }
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined)
+      if (error?.code === 'K9_SOURCE_CORRECTION_EXECUTION_CONFLICT') throw error
       throw sourcePersistenceFailure(error, { substage: 'LIFECYCLE_HEAD_WRITE' })
     } finally {
       client.release()
@@ -2210,6 +2504,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
 
   return Object.freeze({
     claimSourceCorrectionRecapture,
+    findPendingSourceCorrectionRecapture,
     setDesiredSnapshot,
     appendProjectorReceipt,
     promoteActiveSnapshot,

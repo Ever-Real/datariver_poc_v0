@@ -1,0 +1,393 @@
+#!/bin/sh
+set -u
+
+# Read-only, two-sample diagnostic for the live K9 V2 desired-snapshot lifecycle.
+# It runs only in the exact 7c Product web container. Each observation uses an
+# independent PostgreSQL REPEATABLE READ, READ ONLY transaction that is rolled
+# back. No application endpoint or external provider is contacted.
+
+EXPECTED_PRODUCT='7c7bff50f4edb743a7a49292ecadc5c0c23a3ce8'
+OUTPUT_PREFIX='K9_Y_LIVE_STATE'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|desired=UNAVAILABLE|source=UNAVAILABLE|lineage=UNAVAILABLE|metadata=UNAVAILABLE|metadata_progress=UNAVAILABLE|metadata_delta=UNAVAILABLE|semantic=UNAVAILABLE|active=UNAVAILABLE|scheduler_attempt=UNAVAILABLE|source_receipt_invalid=UNAVAILABLE"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i "$exact_id" \
+    node --input-type=module 2>/dev/null <<'NODE'
+import pg from 'pg'
+
+/* global process, setTimeout */
+
+const { Pool } = pg
+const HASH = /^[0-9a-f]{64}$/u
+const TOKEN = /^[A-Z][A-Z0-9_]{0,127}$/u
+const OUTPUT_PREFIX = 'K9_Y_LIVE_STATE'
+const LIFECYCLE_KEY = 'managed-k9-v2'
+const SCHEDULER_SCOPE = 'k9-scheduler-v1:datariver:poc:k9-scheduler:v1'
+const CLAIM_SCOPE_PREFIX = 'k9-source-correction-claim-v1:'
+const CLAIM_CONTRACT = 'DATARIVER_K9_SOURCE_CORRECTION_CLAIM_V1'
+const PROJECTORS = ['SOURCE', 'LINEAGE', 'METADATA', 'SEMANTIC']
+const STATUSES = new Set(['PENDING', 'RUNNING', 'READY', 'FAILED'])
+const ATTEMPT_STATUSES = new Set(['SUCCESS', 'FAILURE'])
+const TRIGGERS = new Set(['scheduled', 'manual'])
+const SOURCE_CORRECTION_MODE = 'SOURCE_CORRECTION_RECAPTURE'
+
+let pool
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw new Error('PROBE_DATABASE_CONFIGURATION')
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+function exactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
+}
+
+function validTimestamp(value) {
+  return typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value))
+}
+
+function safeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000
+}
+
+function validClaim(scope, value) {
+  const requestId = scope?.startsWith(CLAIM_SCOPE_PREFIX)
+    ? scope.slice(CLAIM_SCOPE_PREFIX.length) : ''
+  return HASH.test(requestId)
+    && exactKeys(value, [
+      'contract', 'expected_source_snapshot_id', 'request_id_hash', 'status',
+    ])
+    && value.contract === CLAIM_CONTRACT
+    && value.status === 'CLAIMED'
+    && value.request_id_hash === requestId
+    && HASH.test(value.request_id_hash)
+    && HASH.test(value.expected_source_snapshot_id)
+    ? { requestId, expectedSourceSnapshotId: value.expected_source_snapshot_id }
+    : null
+}
+
+function validAttempt(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !ATTEMPT_STATUSES.has(value.status)
+    || !validTimestamp(value.scheduled_for)
+    || !validTimestamp(value.completed_at)
+    || !TRIGGERS.has(value.trigger)) return null
+
+  const hasAnyExecutionIdentity = [
+    'lifecycle_mode', 'execution_id', 'expected_source_snapshot_id',
+  ].some((field) => Object.hasOwn(value, field))
+  let execution = null
+  if (hasAnyExecutionIdentity) {
+    if (value.lifecycle_mode !== SOURCE_CORRECTION_MODE
+      || !HASH.test(value.execution_id || '')
+      || !HASH.test(value.expected_source_snapshot_id || '')) return null
+    execution = {
+      executionId: value.execution_id,
+      expectedSourceSnapshotId: value.expected_source_snapshot_id,
+    }
+  }
+  if (value.status === 'FAILURE' && !TOKEN.test(value.reason || '')) return null
+  return {
+    status: value.status,
+    reason: value.status === 'FAILURE' ? value.reason : null,
+    completedAt: Date.parse(value.completed_at),
+    execution,
+  }
+}
+
+function validReceipt(row, desiredSnapshotId, projector) {
+  const receipt = row?.receipt
+  const recordedAt = row?.recorded_at instanceof Date
+    ? row.recorded_at.getTime() : Date.parse(String(row?.recorded_at || ''))
+  if (!row || !receipt || typeof receipt !== 'object' || Array.isArray(receipt)
+    || row.source_snapshot_id !== desiredSnapshotId
+    || row.projector !== projector
+    || !STATUSES.has(row.status)
+    || receipt.source_snapshot_id !== desiredSnapshotId
+    || receipt.projector !== projector
+    || receipt.status !== row.status
+    || receipt.attempt_id !== row.attempt_id
+    || Number(receipt.attempt_number) !== Number(row.attempt_number)
+    || Number(receipt.sequence) !== Number(row.sequence)
+    || !HASH.test(row.attempt_id || '')
+    || !Number.isSafeInteger(Number(row.attempt_number))
+    || Number(row.attempt_number) < 1
+    || !Number.isSafeInteger(Number(row.sequence))
+    || Number(row.sequence) < 1
+    || !Number.isFinite(recordedAt)
+    || !validTimestamp(receipt.recorded_at)
+    || Date.parse(receipt.recorded_at) !== recordedAt
+    || JSON.stringify(receipt.progress) !== JSON.stringify(row.progress)) return null
+
+  const progress = row.progress
+  if (progress !== null && (typeof progress !== 'object' || Array.isArray(progress))) return null
+  return {
+    status: row.status,
+    attemptId: row.attempt_id,
+    recordedAt,
+    progress,
+  }
+}
+
+function metadataProgress(receipt, observedAt) {
+  if (!receipt) return 'UNAVAILABLE'
+  const progress = receipt.progress
+  if (!progress || !safeInteger(progress.completed_units) || !safeInteger(progress.total_units)
+    || progress.completed_units > progress.total_units) return 'UNAVAILABLE'
+  let value = `${progress.completed_units}/${progress.total_units}`
+  const hasBatch = safeInteger(progress.batch_number) && safeInteger(progress.batch_total)
+    && progress.batch_number >= 1 && progress.batch_total >= progress.batch_number
+  if (hasBatch) value += `,batch=${progress.batch_number}/${progress.batch_total}`
+  const ageSeconds = Math.max(0, Math.floor((observedAt - receipt.recordedAt) / 1000))
+  return `${value},age_s=${Math.min(ageSeconds, 1_000_000_000)}`
+}
+
+function metadataDelta(first, second) {
+  if (!first || !second || first.desiredSnapshotId !== second.desiredSnapshotId) return 'UNAVAILABLE'
+  const before = first.receipts.METADATA
+  const after = second.receipts.METADATA
+  if (!before || !after || before.attemptId !== after.attemptId) return 'UNAVAILABLE'
+  const beforeCompleted = before.progress?.completed_units
+  const afterCompleted = after.progress?.completed_units
+  if (!safeInteger(beforeCompleted) || !safeInteger(afterCompleted)
+    || afterCompleted < beforeCompleted) return 'UNAVAILABLE'
+  return String(afterCompleted - beforeCompleted)
+}
+
+function schedulerSummary(schedulerValue) {
+  if (!schedulerValue || typeof schedulerValue !== 'object' || Array.isArray(schedulerValue)) {
+    return 'CURRENT_UNAVAILABLE_LAST_NONE'
+  }
+  if (!Object.hasOwn(schedulerValue, 'last_attempt')) return 'CURRENT_UNAVAILABLE_LAST_NONE'
+  const attempt = validAttempt(schedulerValue.last_attempt)
+  if (!attempt) return 'CURRENT_UNAVAILABLE_LAST_INVALID'
+  if (attempt.status === 'SUCCESS') {
+    return attempt.execution
+      ? 'CURRENT_UNAVAILABLE_LAST_SUCCESS_SOURCE_CORRECTION'
+      : 'CURRENT_UNAVAILABLE_LAST_SUCCESS'
+  }
+  const suffix = attempt.execution ? '_SOURCE_CORRECTION' : ''
+  const summary = `CURRENT_UNAVAILABLE_LAST_FAILURE_${attempt.reason}${suffix}`
+  return TOKEN.test(summary) ? summary : 'CURRENT_UNAVAILABLE_LAST_FAILURE'
+}
+
+function sourceReceiptInvalidClassification(sample) {
+  const scheduler = sample.schedulerValue
+  if (!scheduler || typeof scheduler !== 'object' || Array.isArray(scheduler)) return 'UNAVAILABLE'
+  const rawAttempts = [scheduler.last_attempt, scheduler.last_source_correction_attempt]
+    .filter((value) => value !== undefined && value !== null)
+  const mentionsInvalid = rawAttempts.some(
+    (attempt) => attempt?.reason === 'K9_V2_SOURCE_RECEIPT_INVALID',
+  )
+  const attempts = rawAttempts.map(validAttempt).filter(Boolean)
+    .filter((attempt) => attempt.reason === 'K9_V2_SOURCE_RECEIPT_INVALID')
+  if (attempts.length === 0) return mentionsInvalid ? 'UNAVAILABLE' : 'NONE'
+
+  const sourceReceipt = sample.receipts.SOURCE
+  const sourceRecordedAt = sourceReceipt?.recordedAt
+  let uncertain = false
+  for (const attempt of attempts) {
+    if (attempt.execution
+      && sample.claim
+      && attempt.execution.executionId === sample.claim.requestId
+      && attempt.execution.expectedSourceSnapshotId === sample.claim.expectedSourceSnapshotId
+      && sample.desiredLabel === 'Y'
+      && Number.isFinite(sourceRecordedAt)
+      && attempt.completedAt >= sourceRecordedAt) return 'CURRENT'
+    if (!Number.isFinite(sourceRecordedAt) || attempt.completedAt >= sourceRecordedAt) uncertain = true
+  }
+  return uncertain ? 'UNAVAILABLE' : 'HISTORICAL'
+}
+
+async function readSample() {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    const lifecycleResult = await client.query(`
+      SELECT desired_snapshot_id, active_snapshot_id, status, version, updated_at
+      FROM poc_k9_snapshot_lifecycle_v2
+      WHERE lifecycle_key = $1
+    `, [LIFECYCLE_KEY])
+    if (lifecycleResult.rows.length !== 1) throw new Error('PROBE_LIFECYCLE_UNAVAILABLE')
+    const lifecycle = lifecycleResult.rows[0]
+    if (!HASH.test(lifecycle.desired_snapshot_id || '')
+      || (lifecycle.active_snapshot_id !== null && !HASH.test(lifecycle.active_snapshot_id || ''))
+      || !STATUSES.has(lifecycle.status)
+      || !Number.isSafeInteger(Number(lifecycle.version))
+      || Number(lifecycle.version) < 1) {
+      throw new Error('PROBE_LIFECYCLE_INVALID')
+    }
+
+    const configuredRequestId = process.env.POC_K9_SOURCE_CORRECTION_REQUEST_ID?.trim() || ''
+    const claimResult = HASH.test(configuredRequestId)
+      ? await client.query(`
+          SELECT scope, value FROM poc_state WHERE scope = $1
+        `, [`${CLAIM_SCOPE_PREFIX}${configuredRequestId}`])
+      : await client.query(`
+          SELECT scope, value FROM poc_state
+          WHERE scope LIKE 'k9-source-correction-claim-v1:%'
+            AND value ->> 'contract' = $1
+          ORDER BY updated_at DESC, scope DESC
+          LIMIT 1
+        `, [CLAIM_CONTRACT])
+    const claim = claimResult.rows.length === 1
+      ? validClaim(claimResult.rows[0].scope, claimResult.rows[0].value) : null
+
+    const receiptResult = await client.query(`
+      SELECT DISTINCT ON (projector)
+        source_snapshot_id, projector, status, attempt_id, attempt_number,
+        sequence, progress, diagnostic, recorded_at, receipt
+      FROM poc_k9_projector_receipts_v2
+      WHERE source_snapshot_id = $1
+      ORDER BY projector, attempt_number DESC, sequence DESC, receipt_id DESC
+    `, [lifecycle.desired_snapshot_id])
+    const rows = new Map(receiptResult.rows.map((row) => [row.projector, row]))
+    const receipts = Object.fromEntries(PROJECTORS.map((projector) => [
+      projector,
+      rows.has(projector)
+        ? validReceipt(rows.get(projector), lifecycle.desired_snapshot_id, projector)
+          || { status: 'INVALID', attemptId: null, recordedAt: null, progress: null }
+        : null,
+    ]))
+
+    const schedulerResult = await client.query(`
+      SELECT value FROM poc_state WHERE scope = $1
+    `, [SCHEDULER_SCOPE])
+    const schedulerValue = schedulerResult.rows.length === 1 ? schedulerResult.rows[0].value : null
+    const desiredLabel = claim
+      ? lifecycle.desired_snapshot_id === claim.expectedSourceSnapshotId ? 'X' : 'Y'
+      : 'UNAVAILABLE'
+    const activeLabel = lifecycle.active_snapshot_id === null
+      ? 'NONE'
+      : claim && lifecycle.active_snapshot_id === claim.expectedSourceSnapshotId
+        ? 'X'
+        : desiredLabel === 'Y' && lifecycle.active_snapshot_id === lifecycle.desired_snapshot_id
+          ? 'Y'
+          : 'UNAVAILABLE'
+    const observedAt = Date.now()
+    return {
+      activeLabel,
+      claim,
+      desiredLabel,
+      desiredSnapshotId: lifecycle.desired_snapshot_id,
+      observedAt,
+      receipts,
+      schedulerValue,
+    }
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+}
+
+const unavailable = {
+  desired: 'UNAVAILABLE',
+  source: 'UNAVAILABLE',
+  lineage: 'UNAVAILABLE',
+  metadata: 'UNAVAILABLE',
+  metadataProgress: 'UNAVAILABLE',
+  metadataDelta: 'UNAVAILABLE',
+  semantic: 'UNAVAILABLE',
+  active: 'UNAVAILABLE',
+  schedulerAttempt: 'UNAVAILABLE',
+  sourceReceiptInvalid: 'UNAVAILABLE',
+}
+
+let output = unavailable
+try {
+  pool = new Pool(databaseConfig())
+  const first = await readSample()
+  await new Promise((resolve) => setTimeout(resolve, 30_000))
+  const second = await readSample()
+  output = {
+    desired: second.desiredLabel,
+    source: second.receipts.SOURCE?.status || 'NONE',
+    lineage: second.receipts.LINEAGE?.status || 'NONE',
+    metadata: second.receipts.METADATA?.status || 'NONE',
+    metadataProgress: metadataProgress(second.receipts.METADATA, second.observedAt),
+    metadataDelta: metadataDelta(first, second),
+    semantic: second.receipts.SEMANTIC?.status || 'NONE',
+    active: second.activeLabel,
+    schedulerAttempt: schedulerSummary(second.schedulerValue),
+    sourceReceiptInvalid: sourceReceiptInvalidClassification(second),
+  }
+} catch {
+  output = unavailable
+} finally {
+  if (pool) await pool.end().catch(() => undefined)
+}
+
+process.stdout.write(
+  `${OUTPUT_PREFIX}`
+  + `|desired=${output.desired}`
+  + `|source=${output.source}`
+  + `|lineage=${output.lineage}`
+  + `|metadata=${output.metadata}`
+  + `|metadata_progress=${output.metadataProgress}`
+  + `|metadata_delta=${output.metadataDelta}`
+  + `|semantic=${output.semantic}`
+  + `|active=${output.active}`
+  + `|scheduler_attempt=${output.schedulerAttempt}`
+  + `|source_receipt_invalid=${output.sourceReceiptInvalid}\n`,
+)
+NODE
+)
+probe_status=$?
+
+evidence_lines=$(printf '%s\n' "$probe_output" | sed -n "/^${OUTPUT_PREFIX}|/p")
+first_line=$(printf '%s\n' "$evidence_lines" | sed -n '1p')
+second_line=$(printf '%s\n' "$evidence_lines" | sed -n '2p')
+
+if [ "$probe_status" -ne 0 ] || [ -z "$first_line" ] || [ -n "$second_line" ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+printf '%s\n' "$first_line"
