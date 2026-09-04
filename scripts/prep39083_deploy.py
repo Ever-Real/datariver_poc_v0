@@ -3539,6 +3539,11 @@ def execute_provider_preflight_child(
         if collect_all
         else "PREP_PREFLIGHT_NODE_START_FAILED"
     )
+    module_code = (
+        "PREP_DOCTOR_PREFLIGHT_MODULE_IMPORT_FAILED"
+        if collect_all
+        else "PREP_PREFLIGHT_MODULE_IMPORT_FAILED"
+    )
     container_probe = runner.run([*child_prefix, "/usr/bin/true"], check=False)
     if container_probe.returncode != 0:
         raise PrepError(
@@ -3568,9 +3573,8 @@ def execute_provider_preflight_child(
     if module_probe.returncode != 0:
         raise PrepError(
             "PROVIDER_PREFLIGHT",
-            node_code,
-            "The pinned Node runtime or provider-preflight module could not start in the "
-            f"ephemeral {mode} container.",
+            module_code,
+            f"The provider-preflight module could not import in the ephemeral {mode} container.",
             f"Restore the exact Product image and rerun {mode}.",
         )
     arguments = [*child_prefix, "node", "poc-provider-preflight.mjs"]

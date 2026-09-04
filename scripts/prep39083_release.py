@@ -61,6 +61,7 @@ RUNTIME_INPUTS = (
     "scripts/prep39083",
     "scripts/prep39083_deploy.py",
     "scripts/prep39083_artifact.py",
+    "scripts/prep39083_product_artifact.py",
     "scripts/prep39083_release.py",
     "scripts/prep39083_transport.py",
     "scripts/prep39083_release_prepare.py",
