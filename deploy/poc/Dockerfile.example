@@ -79,6 +79,7 @@ COPY frontend/poc-k9-lifecycle-runtime.mjs ./poc-k9-lifecycle-runtime.mjs
 COPY frontend/poc-k9-graph-projector.mjs ./poc-k9-graph-projector.mjs
 COPY frontend/poc-k9-semantic-persistence.mjs ./poc-k9-semantic-persistence.mjs
 COPY frontend/poc-k9-semantic-projector.mjs ./poc-k9-semantic-projector.mjs
+COPY frontend/poc-k9-semantic-input.mjs ./poc-k9-semantic-input.mjs
 COPY frontend/poc-k9-semantic-runtime.mjs ./poc-k9-semantic-runtime.mjs
 COPY frontend/poc-k9-v2-refresh.mjs ./poc-k9-v2-refresh.mjs
 COPY frontend/poc-knowledge-k9-contracts.mjs ./poc-knowledge-k9-contracts.mjs

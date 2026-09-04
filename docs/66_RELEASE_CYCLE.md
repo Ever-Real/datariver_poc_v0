@@ -161,7 +161,11 @@ uv run --frozen python scripts/prep39083_product_artifact.py \
 The command requires `HEAD == Product` on canonical `dev` and a clean worktree. It is pinned to the
 Product Dockerfile, builds once for `linux/amd64` without a mutable pull, and fails before export
 unless the image contains the Node server entrypoint and required Product runtime files, runs as the
-non-root Product user, and carries the exact OCI revision and manifest identity. It then invokes the
+non-root Product user, and carries the exact OCI revision and manifest identity. Before publication,
+the gate recursively closes static relative `.mjs` imports from the server, PREP bootstrap and
+provider-preflight entrypoints against explicit final-image COPY entries. It then runs
+`/usr/bin/true`, the pinned Node version probe, and import-only probes for provider preflight and
+Semantic runtime modules from the image's `/app` workdir. It then invokes the
 bounded `web-artifact-export` operation, which uses `docker image save --platform linux/amd64`, validates the OCI/Docker
 archive, and emits the archive, SHA-256 sidecar and manifest fields for `release.json`. Calling the
 lower-level exporter directly is not a Product build procedure. The archive is transferred

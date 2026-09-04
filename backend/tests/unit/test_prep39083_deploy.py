@@ -3376,13 +3376,36 @@ def test_doctor_classifies_container_and_node_module_start_failures() -> None:
         _collect_doctor(DoctorPreflightRunner(matrix, container_returncode=125))
     assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED"
 
-    for runner in (
-        DoctorPreflightRunner(matrix, node_returncode=127),
-        DoctorPreflightRunner(matrix, module_returncode=1),
-    ):
-        with pytest.raises(deploy.PrepError) as captured:
-            _collect_doctor(runner)
-        assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED"
+    with pytest.raises(deploy.PrepError) as captured:
+        _collect_doctor(DoctorPreflightRunner(matrix, node_returncode=127))
+    assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED"
+
+    with pytest.raises(deploy.PrepError) as captured:
+        _collect_doctor(DoctorPreflightRunner(matrix, module_returncode=1))
+    assert captured.value.code == "PREP_DOCTOR_PREFLIGHT_MODULE_IMPORT_FAILED"
+
+
+def test_deploy_classifies_node_and_module_start_failures_separately() -> None:
+    matrix = _doctor_matrix()
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.execute_provider_preflight_child(
+            DoctorPreflightRunner(matrix, node_returncode=127),
+            f"datariver-poc:{'a' * 40}",
+            Path("/private/deploy-effective.env"),
+            {},
+            collect_all=False,
+        )
+    assert captured.value.code == "PREP_PREFLIGHT_NODE_START_FAILED"
+
+    with pytest.raises(deploy.PrepError) as captured:
+        deploy.execute_provider_preflight_child(
+            DoctorPreflightRunner(matrix, module_returncode=1),
+            f"datariver-poc:{'a' * 40}",
+            Path("/private/deploy-effective.env"),
+            {},
+            collect_all=False,
+        )
+    assert captured.value.code == "PREP_PREFLIGHT_MODULE_IMPORT_FAILED"
 
 
 def test_doctor_uses_matrix_invalid_only_after_child_launches_successfully() -> None:

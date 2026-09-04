@@ -421,6 +421,7 @@ def test_runtime_input_boundary_excludes_handoff_only_artifacts() -> None:
     assert "scripts/prep39083" in release.RUNTIME_INPUTS
     assert "scripts/prep39083_deploy.py" in release.RUNTIME_INPUTS
     assert "scripts/prep39083_artifact.py" in release.RUNTIME_INPUTS
+    assert "scripts/prep39083_product_artifact.py" in release.RUNTIME_INPUTS
     assert "deploy/prep39083/docker-compose.artifact.yaml" in release.RUNTIME_INPUTS
     assert "deploy/prep39083/env-contract.json" in release.RUNTIME_INPUTS
     assert "deploy/prep39083/release.json" not in release.RUNTIME_INPUTS

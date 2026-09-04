@@ -383,9 +383,11 @@ Neither path uses the Web Compose service or creates Compose volumes/state-servi
 Image preparation failures are separately typed for missing/unreadable artifacts, checksum or
 archive-contract mismatch, load failure, missing image, image/tag mismatch, manifest mismatch,
 platform mismatch and revision mismatch. Ephemeral container
-creation and the pinned Node/module launch are respectively
+creation, pinned Node launch and provider-preflight module import are respectively
 `PREP_DOCTOR_PREFLIGHT_CONTAINER_START_FAILED` and
-`PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED`. Only a successfully launched child that emits no valid
+`PREP_DOCTOR_PREFLIGHT_NODE_START_FAILED` and
+`PREP_DOCTOR_PREFLIGHT_MODULE_IMPORT_FAILED`. Deploy uses the corresponding bounded
+`PREP_PREFLIGHT_*` codes. Only a successfully launched child that emits no valid
 matrix contract is `PREP_DOCTOR_PREFLIGHT_MATRIX_RESULT_INVALID`; raw Docker/provider stderr is
 not printed.
 
