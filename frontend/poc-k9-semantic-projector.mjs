@@ -1,8 +1,19 @@
 /* global AbortController, AbortSignal, clearTimeout, setTimeout, structuredClone */
 import { defaultLlmProviderTimeoutMs, llmProviderFailureCodes } from './poc-llm-timeout.mjs'
+import {
+  K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+  K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
+  K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+  K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1,
+  K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+  K9SemanticInputContractError,
+  k9SemanticInputPlan,
+  k9SemanticMaterializationHash,
+  poolK9SemanticVectors,
+} from './poc-k9-semantic-input.mjs'
 
 export const K9_SEMANTIC_PROJECTOR_ID = 'SEMANTIC'
-export const K9_SEMANTIC_BATCH_SIZE = 32
+export const K9_SEMANTIC_BATCH_SIZE = K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1
 export const K9_SEMANTIC_PROVIDER_TIMEOUT_MS = defaultLlmProviderTimeoutMs
 
 const maximumVectorDimension = 4096
@@ -54,6 +65,11 @@ const diagnostics = Object.freeze({
     provider_failure_class: 'HTTP',
     message: 'The Embedding provider returned an unsuccessful HTTP response.',
   }),
+  PROVIDER_INPUT: Object.freeze({
+    code: 'K9_SEMANTIC_PROVIDER_INPUT_FAILED', stage: 'PROVIDER', retryable: false,
+    provider_failure_class: 'INPUT_CONTRACT',
+    message: 'The Embedding provider rejected one bounded Semantic input.',
+  }),
   PROVIDER_TIMEOUT: Object.freeze({
     code: 'K9_SEMANTIC_PROVIDER_TIMEOUT', stage: 'PROVIDER', retryable: true,
     provider_failure_class: 'TIMEOUT',
@@ -94,7 +110,7 @@ export function k9SemanticProjectorDiagnostic(error) {
 }
 
 function providerStatus(error) {
-  const value = Number(error?.statusCode ?? error?.status ?? error?.response?.status)
+  const value = Number(error?.providerStatus ?? error?.statusCode ?? error?.status ?? error?.response?.status)
   return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined
 }
 
@@ -109,7 +125,9 @@ function providerError(error, timedOut, externallyAborted) {
   if (code === llmProviderFailureCodes.CONNECTIVITY) return projectorError('PROVIDER_CONNECTIVITY')
   if (code === llmProviderFailureCodes.CONTRACT) return projectorError('PROVIDER_CONTRACT')
   if (status !== undefined || code === llmProviderFailureCodes.HTTP) {
-    return projectorError('PROVIDER_HTTP')
+    const failure = projectorError('PROVIDER_HTTP')
+    failure.providerStatus = status
+    return failure
   }
   return projectorError('PROVIDER_CONNECTIVITY')
 }
@@ -162,6 +180,7 @@ function normalizedDocument(document) {
   const documentId = String(document.document_id || '').trim()
   const contentText = typeof document.content_text === 'string' ? document.content_text : ''
   if (!documentId || !contentText) throw new TypeError('A catalog document identity or content is invalid.')
+  const inputPlan = k9SemanticInputPlan(contentText)
   return Object.freeze({
     documentId,
     sourceHash: exactHash(document.source_hash, 'Catalog document source_hash'),
@@ -169,6 +188,7 @@ function normalizedDocument(document) {
     metadata: document.metadata && typeof document.metadata === 'object'
       ? structuredClone(document.metadata)
       : {},
+    inputPlan,
   })
 }
 
@@ -204,6 +224,7 @@ function requiredPort(persistence) {
     'readProjectorState',
     'setDesiredSnapshot',
     'readActiveDocumentHashes',
+    'readLegacyStagedDocumentHashes',
     'readStagedDocumentHashes',
     'writeEmbeddingBatch',
     'persistDesiredManifest',
@@ -282,10 +303,95 @@ async function providerBatch(provider, model, input, externalSignal, ownershipSi
   }
 }
 
+async function providerUnitVectors({
+  provider,
+  model,
+  inputs,
+  expectedDimension,
+  externalSignal,
+  ownershipSignal,
+  timer,
+}) {
+  try {
+    const result = await providerBatch(
+      provider, model, inputs, externalSignal, ownershipSignal, timer,
+    )
+    const validated = validateEmbeddingVectors(
+      result.payload, inputs.length, expectedDimension,
+    )
+    return Object.freeze({
+      vectors: validated.vectors,
+      dimension: validated.dimension,
+      elapsed_ms: result.elapsed_ms,
+    })
+  } catch (error) {
+    if (!(error instanceof K9SemanticProjectorError)
+      || error.code !== diagnostics.PROVIDER_HTTP.code || error.providerStatus !== 400) {
+      throw error
+    }
+    if (inputs.length === 1) throw projectorError('PROVIDER_INPUT')
+    const midpoint = Math.ceil(inputs.length / 2)
+    const left = await providerUnitVectors({
+      provider,
+      model,
+      inputs: inputs.slice(0, midpoint),
+      expectedDimension,
+      externalSignal,
+      ownershipSignal,
+      timer,
+    })
+    const right = await providerUnitVectors({
+      provider,
+      model,
+      inputs: inputs.slice(midpoint),
+      expectedDimension: left.dimension,
+      externalSignal,
+      ownershipSignal,
+      timer,
+    })
+    return Object.freeze({
+      vectors: Object.freeze([...left.vectors, ...right.vectors]),
+      dimension: right.dimension,
+      elapsed_ms: left.elapsed_ms + right.elapsed_ms,
+    })
+  }
+}
+
+function pooledDocumentRecords(batch, vectors) {
+  const records = []
+  let vectorOffset = 0
+  for (const document of batch) {
+    const nextOffset = vectorOffset + document.inputPlan.segment_count
+    let embedding
+    try {
+      embedding = poolK9SemanticVectors(
+        document.inputPlan.segments,
+        vectors.slice(vectorOffset, nextOffset),
+      )
+    } catch (error) {
+      if (error instanceof K9SemanticInputContractError) {
+        if (error.kind === 'DIMENSION') throw projectorError('VECTOR_DIMENSION')
+        if (error.kind === 'FINITE') throw projectorError('VECTOR_FINITE')
+      }
+      throw projectorError('MATERIALIZATION')
+    }
+    records.push({
+      document_id: document.documentId,
+      source_hash: document.sourceHash,
+      content_text: document.contentText,
+      metadata: document.metadata,
+      embedding,
+    })
+    vectorOffset = nextOffset
+  }
+  if (vectorOffset !== vectors.length) throw projectorError('MATERIALIZATION')
+  return Object.freeze(records)
+}
+
 /**
  * The input keeps the immutable `source_snapshot` identity separate from `catalog_documents` so
  * the bounded durable source receipt need not contain provider text. Persistence supplies the
- * eight methods asserted by `requiredPort`; it receives source identities and opaque catalog
+ * methods asserted by `requiredPort`; it receives source identities and opaque catalog
  * records, while diagnostics and progress contain counts/codes only. The port owns durable
  * idempotency and the atomic pointer fence. This projector never reacquires source data while
  * retrying a fixed input.
@@ -300,6 +406,7 @@ export function createK9SemanticProjector({
   timer = { schedule: setTimeout, cancel: clearTimeout },
 }) {
   const exactBindingHash = exactHash(bindingHash, 'Semantic bindingHash')
+  const exactMaterializationHash = k9SemanticMaterializationHash(exactBindingHash)
   const exactProjectorId = String(projectorId || '').trim().toUpperCase()
   if (!safeIdentifierPattern.test(exactProjectorId)) throw new TypeError('The Semantic projector ID is invalid.')
   if (!model || typeof model !== 'string' || typeof provider?.embed !== 'function') {
@@ -325,7 +432,16 @@ export function createK9SemanticProjector({
       } catch {
         throw projectorError('CATALOG_PROJECTION')
       }
-      const identity = Object.freeze({ projector_id: exactProjectorId, binding_hash: exactBindingHash })
+      const identity = Object.freeze({
+        projector_id: exactProjectorId,
+        binding_hash: exactMaterializationHash,
+        output_binding_hash: exactBindingHash,
+        legacy_binding_hash: exactBindingHash,
+        materialization_contract: K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+        semantic_input_contract: K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+        pooling_contract: K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+        maximum_segment_bytes: K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
+      })
       const target = Object.freeze({
         ...identity,
         source_snapshot_id: desired.sourceSnapshotId,
@@ -357,9 +473,20 @@ export function createK9SemanticProjector({
           }
 
           let activeHashes
+          let activeReceipt
           try {
-            activeHashes = normalizedHashMap(await persisted(
+            activeReceipt = await persisted(
               () => port.readActiveDocumentHashes(identity), 'MATERIALIZATION',
+            )
+            activeHashes = normalizedHashMap(activeReceipt)
+          } catch (error) {
+            if (error instanceof K9SemanticProjectorError) throw error
+            throw projectorError('MATERIALIZATION')
+          }
+          let legacyStagedHashes
+          try {
+            legacyStagedHashes = normalizedHashMap(await persisted(
+              () => port.readLegacyStagedDocumentHashes(target), 'MATERIALIZATION',
             ))
           } catch (error) {
             if (error instanceof K9SemanticProjectorError) throw error
@@ -382,8 +509,21 @@ export function createK9SemanticProjector({
           const desiredHashes = new Map(desired.documents.map((document) => (
             [document.documentId, document.sourceHash]
           )))
+          const activeUsesCurrentContract = activeReceipt?.semantic_input_contract
+              === K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1
+            && activeReceipt?.materialization_hash === exactMaterializationHash
+            && activeReceipt?.pooling_contract === K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1
+          const reusableHashes = new Map()
+          for (const document of desired.documents) {
+            const activeMatches = activeHashes.get(document.documentId) === document.sourceHash
+            const legacyStagedMatches = legacyStagedHashes.get(document.documentId) === document.sourceHash
+            if ((activeMatches && (activeUsesCurrentContract || document.inputPlan.legacy_compatible))
+              || (legacyStagedMatches && document.inputPlan.legacy_compatible)) {
+              reusableHashes.set(document.documentId, document.sourceHash)
+            }
+          }
           const changedDocuments = desired.documents.filter((document) => (
-            activeHashes.get(document.documentId) !== document.sourceHash
+            reusableHashes.get(document.documentId) !== document.sourceHash
           ))
           const changedDocumentCount = changedDocuments.length
           const removedCount = [...activeHashes.keys()].filter((documentId) => (
@@ -446,20 +586,29 @@ export function createK9SemanticProjector({
             signal?.throwIfAborted()
             ownershipSignal?.throwIfAborted()
             const batch = pending.slice(offset, offset + K9_SEMANTIC_BATCH_SIZE)
-            const providerResult = await providerBatch(
-              provider, model, batch.map((document) => document.contentText), signal, ownershipSignal, timer,
-            )
-            const validated = validateEmbeddingVectors(
-              providerResult.payload, batch.length, expectedDimension,
-            )
-            expectedDimension = validated.dimension
-            const records = batch.map((document, index) => ({
-              document_id: document.documentId,
-              source_hash: document.sourceHash,
-              content_text: document.contentText,
-              metadata: document.metadata,
-              embedding: validated.vectors[index],
-            }))
+            const providerInputs = batch.flatMap((document) => document.inputPlan.segments)
+            const providerVectors = []
+            let providerElapsedMs = 0
+            for (let providerOffset = 0; providerOffset < providerInputs.length;
+              providerOffset += K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1) {
+              const unitBatch = providerInputs.slice(
+                providerOffset,
+                providerOffset + K9_SEMANTIC_PROVIDER_INPUT_BATCH_SIZE_V1,
+              )
+              const result = await providerUnitVectors({
+                provider,
+                model,
+                inputs: unitBatch,
+                expectedDimension,
+                externalSignal: signal,
+                ownershipSignal,
+                timer,
+              })
+              expectedDimension = result.dimension
+              providerElapsedMs += result.elapsed_ms
+              providerVectors.push(...result.vectors)
+            }
+            const records = pooledDocumentRecords(batch, providerVectors)
             completed += batch.length
             batchesCompleted += 1
             await persisted(() => port.writeEmbeddingBatch({
@@ -477,7 +626,7 @@ export function createK9SemanticProjector({
               batch_total: batchTotal,
               changed_count: changedCount,
               materialized_count: completed,
-              batch_elapsed_ms: providerResult.elapsed_ms,
+              batch_elapsed_ms: providerElapsedMs,
             })
           }
           signal?.throwIfAborted()
@@ -508,6 +657,7 @@ export function createK9SemanticProjector({
             source_generation: desired.sourceGeneration, document_count: desired.documents.length,
             embedded_count: pending.length, reused_count: desired.documents.length - pending.length,
             changed_count: changedCount, removed_count: removedCount, batches_completed: batchesCompleted,
+            materialization_hash: exactMaterializationHash,
           })
         })
       } catch (error) {

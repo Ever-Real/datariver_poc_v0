@@ -60,7 +60,7 @@ export function createK9SemanticPersistenceV2({ requireDatabase, lifecycle }) {
   }
 
   async function readActiveDocumentHashes(identity) {
-    const bindingHash = hash(identity?.binding_hash, 'binding_hash')
+    const bindingHash = hash(identity?.output_binding_hash, 'output_binding_hash')
     const pool = await requireDatabase()
     const pointer = await pool.query('SELECT value FROM poc_state WHERE scope = $1', [
       `catalog-embedding-active-v1:${bindingHash}`,
@@ -75,7 +75,28 @@ export function createK9SemanticPersistenceV2({ requireDatabase, lifecycle }) {
       WHERE binding_hash = $1 AND source_generation = $2
       ORDER BY asset_urn
     `, [bindingHash, value.source_generation])
-    return { hashes: rows.rows, source_snapshot_id: value.source_snapshot_id ?? null }
+    return {
+      hashes: rows.rows,
+      source_snapshot_id: value.source_snapshot_id ?? null,
+      semantic_input_contract: value.semantic_input_contract ?? null,
+      materialization_hash: value.materialization_hash ?? null,
+      pooling_contract: value.pooling_contract ?? null,
+    }
+  }
+
+  async function readLegacyStagedDocumentHashes(target) {
+    const sourceSnapshotId = hash(target?.source_snapshot_id, 'source_snapshot_id')
+    const legacyBindingHash = hash(target?.legacy_binding_hash, 'legacy_binding_hash')
+    const materializationHash = hash(target?.binding_hash, 'binding_hash')
+    if (legacyBindingHash === materializationHash) return { hashes: [] }
+    const pool = await requireDatabase()
+    const rows = await pool.query(`
+      SELECT document_id, source_hash
+      FROM poc_k9_semantic_staging_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number, document_id
+    `, [sourceSnapshotId, legacyBindingHash])
+    return { hashes: rows.rows }
   }
 
   async function readStagedDocumentHashes(target) {
@@ -142,6 +163,12 @@ export function createK9SemanticPersistenceV2({ requireDatabase, lifecycle }) {
     return lifecycle.activateSemanticSnapshot({
       source_snapshot_id: target.source_snapshot_id,
       binding_hash: target.binding_hash,
+      output_binding_hash: target.output_binding_hash,
+      legacy_binding_hash: target.legacy_binding_hash,
+      materialization_contract: target.materialization_contract,
+      semantic_input_contract: target.semantic_input_contract,
+      pooling_contract: target.pooling_contract,
+      maximum_segment_bytes: target.maximum_segment_bytes,
       expected_desired_count: target.document_count,
       expected_changed_count: target.staged_count,
       expected_batch_count: target.batch_total,
@@ -153,6 +180,7 @@ export function createK9SemanticPersistenceV2({ requireDatabase, lifecycle }) {
     readProjectorState,
     setDesiredSnapshot,
     readActiveDocumentHashes,
+    readLegacyStagedDocumentHashes,
     readStagedDocumentHashes,
     writeEmbeddingBatch,
     persistDesiredManifest,

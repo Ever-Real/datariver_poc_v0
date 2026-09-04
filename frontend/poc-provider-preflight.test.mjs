@@ -18,7 +18,13 @@ const mclDiscovery = async () => ({
   },
 })
 
-async function fixture({ chatStatus = 200, chatDelayMs = 0, environment = {} } = {}) {
+async function fixture({
+  chatStatus = 200,
+  chatDelayMs = 0,
+  embeddingStatus = 200,
+  embeddingPayload = { data: [{ index: 0, embedding: [0.1] }] },
+  environment = {},
+} = {}) {
   const server = createServer(async (request, response) => {
     const json = (status, body) => {
       response.writeHead(status, { 'Content-Type': 'application/json' })
@@ -32,7 +38,10 @@ async function fixture({ chatStatus = 200, chatDelayMs = 0, environment = {} } =
     } else if (request.url === '/chat/completions') setTimeout(
       () => json(chatStatus, chatStatus === 200 ? { choices: [{}] } : { error: 'denied' }), chatDelayMs,
     )
-    else if (request.url === '/embeddings') json(200, { data: [{ embedding: [0.1] }] })
+    else if (request.url === '/embeddings') json(
+      embeddingStatus,
+      embeddingStatus === 200 ? embeddingPayload : { error: 'denied' },
+    )
     else if (request.url === '/rerank') json(200, { results: [{ index: 0, score: 1 }] })
     else if (request.url === '/auth/token') json(200, { access_token: 'opaque-test-airflow-token' })
     else if (request.url === '/api/v2/dags/datariver_quality_dispatch') json(200, { dag_id: 'datariver_quality_dispatch' })
@@ -88,6 +97,29 @@ test('preflight keeps provider HTTP rejection distinct from connectivity', async
   try {
     await assert.rejects(subject.run(), { classification: 'PREP_PREFLIGHT_CHAT_HTTP_FAILED' })
   } finally { await subject.close() }
+})
+
+test('embedding preflight proves the POST endpoint and exact bounded vector contract', async () => {
+  const rejected = await fixture({ embeddingStatus: 400 })
+  try {
+    await assert.rejects(rejected.run(), {
+      classification: 'PREP_PREFLIGHT_EMBEDDING_HTTP_FAILED',
+    })
+  } finally { await rejected.close() }
+
+  for (const embeddingPayload of [
+    { data: [] },
+    { data: [{ index: 0, embedding: [] }] },
+    { data: [{ index: 0, embedding: [null] }] },
+    { data: [{ index: 1, embedding: [0.1] }] },
+  ]) {
+    const malformed = await fixture({ embeddingPayload })
+    try {
+      await assert.rejects(malformed.run(), {
+        classification: 'PREP_PREFLIGHT_EMBEDDING_CONTRACT_FAILED',
+      })
+    } finally { await malformed.close() }
+  }
 })
 
 test('preflight uses the shared bounded Chat timeout classification', async () => {

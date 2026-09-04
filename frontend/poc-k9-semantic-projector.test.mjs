@@ -1,4 +1,4 @@
-/* global AbortController, queueMicrotask */
+/* global AbortController, Buffer, queueMicrotask */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
@@ -10,6 +10,7 @@ import {
   validateEmbeddingVectors,
 } from './poc-k9-semantic-projector.mjs'
 import { llmProviderFailureCodes } from './poc-llm-timeout.mjs'
+import { K9_SEMANTIC_MAX_SEGMENT_BYTES_V1 } from './poc-k9-semantic-input.mjs'
 
 const bindingHash = 'b'.repeat(64)
 const generationA = 'a'.repeat(64)
@@ -33,7 +34,13 @@ function snapshot(documentCount, {
   })
 }
 
-function fakePersistence({ activeSnapshot, activeDocuments = [], failures = {} } = {}) {
+function fakePersistence({
+  activeSnapshot,
+  activeDocuments = [],
+  activeContract,
+  legacyStagedDocuments = [],
+  failures = {},
+} = {}) {
   const state = {
     activeSnapshot,
     activeHashes: new Map(activeDocuments.map((document) => [document.document_id, document.source_hash])),
@@ -63,7 +70,21 @@ function fakePersistence({ activeSnapshot, activeDocuments = [], failures = {} }
         ? { status: 'READY', active_snapshot_id: state.activeSnapshot }
         : { status: 'PENDING', active_snapshot_id: null }
     },
-    async readActiveDocumentHashes() { return new Map(state.activeHashes) },
+    async readActiveDocumentHashes(target) {
+      return {
+        hashes: new Map(state.activeHashes),
+        ...(activeContract ? {
+          semantic_input_contract: target.semantic_input_contract,
+          materialization_hash: target.binding_hash,
+          pooling_contract: target.pooling_contract,
+        } : {}),
+      }
+    },
+    async readLegacyStagedDocumentHashes() {
+      return new Map(legacyStagedDocuments.map((document) => (
+        [document.document_id, document.source_hash]
+      )))
+    },
     async readStagedDocumentHashes() {
       return {
         hashes: new Map(state.staged),
@@ -473,4 +494,138 @@ test('persists the immutable manifest before batches and activates only after ev
   assert.ok(operations.indexOf('manifest') < operations.indexOf('batch'))
   assert.ok(operations.lastIndexOf('batch') < operations.indexOf('activate'))
   assert.equal(persistence.state.activeSnapshot, source.source_snapshot.source_snapshot_id)
+})
+
+test('segments one oversized document, pools one final vector, and never sends an oversized provider input', async () => {
+  const source = snapshot(1, { snapshotId: 'a'.repeat(64) })
+  const contentText = `${'a'.repeat(7_000)}\n\n${'b'.repeat(7_000)}\n${'c'.repeat(7_000)}`
+  const document = { ...source.catalog_documents[0], content_text: contentText }
+  const observed = []
+  const embeddingProvider = provider(({ input }) => {
+    observed.push(...input)
+    if (input.some((value) => Buffer.byteLength(value, 'utf8') > K9_SEMANTIC_MAX_SEGMENT_BYTES_V1)) {
+      throw Object.assign(new Error('oversized'), { status: 400 })
+    }
+    return { data: input.map((_value, index) => ({ index, embedding: [index + 1, 1] })) }
+  })
+  const persistence = fakePersistence()
+  const { value } = projector({ persistence, provider: embeddingProvider })
+  const result = await value.project({ ...source, catalog_documents: [document] })
+  assert.equal(result.status, 'READY')
+  assert.equal(result.embedded_count, 1)
+  assert.ok(observed.length > 1)
+  assert.equal(observed.join(''), contentText)
+  assert.ok(observed.every((value) => Buffer.byteLength(value, 'utf8') <= 8_192))
+  assert.equal(persistence.state.staged.size, 1)
+})
+
+test('keeps a one-segment provider input and final vector exactly unchanged', async () => {
+  const source = snapshot(1, { snapshotId: '0'.repeat(64) })
+  const document = { ...source.catalog_documents[0], content_text: 'exact provider input' }
+  const expectedVector = [0.125, -0.5, 0.75]
+  let persistedVector
+  const persistence = fakePersistence()
+  const writeEmbeddingBatch = persistence.writeEmbeddingBatch
+  persistence.writeEmbeddingBatch = async (batch) => {
+    persistedVector = batch.records[0].embedding
+    return writeEmbeddingBatch(batch)
+  }
+  const embeddingProvider = provider(({ input }) => {
+    assert.deepEqual(input, [document.content_text])
+    return { data: [{ index: 0, embedding: expectedVector }] }
+  })
+  const current = projector({ persistence, provider: embeddingProvider })
+  await current.value.project({ ...source, catalog_documents: [document] })
+  assert.deepEqual(persistedVector, expectedVector)
+})
+
+test('bisects bounded HTTP 400 provider batches and terminalizes a rejected single segment', async () => {
+  const source = snapshot(4, { snapshotId: 'b'.repeat(64) })
+  const splittingProvider = provider(({ input }) => {
+    if (input.length > 2) throw Object.assign(new Error('aggregate input rejected'), { status: 400 })
+    return { data: input.map((_value, index) => ({ index, embedding: [index + 1, 1] })) }
+  })
+  const recovered = projector({ provider: splittingProvider })
+  assert.equal((await recovered.value.project(source)).status, 'READY')
+  assert.deepEqual(splittingProvider.calls.map((call) => call.input.length), [4, 2, 2])
+
+  const productTransport = provider(({ input }) => {
+    if (input.length > 2) throw Object.assign(new Error('sanitized gateway failure'), {
+      code: llmProviderFailureCodes.HTTP,
+      statusCode: 502,
+      providerStatus: 400,
+    })
+    return { data: input.map((_value, index) => ({ index, embedding: [index + 1, 1] })) }
+  })
+  assert.equal((await projector({ provider: productTransport }).value.project(
+    snapshot(4, { snapshotId: '9'.repeat(64) }),
+  )).status, 'READY')
+  assert.deepEqual(productTransport.calls.map((call) => call.input.length), [4, 2, 2])
+
+  const rejectingProvider = provider(() => {
+    throw Object.assign(new Error('bounded input rejected'), { status: 400 })
+  })
+  const rejected = projector({ provider: rejectingProvider })
+  await assert.rejects(rejected.value.project(snapshot(1, { snapshotId: 'c'.repeat(64) })), (error) => (
+    error.diagnostic.code === 'K9_SEMANTIC_PROVIDER_INPUT_FAILED'
+      && error.diagnostic.provider_failure_class === 'INPUT_CONTRACT'
+      && error.diagnostic.retryable === false
+  ))
+})
+
+test('reuses legacy-compatible short vectors and selectively rebuilds oversized vectors', async () => {
+  const source = snapshot(2, { snapshotId: 'd'.repeat(64) })
+  const documents = [
+    source.catalog_documents[0],
+    { ...source.catalog_documents[1], content_text: 'x'.repeat(9_000) },
+  ]
+  const legacy = fakePersistence({ activeDocuments: documents })
+  const current = projector({ persistence: legacy })
+  const result = await current.value.project({ ...source, catalog_documents: documents })
+  assert.equal(result.embedded_count, 1)
+  assert.equal(result.reused_count, 1)
+  assert.ok(current.provider.calls.every((call) => call.input.every((input) => (
+    Buffer.byteLength(input, 'utf8') <= K9_SEMANTIC_MAX_SEGMENT_BYTES_V1
+  ))))
+
+  const compatible = fakePersistence({ activeDocuments: documents, activeContract: true })
+  const replay = projector({ persistence: compatible })
+  const replayResult = await replay.value.project({ ...source, catalog_documents: documents })
+  assert.equal(replayResult.embedded_count, 0)
+  assert.equal(replayResult.reused_count, 2)
+  assert.equal(replay.provider.calls.length, 0)
+})
+
+test('reuses compatible legacy staged short documents without accepting legacy oversized evidence', async () => {
+  const source = snapshot(2, { snapshotId: 'e'.repeat(64) })
+  const documents = [
+    source.catalog_documents[0],
+    { ...source.catalog_documents[1], content_text: 'x'.repeat(9_000) },
+  ]
+  const persistence = fakePersistence({ legacyStagedDocuments: documents })
+  const current = projector({ persistence })
+  const result = await current.value.project({ ...source, catalog_documents: documents })
+  assert.equal(result.embedded_count, 1)
+  assert.equal(result.reused_count, 1)
+  assert.equal(persistence.state.staged.size, 1)
+})
+
+test('recomputes uncommitted segments after a crash and reuses the committed document batch', async () => {
+  const source = snapshot(1, { snapshotId: 'f'.repeat(64) })
+  const document = { ...source.catalog_documents[0], content_text: 'x'.repeat(12_000) }
+  const failures = { batch: true }
+  const persistence = fakePersistence({ failures })
+  const current = projector({ persistence })
+  await assert.rejects(
+    current.value.project({ ...source, catalog_documents: [document] }),
+    (error) => error.diagnostic.code === 'K9_SEMANTIC_MATERIALIZATION_FAILED',
+  )
+  const firstCalls = current.provider.calls.length
+  assert.ok(firstCalls > 0)
+  failures.batch = false
+  assert.equal((await current.value.project({ ...source, catalog_documents: [document] })).status, 'READY')
+  assert.equal(current.provider.calls.length, firstCalls * 2)
+  const callsAfterCommit = current.provider.calls.length
+  assert.equal((await current.value.project({ ...source, catalog_documents: [document] })).outcome, 'REUSED')
+  assert.equal(current.provider.calls.length, callsAfterCommit)
 })
