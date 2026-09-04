@@ -334,6 +334,17 @@ async function readPendingState(provider) {
     const activeHashes = uniqueHashMap(activeRows)
     const legacyHashes = uniqueHashMap(legacyResult.rows)
     const stagedHashes = uniqueHashMap(stagedResult.rows)
+    const desiredHashes = new Map(documents.map((document) => (
+      [document.document_id, document.source_hash]
+    )))
+    const stagedDocumentsByBatch = new Map()
+    for (const row of stagedResult.rows) {
+      const batchNumber = Number(row.batch_number)
+      stagedDocumentsByBatch.set(
+        batchNumber,
+        (stagedDocumentsByBatch.get(batchNumber) || 0) + 1,
+      )
+    }
     const activeUsesCurrentContract = pointer?.semantic_input_contract
         === K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1
       && pointer?.materialization_hash === materializationHash
@@ -379,14 +390,11 @@ async function readPendingState(provider) {
       || batchesResult.rows.some((batch, index) => (
         Number(batch.batch_number) !== index + 1
         || Number(batch.batch_total) !== stagedBatchTotal
-        || Number(batch.document_count) !== stagedResult.rows.filter(
-          (row) => Number(row.batch_number) === index + 1,
-        ).length
+        || Number(batch.document_count) !== (stagedDocumentsByBatch.get(index + 1) || 0)
       ))
       || stagedResult.rows.some((row) => (
         Number(row.vector_dimension) !== vectorDimension
-        || documents.find((document) => document.document_id === row.document_id)
-          ?.source_hash !== row.source_hash
+        || desiredHashes.get(row.document_id) !== row.source_hash
       ))) throw new ProbeFailure()
 
     return Object.freeze({
