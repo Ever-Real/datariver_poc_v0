@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""Emit one bounded PREP runtime-identity discriminator without changing state."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+SHA = re.compile(r"^[0-9a-f]{40}$")
+IMAGE = re.compile(r"(?:^|/)datariver-poc:([0-9a-f]{40})$")
+PHASES_AFTER_WEB = {"WEB_READY", "SMOKE_RUNNING", "SMOKE_FAILED", "ACCEPTED"}
+SAFE_IDENTITY_KEYS = (
+    "POC_IMAGE_TAG",
+    "POC_SOURCE_COMMIT",
+    "PREP_RELEASE_PRODUCT_SHA",
+    "PREP_RELEASE_EVIDENCE_SHA",
+)
+
+
+def root() -> Path:
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("git unavailable")
+    result = subprocess.run(  # noqa: S603 - fixed git argv, never a shell command.
+        [git, "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        raise RuntimeError("repository unavailable")
+    return Path(value).resolve()
+
+
+ROOT = root()
+DEPLOYMENT = ROOT / "deploy" / "prep39083"
+RUNTIME = ROOT / "runtime" / "prep39083"
+
+
+def load_deployer() -> Any:
+    scripts = ROOT / "scripts"
+    sys.path.insert(0, os.fspath(scripts))
+    spec = importlib.util.spec_from_file_location(
+        "prep39083_runtime_identity_deployer",
+        scripts / "prep39083_deploy.py",
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("deployer unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def command(arguments: Sequence[str], *, environment: Mapping[str, str] | None = None) -> str:
+    executable = shutil.which(arguments[0])
+    if executable is None:
+        return ""
+    result = subprocess.run(  # noqa: S603 - fixed internal argv, never a shell command.
+        [executable, *arguments[1:]],
+        cwd=ROOT,
+        env=dict(environment) if environment is not None else None,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def parse_time(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def image_product(value: Any) -> str | None:
+    match = IMAGE.search(value.strip()) if isinstance(value, str) else None
+    return match.group(1) if match else None
+
+
+def image_revisions(image_ids: set[str]) -> dict[str, str]:
+    revisions: dict[str, str] = {}
+    for image_id in image_ids:
+        raw = command(["docker", "image", "inspect", image_id])
+        try:
+            documents = json.loads(raw)
+            document = documents[0]
+            labels = document.get("Config", {}).get("Labels") or {}
+            revision = labels.get("org.opencontainers.image.revision")
+        except (IndexError, TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(revision, str) and SHA.fullmatch(revision):
+            revisions[image_id] = revision
+    return revisions
+
+
+def canonical_containers(project: str) -> list[dict[str, Any]]:
+    ids = command(
+        [
+            "docker",
+            "ps",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--filter",
+            "label=com.docker.compose.service=web",
+            "--format",
+            "{{.ID}}",
+        ]
+    ).splitlines()
+    if not ids:
+        return []
+    raw = command(["docker", "inspect", *ids])
+    try:
+        inspected = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(inspected, list):
+        return []
+    image_ids = {
+        str(item.get("Image"))
+        for item in inspected
+        if isinstance(item, dict) and item.get("Image")
+    }
+    revisions = image_revisions(image_ids)
+    containers: list[dict[str, Any]] = []
+    for item in inspected:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("Config", {}).get("Labels") or {}
+        if labels.get("com.docker.compose.oneoff") != "False" or str(
+            labels.get("com.docker.compose.container-number")
+        ) != "1":
+            continue
+        state = item.get("State") if isinstance(item.get("State"), dict) else {}
+        config = item.get("Config") if isinstance(item.get("Config"), dict) else {}
+        image_id = str(item.get("Image") or "")
+        containers.append(
+            {
+                "id": str(item.get("Id") or ""),
+                "running": state.get("Running") is True,
+                "created": parse_time(item.get("Created")),
+                "started": parse_time(state.get("StartedAt")),
+                "config_product": image_product(config.get("Image")),
+                "revision": revisions.get(image_id),
+            }
+        )
+    return containers
+
+
+def explicit_smoke_product(*documents: dict[str, Any] | None) -> str | None:
+    for document in documents:
+        if not document:
+            continue
+        for key in ("smoke_product_sha", "runtime_product_sha"):
+            value = document.get(key)
+            if isinstance(value, str) and SHA.fullmatch(value):
+                return value
+    return None
+
+
+def latest_status_product() -> str | None:
+    logs = sorted((RUNTIME / "logs").glob("*-status-*.log"), reverse=True)
+    if not logs:
+        return None
+    try:
+        lines = logs[0].read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("Running Web Product: "):
+            value = line.removeprefix("Running Web Product: ").strip()
+            return value if SHA.fullmatch(value) else None
+    return None
+
+
+def token(value: str | None) -> str:
+    return value[:4].upper() if value and SHA.fullmatch(value) else "U"
+
+
+def emit(
+    classification: str = "C0",
+    *,
+    target: str | None = None,
+    running: str | None = None,
+    runtime_env: str | None = None,
+    compose: str | None = None,
+    witnessed: str = "U",
+    exited: str = "U",
+    smoke: str | None = None,
+    rollback: str = "N",
+) -> None:
+    print(
+        "|".join(
+            (
+                "RID",
+                f"C={classification}",
+                f"T={token(target)}",
+                f"R={token(running)}",
+                f"E={token(runtime_env)}",
+                f"Q={token(compose)}",
+                f"W={witnessed}",
+                f"X={exited}",
+                f"S={token(smoke)}",
+                f"RB={rollback}",
+            )
+        )
+    )
+
+
+def main() -> None:
+    deployer = load_deployer()
+    release = deployer.load_release_identity()
+    target = release.product_sha if SHA.fullmatch(release.product_sha) else None
+    transport = optional_json(DEPLOYMENT / "transport.json")
+    if (
+        target is None
+        or not transport
+        or transport.get("product_sha") != target
+        or release.web_artifact is None
+        or release.web_artifact.product_sha != target
+        or release.web_artifact.oci_revision != target
+    ):
+        emit(target=target)
+        return
+
+    try:
+        runtime_values = deployer.read_env_file(
+            DEPLOYMENT / ".env.prep.runtime",
+            private=True,
+            label=".env.prep.runtime",
+        )
+    except Exception:
+        runtime_values = {}
+    identity_values = [runtime_values.get(key, "").strip() for key in SAFE_IDENTITY_KEYS[:3]]
+    runtime_identity_available = all(SHA.fullmatch(value) for value in identity_values)
+    runtime_identity_consistent = bool(
+        runtime_identity_available and len(set(identity_values)) == 1
+    )
+    runtime_product = identity_values[0] if runtime_identity_consistent else None
+    runtime_identity_mismatch = bool(
+        runtime_identity_available and (
+            not runtime_identity_consistent or runtime_product != target
+        )
+    )
+    runtime_evidence = runtime_values.get("PREP_RELEASE_EVIDENCE_SHA", "").strip()
+    if SHA.fullmatch(runtime_evidence) and runtime_evidence != release.evidence_sha:
+        runtime_identity_mismatch = True
+
+    compose_product: str | None = None
+    try:
+        bundle = deployer.reconcile_environment(
+            release,
+            target_state=deployer.TargetState.EXISTING_OWNED_INCOMPLETE,
+            persist_runtime=False,
+        )
+        effective = dict(bundle.effective)
+        for key in SAFE_IDENTITY_KEYS:
+            if runtime_values.get(key):
+                effective[key] = runtime_values[key]
+        environment = deployer.child_environment(effective)
+        config = deployer.compose_config(
+            deployer.Runner(environment=environment),
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                release.project,
+                "--file",
+                os.fspath(deployer.BASE_COMPOSE),
+                "--file",
+                os.fspath(deployer.PREP_ARTIFACT_COMPOSE),
+            ],
+        )
+        compose_product = image_product(deployer.resolve_web_image(config))
+    except Exception:
+        compose_product = None
+
+    containers = canonical_containers(release.project)
+    running_containers = [item for item in containers if item["running"]]
+    running = running_containers[0]["revision"] if len(running_containers) == 1 else None
+    attempt = optional_json(RUNTIME / "deploy-attempt.json")
+    attempt_start = parse_time(attempt.get("started_at")) if attempt else None
+    attempt_product = attempt.get("product_sha") if attempt else None
+    attempt_phase = attempt.get("phase") if attempt else None
+
+    target_containers = [item for item in containers if item["revision"] == target]
+    target_since_attempt = [
+        item
+        for item in target_containers
+        if attempt_start is None
+        or (item["created"] is not None and item["created"] >= attempt_start)
+        or (item["started"] is not None and item["started"] >= attempt_start)
+    ]
+    witnessed = "Y" if target_since_attempt else "N"
+    exited = "Y" if any(not item["running"] for item in target_containers) else "N"
+
+    smoke_report = optional_json(RUNTIME / "smoke.json")
+    smoke_failure = optional_json(RUNTIME / "smoke-failure.json")
+    smoke_product = explicit_smoke_product(smoke_report, smoke_failure)
+    smoke_evidence_exists = smoke_report is not None or smoke_failure is not None
+
+    explicit_rollback = bool(
+        attempt
+        and (
+            attempt.get("rollback_attempted") is True
+            or attempt.get("rollback_completed") is True
+        )
+    )
+    rollback = "Y" if explicit_rollback else "N"
+    old_started = running_containers[0]["started"] if len(running_containers) == 1 else None
+    target_times = [
+        value
+        for item in target_since_attempt
+        for value in (item["created"], item["started"])
+        if value is not None
+    ]
+    later_external_replacement = bool(
+        running != target
+        and old_started is not None
+        and target_times
+        and old_started > max(target_times)
+        and not explicit_rollback
+    )
+
+    reported = latest_status_product()
+    if running == target and reported and reported != running:
+        classification = "C6"
+    elif runtime_identity_mismatch or (
+        compose_product is not None and compose_product != target
+    ):
+        classification = "C1"
+    elif running != target and witnessed == "Y" and explicit_rollback:
+        classification = "C3"
+    elif running != target and witnessed == "Y" and later_external_replacement:
+        classification = "C4"
+    elif running != target and witnessed == "Y":
+        classification = "C3"
+    elif (
+        running != target
+        and witnessed == "N"
+        and attempt_product == target
+        and attempt_phase in PHASES_AFTER_WEB
+        and smoke_evidence_exists
+        and smoke_product is None
+    ):
+        classification = "C5"
+    elif (
+        running is not None
+        and runtime_product == target
+        and compose_product == target
+        and running != target
+        and witnessed == "N"
+    ):
+        classification = "C2"
+    elif smoke_evidence_exists and smoke_product is None:
+        classification = "C5"
+    else:
+        classification = "C0"
+
+    emit(
+        classification,
+        target=target,
+        running=running,
+        runtime_env=runtime_product,
+        compose=compose_product,
+        witnessed=witnessed,
+        exited=exited,
+        smoke=smoke_product,
+        rollback=rollback,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        emit()
