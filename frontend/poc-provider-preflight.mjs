@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { loadPocLocalAuthConfig } from './poc-local-auth.mjs'
 import { discoverPocMclSource } from './poc-mcl-discovery.mjs'
+import { validateEmbeddingVectors } from './poc-k9-semantic-projector.mjs'
 import { createProviderTransport, joinProviderUrl, llmEndpoint } from './poc-provider-transport.mjs'
 import { parseLlmProviderTimeoutMs } from './poc-llm-timeout.mjs'
 
@@ -138,10 +139,20 @@ async function chatPreflight(providerTransport, environment) {
 
 async function embeddingPreflight(providerTransport, environment) {
   const embedding = llmStage(environment, 'LLM_EMBEDDING', 'EMBEDDING')
+  let timeoutMs
+  try {
+    timeoutMs = parseLlmProviderTimeoutMs(environment.POC_LLM_TIMEOUT_MS)
+  } catch {
+    throw classified('EMBEDDING', 'CONFIG', 'The Embedding provider timeout configuration is invalid.')
+  }
   const embeddingBody = await llmPost(providerTransport, 'EMBEDDING', embedding, '/embeddings', {
     model: embedding.model, input: ['DataRiver PREP provider preflight'],
-  })
-  if (!Array.isArray(embeddingBody?.data)) throw classified('EMBEDDING', 'CONTRACT', 'Embedding returned no vectors.')
+  }, timeoutMs)
+  try {
+    validateEmbeddingVectors(embeddingBody, 1)
+  } catch {
+    throw classified('EMBEDDING', 'CONTRACT', 'Embedding returned an invalid vector contract.')
+  }
 }
 
 async function rerankerPreflight(providerTransport, environment) {

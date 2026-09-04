@@ -1,6 +1,12 @@
 /* global structuredClone */
 import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
 import { createK9V2DurableProjector } from './poc-k9-lifecycle-runtime.mjs'
+import {
+  K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+  K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+  K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+  k9SemanticMaterializationHash,
+} from './poc-k9-semantic-input.mjs'
 import { createK9SemanticProjector } from './poc-k9-semantic-projector.mjs'
 
 const HASH = /^[0-9a-f]{64}$/u
@@ -108,6 +114,7 @@ export function createK9V2SemanticLifecycleProjector({
   if (typeof bindingHash !== 'string' || !HASH.test(bindingHash)) {
     throw new TypeError('The Semantic binding hash is invalid.')
   }
+  const materializationHash = k9SemanticMaterializationHash(bindingHash)
   const durable = createK9V2DurableProjector({
     projectorId: 'SEMANTIC',
     lifecycle,
@@ -116,9 +123,13 @@ export function createK9V2SemanticLifecycleProjector({
     output: (result, sourceReceipt) => ({
       output_pointer: `k9-semantic-v2://${sourceReceipt.source_snapshot_id}/${bindingHash}`,
       output_hash: computeSha256({
-        contract: 'DATARIVER_K9_SEMANTIC_OUTPUT_V2',
+        contract: 'DATARIVER_K9_SEMANTIC_OUTPUT_V3',
         source_snapshot_id: sourceReceipt.source_snapshot_id,
-        binding_hash: bindingHash,
+        output_binding_hash: bindingHash,
+        materialization_hash: materializationHash,
+        materialization_contract: K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+        semantic_input_contract: K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+        pooling_contract: K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
         document_count: result.document_count,
         changed_count: result.changed_count,
       }),

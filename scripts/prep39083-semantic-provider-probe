@@ -1,0 +1,512 @@
+#!/bin/sh
+set -u
+
+# Diagnostic-only single-document RCA for the exact Product 5e6 Semantic provider path.
+# The probe runs inside the one canonical PREP web container, uses the Product-owned
+# provider transport and endpoint construction, and reads the durable Y Semantic state
+# in one rolled-back READ ONLY transaction. It never persists returned vectors.
+
+EXPECTED_PRODUCT='5e6db1604f4d007d6522e69d36fa2572d8e05bf5'
+EXPECTED_SNAPSHOT='791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+OUTPUT_PREFIX='SEMANTIC_SINGLE_DOC_RCA'
+
+emit_shell_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|p4k=UNAVAILABLE|p8k=UNAVAILABLE|p12k=UNAVAILABLE|p16k=UNAVAILABLE|p20k=UNAVAILABLE|full=UNAVAILABLE|synthetic_full=UNAVAILABLE|largest_pass_bytes=0|smallest_fail_bytes=0|verdict=PROVIDER_INPUT_CONTRACT_AMBIGUOUS"
+}
+
+exact_id=''
+exact_count=0
+
+for candidate in $(
+  docker ps \
+    --filter label=com.docker.compose.project=datariver-prep39083 \
+    --filter label=com.docker.compose.service=web \
+    --format '{{.ID}}' 2>/dev/null || true
+); do
+  image_id=$(docker inspect --format '{{.Image}}' "$candidate" 2>/dev/null || true)
+  revision=$(docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image_id" 2>/dev/null || true)
+  oneoff=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+    "$candidate" 2>/dev/null || true)
+  container_number=$(docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.container-number"}}' \
+    "$candidate" 2>/dev/null || true)
+
+  if [ "$revision" = "$EXPECTED_PRODUCT" ] \
+    && [ "$oneoff" = 'False' ] \
+    && [ "$container_number" = '1' ]; then
+    exact_id=$candidate
+    exact_count=$((exact_count + 1))
+  fi
+done
+
+if [ "$exact_count" -ne 1 ]; then
+  emit_shell_failure
+  exit 2
+fi
+
+probe_output=$(
+  docker exec -i "$exact_id" \
+    node --max-old-space-size=2048 --input-type=module 2>/dev/null <<'NODE'
+import { createHash } from 'node:crypto'
+import pg from 'pg'
+
+/* global AbortSignal, Buffer, URL, console, process */
+
+import { computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import { validateEmbeddingVectors } from './poc-k9-semantic-projector.mjs'
+import { parseLlmProviderTimeoutMs } from './poc-llm-timeout.mjs'
+import { createProviderTransport, llmEndpoint } from './poc-provider-transport.mjs'
+
+const { Pool } = pg
+const EXPECTED_SNAPSHOT = '791f9fabb2f41c1f507194e3ed1ddb1c724683a8e8bb4e17ae21937edf5fe9f5'
+const OUTPUT_PREFIX = 'SEMANTIC_SINGLE_DOC_RCA'
+const LIFECYCLE_KEY = 'managed-k9-v2'
+const SEMANTIC_BATCH_SIZE = 32
+const MAX_PROVIDER_REQUESTS = 7
+const PREFIX_BYTE_LIMITS = Object.freeze([4_096, 8_192, 12_288, 16_384, 20_480])
+const HASH = /^[0-9a-f]{64}$/u
+
+let pool
+let transport
+let providerRequestCount = 0
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function optionalUrl(name) {
+  const raw = process.env[name]?.trim()
+  if (!raw) throw new Error('PROBE_PROVIDER_CONFIGURATION')
+  const value = new URL(raw)
+  if (!['http:', 'https:'].includes(value.protocol)
+    || value.username || value.password || value.hash) {
+    throw new Error('PROBE_PROVIDER_CONFIGURATION')
+  }
+  return value.toString().replace(/\/$/u, '')
+}
+
+function embeddingProvider() {
+  const url = optionalUrl('LLM_EMBEDDING_URL')
+  const model = process.env.LLM_EMBEDDING_MODEL?.trim()
+  const token = process.env.LLM_EMBEDDING_TOKEN?.trim()
+  if (!model || !token) throw new Error('PROBE_PROVIDER_CONFIGURATION')
+  return Object.freeze({ url, model, token })
+}
+
+function expectedBindingHash(provider) {
+  const datahubUrl = optionalUrl('DATAHUB_GMS_URL')
+  const source = sha256(datahubUrl).slice(0, 16)
+  return sha256(canonicalJson({
+    source,
+    endpoint: provider.url,
+    model: provider.model,
+    contract: 'POC_DATAHUB_SEMANTIC_DOCUMENT_V3',
+  }))
+}
+
+function databaseConfig() {
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { connectionString: databaseUrl, max: 1 }
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw new Error('PROBE_DATABASE_CONFIGURATION')
+  return {
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+    max: 1,
+  }
+}
+
+function statusClass(status) {
+  if (Number.isInteger(status) && status >= 200 && status <= 299) return '2XX'
+  if ([400, 401, 403, 404, 413, 422, 429].includes(status)) return String(status)
+  if (Number.isInteger(status) && status >= 500 && status <= 599) return '5XX'
+  return 'OTHER'
+}
+
+function transportFailure(error) {
+  return error?.name === 'TimeoutError' || error?.name === 'AbortError'
+    ? 'TIMEOUT'
+    : 'CONNECTIVITY'
+}
+
+function embeddingLabel(result) {
+  const status = result.kind === 'PASS'
+    ? 'PASS_2XX'
+    : result.kind === 'HTTP' ? `FAIL_${result.classification}` : result.classification
+  const vector = result.vectorContract === 'PASS'
+    ? 'VECTOR_PASS'
+    : result.vectorContract === 'FAIL' ? 'VECTOR_FAIL' : 'VECTOR_UNAVAILABLE'
+  return `${status}:${vector}`
+}
+
+async function providerFetch(url, options, timeoutMs) {
+  return transport.fetch(url, {
+    ...options,
+    redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+}
+
+async function embeddingProbe(provider, input, timeoutMs, expectedDimension) {
+  let response
+  try {
+    response = await providerFetch(llmEndpoint(provider, '/embeddings'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: provider.model, input }),
+    }, timeoutMs)
+  } catch (error) {
+    return {
+      kind: 'TRANSPORT', classification: transportFailure(error),
+      vectorContract: 'UNAVAILABLE',
+    }
+  }
+  const classification = statusClass(response.status)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    return { kind: 'HTTP', classification, vectorContract: 'UNAVAILABLE' }
+  }
+  let payload
+  try {
+    payload = await response.json()
+  } catch {
+    return { kind: 'CONTRACT', classification: 'CONTRACT', vectorContract: 'FAIL' }
+  }
+  try {
+    const validated = validateEmbeddingVectors(payload, input.length, expectedDimension)
+    return {
+      kind: 'PASS', classification, vectorContract: 'PASS',
+      dimension: validated.dimension,
+    }
+  } catch {
+    return { kind: 'CONTRACT', classification: 'CONTRACT', vectorContract: 'FAIL' }
+  }
+}
+
+async function boundedEmbeddingProbe(provider, input, timeoutMs, expectedDimension) {
+  if (providerRequestCount >= MAX_PROVIDER_REQUESTS) return null
+  providerRequestCount += 1
+  return embeddingProbe(provider, input, timeoutMs, expectedDimension)
+}
+
+function embeddingPassed(result) {
+  return result?.kind === 'PASS' && result.vectorContract === 'PASS'
+}
+
+function validSemanticRows({ manifest, documents, batches, staged }) {
+  if (!manifest || manifest.source_snapshot_id !== EXPECTED_SNAPSHOT
+    || !HASH.test(manifest.binding_hash || '')
+    || !HASH.test(manifest.manifest_hash || '')
+    || Number(manifest.desired_count) !== documents.length) return false
+  if (documents.some((document) => (
+    document.source_snapshot_id !== EXPECTED_SNAPSHOT
+    || document.binding_hash !== manifest.binding_hash
+    || typeof document.document_id !== 'string'
+    || typeof document.asset_urn !== 'string'
+    || !HASH.test(document.source_hash || '')
+    || typeof document.content_text !== 'string'
+    || !document.content_text
+    || !document.metadata
+    || typeof document.metadata !== 'object'
+    || Array.isArray(document.metadata)
+  ))) return false
+  const normalized = {
+    source_snapshot_id: EXPECTED_SNAPSHOT,
+    binding_hash: manifest.binding_hash,
+    documents: documents.map((document) => ({
+      document_id: document.document_id,
+      asset_urn: document.asset_urn,
+      source_hash: document.source_hash,
+      content_text: document.content_text,
+      metadata: document.metadata,
+    })),
+  }
+  if (computeSha256(normalized) !== manifest.manifest_hash) return false
+  const batchTotal = batches.length === 0 ? 0 : Number(batches[0].batch_total)
+  const dimension = staged.length === 0 ? undefined : Number(staged[0].vector_dimension)
+  if (batches.some((batch, index) => (
+    Number(batch.batch_number) !== index + 1
+    || Number(batch.batch_total) !== batchTotal
+    || Number(batch.document_count) !== staged.filter(
+      (item) => Number(item.batch_number) === index + 1,
+    ).length
+  )) || staged.some((item) => (
+    !HASH.test(item.source_hash || '')
+    || !Number.isSafeInteger(Number(item.vector_dimension))
+    || Number(item.vector_dimension) !== dimension
+  ))) return false
+  return true
+}
+
+async function readPendingSemantic(provider) {
+  const bindingHash = expectedBindingHash(provider)
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    const lifecycle = await client.query(`
+      SELECT desired_snapshot_id
+      FROM poc_k9_snapshot_lifecycle_v2
+      WHERE lifecycle_key = $1
+    `, [LIFECYCLE_KEY])
+    if (lifecycle.rows.length !== 1
+      || lifecycle.rows[0].desired_snapshot_id !== EXPECTED_SNAPSHOT) return null
+
+    const manifestResult = await client.query(`
+      SELECT source_snapshot_id, binding_hash, desired_count, manifest_hash
+      FROM poc_k9_semantic_manifests_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+    `, [EXPECTED_SNAPSHOT, bindingHash])
+    if (manifestResult.rows.length !== 1) return null
+    const manifest = manifestResult.rows[0]
+
+    const documentsResult = await client.query(`
+      SELECT source_snapshot_id, binding_hash, document_id, asset_urn,
+        source_hash, content_text, metadata
+      FROM poc_k9_semantic_desired_documents_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+    `, [EXPECTED_SNAPSHOT, bindingHash])
+    const documents = documentsResult.rows.sort(
+      (left, right) => left.document_id.localeCompare(right.document_id),
+    )
+
+    const pointerResult = await client.query(`
+      SELECT value FROM poc_state WHERE scope = $1
+    `, [`catalog-embedding-active-v1:${bindingHash}`])
+    const pointer = pointerResult.rows[0]?.value
+    let activeRows = []
+    if (pointer?.binding_hash === bindingHash
+      && typeof pointer.source_generation === 'string') {
+      const activeResult = await client.query(`
+        SELECT asset_urn AS document_id, source_hash
+        FROM poc_catalog_embedding
+        WHERE binding_hash = $1 AND source_generation = $2
+      `, [bindingHash, pointer.source_generation])
+      activeRows = activeResult.rows
+    }
+
+    const batchesResult = await client.query(`
+      SELECT batch_number, batch_total, document_count
+      FROM poc_k9_semantic_batches_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number
+    `, [EXPECTED_SNAPSHOT, bindingHash])
+    const stagedResult = await client.query(`
+      SELECT document_id, source_hash, batch_number,
+        vector_dims(embedding)::integer AS vector_dimension
+      FROM poc_k9_semantic_staging_v2
+      WHERE source_snapshot_id = $1 AND binding_hash = $2
+      ORDER BY batch_number, document_id
+    `, [EXPECTED_SNAPSHOT, bindingHash])
+
+    if (!validSemanticRows({
+      manifest,
+      documents,
+      batches: batchesResult.rows,
+      staged: stagedResult.rows,
+    })) return null
+
+    const activeHashes = new Map(activeRows.map(
+      (item) => [item.document_id, item.source_hash],
+    ))
+    const stagedHashes = new Map(stagedResult.rows.map(
+      (item) => [item.document_id, item.source_hash],
+    ))
+    if (activeHashes.size !== activeRows.length || stagedHashes.size !== stagedResult.rows.length) {
+      return null
+    }
+    const changed = documents.filter(
+      (document) => activeHashes.get(document.document_id) !== document.source_hash,
+    )
+    const stagedPrefix = changed.filter(
+      (document) => stagedHashes.get(document.document_id) === document.source_hash,
+    )
+    const alreadyStaged = stagedPrefix.length
+    const expectedPrefix = changed.slice(0, alreadyStaged)
+    const prefixValid = expectedPrefix.every(
+      (document) => stagedHashes.get(document.document_id) === document.source_hash,
+    )
+    const batchCount = batchesResult.rows.length
+    const batchTotal = batchCount === 0 ? 0 : Number(batchesResult.rows[0].batch_total)
+    const expectedBatchTotal = Math.ceil(changed.length / SEMANTIC_BATCH_SIZE)
+    const expectedDimension = stagedResult.rows.length === 0
+      ? undefined : Number(stagedResult.rows[0].vector_dimension)
+    if (!prefixValid || stagedHashes.size !== alreadyStaged
+      || (changed.length > alreadyStaged && alreadyStaged % SEMANTIC_BATCH_SIZE !== 0)
+      || batchCount > expectedBatchTotal
+      || (batchCount > 0 && batchTotal !== expectedBatchTotal)
+      || stagedResult.rows.some(
+        (item) => documents.find((document) => document.document_id === item.document_id)
+          ?.source_hash !== item.source_hash,
+      )) return null
+
+    return {
+      pending: changed.slice(alreadyStaged),
+      expectedDimension,
+    }
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
+}
+
+function providerRejected(result) {
+  return result?.kind === 'CONTRACT'
+    || (result?.kind === 'HTTP' && ['400', '413', '422'].includes(result.classification))
+}
+
+function utf8Prefix(value, byteLimit) {
+  const characters = []
+  let byteCount = 0
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (byteCount + characterBytes > byteLimit) break
+    characters.push(character)
+    byteCount += characterBytes
+  }
+  return Object.freeze({ value: characters.join(''), byteCount })
+}
+
+function deterministicSyntheticInput(byteCount) {
+  const seed = 'datariver-semantic-single-document-size-control-'
+  return seed.repeat(Math.ceil(byteCount / seed.length)).slice(0, byteCount)
+}
+
+function classifySingleDocument(results, syntheticResult) {
+  const outcomes = results.map(({ result }) => (
+    embeddingPassed(result) ? 'PASS' : providerRejected(result) ? 'FAIL' : 'UNKNOWN'
+  ))
+  if (outcomes.includes('UNKNOWN')) return 'PROVIDER_INPUT_CONTRACT_AMBIGUOUS'
+
+  const firstFailure = outcomes.indexOf('FAIL')
+  if (firstFailure === -1) return 'PROVIDER_INPUT_CONTRACT_AMBIGUOUS'
+  const monotonic = outcomes.slice(0, firstFailure).every((value) => value === 'PASS')
+    && outcomes.slice(firstFailure).every((value) => value === 'FAIL')
+  if (!monotonic) return 'PROVIDER_INPUT_CONTRACT_AMBIGUOUS'
+  if (firstFailure > 0) return 'PER_INPUT_SIZE_OR_TOKEN_LIMIT_PROVEN'
+  if (embeddingPassed(syntheticResult)) return 'DOCUMENT_CONTENT_SHAPE_REJECTION_PROVEN'
+  return 'PROVIDER_INPUT_CONTRACT_AMBIGUOUS'
+}
+
+function rcaLine({ labels, largestPassBytes, smallestFailBytes, verdict }) {
+  return [
+    OUTPUT_PREFIX,
+    `p4k=${labels[0]}`,
+    `p8k=${labels[1]}`,
+    `p12k=${labels[2]}`,
+    `p16k=${labels[3]}`,
+    `p20k=${labels[4]}`,
+    `full=${labels[5]}`,
+    `synthetic_full=${labels[6]}`,
+    `largest_pass_bytes=${largestPassBytes}`,
+    `smallest_fail_bytes=${smallestFailBytes}`,
+    `verdict=${verdict}`,
+  ].join('|')
+}
+
+function unavailableLine() {
+  return `${OUTPUT_PREFIX}|p4k=UNAVAILABLE|p8k=UNAVAILABLE|p12k=UNAVAILABLE|p16k=UNAVAILABLE|p20k=UNAVAILABLE|full=UNAVAILABLE|synthetic_full=UNAVAILABLE|largest_pass_bytes=0|smallest_fail_bytes=0|verdict=PROVIDER_INPUT_CONTRACT_AMBIGUOUS`
+}
+
+try {
+  const provider = embeddingProvider()
+  const timeoutMs = parseLlmProviderTimeoutMs(process.env.POC_LLM_TIMEOUT_MS)
+  transport = createProviderTransport(process.env)
+  pool = new Pool(databaseConfig())
+
+  const semantic = await readPendingSemantic(provider)
+  const batchDocuments = semantic?.pending.slice(0, SEMANTIC_BATCH_SIZE) || []
+  if (batchDocuments.length !== SEMANTIC_BATCH_SIZE) {
+    console.log(unavailableLine())
+  } else {
+    const largestDocument = batchDocuments.reduce((largest, document) => (
+      Buffer.byteLength(document.content_text, 'utf8')
+        > Buffer.byteLength(largest.content_text, 'utf8') ? document : largest
+    ))
+    const fullByteCount = Buffer.byteLength(largestDocument.content_text, 'utf8')
+    if (fullByteCount <= PREFIX_BYTE_LIMITS[PREFIX_BYTE_LIMITS.length - 1]) {
+      console.log(unavailableLine())
+    } else {
+      const prefixes = PREFIX_BYTE_LIMITS.map(
+        (byteLimit) => utf8Prefix(largestDocument.content_text, byteLimit),
+      )
+      const actualInputs = [
+        ...prefixes,
+        Object.freeze({ value: largestDocument.content_text, byteCount: fullByteCount }),
+      ]
+      const actualResults = []
+      for (const input of actualInputs) {
+        const result = await boundedEmbeddingProbe(
+          provider, [input.value], timeoutMs, semantic.expectedDimension,
+        )
+        actualResults.push({ result, byteCount: input.byteCount })
+      }
+      const syntheticInput = deterministicSyntheticInput(fullByteCount)
+      const syntheticResult = await boundedEmbeddingProbe(
+        provider, [syntheticInput], timeoutMs, semantic.expectedDimension,
+      )
+      const labels = [
+        ...actualResults.map(({ result }) => (
+          result ? embeddingLabel(result) : 'UNAVAILABLE'
+        )),
+        syntheticResult ? embeddingLabel(syntheticResult) : 'UNAVAILABLE',
+      ]
+      const passedBytes = actualResults.filter(({ result }) => embeddingPassed(result))
+        .map(({ byteCount }) => byteCount)
+      const failedBytes = actualResults.filter(({ result }) => providerRejected(result))
+        .map(({ byteCount }) => byteCount)
+      console.log(rcaLine({
+        labels,
+        largestPassBytes: passedBytes.length > 0 ? Math.max(...passedBytes) : 0,
+        smallestFailBytes: failedBytes.length > 0 ? Math.min(...failedBytes) : 0,
+        verdict: classifySingleDocument(actualResults, syntheticResult),
+      }))
+    }
+  }
+} catch {
+  console.log(unavailableLine())
+} finally {
+  await Promise.allSettled([
+    pool?.end(),
+    transport?.close(),
+  ])
+}
+NODE
+)
+probe_status=$?
+
+case "$probe_output" in
+  "${OUTPUT_PREFIX}|"*) ;;
+  *)
+    emit_shell_failure
+    exit 2
+    ;;
+esac
+
+case "$probe_output" in
+  *'
+'*)
+    emit_shell_failure
+    exit 2
+    ;;
+esac
+
+printf '%s\n' "$probe_output"
+exit "$probe_status"

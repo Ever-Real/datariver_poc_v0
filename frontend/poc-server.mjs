@@ -5729,6 +5729,7 @@ async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeo
       new Error(authenticationFailure ? 'The LLM provider rejected authentication.' : 'The LLM provider rejected the request.'),
       {
         statusCode: 502,
+        providerStatus: response.status,
         code: authenticationFailure ? llmProviderFailureCodes.AUTH : llmProviderFailureCodes.HTTP,
       },
     )

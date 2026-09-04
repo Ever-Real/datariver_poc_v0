@@ -15,6 +15,13 @@ import { createK9V2SemanticLifecycleProjector } from './poc-k9-semantic-runtime.
 import { createPocK9V2RefreshTask } from './poc-k9-v2-refresh.mjs'
 import { createPocK9SourceCaptureTask } from './poc-k9-scheduler.mjs'
 import { createK9LifecyclePersistenceV2 } from './poc-k9-lifecycle-persistence.mjs'
+import {
+  K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+  K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+  K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
+  K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+  k9SemanticMaterializationHash,
+} from './poc-k9-semantic-input.mjs'
 import { pocPostgresTestSkipReason, withDisposablePocPostgres } from './poc-postgres-test-fixture.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 
@@ -157,6 +164,18 @@ function changedVector(document, ordinal) {
     document_id: document.document_id,
     source_hash: document.source_hash,
     embedding: [ordinal / 10, ordinal / 20],
+  }
+}
+
+function semanticMaterializationIdentity(outputBindingHash) {
+  return {
+    binding_hash: k9SemanticMaterializationHash(outputBindingHash),
+    output_binding_hash: outputBindingHash,
+    legacy_binding_hash: outputBindingHash,
+    materialization_contract: K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+    semantic_input_contract: K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+    pooling_contract: K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+    maximum_segment_bytes: K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
   }
 }
 
@@ -799,6 +818,18 @@ test('PREP-shaped V2 retry uses persisted PostgreSQL source and reruns only Sema
         'SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE source_generation = $1',
         [source.source_snapshot.catalog_generation],
       )).rows[0].count, 2_003)
+      const callsAfterReady = { ...calls }
+      const replay = await trigger({ lifecycleMode: 'RESUME' })
+      assert.equal(replay.status, 'SUCCESS')
+      assert.equal(replay.source_snapshot_id, source.source_snapshot_id)
+      assert.equal(replay.lifecycle.source.outcome, 'REUSED')
+      assert.equal(replay.lifecycle.projectors.LINEAGE.outcome, 'REUSED')
+      assert.equal(replay.lifecycle.projectors.METADATA.outcome, 'REUSED')
+      assert.equal(replay.lifecycle.projectors.SEMANTIC.outcome, 'REUSED')
+      assert.deepEqual(calls, callsAfterReady)
+      assert.equal((await pool.query(
+        'SELECT count(*)::integer AS count FROM poc_k9_source_snapshots_v2',
+      )).rows[0].count, 1)
     } finally {
       await store.close()
     }
@@ -1185,9 +1216,14 @@ test('semantic staging survives restart and materializes with its pointer atomic
   await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
   await withIntegrityRequired(async () => {
     const envelope = sourceEnvelope('3')
-    const bindingHash = computeSha256({ binding: 'semantic-v2' })
-    const pointerScope = `catalog-embedding-active-v1:${bindingHash}`
-    const oldPointer = { projection_version: 1, binding_hash: bindingHash, source_generation: '9'.repeat(64) }
+    const outputBindingHash = computeSha256({ binding: 'semantic-v2' })
+    const semanticIdentity = semanticMaterializationIdentity(outputBindingHash)
+    const pointerScope = `catalog-embedding-active-v1:${outputBindingHash}`
+    const oldPointer = {
+      projection_version: 1,
+      binding_hash: outputBindingHash,
+      source_generation: '9'.repeat(64),
+    }
     const first = createPocStateStore({ databasePool: pool })
     await first.setK9DesiredSourceSnapshotV2(envelope)
     const one = semanticDesiredDocument(1)
@@ -1199,11 +1235,11 @@ test('semantic staging survives restart and materializes with its pointer atomic
         ($1, $2, $3, repeat('9',64), $4, $5::jsonb, '[0.1,0.05]'::vector),
         ($1, 'urn:li:dataset:(urn:li:dataPlatform:postgres,removed.table,PROD)',
           repeat('8',64), repeat('9',64), 'removed prior document', '{"prior":true}'::jsonb, '[0.9,0.9]'::vector)
-    `, [bindingHash, one.document_id, one.source_hash, one.content_text, JSON.stringify(one.metadata)])
+    `, [outputBindingHash, one.document_id, one.source_hash, one.content_text, JSON.stringify(one.metadata)])
     await pool.query('INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)', [pointerScope, JSON.stringify(oldPointer)])
     const target = {
       source_snapshot_id: envelope.snapshot.source_snapshot_id,
-      binding_hash: bindingHash,
+      ...semanticIdentity,
       document_count: 2,
       documents: [one, two],
       staged_count: 1,
@@ -1233,7 +1269,7 @@ test('semantic staging survives restart and materializes with its pointer atomic
       code: 'K9_SEMANTIC_BATCHES_INCOMPLETE',
     })
     assert.deepEqual((await pool.query('SELECT value FROM poc_state WHERE scope = $1', [pointerScope])).rows[0].value, oldPointer)
-    assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [bindingHash])).rows[0].count, 2)
+    assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [outputBindingHash])).rows[0].count, 2)
     await first.k9SemanticPersistenceV2.writeEmbeddingBatch({
       ...target,
       batch_number: 1,
@@ -1260,7 +1296,7 @@ test('semantic staging survives restart and materializes with its pointer atomic
       `)
       await assert.rejects(restarted.k9SemanticPersistenceV2.activateSnapshot(target), /synthetic pointer failure/)
       assert.deepEqual((await pool.query('SELECT value FROM poc_state WHERE scope = $1', [pointerScope])).rows[0].value, oldPointer)
-      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [bindingHash])).rows[0].count, 2)
+      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [outputBindingHash])).rows[0].count, 2)
       await pool.query('DROP TRIGGER trg_poc_test_reject_k9_pointer ON poc_state; DROP FUNCTION poc_test_reject_k9_pointer()')
 
       const activated = await restarted.k9SemanticPersistenceV2.activateSnapshot(target)
@@ -1273,24 +1309,29 @@ test('semantic staging survives restart and materializes with its pointer atomic
       assert.equal((await restarted.k9SemanticPersistenceV2.activateSnapshot(target)).activated, false)
       assert.equal((await pool.query('SELECT version::integer FROM poc_state WHERE scope = $1', [pointerScope])).rows[0].version, pointerVersion.version)
       assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_k9_semantic_staging_v2', [])).rows[0].count, 1)
-      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [bindingHash])).rows[0].count, 3)
-      assert.deepEqual(await restarted.k9SemanticPersistenceV2.readActiveDocumentHashes({ binding_hash: bindingHash }), {
+      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1', [outputBindingHash])).rows[0].count, 3)
+      assert.deepEqual(await restarted.k9SemanticPersistenceV2.readActiveDocumentHashes({
+        output_binding_hash: outputBindingHash,
+      }), {
         hashes: [
           { document_id: one.document_id, source_hash: one.source_hash },
           { document_id: two.document_id, source_hash: two.source_hash },
         ],
         source_snapshot_id: envelope.snapshot.source_snapshot_id,
+        semantic_input_contract: K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+        materialization_hash: semanticIdentity.binding_hash,
+        pooling_contract: K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
       })
       const sameGeneration = sourceEnvelope('3', 'next-provider-commit')
       await restarted.setK9DesiredSourceSnapshotV2(sameGeneration, 'same-catalog-generation')
       await restarted.persistK9SemanticDesiredManifestV2({
         source_snapshot_id: sameGeneration.snapshot.source_snapshot_id,
-        binding_hash: bindingHash,
+        binding_hash: semanticIdentity.binding_hash,
         documents: [one, two],
       }, 'same-catalog-generation')
       const identityOnly = await restarted.activateK9SemanticSnapshotV2({
         source_snapshot_id: sameGeneration.snapshot.source_snapshot_id,
-        binding_hash: bindingHash,
+        ...semanticIdentity,
         expected_desired_count: 2,
         expected_changed_count: 0,
         expected_batch_count: 0,
@@ -1301,12 +1342,12 @@ test('semantic staging survives restart and materializes with its pointer atomic
       await restarted.setK9DesiredSourceSnapshotV2(sameGenerationRemoval, 'same-generation-removal')
       await restarted.persistK9SemanticDesiredManifestV2({
         source_snapshot_id: sameGenerationRemoval.snapshot.source_snapshot_id,
-        binding_hash: bindingHash,
+        binding_hash: semanticIdentity.binding_hash,
         documents: [one],
       }, 'same-generation-removal')
       await restarted.activateK9SemanticSnapshotV2({
         source_snapshot_id: sameGenerationRemoval.snapshot.source_snapshot_id,
-        binding_hash: bindingHash,
+        ...semanticIdentity,
         expected_desired_count: 1,
         expected_changed_count: 0,
         expected_batch_count: 0,
@@ -1314,10 +1355,10 @@ test('semantic staging survives restart and materializes with its pointer atomic
       assert.equal((await pool.query(`
         SELECT count(*)::integer AS count FROM poc_catalog_embedding
         WHERE binding_hash = $1 AND source_generation = $2
-      `, [bindingHash, envelope.snapshot.catalog_generation])).rows[0].count, 1)
+      `, [outputBindingHash, envelope.snapshot.catalog_generation])).rows[0].count, 1)
       assert.equal((await pool.query(
         'SELECT count(*)::integer AS count FROM poc_catalog_embedding WHERE binding_hash = $1',
-        [bindingHash],
+        [outputBindingHash],
       )).rows[0].count, 3)
 
       for (const scenario of [
@@ -1325,23 +1366,27 @@ test('semantic staging survives restart and materializes with its pointer atomic
         { name: 'full', documents: [one, two], prior: [], changed: [one, two] },
         { name: 'removal', documents: [], prior: [one], changed: [] },
       ]) {
-        const scenarioBinding = computeSha256({ scenario: scenario.name })
-        const scenarioPointer = `catalog-embedding-active-v1:${scenarioBinding}`
+        const scenarioOutputBinding = computeSha256({ scenario: scenario.name })
+        const scenarioIdentity = semanticMaterializationIdentity(scenarioOutputBinding)
+        const scenarioPointer = `catalog-embedding-active-v1:${scenarioOutputBinding}`
         for (const document of scenario.prior) {
           await pool.query(`
             INSERT INTO poc_catalog_embedding (
               binding_hash, asset_urn, source_hash, source_generation, content_text, metadata, embedding
             ) VALUES ($1,$2,$3,repeat('7',64),$4,$5::jsonb,'[0.1,0.05]'::vector)
-          `, [scenarioBinding, document.document_id, document.source_hash, document.content_text, JSON.stringify(document.metadata)])
+          `, [scenarioOutputBinding, document.document_id, document.source_hash,
+            document.content_text, JSON.stringify(document.metadata)])
         }
         if (scenario.prior.length) {
           await pool.query('INSERT INTO poc_state (scope, value) VALUES ($1,$2::jsonb)', [scenarioPointer, JSON.stringify({
-            projection_version: 1, binding_hash: scenarioBinding, source_generation: '7'.repeat(64),
+            projection_version: 1,
+            binding_hash: scenarioOutputBinding,
+            source_generation: '7'.repeat(64),
           })])
         }
         const scenarioTarget = {
           source_snapshot_id: envelope.snapshot.source_snapshot_id,
-          binding_hash: scenarioBinding,
+          ...scenarioIdentity,
           document_count: scenario.documents.length,
           documents: scenario.documents,
           staged_count: scenario.changed.length,
@@ -1362,10 +1407,93 @@ test('semantic staging survives restart and materializes with its pointer atomic
         assert.equal((await pool.query(`
           SELECT count(*)::integer AS count FROM poc_catalog_embedding
           WHERE binding_hash = $1 AND source_generation = $2
-        `, [scenarioBinding, envelope.snapshot.catalog_generation])).rows[0].count, scenario.documents.length)
+        `, [scenarioOutputBinding, envelope.snapshot.catalog_generation])).rows[0].count, scenario.documents.length)
       }
     } finally {
       await restarted.close()
+    }
+  })
+  await pool.end()
+}))
+
+test('semantic activation reuses legacy short staging and rebuilds only incompatible oversized evidence', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('k9_v2_semantic_selective_reuse', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 3 })
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+  await withIntegrityRequired(async () => {
+    const envelope = sourceEnvelope('4', 'semantic-selective-reuse')
+    const outputBindingHash = computeSha256({ binding: 'semantic-selective-reuse' })
+    const identity = semanticMaterializationIdentity(outputBindingHash)
+    const short = {
+      ...semanticDesiredDocument(11, 'short'),
+      content_text: 'short legacy-compatible semantic input',
+    }
+    const oversized = {
+      ...semanticDesiredDocument(12, 'oversized'),
+      content_text: 'x'.repeat(K9_SEMANTIC_MAX_SEGMENT_BYTES_V1 + 1),
+    }
+    const store = createPocStateStore({ databasePool: pool })
+    try {
+      await store.setK9DesiredSourceSnapshotV2(envelope)
+      await store.persistK9SemanticDesiredManifestV2({
+        source_snapshot_id: envelope.snapshot.source_snapshot_id,
+        binding_hash: outputBindingHash,
+        documents: [short, oversized],
+      })
+      await store.stageK9SemanticBatchV2({
+        source_snapshot_id: envelope.snapshot.source_snapshot_id,
+        binding_hash: outputBindingHash,
+        batch_number: 1,
+        batch_total: 1,
+        documents: [
+          { ...changedVector(short, 1), embedding: [0.1, 0.2] },
+          { ...changedVector(oversized, 2), embedding: [0.2, 0.3] },
+        ],
+      })
+      const target = {
+        source_snapshot_id: envelope.snapshot.source_snapshot_id,
+        ...identity,
+        document_count: 2,
+        documents: [short, oversized],
+        staged_count: 1,
+        batch_total: 1,
+        vector_dimension: 2,
+      }
+      await store.k9SemanticPersistenceV2.persistDesiredManifest(target)
+      assert.deepEqual(await store.k9SemanticPersistenceV2.readLegacyStagedDocumentHashes(target), {
+        hashes: [
+          { document_id: short.document_id, source_hash: short.source_hash },
+          { document_id: oversized.document_id, source_hash: oversized.source_hash },
+        ],
+      })
+      await store.k9SemanticPersistenceV2.writeEmbeddingBatch({
+        ...target,
+        batch_number: 1,
+        records: [{ ...oversized, embedding: [0.8, 0.6] }],
+      })
+      const activated = await store.k9SemanticPersistenceV2.activateSnapshot(target)
+      assert.equal(activated.materialized, 2)
+      assert.equal(activated.active_pointer.binding_hash, outputBindingHash)
+      assert.equal(activated.active_pointer.materialization_hash, identity.binding_hash)
+      assert.equal(activated.active_pointer.semantic_input_contract, K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1)
+      const active = (await pool.query(`
+        SELECT asset_urn, embedding::text AS embedding
+        FROM poc_catalog_embedding
+        WHERE binding_hash = $1
+        ORDER BY asset_urn
+      `, [outputBindingHash])).rows
+      assert.deepEqual(active, [
+        { asset_urn: short.document_id, embedding: '[0.1,0.2]' },
+        { asset_urn: oversized.document_id, embedding: '[0.8,0.6]' },
+      ])
+      assert.equal((await pool.query(`
+        SELECT count(*)::integer AS count
+        FROM poc_k9_semantic_staging_v2
+        WHERE source_snapshot_id = $1 AND binding_hash = $2
+      `, [envelope.snapshot.source_snapshot_id, outputBindingHash])).rows[0].count, 2)
+    } finally {
+      await store.close()
     }
   })
   await pool.end()

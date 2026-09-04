@@ -1,6 +1,12 @@
 /* global Buffer, structuredClone */
 import { createHash } from 'node:crypto'
 import { canonicalStringify, computeSha256 } from './poc-knowledge-k9-contracts.mjs'
+import {
+  K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1,
+  K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1,
+  K9_SEMANTIC_MAX_SEGMENT_BYTES_V1,
+  K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1,
+} from './poc-k9-semantic-input.mjs'
 import { sanitizeK9SourceEligibilityTelemetry } from './poc-k9-source-eligibility.mjs'
 
 export const K9_LIFECYCLE_KEY_V2 = 'managed-k9-v2'
@@ -2224,8 +2230,9 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
   async function activateSemanticSnapshot(value, lifecycleKeyValue = K9_LIFECYCLE_KEY_V2) {
     const lifecycleKey = boundedString(lifecycleKeyValue, 'lifecycleKey', 100)
     const keys = [
-      'binding_hash', 'expected_batch_count', 'expected_changed_count',
-      'expected_desired_count', 'source_snapshot_id',
+      'binding_hash', 'expected_batch_count', 'expected_changed_count', 'expected_desired_count',
+      'legacy_binding_hash', 'materialization_contract', 'maximum_segment_bytes',
+      'output_binding_hash', 'pooling_contract', 'semantic_input_contract', 'source_snapshot_id',
     ]
     if (!exactKeys(value, keys)
       || !Number.isSafeInteger(value.expected_batch_count) || value.expected_batch_count < 0
@@ -2233,17 +2240,26 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
       || !Number.isSafeInteger(value.expected_desired_count) || value.expected_desired_count < 0
       || value.expected_changed_count > value.expected_desired_count
       || (value.expected_changed_count === 0 && value.expected_batch_count !== 0)
-      || (value.expected_changed_count > 0 && value.expected_batch_count < 1)) {
+      || (value.expected_changed_count > 0 && value.expected_batch_count < 1)
+      || value.materialization_contract !== K9_SEMANTIC_MATERIALIZATION_CONTRACT_V1
+      || value.semantic_input_contract !== K9_SEMANTIC_INPUT_SEGMENTATION_CONTRACT_V1
+      || value.pooling_contract !== K9_SEMANTIC_VECTOR_POOLING_CONTRACT_V1
+      || value.maximum_segment_bytes !== K9_SEMANTIC_MAX_SEGMENT_BYTES_V1) {
       throw lifecycleError('K9_SEMANTIC_ACTIVATION_INVALID', 'The semantic activation contract is invalid.')
     }
     const sourceSnapshotId = hash(value.source_snapshot_id, 'source_snapshot_id')
-    const bindingHash = hash(value.binding_hash, 'binding_hash')
+    const materializationHash = hash(value.binding_hash, 'binding_hash')
+    const outputBindingHash = hash(value.output_binding_hash, 'output_binding_hash')
+    const legacyBindingHash = hash(value.legacy_binding_hash, 'legacy_binding_hash')
+    if (materializationHash === legacyBindingHash || outputBindingHash !== legacyBindingHash) {
+      throw lifecycleError('K9_SEMANTIC_ACTIVATION_INVALID', 'The semantic compatibility bindings are invalid.')
+    }
     const pool = await requireDatabase()
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `k9-semantic-activate-v2:${sourceSnapshotId}:${bindingHash}`,
+        `k9-semantic-activate-v2:${sourceSnapshotId}:${materializationHash}`,
       ])
       const head = await client.query(`
         SELECT head.desired_snapshot_id, source.catalog_generation
@@ -2260,7 +2276,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         SELECT desired_count, manifest_hash
         FROM poc_k9_semantic_manifests_v2
         WHERE source_snapshot_id = $1 AND binding_hash = $2
-      `, [sourceSnapshotId, bindingHash])
+      `, [sourceSnapshotId, materializationHash])
       const completeness = await client.query(`
         SELECT count(*)::integer AS batch_count,
           min(batch_number)::integer AS first_batch,
@@ -2270,7 +2286,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
           sum(document_count)::integer AS declared_documents
         FROM poc_k9_semantic_batches_v2
         WHERE source_snapshot_id = $1 AND binding_hash = $2
-      `, [sourceSnapshotId, bindingHash])
+      `, [sourceSnapshotId, materializationHash])
       const staged = await client.query(`
         SELECT count(*)::integer AS document_count,
           count(*) FILTER (WHERE desired.document_id IS NOT NULL)::integer AS desired_match_count,
@@ -2283,7 +2299,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
           AND desired.document_id = staged.document_id
           AND desired.source_hash = staged.source_hash
         WHERE staged.source_snapshot_id = $1 AND staged.binding_hash = $2
-      `, [sourceSnapshotId, bindingHash])
+      `, [sourceSnapshotId, materializationHash])
       const boundary = completeness.rows[0]
       const documentBoundary = staged.rows[0]
       const emptyBatchesValid = value.expected_batch_count === 0
@@ -2305,38 +2321,58 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
           && documentBoundary.minimum_dimensions !== documentBoundary.maximum_dimensions)) {
         throw lifecycleError('K9_SEMANTIC_BATCHES_INCOMPLETE', 'Semantic staging is not complete enough to activate.')
       }
-      const pointerScope = `catalog-embedding-active-v1:${bindingHash}`
+      const pointerScope = `catalog-embedding-active-v1:${outputBindingHash}`
       const materializationGeneration = head.rows[0].catalog_generation
       const activeValue = {
         projection_version: 1,
-        binding_hash: bindingHash,
+        binding_hash: outputBindingHash,
         source_generation: materializationGeneration,
         source_snapshot_id: sourceSnapshotId,
         manifest_hash: manifest.rows[0].manifest_hash,
+        materialization_contract: value.materialization_contract,
+        materialization_hash: materializationHash,
+        semantic_input_contract: value.semantic_input_contract,
+        pooling_contract: value.pooling_contract,
+        maximum_segment_bytes: value.maximum_segment_bytes,
       }
       const pointer = await client.query('SELECT value FROM poc_state WHERE scope = $1 FOR UPDATE', [pointerScope])
       const replay = pointer.rows.length === 1
         && canonicalStringify(pointer.rows[0].value) === canonicalStringify(activeValue)
       if (!replay) {
-        const priorGeneration = pointer.rows[0]?.value?.binding_hash === bindingHash
+        const priorGeneration = pointer.rows[0]?.value?.binding_hash === outputBindingHash
           && typeof pointer.rows[0]?.value?.source_generation === 'string'
           ? pointer.rows[0].value.source_generation : null
+        const priorUsesCurrentContract = pointer.rows[0]?.value?.semantic_input_contract
+            === value.semantic_input_contract
+          && pointer.rows[0]?.value?.materialization_hash === materializationHash
+          && pointer.rows[0]?.value?.pooling_contract === value.pooling_contract
         const resolution = await client.query(`
           SELECT count(*)::integer AS desired_count,
-            count(*) FILTER (WHERE staged.document_id IS NOT NULL OR prior.asset_urn IS NOT NULL)::integer AS resolved_count,
-            min(vector_dims(COALESCE(staged.embedding, prior.embedding)))::integer AS minimum_dimensions,
-            max(vector_dims(COALESCE(staged.embedding, prior.embedding)))::integer AS maximum_dimensions
+            count(*) FILTER (WHERE COALESCE(staged.embedding, legacy.embedding, prior.embedding) IS NOT NULL)::integer AS resolved_count,
+            min(vector_dims(COALESCE(staged.embedding, legacy.embedding, prior.embedding)))::integer AS minimum_dimensions,
+            max(vector_dims(COALESCE(staged.embedding, legacy.embedding, prior.embedding)))::integer AS maximum_dimensions
           FROM poc_k9_semantic_desired_documents_v2 AS desired
           LEFT JOIN poc_k9_semantic_staging_v2 AS staged
             ON staged.source_snapshot_id = desired.source_snapshot_id
             AND staged.binding_hash = desired.binding_hash
             AND staged.document_id = desired.document_id
+            AND staged.source_hash = desired.source_hash
+          LEFT JOIN poc_k9_semantic_staging_v2 AS legacy
+            ON staged.document_id IS NULL
+            AND legacy.source_snapshot_id = desired.source_snapshot_id
+            AND legacy.binding_hash = $4
+            AND legacy.document_id = desired.document_id
+            AND legacy.source_hash = desired.source_hash
+            AND octet_length(desired.content_text) <= $5
           LEFT JOIN poc_catalog_embedding AS prior
-            ON staged.document_id IS NULL AND prior.binding_hash = desired.binding_hash
+            ON staged.document_id IS NULL AND legacy.document_id IS NULL
+            AND prior.binding_hash = $6
             AND prior.asset_urn = desired.asset_urn AND prior.source_hash = desired.source_hash
             AND prior.source_generation = $3
+            AND ($7::boolean OR octet_length(desired.content_text) <= $5)
           WHERE desired.source_snapshot_id = $1 AND desired.binding_hash = $2
-        `, [sourceSnapshotId, bindingHash, priorGeneration])
+        `, [sourceSnapshotId, materializationHash, priorGeneration, legacyBindingHash,
+          value.maximum_segment_bytes, outputBindingHash, priorUsesCurrentContract])
         if (resolution.rows[0]?.desired_count !== value.expected_desired_count
           || resolution.rows[0]?.resolved_count !== value.expected_desired_count
           || (value.expected_desired_count > 0
@@ -2347,7 +2383,7 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         if (priorGeneration === materializationGeneration) {
           const inactiveGeneration = computeSha256({
             source_snapshot_id: sourceSnapshotId,
-            binding_hash: bindingHash,
+            binding_hash: outputBindingHash,
             state: 'INACTIVE_REMOVED',
           })
           await client.query(`
@@ -2356,27 +2392,38 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
             WHERE prior.binding_hash = $2 AND prior.source_generation = $4
               AND NOT EXISTS (
                 SELECT 1 FROM poc_k9_semantic_desired_documents_v2 AS desired
-                WHERE desired.source_snapshot_id = $1 AND desired.binding_hash = $2
+                WHERE desired.source_snapshot_id = $1 AND desired.binding_hash = $5
                   AND desired.asset_urn = prior.asset_urn
               )
-          `, [sourceSnapshotId, bindingHash, inactiveGeneration, priorGeneration])
+          `, [sourceSnapshotId, outputBindingHash, inactiveGeneration, priorGeneration,
+            materializationHash])
         }
         await client.query(`
           INSERT INTO poc_catalog_embedding (
             binding_hash, asset_urn, source_hash, source_generation,
             content_text, metadata, embedding
           )
-          SELECT desired.binding_hash, desired.asset_urn, desired.source_hash, $3,
-            desired.content_text, desired.metadata, COALESCE(staged.embedding, prior.embedding)
+          SELECT $5, desired.asset_urn, desired.source_hash, $3,
+            desired.content_text, desired.metadata, COALESCE(staged.embedding, legacy.embedding, prior.embedding)
           FROM poc_k9_semantic_desired_documents_v2 AS desired
           LEFT JOIN poc_k9_semantic_staging_v2 AS staged
             ON staged.source_snapshot_id = desired.source_snapshot_id
             AND staged.binding_hash = desired.binding_hash
             AND staged.document_id = desired.document_id
+            AND staged.source_hash = desired.source_hash
+          LEFT JOIN poc_k9_semantic_staging_v2 AS legacy
+            ON staged.document_id IS NULL
+            AND legacy.source_snapshot_id = desired.source_snapshot_id
+            AND legacy.binding_hash = $6
+            AND legacy.document_id = desired.document_id
+            AND legacy.source_hash = desired.source_hash
+            AND octet_length(desired.content_text) <= $7
           LEFT JOIN poc_catalog_embedding AS prior
-            ON staged.document_id IS NULL AND prior.binding_hash = desired.binding_hash
+            ON staged.document_id IS NULL AND legacy.document_id IS NULL
+            AND prior.binding_hash = $5
             AND prior.asset_urn = desired.asset_urn AND prior.source_hash = desired.source_hash
             AND prior.source_generation = $4
+            AND ($8::boolean OR octet_length(desired.content_text) <= $7)
           WHERE desired.source_snapshot_id = $1 AND desired.binding_hash = $2
           ORDER BY desired.document_id
           ON CONFLICT (binding_hash, asset_urn) DO UPDATE SET
@@ -2391,7 +2438,8 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
             poc_catalog_embedding.embedding::text)
             IS DISTINCT FROM (EXCLUDED.source_hash, EXCLUDED.source_generation,
               EXCLUDED.content_text, EXCLUDED.metadata, EXCLUDED.embedding::text)
-        `, [sourceSnapshotId, bindingHash, materializationGeneration, priorGeneration])
+        `, [sourceSnapshotId, materializationHash, materializationGeneration, priorGeneration,
+          outputBindingHash, legacyBindingHash, value.maximum_segment_bytes, priorUsesCurrentContract])
         await client.query(`
           INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
           ON CONFLICT (scope) DO UPDATE
@@ -2403,12 +2451,12 @@ export function createK9LifecyclePersistenceV2({ requireDatabase }) {
         FROM poc_catalog_embedding AS active
         JOIN poc_k9_semantic_desired_documents_v2 AS desired
           ON desired.source_snapshot_id = $1 AND desired.binding_hash = $2
-          AND active.binding_hash = desired.binding_hash AND active.asset_urn = desired.asset_urn
+          AND active.binding_hash = $4 AND active.asset_urn = desired.asset_urn
           AND active.source_hash = desired.source_hash
           AND active.source_generation = $3
           AND active.content_text = desired.content_text
           AND active.metadata = desired.metadata
-      `, [sourceSnapshotId, bindingHash, materializationGeneration])
+      `, [sourceSnapshotId, materializationHash, materializationGeneration, outputBindingHash])
       if (materialized.rows[0]?.count !== value.expected_desired_count) {
         throw lifecycleError('K9_SEMANTIC_MATERIALIZATION_INCOMPLETE', 'Semantic materialization did not match staged evidence.')
       }

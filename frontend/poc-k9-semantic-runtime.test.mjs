@@ -109,6 +109,7 @@ function fakeSemanticPersistence() {
     },
     async setDesiredSnapshot() {},
     async readActiveDocumentHashes() { return { hashes: [...state.activeHashes].map(([document_id, source_hash]) => ({ document_id, source_hash })) } },
+    async readLegacyStagedDocumentHashes() { return { hashes: [] } },
     async readStagedDocumentHashes() {
       return {
         hashes: [...state.staged].map(([document_id, source_hash]) => ({ document_id, source_hash })),
