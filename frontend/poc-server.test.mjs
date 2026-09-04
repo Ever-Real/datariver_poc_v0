@@ -440,6 +440,45 @@ test('managed K9 scheduler read model preserves exact V2 failure and bounded sou
   assert.equal(JSON.stringify(readModel).includes('urn:li:'), false)
 })
 
+test('managed K9 scheduler read model preserves bound-successor RESUME provenance', async () => {
+  const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-successor-resume-observability')
+  const config = {
+    requested: true, enabled: true, refreshMode: 'DAILY', schedule: '02:15 Asia/Seoul',
+    timeZone: 'Asia/Seoul', scheduleHour: 2, scheduleMinute: 15,
+  }
+  const sourceX = 'a'.repeat(64)
+  const sourceY = 'b'.repeat(64)
+  const executionId = 'c'.repeat(64)
+  const readModel = managedK9SchedulerReadModel(config, { value: { last_attempt: {
+    status: 'FAILURE', reason: 'K9_V2_PROJECTOR_FAILED',
+    failure_stage: 'PROJECTOR', failure_detail_code: 'METADATA_RUNNING',
+    lifecycle_mode: 'RESUME', execution_id: executionId,
+    expected_source_snapshot_id: sourceX, successor_source_snapshot_id: sourceY,
+    source_correction_phase: 'SUCCESSOR_BOUND',
+    scheduled_for: '2026-09-03T17:00:00.000Z', completed_at: '2026-09-03T17:01:00.000Z',
+    trigger: 'scheduled',
+  } } }, {
+    status: 'RUNNING', lifecycle_mode: 'RESUME', execution_id: executionId,
+    expected_source_snapshot_id: sourceX, successor_source_snapshot_id: sourceY,
+    source_correction_phase: 'SUCCESSOR_BOUND',
+    scheduled_for: '2026-09-03T17:00:00.000Z', trigger: 'scheduled',
+    started_at: '2026-09-03T17:02:00.000Z', observed_at: '2026-09-03T17:02:30.000Z',
+    stage: 'METADATA_PROJECTOR', detail: 'METADATA_RUNNING',
+  })
+
+  assert.deepEqual(readModel.scheduler_current_attempt, {
+    status: 'RUNNING', scheduled_for: '2026-09-03T17:00:00.000Z', trigger: 'scheduled',
+    started_at: '2026-09-03T17:02:00.000Z', observed_at: '2026-09-03T17:02:30.000Z',
+    lifecycle_mode: 'RESUME', execution_id: executionId,
+    expected_source_snapshot_id: sourceX, source_correction_phase: 'SUCCESSOR_BOUND',
+    successor_source_snapshot_id: sourceY,
+    stage: 'METADATA_PROJECTOR', detail: 'METADATA_RUNNING',
+  })
+  assert.equal(readModel.scheduler_last_completed_attempt.lifecycle_mode, 'RESUME')
+  assert.equal(readModel.scheduler_last_completed_attempt.source_correction_phase, 'SUCCESSOR_BOUND')
+  assert.equal(readModel.scheduler_last_completed_attempt.successor_source_snapshot_id, sourceY)
+})
+
 test('managed K9 scheduler status distinguishes active, on-demand, disabled, and unavailable states', async () => {
   const { managedK9SchedulerReadModel } = await import('./poc-server.mjs?k9-scheduler-state-contract')
   const base = {

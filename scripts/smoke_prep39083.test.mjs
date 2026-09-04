@@ -820,6 +820,48 @@ test('PREP smoke keeps a delayed source-correction RUNNING ahead of the failed X
   assert.notEqual(result.failure.diagnostic.failure_detail_code, 'GLOSSARY_HIERARCHY_SELF_LOOP')
 })
 
+test('PREP smoke preserves bound-successor RESUME provenance while Metadata is running', async () => {
+  const sourceX = 'a'.repeat(64)
+  const currentAttempt = {
+    status: 'RUNNING', lifecycle_mode: 'RESUME', execution_id: 'b'.repeat(64),
+    expected_source_snapshot_id: sourceX, successor_source_snapshot_id: sourceSnapshotId,
+    source_correction_phase: 'SUCCESSOR_BOUND',
+    scheduled_for: '2026-09-01T17:00:00.000Z',
+    started_at: '2026-09-02T03:20:00.000Z', observed_at: '2026-09-02T03:21:00.000Z',
+    trigger: 'scheduled', stage: 'METADATA_PROJECTOR', detail: 'METADATA_RUNNING',
+  }
+  const result = await fixture('required', {
+    readinessTimeoutMs: '1000',
+    managedItems: [
+      {
+        graph_type: 'LINEAGE', is_default: true, status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+      {
+        graph_type: 'METADATA_MASTER', status: 'PENDING', refresh_mode: 'DAILY',
+        semantic_index_status: 'READY', scheduler_current_attempt: currentAttempt,
+      },
+    ],
+    k9Lifecycle: readyK9Lifecycle({
+      METADATA: {
+        desired_snapshot_id: sourceSnapshotId, active_snapshot_id: null, status: 'RUNNING',
+        progress: { phase: 'GRAPH_MAPPING', completed_units: 0, total_units: 122_241 },
+      },
+      lifecycle: { aggregate: { status: 'NOT_READY', reason: 'K9_V2_PROJECTOR_NOT_READY' } },
+    }),
+  })
+
+  assert.equal(result.completed.code, 2)
+  assert.equal(result.failure.classification, 'PREP_SMOKE_K9_NOT_READY')
+  assert.equal(result.failure.diagnostic.terminal, false)
+  assert.equal(result.report.k9_scheduler.current_attempt.lifecycle_mode, 'RESUME')
+  assert.equal(result.report.k9_scheduler.current_attempt.source_correction_phase, 'SUCCESSOR_BOUND')
+  assert.equal(
+    result.report.k9_scheduler.current_attempt.successor_source_snapshot_id,
+    sourceSnapshotId,
+  )
+})
+
 test('PREP smoke scopes a post-capture projector failure to successor Y', async () => {
   const successorSnapshotId = 'c'.repeat(64)
   const sourceCorrectionFailure = {

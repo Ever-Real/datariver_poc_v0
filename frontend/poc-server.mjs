@@ -9315,12 +9315,20 @@ export function managedK9SchedulerReadModel(
   const durableExpectedSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
     durableAttempt?.expected_source_snapshot_id || '',
   ) ? durableAttempt.expected_source_snapshot_id : null
-  const durableSourceCorrectionIdentity = durableLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
-    && durableExecutionId && durableExpectedSourceSnapshotId
+  const durableSuccessorSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
+    durableAttempt?.successor_source_snapshot_id || '',
+  ) ? durableAttempt.successor_source_snapshot_id : null
+  const durableSourceCorrectionIdentity = durableExecutionId && durableExpectedSourceSnapshotId
+    && ((durableLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+      && durableSuccessorSourceSnapshotId === null)
+      || (durableLifecycleMode === 'RESUME' && durableSuccessorSourceSnapshotId !== null))
     ? {
         lifecycle_mode: durableLifecycleMode,
         execution_id: durableExecutionId,
         expected_source_snapshot_id: durableExpectedSourceSnapshotId,
+        source_correction_phase: durableSuccessorSourceSnapshotId ? 'SUCCESSOR_BOUND' : 'CLAIMED',
+        ...(durableSuccessorSourceSnapshotId
+          ? { successor_source_snapshot_id: durableSuccessorSourceSnapshotId } : {}),
       }
     : null
   const durableV2Diagnostic = durableReason && k9V2FailureCodes.has(durableReason)
@@ -9382,12 +9390,20 @@ export function managedK9SchedulerReadModel(
   const activeExpectedSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
     activeRefreshAttempt?.expected_source_snapshot_id || '',
   ) ? activeRefreshAttempt.expected_source_snapshot_id : null
-  const activeSourceCorrectionIdentity = activeLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
-    && activeExecutionId && activeExpectedSourceSnapshotId
+  const activeSuccessorSourceSnapshotId = /^[0-9a-f]{64}$/u.test(
+    activeRefreshAttempt?.successor_source_snapshot_id || '',
+  ) ? activeRefreshAttempt.successor_source_snapshot_id : null
+  const activeSourceCorrectionIdentity = activeExecutionId && activeExpectedSourceSnapshotId
+    && ((activeLifecycleMode === 'SOURCE_CORRECTION_RECAPTURE'
+      && activeSuccessorSourceSnapshotId === null)
+      || (activeLifecycleMode === 'RESUME' && activeSuccessorSourceSnapshotId !== null))
     ? {
         lifecycle_mode: activeLifecycleMode,
         execution_id: activeExecutionId,
         expected_source_snapshot_id: activeExpectedSourceSnapshotId,
+        source_correction_phase: activeSuccessorSourceSnapshotId ? 'SUCCESSOR_BOUND' : 'CLAIMED',
+        ...(activeSuccessorSourceSnapshotId
+          ? { successor_source_snapshot_id: activeSuccessorSourceSnapshotId } : {}),
       }
     : null
   const schedulerCurrentAttempt = refreshRunning ? {

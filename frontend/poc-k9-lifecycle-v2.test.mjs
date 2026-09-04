@@ -44,8 +44,8 @@ function fakeReceiptPort({ sourceReceipt, desired = {}, active = {} } = {}) {
       state.calls.push(['read-source'])
       return state.sourceReceipt
     },
-    async writeSourceCaptureReceipt(receipt) {
-      state.calls.push(['write-source'])
+    async writeSourceCaptureReceipt(receipt, sourceCorrectionExecution) {
+      state.calls.push(['write-source', sourceCorrectionExecution || null])
       if (state.sourceReceipt?.source_snapshot_id !== receipt?.source_snapshot_id) {
         // PostgreSQL desired projector reads are scoped to the new desired snapshot;
         // the prior active receipts remain readable as LKG evidence only.
@@ -293,6 +293,9 @@ test('explicit source correction preserves X and captures isolated successor Y',
   }).run({
     sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
     expectedSourceSnapshotId: snapshotA,
+    sourceCorrectionExecution: {
+      executionId: 'e'.repeat(64), expectedSourceSnapshotId: snapshotA,
+    },
   })
 
   assert.equal(result.status, 'READY')
@@ -300,6 +303,10 @@ test('explicit source correction preserves X and captures isolated successor Y',
   assert.equal(result.source.outcome, 'CAPTURED')
   assert.deepEqual(sourceX.evidence, { marker: 'immutable-x' })
   assert.equal(captureSource.mock.calls.length, 1)
+  assert.deepEqual(
+    receipts.state.calls.find(([operation]) => operation === 'write-source')?.[1],
+    { executionId: 'e'.repeat(64), expectedSourceSnapshotId: snapshotA },
+  )
   for (const projectorId of K9_V2_PROJECTOR_IDS) {
     assert.equal(projectors[projectorId].project.mock.calls.length, 1)
     assert.equal(receipts.state.desired[projectorId].source_snapshot_id, snapshotB)
@@ -318,6 +325,37 @@ test('explicit source correction preserves X and captures isolated successor Y',
   }
 })
 
+test('bound successor restart reuses Source and Lineage while resuming RUNNING Metadata', async () => {
+  const receipts = fakeReceiptPort({
+    sourceReceipt: readySourceReceipt(snapshotB),
+    desired: {
+      LINEAGE: desiredReceipt('LINEAGE', snapshotB),
+      METADATA: desiredReceipt('METADATA', snapshotB, 'RUNNING'),
+    },
+    active: {
+      LINEAGE: activeReceipt('LINEAGE', snapshotB),
+      METADATA: activeReceipt('METADATA', snapshotA),
+    },
+  })
+  const captureSource = mock.fn()
+  const projectors = projectorPorts(receipts)
+
+  const result = await createK9V2LifecycleOrchestrator({
+    captureSource, receipts, projectors,
+  }).run({ sourceRunMode: 'RESUME' })
+
+  assert.equal(result.status, 'READY')
+  assert.equal(result.source_snapshot_id, snapshotB)
+  assert.equal(result.source.outcome, 'REUSED')
+  assert.equal(result.projectors.LINEAGE.outcome, 'REUSED')
+  assert.equal(result.projectors.METADATA.outcome, 'PROJECTED')
+  assert.equal(result.projectors.SEMANTIC.outcome, 'PROJECTED')
+  assert.equal(captureSource.mock.calls.length, 0)
+  assert.equal(projectors.LINEAGE.project.mock.calls.length, 0)
+  assert.equal(projectors.METADATA.project.mock.calls.length, 1)
+  assert.equal(projectors.SEMANTIC.project.mock.calls.length, 1)
+})
+
 test('explicit source correction fails closed when provider content did not change', async () => {
   const receipts = fakeReceiptPort({
     sourceReceipt: readySourceReceipt(snapshotA),
@@ -331,6 +369,9 @@ test('explicit source correction fails closed when provider content did not chan
   }).run({
     sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
     expectedSourceSnapshotId: snapshotA,
+    sourceCorrectionExecution: {
+      executionId: 'e'.repeat(64), expectedSourceSnapshotId: snapshotA,
+    },
   })
 
   assert.equal(result.status, 'FAILED')
@@ -355,6 +396,9 @@ test('explicit source correction rejects X/Y head mixing before provider capture
   }).run({
     sourceRunMode: 'SOURCE_CORRECTION_RECAPTURE',
     expectedSourceSnapshotId: snapshotA,
+    sourceCorrectionExecution: {
+      executionId: 'e'.repeat(64), expectedSourceSnapshotId: snapshotA,
+    },
   })
 
   assert.equal(result.status, 'FAILED')

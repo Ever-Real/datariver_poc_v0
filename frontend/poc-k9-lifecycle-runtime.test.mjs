@@ -228,6 +228,52 @@ test('durable projector records bounded failure, retries only itself, and expose
   assert.equal(failed.status, 'READY')
 })
 
+test('durable projector resumes a stranded RUNNING receipt without creating a new attempt', async () => {
+  const lifecycle = fakeLifecycle()
+  const now = clock()
+  const receiptPort = createK9V2LifecycleReceiptPort({ lifecycle, clock: now })
+  await receiptPort.writeSourceCaptureReceipt(sourceReceipt())
+  let metadata = buildK9ProjectorReceiptV2({
+    sourceSnapshotId: snapshotId, projectorId: 'METADATA', status: 'PENDING', recordedAt: now(),
+  })
+  metadata = buildK9ProjectorReceiptV2({
+    sourceSnapshotId: snapshotId,
+    projectorId: 'METADATA',
+    status: 'RUNNING',
+    previous: metadata,
+    progress: { phase: 'GRAPH_MAPPING', completed_units: 0, total_units: 122_241 },
+    recordedAt: now(),
+  })
+  lifecycle.state.desired_projector_receipts.push(metadata)
+  let invocations = 0
+  const projector = createK9V2DurableProjector({
+    projectorId: 'METADATA', lifecycle, clock: now,
+    progress: (value) => ({
+      phase: value?.stage || 'GRAPH_MAPPING',
+      completed_units: value?.stage === 'READY' ? 122_241 : 0,
+      total_units: 122_241,
+    }),
+    output: () => ({
+      output_pointer: `k9-metadata-v2://${snapshotId}`,
+      output_hash: computeSha256({ metadata: snapshotId }),
+    }),
+    async materialize() {
+      invocations += 1
+      return { generation: snapshotId }
+    },
+  })
+
+  const result = await projector.project(sourceReceipt())
+  const ready = lifecycle.state.desired_projector_receipts.find(
+    (item) => item.projector === 'METADATA',
+  )
+  assert.equal(result.status, 'READY')
+  assert.equal(invocations, 1)
+  assert.equal(ready.status, 'READY')
+  assert.equal(ready.attempt_number, metadata.attempt_number)
+  assert.equal(ready.attempt_id, metadata.attempt_id)
+})
+
 test('projector receipt identity is deterministic for one exact transition and rejects skipped starts', () => {
   const value = {
     sourceSnapshotId: snapshotId,

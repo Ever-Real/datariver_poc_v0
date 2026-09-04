@@ -754,6 +754,23 @@ async function main() {
           const boundedAttempt = (attempt) => {
             if (!attempt || !['RUNNING', 'SUCCESS', 'FAILURE'].includes(attempt.status)) return null
             const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0
+            const successorSourceSnapshotId = safeSnapshotHash(attempt.successor_source_snapshot_id)
+              ? attempt.successor_source_snapshot_id : null
+            const sourceCorrectionIdentity = safeSnapshotHash(attempt.execution_id)
+              && safeSnapshotHash(attempt.expected_source_snapshot_id)
+              && ((attempt.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
+                && successorSourceSnapshotId === null)
+                || (attempt.lifecycle_mode === 'RESUME' && successorSourceSnapshotId !== null))
+              ? {
+                  lifecycle_mode: attempt.lifecycle_mode,
+                  execution_id: attempt.execution_id,
+                  expected_source_snapshot_id: attempt.expected_source_snapshot_id,
+                  source_correction_phase: successorSourceSnapshotId
+                    ? 'SUCCESSOR_BOUND' : 'CLAIMED',
+                  ...(successorSourceSnapshotId
+                    ? { successor_source_snapshot_id: successorSourceSnapshotId } : {}),
+                }
+              : null
             const persistence = attempt.reason === 'K9_V2_SOURCE_RECEIPT_PERSISTENCE_FAILED'
               ? sanitizeK9SourcePersistenceDiagnosticV2({
                   code: attempt.reason,
@@ -781,15 +798,7 @@ async function main() {
               : null
             return {
               status: attempt.status,
-              ...(attempt.lifecycle_mode === 'SOURCE_CORRECTION_RECAPTURE'
-                && safeSnapshotHash(attempt.execution_id)
-                && safeSnapshotHash(attempt.expected_source_snapshot_id)
-                ? {
-                    lifecycle_mode: attempt.lifecycle_mode,
-                    execution_id: attempt.execution_id,
-                    expected_source_snapshot_id: attempt.expected_source_snapshot_id,
-                  }
-                : {}),
+              ...(sourceCorrectionIdentity || {}),
               ...(safeK9Token(attempt.stage) ? { stage: attempt.stage } : {}),
               ...(safeK9Token(attempt.detail) ? { detail: attempt.detail } : {}),
               ...(safeK9Token(attempt.reason) ? { reason: attempt.reason } : {}),

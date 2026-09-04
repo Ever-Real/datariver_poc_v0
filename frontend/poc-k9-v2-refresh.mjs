@@ -74,10 +74,12 @@ export function createPocK9V2RefreshTask({
   return async function triggerK9V2Refresh({
     lifecycleMode = 'REFRESH',
     expectedSourceSnapshotId = null,
+    sourceCorrectionExecution = null,
   } = {}) {
     const result = await orchestrator.run({
       sourceRunMode: lifecycleMode,
       expectedSourceSnapshotId,
+      sourceCorrectionExecution,
     })
     if (result.status !== 'READY') {
       const diagnostic = boundedDiagnostic(
