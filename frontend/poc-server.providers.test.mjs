@@ -1754,7 +1754,11 @@ test('bypasses the classifier for explicit Chat routes and fails malformed AUTO 
   })
   forcedClassifierResponse = undefined
   assert.equal(malformed.status, 503)
-  assert.match((await malformed.json()).detail, /bounded classifier failed/)
+  const malformedPayload = await malformed.json()
+  assert.equal(malformedPayload.code, 'POC_LLM_PROVIDER_CONTRACT_FAILED')
+  assert.equal(malformedPayload.diagnostic.stage, 'ROUTING_CLASSIFIER')
+  assert.equal(malformedPayload.diagnostic.provider_class, 'CONTRACT')
+  assert.match(malformedPayload.detail, /bounded classifier failed/)
 })
 
 test('routes general Korean conversation without probing DataHub as arbitrary asset identifiers', async () => {

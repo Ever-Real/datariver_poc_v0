@@ -49,6 +49,7 @@ async function requestJson(request) {
 async function fixture(k9Mode, {
   chatStatus = 200,
   chatFailureCode = null,
+  chatFailureDiagnostic = null,
   catalogFailure = null,
   glossaryFailure = null,
   glossaryTarget = null,
@@ -146,7 +147,11 @@ async function fixture(k9Mode, {
       } else {
         json(chatStatus, chatStatus === 200
           ? { route: { selected_mode: 'GENERAL' }, evidence: [] }
-          : { code: chatFailureCode, error: 'provider failed with sensitive body' })
+          : {
+              code: chatFailureCode,
+              error: 'provider failed with sensitive body',
+              ...(chatFailureDiagnostic ? { diagnostic: chatFailureDiagnostic } : {}),
+            })
       }
     } else {
       json(404, { error: 'not found' })
@@ -1327,11 +1332,30 @@ test('PREP smoke preserves bounded Product GENERAL provider failure classificati
   }
   for (const [productCode, expected] of Object.entries(mappings)) {
     await context.test(productCode, async () => {
-      const result = await fixture('deferred', { chatStatus: 502, chatFailureCode: productCode })
+      const result = await fixture('deferred', {
+        chatStatus: 502,
+        chatFailureCode: productCode,
+        chatFailureDiagnostic: {
+          contract: 'DATARIVER_POC_LLM_PROVIDER_DIAGNOSTIC_V1',
+          stage: 'ROUTING_CLASSIFIER',
+          provider_class: productCode.includes('AUTH')
+            ? 'AUTH'
+            : productCode.includes('CONNECTIVITY')
+              ? 'CONNECTIVITY'
+              : productCode.includes('CONTRACT')
+                ? 'CONTRACT'
+                : productCode.includes('TIMEOUT') ? 'TIMEOUT' : 'HTTP',
+          provider_http_class: productCode.includes('HTTP') ? 'HTTP_5XX' : null,
+          provider_body: 'must-not-survive-smoke-sanitization',
+        },
+      })
       assert.equal(result.completed.code, 2)
       assert.equal(result.failure.stage, 'GENERAL_PROVIDER')
       assert.equal(result.failure.classification, expected)
       assert.equal(result.failure.status_class, '5xx')
+      assert.equal(result.failure.diagnostic.stage, 'ROUTING_CLASSIFIER')
+      assert.equal(JSON.stringify(result.failure).includes('sensitive body'), false)
+      assert.equal(JSON.stringify(result.failure).includes('must-not-survive'), false)
     })
   }
   await context.test('unrecognized Product code retains the legacy bounded fallback', async () => {
