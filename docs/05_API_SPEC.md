@@ -638,7 +638,12 @@ timeout, authentication, transport, non-authentication HTTP rejection and respon
 return only the sanitized codes `POC_LLM_PROVIDER_TIMEOUT`, `POC_LLM_PROVIDER_AUTH_FAILED`,
 `POC_LLM_PROVIDER_CONNECTIVITY_FAILED`, `POC_LLM_PROVIDER_HTTP_FAILED` and
 `POC_LLM_PROVIDER_CONTRACT_FAILED`; response bodies, endpoints and credentials are never copied into
-the error contract. This changes neither routing semantics nor the zero-evidence GENERAL contract.
+the error contract. AUTO classifier and answer-composer failures preserve those same codes and add
+only the closed `DATARIVER_POC_LLM_PROVIDER_DIAGNOSTIC_V1` boundary (`ROUTING_CLASSIFIER`,
+`GENERAL_COMPOSER`, or `EVIDENCE_COMPOSER`), provider class, and bounded HTTP class. Empty,
+malformed, schema-invalid, or inconsistent AUTO output remains fail-closed as a classifier
+`CONTRACT` failure; it is never guessed or converted to GENERAL. This changes neither routing
+semantics nor the zero-evidence GENERAL contract.
 
 Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
 exact policy ID/hash, database transaction time and policy-derived deadline in one locked

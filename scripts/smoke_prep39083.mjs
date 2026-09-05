@@ -4,7 +4,10 @@
 import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import process from 'node:process'
 
-import { prepGeneralSmokeClassification } from '../frontend/poc-llm-timeout.mjs'
+import {
+  prepGeneralSmokeClassification,
+  sanitizeLlmProviderDiagnostic,
+} from '../frontend/poc-llm-timeout.mjs'
 import { K9_METADATA_FAILURE_DETAILS } from '../frontend/poc-k9-metadata-collection.mjs'
 import {
   K9_LINEAGE_FAILURE_DETAILS,
@@ -452,6 +455,9 @@ async function responseJson(url, init, stage, classification) {
     const generalClassification = stage === 'GENERAL_PROVIDER'
       ? prepGeneralSmokeClassification(body?.code)
       : undefined
+    const generalDiagnostic = generalClassification
+      ? sanitizeLlmProviderDiagnostic(body?.diagnostic)
+      : null
     const adminClassification = stage === 'ADMIN_LOGIN'
       ? adminLoginClassification(body, response.status)
       : undefined
@@ -462,7 +468,7 @@ async function responseJson(url, init, stage, classification) {
       failureClassification,
       `${stage} request was rejected.`,
       response.status,
-      failureClassification === body?.code ? body?.diagnostic : null,
+      generalDiagnostic || (failureClassification === body?.code ? body?.diagnostic : null),
     )
   }
   return { response, body }

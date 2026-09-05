@@ -140,7 +140,10 @@ import {
   normalizePersistedFeatureSecurityPolicy,
 } from './poc-feature-security-policy.mjs'
 import {
+  boundedLlmProviderDiagnostic,
+  boundedLlmProviderFailureCode,
   llmProviderFailureCodes,
+  llmProviderFailureStages,
   parseLlmProviderTimeoutMs,
 } from './poc-llm-timeout.mjs'
 import {
@@ -5756,6 +5759,20 @@ async function llmRequest(provider, endpoint, body, timeoutMs = llmProviderTimeo
   return value
 }
 
+function boundedLlmStageError(error, stage, message, fallbackStatusCode = 502) {
+  const statusCode = Number.isInteger(error?.statusCode)
+    && error.statusCode >= 500
+    && error.statusCode <= 599
+    ? error.statusCode
+    : fallbackStatusCode
+  return Object.assign(new Error(message), {
+    statusCode,
+    code: boundedLlmProviderFailureCode(error?.code),
+    diagnostic: boundedLlmProviderDiagnostic(stage, error),
+    cause: error,
+  })
+}
+
 function chatMemoryPayload(value) {
   if (value === undefined || value === null) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -6013,11 +6030,14 @@ async function chatRoute(question, requestedMode, principal, signal) {
       clarificationRequired = decision.intent === 'AMBIGUOUS' || decision.confidence < 0.55
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error
-      process.stderr.write(`Chat route planner rejected structured output: ${error instanceof Error ? error.message : 'unknown error'}\n`)
-      throw Object.assign(new Error('AUTO Chat routing is unavailable because the bounded classifier failed.'), {
-        statusCode: 503,
-        cause: error,
-      })
+      const failure = boundedLlmStageError(
+        error,
+        llmProviderFailureStages.ROUTING_CLASSIFIER,
+        'AUTO Chat routing is unavailable because the bounded classifier failed.',
+        503,
+      )
+      process.stderr.write(`Chat route planner failed closed: ${failure.diagnostic.provider_class}\n`)
+      throw failure
     }
     reason = selectedMode === 'GRAPH'
       ? 'GRAPH_INTENT'
@@ -7787,15 +7807,28 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, co
     }
     recordChatPerformance(compositionPerformance, 'prompt_assembly_ms', promptAssemblyStarted)
     compositionLlmCalls += 1
-    const completion = await llmRequest(
-      llm.chat, '/chat/completions', compositionRequest, llmProviderTimeoutMs, signal, compositionPerformance,
-    )
-    answer = completion.choices?.[0]?.message?.content
-    if (typeof answer !== 'string' || !answer.trim()) {
-      throw Object.assign(new Error('The Chat model returned no answer.'), {
-        statusCode: 502,
-        code: llmProviderFailureCodes.CONTRACT,
-      })
+    try {
+      const completion = await llmRequest(
+        llm.chat, '/chat/completions', compositionRequest, llmProviderTimeoutMs, signal, compositionPerformance,
+      )
+      answer = completion.choices?.[0]?.message?.content
+      if (typeof answer !== 'string' || !answer.trim()) {
+        throw Object.assign(new Error('The Chat model returned no answer.'), {
+          statusCode: 502,
+          code: llmProviderFailureCodes.CONTRACT,
+        })
+      }
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
+      throw boundedLlmStageError(
+        error,
+        generalRoute
+          ? llmProviderFailureStages.GENERAL_COMPOSER
+          : llmProviderFailureStages.EVIDENCE_COMPOSER,
+        generalRoute
+          ? 'GENERAL Chat composition failed at the bounded provider contract.'
+          : 'Evidence-grounded Chat composition failed at the bounded provider contract.',
+      )
     }
   }
   progress('COMPOSITION', 'COMPLETED', 'POC_LIVE_PROVIDER')
