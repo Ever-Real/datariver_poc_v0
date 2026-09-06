@@ -8,6 +8,7 @@ set -euo pipefail
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
 # ProviderCallsPerRun: 3
+# Neo4jMutation: NONE
 
 readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
 readonly COMPOSE_PROJECT='datariver-prep39083'
@@ -106,6 +107,8 @@ const PROVIDER_TRANSPORT_NEEDLE = 'const providerTransport = createProviderTrans
 const CHAT_ROUTE_NEEDLE = 'async function chatRoute(question, requestedMode, principal, signal) {'
 const CLASSIFIER_CALL_NEEDLE = "      const classification = await llmRequest(llm.chat, '/chat/completions', {"
 const CLASSIFIER_VALUE_NEEDLE = '      const value = classification.choices?.[0]?.message?.content'
+const LLM_SERIALIZE_NEEDLE = '  const serializedBody = JSON.stringify(body)'
+const NEO4J_QUERY_NEEDLE = 'async function neo4jQuery(statement, parameters = {}, timeoutMs = providerTimeoutMs, signal) {'
 const DISCOVERY_SQL_NULL_NEEDLE = `command.discovery === null
             ? null
             : JSON.stringify(command.discovery)`
@@ -280,7 +283,9 @@ async function prepareTemporaryServer(source) {
   if (countOccurrences(source, PROVIDER_TRANSPORT_NEEDLE) !== 1
     || countOccurrences(source, CHAT_ROUTE_NEEDLE) !== 1
     || countOccurrences(source, CLASSIFIER_CALL_NEEDLE) !== 1
-    || countOccurrences(source, CLASSIFIER_VALUE_NEEDLE) !== 1) {
+    || countOccurrences(source, CLASSIFIER_VALUE_NEEDLE) !== 1
+    || countOccurrences(source, LLM_SERIALIZE_NEEDLE) !== 1
+    || countOccurrences(source, NEO4J_QUERY_NEEDLE) !== 1) {
     throw probeFailure('SOURCE_CONTRACT')
   }
 
@@ -300,8 +305,32 @@ async function prepareTemporaryServer(source) {
     `export ${CHAT_ROUTE_NEEDLE}`,
   )
   instrumented = instrumented.replace(
+    NEO4J_QUERY_NEEDLE,
+    `export ${NEO4J_QUERY_NEEDLE}`,
+  )
+  instrumented = instrumented.replace(
+    LLM_SERIALIZE_NEEDLE,
+    `  if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA?.captureRequest === true) {
+    const capture = globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA
+    capture.captureRequest = false
+    capture.requests.push({
+      maxTokens: body?.max_tokens,
+      maxCompletionTokensPresent: Object.hasOwn(body || {}, 'max_completion_tokens'),
+      reasoningEffort: body?.reasoning_effort,
+      nestedReasoningEffort: body?.reasoning?.effort,
+      temperature: body?.temperature,
+      modelPresent: typeof body?.model === 'string' && Boolean(body.model),
+      strictJsonSchema: body?.response_format?.type === 'json_schema'
+        && body?.response_format?.json_schema?.strict === true,
+    })
+  }
+${LLM_SERIALIZE_NEEDLE}`,
+  )
+  instrumented = instrumented.replace(
     CLASSIFIER_CALL_NEEDLE,
-    `      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.providerCalls += 1\n${CLASSIFIER_CALL_NEEDLE}`,
+    `      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.providerCalls += 1
+      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.captureRequest = true
+${CLASSIFIER_CALL_NEEDLE}`,
   )
   instrumented = instrumented.replace(
     CLASSIFIER_VALUE_NEEDLE,
@@ -394,6 +423,27 @@ function failurePoint(subtype) {
   })[subtype] || 'LOCAL_CONTRACT'
 }
 
+function requestShape(value) {
+  if (!value || typeof value !== 'object') return 'U'
+  const maxTokens = Number.isSafeInteger(value.maxTokens) && value.maxTokens >= 0
+    ? String(value.maxTokens)
+    : 'U'
+  const reasoning = value.reasoningEffort === 'none' ? 'N' : boundedToken(value.reasoningEffort, 'U')
+  const nestedReasoning = value.nestedReasoningEffort === 'none'
+    ? 'N'
+    : boundedToken(value.nestedReasoningEffort, 'U')
+  const temperature = value.temperature === 0 ? '0' : 'U'
+  return [
+    `MT${maxTokens}`,
+    `MCT${value.maxCompletionTokensPresent ? 'Y' : 'N'}`,
+    `RE${reasoning}`,
+    `RN${nestedReasoning}`,
+    `T${temperature}`,
+    `M${value.modelPresent ? 'Y' : 'N'}`,
+    `JS${value.strictJsonSchema ? 'Y' : 'N'}`,
+  ].join('.')
+}
+
 function classifyFailure(routeError, rawValue) {
   const chain = causeChain(routeError)
   const messages = chain.map((item) => String(item.message || ''))
@@ -422,7 +472,7 @@ function classifyFailure(routeError, rawValue) {
   return 'UNCLASSIFIED_LOCAL_CONTRACT'
 }
 
-function classifierEvidence(route, routeError, capture) {
+function classifierEvidence(route, routeError, capture, request) {
   const classification = capture.classification
   const choice = Array.isArray(classification?.choices) ? classification.choices[0] : undefined
   const message = choice?.message
@@ -453,6 +503,7 @@ function classifierEvidence(route, routeError, capture) {
     route: boundedToken(route?.selected_mode, 'NONE'),
     shape: rawClassifierShape(rawValue),
     point: failurePoint(subtype),
+    request: requestShape(request),
   }
 }
 
@@ -469,7 +520,154 @@ function attemptToken(evidence) {
     evidence.route,
     evidence.shape,
     evidence.point,
+    evidence.request,
   ].join(',')
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function graphDocumentsByIdentity(documents, identityOf) {
+  if (!Array.isArray(documents)) return null
+  const result = new Map()
+  for (const document of documents) {
+    const identity = identityOf(document)
+    if (!identity || result.has(identity)) return null
+    result.set(identity, canonicalJson(document))
+  }
+  return result
+}
+
+function graphDocumentsEqual(expected, observed, identityOf) {
+  if (!Array.isArray(expected) || !Array.isArray(observed) || expected.length !== observed.length) {
+    return false
+  }
+  const expectedByIdentity = graphDocumentsByIdentity(expected, identityOf)
+  const observedByIdentity = graphDocumentsByIdentity(observed, identityOf)
+  if (!expectedByIdentity || !observedByIdentity || expectedByIdentity.size !== observedByIdentity.size) {
+    return false
+  }
+  for (const [identity, expectedDocument] of expectedByIdentity) {
+    if (observedByIdentity.get(identity) !== expectedDocument) return false
+  }
+  return true
+}
+
+function graphProperties(value) {
+  if (typeof value !== 'string' || !value) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function managedGraphKey(value) {
+  if (value === 'metadata-lineage') return 'ML'
+  if (value === 'data-glossary') return 'DG'
+  return 'OT'
+}
+
+function graphFlag(value) {
+  return value ? '1' : '0'
+}
+
+function graphEvidenceToken(key, flags, classification, cause) {
+  return `${key}:R${graphFlag(flags.ready)}P${graphFlag(flags.published)}`
+    + `A${graphFlag(flags.active)}S${graphFlag(flags.store)}D${graphFlag(flags.digest)}`
+    + `:${classification}:${cause}`
+}
+
+async function auditManagedGraph(row) {
+  const key = managedGraphKey(row.managed_intent)
+  const active = typeof row.active_release_pointer === 'string' && Boolean(row.active_release_pointer)
+  const published = Boolean(row.active_run_id && row.active_canonical_release)
+  const flags = { ready: active && published, published, active, store: false, digest: false }
+  if (!active) {
+    const classification = ['RUN', 'NO_OP'].includes(row.latest_result)
+      ? 'READY_BUT_UNPUBLISHED'
+      : 'ACTIVE_RELEASE_MISSING'
+    return graphEvidenceToken(key, flags, classification, 'POINTER')
+  }
+  const canonicalRelease = row.active_canonical_release
+  if (!published || !canonicalRelease || typeof canonicalRelease !== 'object'
+    || canonicalRelease.manifest?.graph_id !== row.graph_id
+    || canonicalRelease.manifest?.policy_hash !== row.policy_hash
+    || canonicalRelease.manifest?.input_snapshot_hash !== row.active_input_snapshot_hash
+    || !Array.isArray(canonicalRelease.nodes)
+    || !Array.isArray(canonicalRelease.edges)) {
+    return graphEvidenceToken(key, flags, 'ACTIVE_RELEASE_MISSING', 'POSTGRES')
+  }
+  try {
+    const markerRows = await serverModule.neo4jQuery(`
+      MATCH (marker:K9Node:K9Release { namespace: $namespace })
+      RETURN marker.input_snapshot_hash, marker.policy_hash, marker.node_count, marker.edge_count
+    `, { namespace: row.active_release_pointer })
+    flags.store = markerRows.length === 1
+    if (!flags.store) return graphEvidenceToken(key, flags, 'STORE_RELEASE_MISSING', 'MARKER')
+    const marker = markerRows[0]?.row || []
+    flags.digest = marker[0] === row.active_input_snapshot_hash
+      && marker[1] === row.policy_hash
+      && Number(marker[2]) === canonicalRelease.nodes.length
+      && Number(marker[3]) === canonicalRelease.edges.length
+    if (!flags.digest) return graphEvidenceToken(key, flags, 'ACTIVE_STORE_MISMATCH', 'MARKER')
+
+    const expectedNodes = canonicalRelease.nodes.slice(0, 200)
+    const expectedNodeIds = new Set(expectedNodes.map((node) => node.id))
+    const expectedEdges = canonicalRelease.edges.filter((edge) => (
+      expectedNodeIds.has(edge.source) && expectedNodeIds.has(edge.target)
+    ))
+    const nodeRows = await serverModule.neo4jQuery(`
+      MATCH (node:K9Node)
+      WHERE node.namespace = $namespace AND NOT node:K9Release AND node.id IN $nodeIds
+      RETURN node.id, node.type, node.classification, node.properties
+      ORDER BY node.id
+    `, { namespace: row.active_release_pointer, nodeIds: [...expectedNodeIds] })
+    const edgeRows = expectedEdges.length ? await serverModule.neo4jQuery(`
+      MATCH (source:K9Node { namespace: $namespace })-[relation:K9Edge]->(target:K9Node { namespace: $namespace })
+      WHERE source.id IN $nodeIds AND target.id IN $nodeIds
+      RETURN source.id, target.id, relation.type, relation.properties
+      ORDER BY source.id, target.id, relation.type
+    `, { namespace: row.active_release_pointer, nodeIds: [...expectedNodeIds] }) : []
+    const observedNodes = nodeRows.map(({ row: values }) => ({
+      id: values[0], type: values[1], classification: values[2], properties: graphProperties(values[3]),
+    }))
+    const observedEdges = edgeRows.map(({ row: values }) => ({
+      source: values[0], target: values[1], type: values[2], properties: graphProperties(values[3]),
+    }))
+    const contentMatches = graphDocumentsEqual(
+      expectedNodes, observedNodes, (node) => typeof node?.id === 'string' ? node.id : null,
+    ) && graphDocumentsEqual(
+      expectedEdges,
+      observedEdges,
+      (edge) => typeof edge?.source === 'string'
+          && typeof edge?.target === 'string'
+          && typeof edge?.type === 'string'
+        ? canonicalJson([edge.source, edge.target, edge.type])
+        : null,
+    )
+    if (!contentMatches) return graphEvidenceToken(key, flags, 'ACTIVE_STORE_MISMATCH', 'CONTENT')
+    const orderMatches = canonicalJson(expectedNodes) === canonicalJson(observedNodes)
+      && canonicalJson(expectedEdges) === canonicalJson(observedEdges)
+    return orderMatches
+      ? graphEvidenceToken(key, flags, 'PASS', 'NONE')
+      : graphEvidenceToken(key, flags, 'ACTIVE_STORE_MISMATCH', 'ORDER')
+  } catch (error) {
+    const cause = boundedToken(error?.neo4jErrorClass, 'OTHER')
+    return graphEvidenceToken(key, flags, 'DATABASE_CONNECTION_FAILURE', cause)
+  }
+}
+
+async function auditManagedGraphs(rows) {
+  const tokens = []
+  for (const row of rows) tokens.push(await auditManagedGraph(row))
+  return tokens.join(';') || 'NONE'
 }
 
 function aggregateSubtype(attempts) {
@@ -481,7 +679,7 @@ function aggregateSubtype(attempts) {
     : 'MULTIPLE_CONTRACT_FAILURES'
 }
 
-function evidenceLine(attempts, persisted, discoveryBind) {
+function evidenceLine(attempts, persisted, discoveryBind, graphEvidence) {
   return [
     OUTPUT_PREFIX,
     `subtype=${aggregateSubtype(attempts)}`,
@@ -492,6 +690,7 @@ function evidenceLine(attempts, persisted, discoveryBind) {
     `run1=${attemptToken(attempts[0])}`,
     `run2=${attemptToken(attempts[1])}`,
     `run3=${attemptToken(attempts[2])}`,
+    `graphs=${graphEvidence}`,
     `constraint=${persisted.constraint}`,
     `discovery_bind=${discoveryBind}`,
   ].join('|')
@@ -519,8 +718,9 @@ async function main() {
     ),
   })
   serverModule.createPocServer({ stateStore })
+  const graphEvidence = await auditManagedGraphs(persisted.managedGraphRows)
 
-  globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0 }
+  globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0, requests: [], captureRequest: false }
   const attempts = []
   for (let attempt = 0; attempt < PROBE_ATTEMPT_COUNT; attempt += 1) {
     delete globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.classification
@@ -540,12 +740,15 @@ async function main() {
     attempts.push(classifierEvidence(route, routeError, {
       classification: globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.classification,
       rawValue: globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.rawValue,
-    }))
+    }, globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.requests[attempt]))
   }
   if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.providerCalls !== PROBE_ATTEMPT_COUNT) {
     throw probeFailure('PROVIDER_CALL_CONTRACT')
   }
-  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind)}\n`)
+  if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.requests.length !== PROBE_ATTEMPT_COUNT) {
+    throw probeFailure('PROVIDER_REQUEST_CONTRACT')
+  }
+  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind, graphEvidence)}\n`)
 }
 
 try {

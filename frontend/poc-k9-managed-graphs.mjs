@@ -347,7 +347,7 @@ function graphDocumentsEqualByIdentity(expected, observed, identityOf) {
   return true
 }
 
-function graphReadBackMatches(expectedNodes, expectedEdges, observedNodes, observedEdges) {
+export function graphReadBackMatches(expectedNodes, expectedEdges, observedNodes, observedEdges) {
   return graphDocumentsEqualByIdentity(
     expectedNodes,
     observedNodes,

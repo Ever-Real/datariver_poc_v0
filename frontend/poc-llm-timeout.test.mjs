@@ -23,6 +23,7 @@ let classifierDelayMs = 0
 let classifierFinishReason = 'stop'
 let classifierMinimumBudget = 0
 const classifierRequestBudgets = []
+const classifierResponseFinishReasons = []
 let classifierStatus = 200
 let providerServer
 let productServer
@@ -57,6 +58,7 @@ before(async () => {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, currentDelayMs))
       if (response.destroyed) return
       const budgetAccepted = Number(payload.max_tokens) >= currentMinimumBudget
+      classifierResponseFinishReasons.push(budgetAccepted ? currentFinishReason : 'length')
       return sendJson(response, currentStatus, currentStatus === 200
         ? { choices: [{
           message: { content: budgetAccepted ? currentContent ?? JSON.stringify(generalDecision) : '{"mode":"GENERAL"' },
@@ -143,12 +145,18 @@ test('AUTO classifier carries the bounded expanded completion envelope on repeat
   answerInvalidContract = false
   answerStatus = 200
   const budgetOffset = classifierRequestBudgets.length
+  const finishOffset = classifierResponseFinishReasons.length
   for (let run = 0; run < 3; run += 1) {
     const response = await chat('AUTO')
     assert.equal(response.status, 200, await response.clone().text())
     assert.equal((await response.json()).route.selected_mode, 'GENERAL')
   }
-  assert.deepEqual(classifierRequestBudgets.slice(budgetOffset), [1_024, 1_024, 1_024])
+  assert.deepEqual(classifierRequestBudgets.slice(budgetOffset), [
+    routingClassifierCompletionTokenBudget,
+    routingClassifierCompletionTokenBudget,
+    routingClassifierCompletionTokenBudget,
+  ])
+  assert.deepEqual(classifierResponseFinishReasons.slice(finishOffset), ['stop', 'stop', 'stop'])
   classifierMinimumBudget = 0
 })
 
