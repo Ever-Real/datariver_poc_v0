@@ -145,6 +145,7 @@ import {
   llmProviderFailureCodes,
   llmProviderFailureStages,
   parseLlmProviderTimeoutMs,
+  routingClassifierCompletionTokenBudget,
 } from './poc-llm-timeout.mjs'
 import {
   POC_SITE_BRANDING_SCOPE,
@@ -5954,7 +5955,7 @@ async function chatRoute(question, requestedMode, principal, signal) {
         reasoning_effort: 'none',
         reasoning: { effort: 'none' },
         temperature: 0,
-        max_tokens: 320,
+        max_tokens: routingClassifierCompletionTokenBudget,
         response_format: {
           type: 'json_schema',
           json_schema: {

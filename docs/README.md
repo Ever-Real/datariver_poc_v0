@@ -79,6 +79,7 @@
 | 81 | [K9 Semantic input segmentation](adr/0137-k9-semantic-input-segmentation.md) | deterministic bounded provider inputs, cosine-compatible document pooling and selective legacy vector reuse | Accepted; PREP runtime gate open |
 | 82 | [PREP Compose ownership and runtime identity fence](adr/0138-prep-compose-owner-and-runtime-identity-fence.md) | host-global project serialization, safe foreign-Web adoption and smoke-bound Product identity | Accepted; PREP runtime gate open |
 | 83 | [PREP final-image runtime module closure](adr/0139-prep-final-image-runtime-module-closure.md) | explicit recursive runtime-module packaging and exact OCI import probes | Accepted; PREP runtime gate open |
+| 84 | [POC AUTO classifier completion envelope](adr/0140-poc-auto-classifier-completion-envelope.md) | bounded classifier-only completion budget while preserving strict routing validation | Accepted; PREP runtime gate open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

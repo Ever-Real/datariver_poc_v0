@@ -1091,7 +1091,10 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(classifierPayload.response_format.type, 'json_schema')
   assert.equal(classifierPayload.reasoning_effort, 'none')
   assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
-  assert.equal(classifierPayload.max_tokens, 320)
+  assert.equal(classifierPayload.max_tokens, 1_024)
+  assert.equal(Object.hasOwn(classifierPayload, 'max_completion_tokens'), false)
+  assert.equal(classifierPayload.temperature, 0)
+  assert.equal(classifierPayload.stream, false)
   assert.deepEqual(classifierPayload.response_format.json_schema.schema.required, [
     'mode', 'confidence', 'intent', 'primary_concepts', 'secondary_concepts',
     'relation_intent', 'entity_type_hints', 'selected_graph_asset',

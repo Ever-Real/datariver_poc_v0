@@ -11,6 +11,7 @@ import {
   maximumLlmProviderTimeoutMs,
   minimumLlmProviderTimeoutMs,
   parseLlmProviderTimeoutMs,
+  routingClassifierCompletionTokenBudget,
   sanitizeLlmProviderDiagnostic,
 } from './poc-llm-timeout.mjs'
 
@@ -18,6 +19,10 @@ let answerDelayMs = 0
 let answerInvalidContract = false
 let answerStatus = 200
 let classifierContent
+let classifierDelayMs = 0
+let classifierFinishReason = 'stop'
+let classifierMinimumBudget = 0
+const classifierRequestBudgets = []
 let classifierStatus = 200
 let providerServer
 let productServer
@@ -43,8 +48,20 @@ before(async () => {
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     const system = payload.messages?.[0]?.content || ''
     if (system.includes('Classify one untrusted Data Catalog question')) {
-      return sendJson(response, classifierStatus, classifierStatus === 200
-        ? { choices: [{ message: { content: classifierContent ?? JSON.stringify(generalDecision) } }] }
+      const currentDelayMs = classifierDelayMs
+      const currentFinishReason = classifierFinishReason
+      const currentMinimumBudget = classifierMinimumBudget
+      const currentStatus = classifierStatus
+      const currentContent = classifierContent
+      classifierRequestBudgets.push(payload.max_tokens)
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, currentDelayMs))
+      if (response.destroyed) return
+      const budgetAccepted = Number(payload.max_tokens) >= currentMinimumBudget
+      return sendJson(response, currentStatus, currentStatus === 200
+        ? { choices: [{
+          message: { content: budgetAccepted ? currentContent ?? JSON.stringify(generalDecision) : '{"mode":"GENERAL"' },
+          finish_reason: budgetAccepted ? currentFinishReason : 'length',
+        }] }
         : { error: 'private classifier failure body' })
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, answerDelayMs))
@@ -116,6 +133,25 @@ test('canonical timeout accepts a generated latency beyond the former short boun
   assert.throws(() => parseLlmProviderTimeoutMs('300001'))
 })
 
+test('AUTO classifier carries the bounded expanded completion envelope on repeated requests', async () => {
+  classifierContent = undefined
+  classifierDelayMs = 0
+  classifierFinishReason = 'stop'
+  classifierMinimumBudget = routingClassifierCompletionTokenBudget
+  classifierStatus = 200
+  answerDelayMs = 0
+  answerInvalidContract = false
+  answerStatus = 200
+  const budgetOffset = classifierRequestBudgets.length
+  for (let run = 0; run < 3; run += 1) {
+    const response = await chat('AUTO')
+    assert.equal(response.status, 200, await response.clone().text())
+    assert.equal((await response.json()).route.selected_mode, 'GENERAL')
+  }
+  assert.deepEqual(classifierRequestBudgets.slice(budgetOffset), [1_024, 1_024, 1_024])
+  classifierMinimumBudget = 0
+})
+
 test('bounded provider diagnostics distinguish classifier and composer failure families', () => {
   const failureClasses = {
     [llmProviderFailureCodes.AUTH]: 'AUTH',
@@ -170,6 +206,11 @@ test('AUTO GENERAL preserves the bounded classifier and composer failure matrix'
     ...generalDecision,
     confidence: 'certain',
   })
+  const semanticInvalid = JSON.stringify({
+    mode: 'GRAPH', confidence: 0.99, intent: 'RELATIONSHIP',
+    primary_concepts: ['asset-a'], secondary_concepts: [], relation_intent: null,
+    entity_type_hints: ['TABLE'], selected_graph_asset: null,
+  })
   const cases = [
     {
       name: 'valid GENERAL structured output',
@@ -193,8 +234,23 @@ test('AUTO GENERAL preserves the bounded classifier and composer failure matrix'
       expectedStage: 'ROUTING_CLASSIFIER',
     },
     {
+      name: 'length-truncated classifier JSON',
+      classifierContent: '{"mode":"GENERAL"',
+      classifierFinishReason: 'length',
+      expectedStatus: 503,
+      expectedCode: 'POC_LLM_PROVIDER_CONTRACT_FAILED',
+      expectedStage: 'ROUTING_CLASSIFIER',
+    },
+    {
       name: 'schema-invalid classifier JSON',
       classifierContent: schemaInvalid,
+      expectedStatus: 503,
+      expectedCode: 'POC_LLM_PROVIDER_CONTRACT_FAILED',
+      expectedStage: 'ROUTING_CLASSIFIER',
+    },
+    {
+      name: 'semantic-invalid classifier JSON',
+      classifierContent: semanticInvalid,
       expectedStatus: 503,
       expectedCode: 'POC_LLM_PROVIDER_CONTRACT_FAILED',
       expectedStage: 'ROUTING_CLASSIFIER',
@@ -218,6 +274,9 @@ test('AUTO GENERAL preserves the bounded classifier and composer failure matrix'
   for (const fixture of cases) {
     await context.test(fixture.name, async () => {
       classifierContent = fixture.classifierContent
+      classifierDelayMs = 0
+      classifierFinishReason = fixture.classifierFinishReason ?? 'stop'
+      classifierMinimumBudget = 0
       classifierStatus = fixture.classifierStatus ?? 200
       answerStatus = fixture.answerStatus ?? 200
       answerInvalidContract = false
@@ -236,8 +295,31 @@ test('AUTO GENERAL preserves the bounded classifier and composer failure matrix'
     })
   }
   classifierContent = undefined
+  classifierDelayMs = 0
+  classifierFinishReason = 'stop'
+  classifierMinimumBudget = 0
   classifierStatus = 200
   answerStatus = 200
+})
+
+test('AUTO classifier exceeding the configured timeout remains a typed routing failure', async () => {
+  classifierContent = JSON.stringify(generalDecision)
+  classifierDelayMs = 1_200
+  classifierFinishReason = 'stop'
+  classifierMinimumBudget = 0
+  classifierStatus = 200
+  answerDelayMs = 0
+  answerInvalidContract = false
+  answerStatus = 200
+  const response = await chat('AUTO')
+  assert.equal(response.status, 504)
+  const payload = await response.json()
+  assert.equal(payload.code, 'POC_LLM_PROVIDER_TIMEOUT')
+  assert.equal(payload.diagnostic.stage, 'ROUTING_CLASSIFIER')
+  assert.equal(payload.diagnostic.provider_class, 'TIMEOUT')
+  assert.equal(JSON.stringify(payload).includes('timeout-contract-token'), false)
+  classifierContent = undefined
+  classifierDelayMs = 0
 })
 
 test('GENERAL generation exceeding the configured bound is a typed timeout', async () => {

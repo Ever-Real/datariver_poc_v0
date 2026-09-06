@@ -1,6 +1,7 @@
 export const minimumLlmProviderTimeoutMs = 1_000
 export const maximumLlmProviderTimeoutMs = 300_000
 export const defaultLlmProviderTimeoutMs = 120_000
+export const routingClassifierCompletionTokenBudget = 1_024
 
 export const llmProviderFailureCodes = Object.freeze({
   AUTH: 'POC_LLM_PROVIDER_AUTH_FAILED',
