@@ -57,6 +57,7 @@ import {
 import {
   buildK9GlossaryScrollVariables,
   createK9ManagedGraphs,
+  graphReadBackMatches,
   k9GraphAssetDefinition,
 } from './poc-k9-managed-graphs.mjs'
 import {
@@ -9993,8 +9994,7 @@ async function knowledgeChatSnapshot(scope, maximumNodes = 200, managedSeedNodeI
       type: row[2],
       properties: knowledgeChatProperties(row[3]),
     }))
-    if (canonicalHash(readBackNodes) !== canonicalHash(expectedNodes)
-      || canonicalHash(readBackEdges) !== canonicalHash(expectedEdges)) {
+    if (!graphReadBackMatches(expectedNodes, expectedEdges, readBackNodes, readBackEdges)) {
       throw knowledgeProjectionError(409, 'K9_ACTIVE_RELEASE_INVALID', 'The managed graph store no longer matches its active release.')
     }
     const classification = securityGradeRank(scope.draft.classification)

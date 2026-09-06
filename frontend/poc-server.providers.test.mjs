@@ -67,6 +67,8 @@ let forceKnowledgeNonTable
 let forceABoxNeo4jFailure
 let currentTableClassificationTags = ['CLASSIFICATION:INTERNAL']
 let keywordFixtureAssets
+let managedK9ReadBackMutation
+let reverseManagedK9ReadBack = false
 let providerServer
 let providerOrigin
 let pocServer
@@ -550,14 +552,34 @@ function providerHandler(request, response) {
       const parameters = payload.statements?.[0]?.parameters || {}
       if (query.includes('MATCH (node:K9Node)')) {
         const nodeIds = new Set(parameters.nodeIds || [])
-        return sendJson(response, { errors: [], results: [{ data: managedK9Nodes
+        const nodes = managedK9Nodes
           .filter((node) => nodeIds.has(node.id))
+          .map((node) => structuredClone(node))
+        if (managedK9ReadBackMutation === 'NODE_PROPERTIES' && nodes.length) {
+          nodes[0].properties = { ...nodes[0].properties, name: 'changed-provider-read-back' }
+        }
+        if (managedK9ReadBackMutation === 'NODE_MISSING') nodes.shift()
+        if (managedK9ReadBackMutation === 'NODE_DUPLICATE' && nodes.length) {
+          nodes.push(structuredClone(nodes[0]))
+        }
+        if (reverseManagedK9ReadBack) nodes.reverse()
+        return sendJson(response, { errors: [], results: [{ data: nodes
           .map((node) => ({ row: [node.id, node.type, node.classification, JSON.stringify(node.properties)] })) }] })
       }
       if (query.includes('[relation:K9Edge]')) {
         const nodeIds = new Set(parameters.nodeIds || [])
-        return sendJson(response, { errors: [], results: [{ data: managedK9Edges
+        const edges = managedK9Edges
           .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+          .map((edge) => structuredClone(edge))
+        if (managedK9ReadBackMutation === 'EDGE_PROPERTIES' && edges.length) {
+          edges[0].properties = { changed: true }
+        }
+        if (managedK9ReadBackMutation === 'EDGE_MISSING') edges.shift()
+        if (managedK9ReadBackMutation === 'EDGE_DUPLICATE' && edges.length) {
+          edges.push(structuredClone(edges[0]))
+        }
+        if (reverseManagedK9ReadBack) edges.reverse()
+        return sendJson(response, { errors: [], results: [{ data: edges
           .map((edge) => ({ row: [edge.source, edge.target, edge.type, JSON.stringify(edge.properties)] })) }] })
       }
       if (query.includes('KNOWLEDGE_CHAT_NODES_V1')) {
@@ -1091,7 +1113,7 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   assert.equal(classifierPayload.response_format.type, 'json_schema')
   assert.equal(classifierPayload.reasoning_effort, 'none')
   assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
-  assert.equal(classifierPayload.max_tokens, 1_024)
+  assert.equal(classifierPayload.max_tokens, 4_096)
   assert.equal(Object.hasOwn(classifierPayload, 'max_completion_tokens'), false)
   assert.equal(classifierPayload.temperature, 0)
   assert.equal(classifierPayload.stream, false)
@@ -1123,6 +1145,37 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     keyword_page_returned_count: 1, keyword_page_limit: 20,
     keyword_next_cursor_present: false, bounded_narrative_evidence_count: 2,
   })
+})
+
+test('managed graph request-time read-back ignores row order but rejects changed content', async (context) => {
+  const snapshotUrl = `${pocOrigin}/poc-api/knowledge/graphs/${managedLineageGraphId}`
+    + `/releases/${managedK9Row.active_release_pointer}/snapshot`
+  reverseManagedK9ReadBack = true
+  try {
+    const reorderedResponse = await fetch(snapshotUrl)
+    assert.equal(reorderedResponse.status, 200, await reorderedResponse.clone().text())
+    const reordered = await reorderedResponse.json()
+    assert.equal(reordered.nodes.length, managedK9Nodes.length)
+    assert.equal(reordered.edges.length, managedK9Edges.length)
+  } finally {
+    reverseManagedK9ReadBack = false
+  }
+
+  for (const mutation of [
+    'NODE_PROPERTIES', 'NODE_MISSING', 'NODE_DUPLICATE',
+    'EDGE_PROPERTIES', 'EDGE_MISSING', 'EDGE_DUPLICATE',
+  ]) {
+    await context.test(mutation, async () => {
+      managedK9ReadBackMutation = mutation
+      try {
+        const response = await fetch(snapshotUrl)
+        assert.equal(response.status, 409)
+        assert.equal((await response.json()).code, 'K9_ACTIVE_RELEASE_INVALID')
+      } finally {
+        managedK9ReadBackMutation = undefined
+      }
+    })
+  }
 })
 
 test('emits null Catalog and vector timings when clarification skips both phases', async () => {
