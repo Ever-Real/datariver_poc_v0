@@ -7,7 +7,7 @@ set -euo pipefail
 # SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
-# ProviderCallsPerRun: 1
+# ProviderCallsPerRun: 3
 
 readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
 readonly COMPOSE_PROJECT='datariver-prep39083'
@@ -98,6 +98,7 @@ import pg from 'pg'
 
 const OUTPUT_PREFIX = 'GENERAL_RCA_EVIDENCE'
 const QUESTION = '데이터 계보가 무엇인지 일반적으로 설명해줘.'
+const PROBE_ATTEMPT_COUNT = 3
 const SERVER_PATH = '/app/poc-server.mjs'
 const STATE_STORE_PATH = '/app/poc-state-store.mjs'
 const SERVER_FILE = 'poc-server.mjs'
@@ -105,7 +106,10 @@ const PROVIDER_TRANSPORT_NEEDLE = 'const providerTransport = createProviderTrans
 const CHAT_ROUTE_NEEDLE = 'async function chatRoute(question, requestedMode, principal, signal) {'
 const CLASSIFIER_CALL_NEEDLE = "      const classification = await llmRequest(llm.chat, '/chat/completions', {"
 const CLASSIFIER_VALUE_NEEDLE = '      const value = classification.choices?.[0]?.message?.content'
-const DISCOVERY_BIND_NEEDLE = 'JSON.stringify(command.discovery)'
+const DISCOVERY_SQL_NULL_NEEDLE = `command.discovery === null
+            ? null
+            : JSON.stringify(command.discovery)`
+const DISCOVERY_JSON_NULL_NEEDLE = 'JSON.stringify(command.discovery),'
 const DISCOVERY_SQL_NEEDLE = '$11::jsonb'
 const ALLOWED_SUBTYPES = new Set([
   'PASS',
@@ -165,7 +169,7 @@ function databaseConfig() {
   }
 }
 
-async function readConstraintEvidence() {
+async function readPersistedEvidence() {
   pool = new Pool(databaseConfig())
   client = await pool.connect()
   await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
@@ -174,7 +178,7 @@ async function readConstraintEvidence() {
   if (readOnly.rows[0]?.transaction_read_only !== 'on') {
     throw probeFailure('DATABASE_READ_ONLY')
   }
-  const result = await client.query(`
+  const constraintResult = await client.query(`
     SELECT pg_get_constraintdef(constraint_row.oid, true) AS definition
     FROM pg_constraint AS constraint_row
     JOIN pg_class AS table_row ON table_row.oid = constraint_row.conrelid
@@ -183,16 +187,93 @@ async function readConstraintEvidence() {
       AND table_row.relname = 'poc_chat_messages'
       AND constraint_row.conname = 'ck_poc_chat_message_discovery'
   `)
-  if (result.rows.length !== 1 || typeof result.rows[0]?.definition !== 'string') {
+  if (constraintResult.rows.length !== 1
+    || typeof constraintResult.rows[0]?.definition !== 'string') {
     throw probeFailure('DB_CONSTRAINT')
   }
-  const normalized = result.rows[0].definition.toLowerCase().replace(/\s+/gu, ' ')
-  return normalized.includes('discovery_json is null')
+  const normalized = constraintResult.rows[0].definition.toLowerCase().replace(/\s+/gu, ' ')
+  const constraint = normalized.includes('discovery_json is null')
     && normalized.includes('jsonb_typeof(discovery_json)')
     && normalized.includes("'object'")
     && normalized.includes('1048576')
     ? 'PASS'
     : 'OTHER'
+
+  const uiRouteResult = await client.query(`
+    SELECT route_json->>'requested_mode' AS requested_mode,
+      route_json->>'selected_mode' AS selected_mode
+    FROM poc_chat_messages
+    WHERE role = 'assistant'
+      AND route_json IS NOT NULL
+    ORDER BY created_at DESC, ordinal DESC, message_id DESC
+    LIMIT 1
+  `)
+  const uiRequestedMode = boundedMode(uiRouteResult.rows[0]?.requested_mode)
+  const uiSelectedMode = boundedMode(uiRouteResult.rows[0]?.selected_mode)
+
+  const managedGraphResult = await client.query(`
+    SELECT
+      policy.*,
+      latest.run_id AS latest_run_id,
+      latest.status AS latest_result,
+      latest.started_at AS latest_started_at,
+      latest.completed_at AS latest_completed_at,
+      latest.error_message AS latest_error_message,
+      latest.manifest AS latest_manifest,
+      active.run_id AS active_run_id,
+      active.started_at AS active_started_at,
+      active.completed_at AS active_completed_at,
+      active.input_snapshot_hash AS active_input_snapshot_hash,
+      active.manifest AS active_manifest,
+      active.canonical_release AS active_canonical_release
+    FROM poc_k9_managed_graph_policies AS policy
+    LEFT JOIN LATERAL (
+      SELECT run_id, status, started_at, completed_at, error_message, manifest
+      FROM poc_k9_refresh_runs
+      WHERE graph_id = policy.graph_id
+      ORDER BY started_at DESC, run_id DESC
+      LIMIT 1
+    ) AS latest ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT run_id, started_at, completed_at, input_snapshot_hash, manifest, canonical_release
+      FROM poc_k9_refresh_runs
+      WHERE graph_id = policy.graph_id
+        AND active_release_pointer = policy.active_release_pointer
+        AND status IN ('RUN', 'NO_OP')
+        AND canonical_release IS NOT NULL
+      ORDER BY started_at DESC, run_id DESC
+      LIMIT 1
+    ) AS active ON policy.active_release_pointer IS NOT NULL
+    ORDER BY policy.managed_intent, policy.graph_id
+  `)
+  const activeGenerationResult = await client.query(`
+    SELECT scope, value
+    FROM poc_state
+    WHERE scope LIKE 'catalog-embedding-active-v1:%'
+  `)
+  const activeGenerations = new Map(activeGenerationResult.rows.flatMap((row) => {
+    const value = row.value
+    if (typeof row.scope !== 'string' || !value || typeof value !== 'object'
+      || value.projection_version !== 1
+      || typeof value.binding_hash !== 'string'
+      || typeof value.source_generation !== 'string'
+      || row.scope !== `catalog-embedding-active-v1:${value.binding_hash}`) return []
+    return [[value.binding_hash, value.source_generation]]
+  }))
+
+  await client.query('ROLLBACK')
+  transactionStarted = false
+  client.release()
+  client = undefined
+  await pool.end()
+  pool = undefined
+  return {
+    constraint,
+    uiRequestedMode,
+    uiSelectedMode,
+    managedGraphRows: managedGraphResult.rows,
+    activeGenerations,
+  }
 }
 
 async function prepareTemporaryServer(source) {
@@ -220,7 +301,7 @@ async function prepareTemporaryServer(source) {
   )
   instrumented = instrumented.replace(
     CLASSIFIER_CALL_NEEDLE,
-    `      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 1 }\n${CLASSIFIER_CALL_NEEDLE}`,
+    `      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.providerCalls += 1\n${CLASSIFIER_CALL_NEEDLE}`,
   )
   instrumented = instrumented.replace(
     CLASSIFIER_VALUE_NEEDLE,
@@ -234,6 +315,10 @@ function boundedToken(value, fallback = 'NONE') {
   if (typeof value !== 'string') return fallback
   const token = value.trim().toUpperCase()
   return /^[A-Z0-9_]{1,64}$/u.test(token) ? token : fallback
+}
+
+function boundedMode(value) {
+  return ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(value) ? value : 'U'
 }
 
 function contentType(value) {
@@ -278,6 +363,37 @@ function parsedRawValue(rawValue) {
   }
 }
 
+function rawClassifierShape(rawValue) {
+  const parsed = parsedRawValue(rawValue)
+  if (parsed.state !== 'PARSED') return parsed.state
+  if (!parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+    return Array.isArray(parsed.value) ? 'JSON_ARRAY' : 'JSON_SCALAR'
+  }
+  const expectedKeys = [
+    'confidence', 'entity_type_hints', 'intent', 'mode', 'primary_concepts',
+    'relation_intent', 'secondary_concepts', 'selected_graph_asset',
+  ]
+  const keys = Object.keys(parsed.value).sort()
+  return keys.length === expectedKeys.length
+    && keys.every((key, index) => key === expectedKeys[index])
+    ? 'JSON_OBJECT_EXACT_KEYS'
+    : 'JSON_OBJECT_OTHER_KEYS'
+}
+
+function failurePoint(subtype) {
+  return ({
+    PASS: 'PASS',
+    PROVIDER_RESPONSE_JSON_INVALID: 'PROVIDER_JSON',
+    PROVIDER_RESPONSE_SHAPE_INVALID: 'PROVIDER_SHAPE',
+    EMPTY_CLASSIFIER_RESULT: 'CONTENT_EXTRACTION',
+    CLASSIFIER_JSON_PARSE_FAILED: 'JSON_PARSE',
+    CLASSIFIER_SEMANTIC_INVARIANT_FAILED: 'SEMANTIC_VALIDATION',
+    CLASSIFIER_SCHEMA_VALIDATION_FAILED: 'SCHEMA_VALIDATION',
+    CLASSIFIER_JSON_SHAPE_INVALID: 'JSON_SHAPE',
+    UNCLASSIFIED_LOCAL_CONTRACT: 'LOCAL_CONTRACT',
+  })[subtype] || 'LOCAL_CONTRACT'
+}
+
 function classifyFailure(routeError, rawValue) {
   const chain = causeChain(routeError)
   const messages = chain.map((item) => String(item.message || ''))
@@ -306,9 +422,7 @@ function classifyFailure(routeError, rawValue) {
   return 'UNCLASSIFIED_LOCAL_CONTRACT'
 }
 
-function classifierEvidence(route, routeError) {
-  const capture = globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA || {}
-  if (capture.providerCalls !== 1) throw probeFailure('PROVIDER_CALL_CONTRACT')
+function classifierEvidence(route, routeError, capture) {
   const classification = capture.classification
   const choice = Array.isArray(classification?.choices) ? classification.choices[0] : undefined
   const message = choice?.message
@@ -337,57 +451,101 @@ function classifierEvidence(route, routeError) {
     reasoning,
     refusal,
     route: boundedToken(route?.selected_mode, 'NONE'),
+    shape: rawClassifierShape(rawValue),
+    point: failurePoint(subtype),
   }
 }
 
-function evidenceLine(evidence, constraint, discoveryBind) {
+function attemptToken(evidence) {
+  return [
+    evidence.subtype,
+    evidence.code,
+    evidence.http,
+    evidence.choices,
+    evidence.content,
+    evidence.finish,
+    evidence.reasoning,
+    evidence.refusal,
+    evidence.route,
+    evidence.shape,
+    evidence.point,
+  ].join(',')
+}
+
+function aggregateSubtype(attempts) {
+  const failures = attempts.filter((attempt) => attempt.subtype !== 'PASS')
+  if (failures.length === 0) return 'PASS_3_OF_3'
+  if (failures.length !== attempts.length) return 'INTERMITTENT_CONTRACT_FAILURE'
+  return failures.every((failure) => failure.subtype === failures[0].subtype)
+    ? failures[0].subtype
+    : 'MULTIPLE_CONTRACT_FAILURES'
+}
+
+function evidenceLine(attempts, persisted, discoveryBind) {
   return [
     OUTPUT_PREFIX,
-    `subtype=${evidence.subtype}`,
-    `code=${evidence.code}`,
-    `http=${evidence.http}`,
-    `choices=${evidence.choices}`,
-    `content=${evidence.content}`,
-    `finish=${evidence.finish}`,
-    `reasoning=${evidence.reasoning}`,
-    `refusal=${evidence.refusal}`,
-    `route=${evidence.route}`,
-    `constraint=${constraint}`,
+    `subtype=${aggregateSubtype(attempts)}`,
+    `ui_requested=${persisted.uiRequestedMode}`,
+    `ui_selected=${persisted.uiSelectedMode}`,
+    'smoke_requested=AUTO',
+    `graph_assets=${persisted.managedGraphRows.length}`,
+    `run1=${attemptToken(attempts[0])}`,
+    `run2=${attemptToken(attempts[1])}`,
+    `run3=${attemptToken(attempts[2])}`,
+    `constraint=${persisted.constraint}`,
     `discovery_bind=${discoveryBind}`,
   ].join('|')
 }
 
 async function main() {
-  const constraint = await readConstraintEvidence()
+  const persisted = await readPersistedEvidence()
   const [source, stateStoreSource] = await Promise.all([
     readFile(SERVER_PATH, 'utf8'),
     readFile(STATE_STORE_PATH, 'utf8'),
   ])
-  const discoveryBind = stateStoreSource.includes(DISCOVERY_BIND_NEEDLE)
+  const discoveryBind = stateStoreSource.includes(DISCOVERY_SQL_NULL_NEEDLE)
     && stateStoreSource.includes(DISCOVERY_SQL_NEEDLE)
-    ? 'JSON_NULL'
-    : 'OTHER'
+    ? 'SQL_NULL'
+    : stateStoreSource.includes(DISCOVERY_JSON_NULL_NEEDLE)
+      && stateStoreSource.includes(DISCOVERY_SQL_NEEDLE)
+      ? 'JSON_NULL'
+      : 'OTHER'
   serverModule = await prepareTemporaryServer(source)
   const stateStore = Object.freeze({
-    configured: Object.freeze({ postgres: false }),
-    listK9ManagedGraphAssets: async () => [],
-    catalogEmbeddingActiveGeneration: async () => null,
+    configured: Object.freeze({ postgres: true }),
+    listK9ManagedGraphAssets: async () => persisted.managedGraphRows,
+    catalogEmbeddingActiveGeneration: async (bindingHash) => (
+      persisted.activeGenerations.get(bindingHash)
+    ),
   })
   serverModule.createPocServer({ stateStore })
 
-  let route
-  let routeError
-  try {
-    route = await serverModule.chatRoute(
-      QUESTION,
-      'AUTO',
-      Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' }),
-      AbortSignal.timeout(130_000),
-    )
-  } catch (error) {
-    routeError = error
+  globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0 }
+  const attempts = []
+  for (let attempt = 0; attempt < PROBE_ATTEMPT_COUNT; attempt += 1) {
+    delete globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.classification
+    delete globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.rawValue
+    let route
+    let routeError
+    try {
+      route = await serverModule.chatRoute(
+        QUESTION,
+        'AUTO',
+        Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' }),
+        AbortSignal.timeout(130_000),
+      )
+    } catch (error) {
+      routeError = error
+    }
+    attempts.push(classifierEvidence(route, routeError, {
+      classification: globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.classification,
+      rawValue: globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.rawValue,
+    }))
   }
-  process.stdout.write(`${evidenceLine(classifierEvidence(route, routeError), constraint, discoveryBind)}\n`)
+  if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.providerCalls !== PROBE_ATTEMPT_COUNT) {
+    throw probeFailure('PROVIDER_CALL_CONTRACT')
+  }
+  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind)}\n`)
 }
 
 try {
