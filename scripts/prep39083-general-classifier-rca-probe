@@ -369,6 +369,66 @@ function propertyPresence(value, properties) {
   )) ? 'Y' : 'N'
 }
 
+function boundedCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 100_000_000
+    ? String(value)
+    : 'U'
+}
+
+function firstBoundedCount(values) {
+  for (const value of values) {
+    const bounded = boundedCount(value)
+    if (bounded !== 'U') return bounded
+  }
+  return 'U'
+}
+
+function classifierUsage(classification, rawValue) {
+  const usage = classification?.usage && typeof classification.usage === 'object'
+    ? classification.usage
+    : {}
+  const completionDetails = usage.completion_tokens_details
+    && typeof usage.completion_tokens_details === 'object'
+    ? usage.completion_tokens_details
+    : {}
+  const outputDetails = usage.output_tokens_details
+    && typeof usage.output_tokens_details === 'object'
+    ? usage.output_tokens_details
+    : {}
+  const reasoning = firstBoundedCount([
+    completionDetails.reasoning_tokens,
+    outputDetails.reasoning_tokens,
+    usage.reasoning_tokens,
+  ])
+  const thinking = firstBoundedCount([
+    completionDetails.thinking_tokens,
+    outputDetails.thinking_tokens,
+    usage.thinking_tokens,
+  ])
+  const visibleBytes = typeof rawValue === 'string'
+    ? boundedCount(Buffer.byteLength(rawValue, 'utf8'))
+    : 'U'
+  const providerLimit = firstBoundedCount([
+    classification?.max_completion_tokens,
+    classification?.max_output_tokens,
+    classification?.max_tokens,
+    classification?.token_limit,
+    usage.max_completion_tokens,
+    usage.max_output_tokens,
+    usage.max_tokens,
+    usage.token_limit,
+  ])
+  return [
+    `P${boundedCount(usage.prompt_tokens)}`,
+    `C${boundedCount(usage.completion_tokens)}`,
+    `T${boundedCount(usage.total_tokens)}`,
+    `R${reasoning}`,
+    `K${thinking}`,
+    `V${visibleBytes}`,
+    `L${providerLimit}`,
+  ].join('.')
+}
+
 function causeChain(error) {
   const values = []
   const seen = new Set()
@@ -504,6 +564,7 @@ function classifierEvidence(route, routeError, capture, request) {
     shape: rawClassifierShape(rawValue),
     point: failurePoint(subtype),
     request: requestShape(request),
+    usage: classifierUsage(classification, rawValue),
   }
 }
 
@@ -521,6 +582,7 @@ function attemptToken(evidence) {
     evidence.shape,
     evidence.point,
     evidence.request,
+    evidence.usage,
   ].join(',')
 }
 
