@@ -34,7 +34,44 @@ REPOSITORY_ROOT="$(git -C "$SCRIPT_DIRECTORY" rev-parse --show-toplevel 2>/dev/n
 readonly REPOSITORY_ROOT
 [[ "$SCRIPT_DIRECTORY" == "$REPOSITORY_ROOT/scripts" ]] || fail CHECKOUT
 
-readonly RELEASE_PATH="$REPOSITORY_ROOT/$RELEASE_RELATIVE_PATH"
+web_ids=()
+while IFS= read -r container_id; do
+  [[ -n "$container_id" ]] && web_ids+=("$container_id")
+done < <(
+  docker ps \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
+    --format '{{.ID}}' 2>/dev/null
+)
+
+[[ "${#web_ids[@]}" -eq 1 ]] || fail WEB_IDENTITY
+readonly WEB_CONTAINER_ID="${web_ids[0]}"
+
+COMPOSE_CONFIG_FILES="$(
+  docker inspect \
+    --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
+    "$WEB_CONTAINER_ID" 2>/dev/null
+)" || fail PRODUCT_IDENTITY
+readonly COMPOSE_CONFIG_FILES
+
+RUNTIME_REPOSITORY_ROOT="$(python3 - "$COMPOSE_CONFIG_FILES" <<'PY'
+import sys
+from pathlib import Path
+
+suffix = Path("deploy/prep39083/docker-compose.artifact.yaml").parts
+candidates = []
+for raw in sys.argv[1].split(","):
+    value = Path(raw.strip())
+    if value.is_absolute() and value.parts[-len(suffix):] == suffix:
+        candidates.append(value.resolve().parents[2])
+if len(candidates) != 1:
+    raise SystemExit(2)
+print(candidates[0])
+PY
+)" || fail PRODUCT_IDENTITY
+readonly RUNTIME_REPOSITORY_ROOT
+
+readonly RELEASE_PATH="$RUNTIME_REPOSITORY_ROOT/$RELEASE_RELATIVE_PATH"
 [[ -f "$RELEASE_PATH" && ! -L "$RELEASE_PATH" ]] || fail PRODUCT_IDENTITY
 
 EXPECTED_PRODUCT="$(python3 - "$RELEASE_PATH" <<'PY'
@@ -55,19 +92,6 @@ print(product)
 PY
 )" || fail PRODUCT_IDENTITY
 readonly EXPECTED_PRODUCT
-
-web_ids=()
-while IFS= read -r container_id; do
-  [[ -n "$container_id" ]] && web_ids+=("$container_id")
-done < <(
-  docker ps \
-    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
-    --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
-    --format '{{.ID}}' 2>/dev/null
-)
-
-[[ "${#web_ids[@]}" -eq 1 ]] || fail WEB_IDENTITY
-readonly WEB_CONTAINER_ID="${web_ids[0]}"
 
 RUNNING_IMAGE_ID="$(
   docker inspect --format '{{.Image}}' "$WEB_CONTAINER_ID" 2>/dev/null
