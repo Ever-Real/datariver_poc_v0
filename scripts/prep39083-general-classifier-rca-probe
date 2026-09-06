@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# DATARIVER_LEGACY_RCA_PREP39083_GENERAL_CLASSIFIER_V1
+# Lifecycle: TEMPORARY_RCA
+# Scope: PREP39083 GENERAL ROUTING_CLASSIFIER CONTRACT subtype capture
+# SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
+# PersistentRuntimeMutation: NONE
+# DatabaseMutation: NONE
+# ProviderCallsPerRun: 1
+
+readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
+readonly COMPOSE_PROJECT='datariver-prep39083'
+readonly COMPOSE_SERVICE='web'
+readonly RELEASE_RELATIVE_PATH='deploy/prep39083/release.json'
+readonly RELEASE_REF='refs/remotes/origin/prep39083-release'
+readonly OCI_REVISION_LABEL='org.opencontainers.image.revision'
+
+emit_failure() {
+  printf '%s\n' "${OUTPUT_PREFIX}|subtype=PROBE_FAILED|stage=$1"
+}
+
+fail() {
+  emit_failure "$1"
+  exit 2
+}
+
+command -v git >/dev/null 2>&1 || fail CHECKOUT
+command -v python3 >/dev/null 2>&1 || fail PRODUCT_IDENTITY
+command -v docker >/dev/null 2>&1 || fail DOCKER
+
+readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd; })"
+REPOSITORY_ROOT="$(git -C "$SCRIPT_DIRECTORY" rev-parse --show-toplevel 2>/dev/null)" \
+  || fail CHECKOUT
+readonly REPOSITORY_ROOT
+[[ "$SCRIPT_DIRECTORY" == "$REPOSITORY_ROOT/scripts" ]] || fail CHECKOUT
+
+web_ids=()
+while IFS= read -r container_id; do
+  [[ -n "$container_id" ]] && web_ids+=("$container_id")
+done < <(
+  docker ps \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
+    --format '{{.ID}}' 2>/dev/null
+)
+
+[[ "${#web_ids[@]}" -eq 1 ]] || fail WEB_IDENTITY
+readonly WEB_CONTAINER_ID="${web_ids[0]}"
+
+RELEASE_DOCUMENT="$(
+  git -C "$REPOSITORY_ROOT" show "$RELEASE_REF:$RELEASE_RELATIVE_PATH" 2>/dev/null
+)" || fail PRODUCT_IDENTITY
+readonly RELEASE_DOCUMENT
+
+EXPECTED_PRODUCT="$(python3 - "$RELEASE_DOCUMENT" <<'PY'
+import json
+import re
+import sys
+
+try:
+    value = json.loads(sys.argv[1])
+    product = value.get("product_sha") if isinstance(value, dict) else None
+except json.JSONDecodeError:
+    product = None
+
+if not isinstance(product, str) or re.fullmatch(r"[0-9a-f]{40}", product) is None:
+    raise SystemExit(2)
+print(product)
+PY
+)" || fail PRODUCT_IDENTITY
+readonly EXPECTED_PRODUCT
+
+RUNNING_IMAGE_ID="$(
+  docker inspect --format '{{.Image}}' "$WEB_CONTAINER_ID" 2>/dev/null
+)" || fail WEB_IDENTITY
+[[ -n "$RUNNING_IMAGE_ID" ]] || fail WEB_IDENTITY
+readonly RUNNING_IMAGE_ID
+
+RUNNING_PRODUCT="$(
+  docker image inspect \
+    --format "{{index .Config.Labels \"$OCI_REVISION_LABEL\"}}" \
+    "$RUNNING_IMAGE_ID" 2>/dev/null
+)" || fail PRODUCT_IDENTITY
+readonly RUNNING_PRODUCT
+
+[[ "$RUNNING_PRODUCT" =~ ^[0-9a-f]{40}$ ]] || fail PRODUCT_IDENTITY
+[[ "$RUNNING_PRODUCT" == "$EXPECTED_PRODUCT" ]] || fail PRODUCT_IDENTITY
+
+set +e
+probe_output="$(
+  docker exec -i "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import process from 'node:process'
+import pg from 'pg'
+
+const OUTPUT_PREFIX = 'GENERAL_RCA_EVIDENCE'
+const QUESTION = '데이터 계보가 무엇인지 일반적으로 설명해줘.'
+const SERVER_PATH = '/app/poc-server.mjs'
+const STATE_STORE_PATH = '/app/poc-state-store.mjs'
+const SERVER_FILE = 'poc-server.mjs'
+const PROVIDER_TRANSPORT_NEEDLE = 'const providerTransport = createProviderTransport(process.env)'
+const CHAT_ROUTE_NEEDLE = 'async function chatRoute(question, requestedMode, principal, signal) {'
+const CLASSIFIER_CALL_NEEDLE = "      const classification = await llmRequest(llm.chat, '/chat/completions', {"
+const CLASSIFIER_VALUE_NEEDLE = '      const value = classification.choices?.[0]?.message?.content'
+const DISCOVERY_BIND_NEEDLE = 'JSON.stringify(command.discovery)'
+const DISCOVERY_SQL_NEEDLE = '$11::jsonb'
+const ALLOWED_SUBTYPES = new Set([
+  'PASS',
+  'PROVIDER_RESPONSE_JSON_INVALID',
+  'PROVIDER_RESPONSE_SHAPE_INVALID',
+  'EMPTY_CLASSIFIER_RESULT',
+  'CLASSIFIER_JSON_PARSE_FAILED',
+  'CLASSIFIER_SEMANTIC_INVARIANT_FAILED',
+  'CLASSIFIER_SCHEMA_VALIDATION_FAILED',
+  'CLASSIFIER_JSON_SHAPE_INVALID',
+  'UNCLASSIFIED_LOCAL_CONTRACT',
+])
+const SAFE_PROVIDER_CODES = new Set([
+  'POC_LLM_PROVIDER_AUTH_FAILED',
+  'POC_LLM_PROVIDER_CONNECTIVITY_FAILED',
+  'POC_LLM_PROVIDER_CONTRACT_FAILED',
+  'POC_LLM_PROVIDER_HTTP_FAILED',
+  'POC_LLM_PROVIDER_TIMEOUT',
+])
+const SAFE_HTTP_CLASSES = new Set(['HTTP_4XX', 'HTTP_5XX', 'HTTP_OTHER'])
+const { Pool } = pg
+
+let pool
+let client
+let temporaryDirectory
+let serverModule
+let transactionStarted = false
+
+function probeFailure(stage) {
+  const error = new Error('Bounded GENERAL RCA probe failure.')
+  error.probeStage = stage
+  return error
+}
+
+function countOccurrences(source, needle) {
+  return source.split(needle).length - 1
+}
+
+function databaseConfig() {
+  const common = {
+    max: 1,
+    connectionTimeoutMillis: 10_000,
+    options: '-c default_transaction_read_only=on -c statement_timeout=10000',
+  }
+  const databaseUrl = process.env.POC_DATABASE_URL?.trim()
+  if (databaseUrl) return { ...common, connectionString: databaseUrl }
+
+  const host = process.env.POC_POSTGRES_HOST?.trim()
+  if (!host) throw probeFailure('DATABASE_CONFIGURATION')
+  return {
+    ...common,
+    host,
+    port: Number(process.env.POC_POSTGRES_PORT || 5432),
+    database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+    user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+    password: process.env.POC_POSTGRES_PASSWORD || undefined,
+  }
+}
+
+async function readConstraintEvidence() {
+  pool = new Pool(databaseConfig())
+  client = await pool.connect()
+  await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+  transactionStarted = true
+  const readOnly = await client.query('SHOW transaction_read_only')
+  if (readOnly.rows[0]?.transaction_read_only !== 'on') {
+    throw probeFailure('DATABASE_READ_ONLY')
+  }
+  const result = await client.query(`
+    SELECT pg_get_constraintdef(constraint_row.oid, true) AS definition
+    FROM pg_constraint AS constraint_row
+    JOIN pg_class AS table_row ON table_row.oid = constraint_row.conrelid
+    JOIN pg_namespace AS namespace_row ON namespace_row.oid = table_row.relnamespace
+    WHERE namespace_row.nspname = 'public'
+      AND table_row.relname = 'poc_chat_messages'
+      AND constraint_row.conname = 'ck_poc_chat_message_discovery'
+  `)
+  if (result.rows.length !== 1 || typeof result.rows[0]?.definition !== 'string') {
+    throw probeFailure('DB_CONSTRAINT')
+  }
+  const normalized = result.rows[0].definition.toLowerCase().replace(/\s+/gu, ' ')
+  return normalized.includes('discovery_json is null')
+    && normalized.includes('jsonb_typeof(discovery_json)')
+    && normalized.includes("'object'")
+    && normalized.includes('1048576')
+    ? 'PASS'
+    : 'OTHER'
+}
+
+async function prepareTemporaryServer(source) {
+  if (countOccurrences(source, PROVIDER_TRANSPORT_NEEDLE) !== 1
+    || countOccurrences(source, CHAT_ROUTE_NEEDLE) !== 1
+    || countOccurrences(source, CLASSIFIER_CALL_NEEDLE) !== 1
+    || countOccurrences(source, CLASSIFIER_VALUE_NEEDLE) !== 1) {
+    throw probeFailure('SOURCE_CONTRACT')
+  }
+
+  temporaryDirectory = await mkdtemp(join(tmpdir(), 'datariver-general-classifier-rca-'))
+  for (const entry of await readdir('/app', { withFileTypes: true })) {
+    if (entry.name === SERVER_FILE) continue
+    if (!(entry.name.endsWith('.mjs') || entry.name === 'node_modules')) continue
+    await symlink(join('/app', entry.name), join(temporaryDirectory, entry.name), entry.isDirectory() ? 'dir' : 'file')
+  }
+
+  let instrumented = source.replace(
+    PROVIDER_TRANSPORT_NEEDLE,
+    `export ${PROVIDER_TRANSPORT_NEEDLE}`,
+  )
+  instrumented = instrumented.replace(
+    CHAT_ROUTE_NEEDLE,
+    `export ${CHAT_ROUTE_NEEDLE}`,
+  )
+  instrumented = instrumented.replace(
+    CLASSIFIER_CALL_NEEDLE,
+    `      globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 1 }\n${CLASSIFIER_CALL_NEEDLE}`,
+  )
+  instrumented = instrumented.replace(
+    CLASSIFIER_VALUE_NEEDLE,
+    `${CLASSIFIER_VALUE_NEEDLE}\n      Object.assign(globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA, { classification, rawValue: value })`,
+  )
+  await writeFile(join(temporaryDirectory, SERVER_FILE), instrumented, { encoding: 'utf8', mode: 0o600 })
+  return import(`file://${join(temporaryDirectory, SERVER_FILE)}?rca=${Date.now()}`)
+}
+
+function boundedToken(value, fallback = 'NONE') {
+  if (typeof value !== 'string') return fallback
+  const token = value.trim().toUpperCase()
+  return /^[A-Z0-9_]{1,64}$/u.test(token) ? token : fallback
+}
+
+function contentType(value) {
+  if (value === undefined) return 'UNDEFINED'
+  if (value === null) return 'NULL'
+  if (Array.isArray(value)) return 'ARRAY'
+  const type = typeof value
+  return ['string', 'number', 'boolean', 'object'].includes(type) ? type.toUpperCase() : 'OTHER'
+}
+
+function propertyPresence(value, properties) {
+  if (!value || typeof value !== 'object') return 'U'
+  return properties.some((property) => (
+    Object.hasOwn(value, property)
+    && value[property] !== undefined
+    && value[property] !== null
+    && value[property] !== false
+    && value[property] !== ''
+  )) ? 'Y' : 'N'
+}
+
+function causeChain(error) {
+  const values = []
+  const seen = new Set()
+  let current = error
+  while (current && typeof current === 'object' && !seen.has(current) && values.length < 8) {
+    seen.add(current)
+    values.push(current)
+    current = current.cause
+  }
+  return values
+}
+
+function parsedRawValue(rawValue) {
+  if (rawValue === undefined || rawValue === null
+    || (typeof rawValue === 'string' && !rawValue.trim())) return { state: 'EMPTY' }
+  if (typeof rawValue !== 'string') return { state: 'NON_STRING' }
+  try {
+    return { state: 'PARSED', value: JSON.parse(rawValue) }
+  } catch {
+    return { state: 'INVALID_JSON' }
+  }
+}
+
+function classifyFailure(routeError, rawValue) {
+  const chain = causeChain(routeError)
+  const messages = chain.map((item) => String(item.message || ''))
+  if (messages.includes('The LLM provider returned invalid JSON.')) {
+    return 'PROVIDER_RESPONSE_JSON_INVALID'
+  }
+  if (messages.includes('The LLM provider returned an invalid response contract.')) {
+    return 'PROVIDER_RESPONSE_SHAPE_INVALID'
+  }
+  const parsed = parsedRawValue(rawValue)
+  if (messages.includes('The Chat route classifier returned no route.')) {
+    return parsed.state === 'EMPTY' ? 'EMPTY_CLASSIFIER_RESULT' : 'CLASSIFIER_JSON_SHAPE_INVALID'
+  }
+  if (chain.some((item) => item instanceof SyntaxError) || parsed.state === 'INVALID_JSON') {
+    return 'CLASSIFIER_JSON_PARSE_FAILED'
+  }
+  if (messages.includes('The Chat route classifier returned an inconsistent route.')) {
+    return 'CLASSIFIER_SEMANTIC_INVARIANT_FAILED'
+  }
+  if (messages.includes('The Chat route classifier returned a malformed route.')) {
+    return parsed.state === 'PARSED'
+      && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)
+      ? 'CLASSIFIER_SCHEMA_VALIDATION_FAILED'
+      : 'CLASSIFIER_JSON_SHAPE_INVALID'
+  }
+  return 'UNCLASSIFIED_LOCAL_CONTRACT'
+}
+
+function classifierEvidence(route, routeError) {
+  const capture = globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA || {}
+  if (capture.providerCalls !== 1) throw probeFailure('PROVIDER_CALL_CONTRACT')
+  const classification = capture.classification
+  const choice = Array.isArray(classification?.choices) ? classification.choices[0] : undefined
+  const message = choice?.message
+  const rawValue = capture.rawValue
+  const subtype = route ? 'PASS' : classifyFailure(routeError, rawValue)
+  if (!ALLOWED_SUBTYPES.has(subtype)) throw probeFailure('CLASSIFICATION')
+  const choices = Array.isArray(classification?.choices) && classification.choices.length <= 100
+    ? String(classification.choices.length)
+    : 'U'
+  const codeValue = causeChain(routeError).map((item) => item.code)
+    .find((value) => SAFE_PROVIDER_CODES.has(value))
+  const diagnostic = causeChain(routeError).map((item) => item.diagnostic)
+    .find((value) => value && typeof value === 'object')
+  const http = SAFE_HTTP_CLASSES.has(diagnostic?.provider_http_class)
+    ? diagnostic.provider_http_class
+    : 'NONE'
+  const reasoning = propertyPresence(message, ['reasoning', 'reasoning_content', 'thinking'])
+  const refusal = propertyPresence(message, ['refusal'])
+  return {
+    subtype,
+    code: codeValue || 'NONE',
+    http,
+    choices,
+    content: contentType(rawValue),
+    finish: boundedToken(choice?.finish_reason, choice?.finish_reason === null ? 'NONE' : 'U'),
+    reasoning,
+    refusal,
+    route: boundedToken(route?.selected_mode, 'NONE'),
+  }
+}
+
+function evidenceLine(evidence, constraint, discoveryBind) {
+  return [
+    OUTPUT_PREFIX,
+    `subtype=${evidence.subtype}`,
+    `code=${evidence.code}`,
+    `http=${evidence.http}`,
+    `choices=${evidence.choices}`,
+    `content=${evidence.content}`,
+    `finish=${evidence.finish}`,
+    `reasoning=${evidence.reasoning}`,
+    `refusal=${evidence.refusal}`,
+    `route=${evidence.route}`,
+    `constraint=${constraint}`,
+    `discovery_bind=${discoveryBind}`,
+  ].join('|')
+}
+
+async function main() {
+  const constraint = await readConstraintEvidence()
+  const [source, stateStoreSource] = await Promise.all([
+    readFile(SERVER_PATH, 'utf8'),
+    readFile(STATE_STORE_PATH, 'utf8'),
+  ])
+  const discoveryBind = stateStoreSource.includes(DISCOVERY_BIND_NEEDLE)
+    && stateStoreSource.includes(DISCOVERY_SQL_NEEDLE)
+    ? 'JSON_NULL'
+    : 'OTHER'
+  serverModule = await prepareTemporaryServer(source)
+  const stateStore = Object.freeze({
+    configured: Object.freeze({ postgres: false }),
+    listK9ManagedGraphAssets: async () => [],
+    catalogEmbeddingActiveGeneration: async () => null,
+  })
+  serverModule.createPocServer({ stateStore })
+
+  let route
+  let routeError
+  try {
+    route = await serverModule.chatRoute(
+      QUESTION,
+      'AUTO',
+      Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' }),
+      AbortSignal.timeout(130_000),
+    )
+  } catch (error) {
+    routeError = error
+  }
+  process.stdout.write(`${evidenceLine(classifierEvidence(route, routeError), constraint, discoveryBind)}\n`)
+}
+
+try {
+  await main()
+} catch (error) {
+  const stage = boundedToken(error?.probeStage, 'RUNTIME')
+  process.stdout.write(`${OUTPUT_PREFIX}|subtype=PROBE_FAILED|stage=${stage}\n`)
+  process.exitCode = 2
+} finally {
+  if (transactionStarted && client) await client.query('ROLLBACK').catch(() => undefined)
+  client?.release?.()
+  await pool?.end?.().catch(() => undefined)
+  await serverModule?.providerTransport?.close?.().catch(() => undefined)
+  if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+}
+NODE
+)"
+probe_status=$?
+set -e
+
+if [[ -z "$probe_output" || "$probe_output" == *$'\n'* \
+  || "$probe_output" != "${OUTPUT_PREFIX}|"* ]]; then
+  fail OUTPUT_CONTRACT
+fi
+
+printf '%s\n' "$probe_output"
+exit "$probe_status"
+
+# END DATARIVER_LEGACY_RCA_PREP39083_GENERAL_CLASSIFIER_V1

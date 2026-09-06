@@ -3917,7 +3917,9 @@ export function createPocStateStore({ databasePool } = {}) {
         `, [
           command.requestMessageId, command.sessionId, command.subjectId, firstOrdinal,
           command.question, command.createdAt, command.responseMessageId, firstOrdinal + 1,
-          command.answer, JSON.stringify(command.evidence), JSON.stringify(command.discovery),
+          command.answer, JSON.stringify(command.evidence), command.discovery === null
+            ? null
+            : JSON.stringify(command.discovery),
           JSON.stringify(command.route), JSON.stringify(command.workflow), command.createdAt,
         ])
         if (existing) {
