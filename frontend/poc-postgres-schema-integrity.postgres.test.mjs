@@ -511,6 +511,85 @@ test('canonical V8 migration matches runtime DDL, receipt and preserved Chat col
   }
 }))
 
+test('Chat persists absent discovery as SQL NULL and preserves bounded discovery objects', {
+  skip: pocPostgresTestSkipReason,
+}, async () => withDisposablePocPostgres('general_chat_null', async ({ connectionString }) => {
+  const pool = new Pool({ connectionString, max: 2 })
+  try {
+    await applyV8(pool)
+    await withSchemaIntegrityRequired(async () => {
+      const store = createPocStateStore({ databasePool: pool })
+      try {
+        await store.appendChatTurn({
+          subjectId: 'subject-general',
+          sessionId: 'session-general',
+          requestMessageId: 'request-general',
+          responseMessageId: 'response-general',
+          question: '데이터 계보가 무엇인지 일반적으로 설명해줘.',
+          answer: '데이터 계보는 데이터의 출처와 흐름을 설명합니다.',
+          title: '데이터 계보 설명',
+          evidence: [],
+          discovery: null,
+          route: { requested_mode: 'AUTO', selected_mode: 'GENERAL' },
+          workflow: [{
+            stage: 'PERSISTENCE',
+            status: 'COMPLETED',
+            detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED',
+          }],
+          createdAt: '2026-09-06T01:00:00.000Z',
+        })
+        await store.appendChatTurn({
+          subjectId: 'subject-discovery',
+          sessionId: 'session-discovery',
+          requestMessageId: 'request-discovery',
+          responseMessageId: 'response-discovery',
+          question: '고객 테이블을 찾아줘.',
+          answer: '인가된 카탈로그 후보를 찾았습니다.',
+          title: '고객 테이블 탐색',
+          evidence: [],
+          discovery: { items: [], returned_count: 0 },
+          route: { requested_mode: 'AUTO', selected_mode: 'VECTOR' },
+          workflow: [{
+            stage: 'PERSISTENCE',
+            status: 'COMPLETED',
+            detail_code: 'POSTGRES_ACCOUNT_HISTORY_PERSISTED',
+          }],
+          createdAt: '2026-09-06T01:01:00.000Z',
+        })
+        const result = await pool.query(`
+          SELECT session_id, role, discovery_json,
+            discovery_json IS NULL AS discovery_is_sql_null
+          FROM poc_chat_messages
+          WHERE session_id IN ('session-general', 'session-discovery')
+          ORDER BY session_id DESC, ordinal
+        `)
+        assert.deepEqual(result.rows, [
+          {
+            session_id: 'session-general', role: 'user',
+            discovery_json: null, discovery_is_sql_null: true,
+          },
+          {
+            session_id: 'session-general', role: 'assistant',
+            discovery_json: null, discovery_is_sql_null: true,
+          },
+          {
+            session_id: 'session-discovery', role: 'user',
+            discovery_json: null, discovery_is_sql_null: true,
+          },
+          {
+            session_id: 'session-discovery', role: 'assistant',
+            discovery_json: { items: [], returned_count: 0 }, discovery_is_sql_null: false,
+          },
+        ])
+      } finally {
+        await store.close()
+      }
+    })
+  } finally {
+    await pool.end()
+  }
+}))
+
 test('actual PREP-shaped V6 history gap migrates through V8, preserves 357 events and replays once', {
   skip: pocPostgresTestSkipReason,
 }, async () => withDisposablePocPostgres('v6_retention_gap_upgrade', async ({ connectionString }) => {
