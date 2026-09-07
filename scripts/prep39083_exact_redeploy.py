@@ -32,6 +32,7 @@ DEPLOY_PROFILE = ROOT / "deploy/dev_deploy.json"
 RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_PATH = RUNTIME_ROOT / "admin-password"
+K9_CLASSIFICATION_CEILING = "INTERNAL"
 
 PRODUCT = "2bd5494d6f100abc8e50a844e0d01c30b93cc698"
 EVIDENCE = "4473135c3c9aa1cb44f317f1e3ae1a63de1eeacf"
@@ -303,6 +304,7 @@ def derived_environment(source_file: Path, source_container: str | None, bind_ho
         # The frozen PREP contract has one workspace for K9 and MCP.  The live
         # 39083 container contains older drift; do not copy that drift into 39081.
         "POC_K9_WORKSPACE_ID": workspace,
+        "POC_K9_CLASSIFICATION_CEILING": K9_CLASSIFICATION_CEILING,
         **STATE_PORTS,
     }
     if ca_bind:
