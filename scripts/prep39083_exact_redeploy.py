@@ -25,6 +25,7 @@ RELEASE = ROOT / "deploy/prep39083/release.json"
 TRANSPORT = ROOT / "deploy/prep39083/transport.json"
 BASE_COMPOSE = ROOT / "deploy/poc/docker-compose.poc.yaml"
 ARTIFACT_COMPOSE = ROOT / "deploy/prep39083/docker-compose.artifact.yaml"
+DEV_ARTIFACT_COMPOSE = ROOT / "deploy/dev_deploy.artifact.yaml"
 DEFAULT_ENV = ROOT / "deploy/prep39083/.env.prep"
 DEPLOY_PROFILE = ROOT / "deploy/dev_deploy.json"
 RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
@@ -72,6 +73,7 @@ FROZEN_PATHS = (
 ALLOWED_PATHS = frozenset((
     ".gitignore",
     *FROZEN_PATHS,
+    "deploy/dev_deploy.artifact.yaml",
     "deploy/dev_deploy.json",
     "scripts/dev_deploy",
     "scripts/prep39083_exact_redeploy.py",
@@ -209,9 +211,14 @@ def validate_checkout() -> None:
     validate_deploy_profile()
 
 
-def validate_docker() -> None:
+def docker_server_platform() -> str:
     host = output("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}")
     require(host in {"linux/amd64", "linux/x86_64", "linux/arm64", "linux/aarch64"}, f"Docker server must be Linux, got {host}")
+    return "linux/arm64" if host in {"linux/arm64", "linux/aarch64"} else "linux/amd64"
+
+
+def validate_docker() -> None:
+    docker_server_platform()
 
 
 def secure_env(path: Path) -> Path:
@@ -273,7 +280,8 @@ def derived_environment(source_file: Path, source_container: str | None, bind_ho
         "POC_PORT": str(PORT),
         "POC_SHARED_NETWORK": NETWORK,
         "POC_IMAGE_TAG": PRODUCT,
-        "POC_PLATFORM": "linux/amd64",
+        "POC_PLATFORM": docker_server_platform(),
+        "POC_WEB_PLATFORM": "linux/amd64",
         "POC_SOURCE_COMMIT": PRODUCT,
         "PREP_RELEASE_PRODUCT_SHA": PRODUCT,
         "PREP_RELEASE_EVIDENCE_SHA": EVIDENCE,
@@ -367,6 +375,7 @@ def compose_prefix(environment: Path) -> list[str]:
     return [
         "docker", "compose", "--project-name", PROJECT, "--project-directory", str(ROOT),
         "--env-file", str(environment), "--file", str(BASE_COMPOSE), "--file", str(ARTIFACT_COMPOSE),
+        "--file", str(DEV_ARTIFACT_COMPOSE),
     ]
 
 
