@@ -5,7 +5,6 @@ LICENSE
 NOTICE
 deploy/dev_deploy/build-dependencies.json
 deploy/dev_deploy/docker-compose.source.yaml
-deploy/dev_deploy/provider-side-effects.json
 deploy/dev_deploy/source-provenance.json
 deploy/poc/Dockerfile.example
 deploy/poc/docker-compose.poc.yaml
