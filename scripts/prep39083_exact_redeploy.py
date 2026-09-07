@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import stat
@@ -15,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,8 @@ TRANSPORT = ROOT / "deploy/prep39083/transport.json"
 BASE_COMPOSE = ROOT / "deploy/poc/docker-compose.poc.yaml"
 ARTIFACT_COMPOSE = ROOT / "deploy/prep39083/docker-compose.artifact.yaml"
 DEFAULT_ENV = ROOT / "deploy/prep39083/.env.prep"
-RUNTIME_ROOT = ROOT / "runtime/prep39083"
+DEPLOY_PROFILE = ROOT / "deploy/dev_deploy.json"
+RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
 
 PRODUCT = "2bd5494d6f100abc8e50a844e0d01c30b93cc698"
 EVIDENCE = "4473135c3c9aa1cb44f317f1e3ae1a63de1eeacf"
@@ -40,8 +41,12 @@ ARCHIVE_SIZE = 124389376
 IMAGE = f"datariver-poc:{PRODUCT}"
 CONFIG_DIGEST = "sha256:45e3f943b48709aca6b19864b522fb8ec01e866ac967e3afb18d154c6a415c7d"
 MANIFEST_DIGEST = "sha256:4a88ae49cbc40c01c85d2fdc7512b646ea8040c5c20246208ee394a619efe3b2"
-PROJECT = "datariver-prep39083"
-PORT = 39083
+PROJECT = "datariver-dev-deploy-39081"
+PORT = 39081
+NETWORK = "datariver-dev-deploy-39081-services"
+STATE_PORTS = {"POC_NEO4J_HTTP_PORT": "17476", "POC_POSTGRES_HOST_PORT": "15433", "POC_REDIS_PORT": "16380"}
+RELEASE_PROJECT = "datariver-prep39083"
+RELEASE_PORT = 39083
 TREE_PATH = f"prep39083/{PRODUCT}"
 CHUNKS = tuple(f"{ARCHIVE_NAME}.part-{index:03d}" for index in range(3))
 CHECKSUM = f"{ARCHIVE_NAME}.sha256"
@@ -67,7 +72,8 @@ FROZEN_PATHS = (
 ALLOWED_PATHS = frozenset((
     ".gitignore",
     *FROZEN_PATHS,
-    "scripts/prep39083",
+    "deploy/dev_deploy.json",
+    "scripts/dev_deploy",
     "scripts/prep39083_exact_redeploy.py",
 ))
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -124,8 +130,8 @@ def validate_release_contract() -> tuple[dict[str, Any], dict[str, Any]]:
         and release.get("evidence_sha") == EVIDENCE
         and release.get("handoff_commit_policy") == "CURRENT_COMMITTED_HEAD"
         and release.get("platform") == "linux/amd64"
-        and release.get("port") == PORT
-        and release.get("project") == PROJECT
+        and release.get("port") == RELEASE_PORT
+        and release.get("project") == RELEASE_PROJECT
         and isinstance(artifact, dict),
         "release.json does not equal the fixed successful release contract",
     )
@@ -166,6 +172,24 @@ def validate_release_contract() -> tuple[dict[str, Any], dict[str, Any]]:
     return release, transport
 
 
+def validate_deploy_profile() -> None:
+    profile = read_json(DEPLOY_PROFILE)
+    require(
+        profile == {
+            "contract": "DATARIVER_DEV_DEPLOY_39081_V1",
+            "project": PROJECT,
+            "port": PORT,
+            "network": NETWORK,
+            "state_host_ports": {
+                "neo4j": 17476,
+                "postgres": 15433,
+                "redis": 16380,
+            },
+        },
+        "dev_deploy profile differs from the isolated 39081 contract",
+    )
+
+
 def validate_checkout() -> None:
     require(Path(output("git", "rev-parse", "--show-toplevel")).resolve() == ROOT, "unexpected Git root")
     require(not output("git", "status", "--porcelain", "--untracked-files=all"), "worktree must be clean")
@@ -182,12 +206,12 @@ def validate_checkout() -> None:
     )
     require(unchanged.returncode == 0, "one or more frozen deploy inputs differ from the release snapshot")
     validate_release_contract()
+    validate_deploy_profile()
 
 
-def validate_linux_amd64_docker() -> None:
+def validate_docker() -> None:
     host = output("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}")
-    require(host in {"linux/amd64", "linux/x86_64"}, f"target Docker server must be linux/amd64, got {host}")
-    require(platform.system() == "Linux", "run this bundle on the PREP Linux host, not Docker Desktop")
+    require(host in {"linux/amd64", "linux/x86_64", "linux/arm64", "linux/aarch64"}, f"Docker server must be Linux, got {host}")
 
 
 def secure_env(path: Path) -> Path:
@@ -198,6 +222,80 @@ def secure_env(path: Path) -> Path:
     require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "PREP environment must be a regular file")
     require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "PREP environment permissions must be 0600 or stricter")
     return path.resolve()
+
+
+def environment_lines_from_container(container: str) -> tuple[list[str], str | None]:
+    try:
+        documents = json.loads(output("docker", "inspect", container))
+        document = documents[0]
+        values = document["Config"]["Env"]
+    except (DeployError, IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise DeployError("source container environment is unavailable") from error
+    require(document.get("State", {}).get("Running") is True, "source container is not running")
+    require(isinstance(values, list) and all(isinstance(value, str) and "=" in value for value in values), "source container environment is invalid")
+    ca_bind = None
+    for mount in document.get("Mounts", []):
+        if (
+            isinstance(mount, dict)
+            and mount.get("Destination") == "/run/datariver/runtime-ca.pem"
+            and isinstance(mount.get("Source"), str)
+            and Path(mount["Source"]).is_file()
+        ):
+            ca_bind = mount["Source"]
+    return list(values), ca_bind
+
+
+def public_origin(lines: list[str]) -> str:
+    value = None
+    for line in lines:
+        if line.startswith("POC_PUBLIC_ORIGIN="):
+            value = line.split("=", 1)[1].strip().strip("'\"")
+    require(value is not None, "source environment has no POC_PUBLIC_ORIGIN")
+    parsed = urlsplit(value)
+    require(parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password, "source POC_PUBLIC_ORIGIN is unsafe")
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    return urlunsplit((parsed.scheme, f"{host}:{PORT}", parsed.path, parsed.query, parsed.fragment))
+
+
+def derived_environment(source_file: Path, source_container: str | None, bind_host: str) -> Path:
+    require(bind_host in {"127.0.0.1", "0.0.0.0"}, "bind host must be 127.0.0.1 or 0.0.0.0")
+    if source_container:
+        lines, ca_bind = environment_lines_from_container(source_container)
+    else:
+        lines = secure_env(source_file).read_text(encoding="utf-8").splitlines()
+        ca_bind = None
+    origin = public_origin(lines)
+    overrides = {
+        "COMPOSE_PROJECT_NAME": PROJECT,
+        "POC_BIND_HOST": bind_host,
+        "POC_PORT": str(PORT),
+        "POC_SHARED_NETWORK": NETWORK,
+        "POC_IMAGE_TAG": PRODUCT,
+        "POC_PLATFORM": "linux/amd64",
+        "POC_SOURCE_COMMIT": PRODUCT,
+        "PREP_RELEASE_PRODUCT_SHA": PRODUCT,
+        "PREP_RELEASE_EVIDENCE_SHA": EVIDENCE,
+        "POC_PUBLIC_ORIGIN": origin,
+        **STATE_PORTS,
+    }
+    if ca_bind:
+        overrides["POC_RUNTIME_CA_BIND_SOURCE"] = ca_bind
+    key_pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+    retained = []
+    for line in lines:
+        match = key_pattern.match(line)
+        if match and match.group(1) in overrides:
+            continue
+        retained.append(line)
+    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    target = RUNTIME_ROOT / "dev_deploy.env"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text("\n".join((*retained, *(f"{key}={value}" for key, value in overrides.items()))) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+    return target
 
 
 def archive_path() -> Path:
@@ -272,9 +370,9 @@ def compose_prefix(environment: Path) -> list[str]:
     ]
 
 
-def port_39080_containers() -> tuple[str, ...]:
+def existing_web_port_containers() -> tuple[str, ...]:
     rows = output("docker", "ps", "--all", "--format", "{{.ID}}\t{{.Ports}}").splitlines()
-    return tuple(sorted(row.split("\t", 1)[0] for row in rows if re.search(r"(?:^|:)39080->", row)))
+    return tuple(sorted(row for row in rows if re.search(r"(?:^|:)(39080|39083)->", row)))
 
 
 def compose_config(prefix: list[str]) -> dict[str, Any]:
@@ -347,7 +445,7 @@ def running_web() -> dict[str, Any]:
 def write_receipt(web: dict[str, Any]) -> None:
     RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     receipt = {
-        "contract": "DATARIVER_PREP39083_EXACT_REDEPLOY_V1",
+        "contract": "DATARIVER_DEV_DEPLOY_39081_V1",
         "accepted_at": datetime.now(UTC).isoformat(),
         "product_sha": PRODUCT,
         "evidence_sha": EVIDENCE,
@@ -357,8 +455,8 @@ def write_receipt(web: dict[str, Any]) -> None:
         "manifest_digest": MANIFEST_DIGEST,
         "config_digest": CONFIG_DIGEST,
         "container_id": web.get("Id"),
-        "port_39083": PORT,
-        "port_39080_untouched": True,
+        "port_39081": PORT,
+        "ports_39080_39083_untouched": True,
     }
     target = RUNTIME_ROOT / "exact-redeploy-receipt.json"
     temporary = target.with_suffix(".tmp")
@@ -367,8 +465,8 @@ def write_receipt(web: dict[str, Any]) -> None:
 
 
 def deploy(environment: Path) -> None:
-    validate_linux_amd64_docker()
-    before_39080 = port_39080_containers()
+    validate_docker()
+    before_existing_ports = existing_web_port_containers()
     archive = extract_artifact()
     require(verify_existing_archive(archive), "local artifact identity changed before image load")
     run("docker", "load", "--input", str(archive), capture=False)
@@ -382,17 +480,19 @@ def deploy(environment: Path) -> None:
     start_state_services(prefix, existing)
     run(*prefix, "up", "-d", "--no-build", "--pull", "never", "--wait", "--force-recreate", "--no-deps", "web", capture=False)
     web = running_web()
-    after_39080 = port_39080_containers()
-    require(after_39080 == before_39080, "39080 changed during PREP deploy; preserve state and investigate")
+    after_existing_ports = existing_web_port_containers()
+    require(after_existing_ports == before_existing_ports, "39080 or 39083 changed during isolated deploy; preserve state and investigate")
     run("docker", "exec", str(web["Id"]), "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))", capture=False)
     write_receipt(web)
-    print(f"EXACT_REDEPLOY_OK Product={PRODUCT} Port={PORT} Project={PROJECT}")
+    print(f"DEV_DEPLOY_OK Product={PRODUCT} Port={PORT} Project={PROJECT}")
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("check", "artifact", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
+    parser.add_argument("--from-container", help="derive a private isolated environment from one running local Web container")
+    parser.add_argument("--bind-host", default="127.0.0.1", help="127.0.0.1 (default) or 0.0.0.0")
     parser.add_argument("--apply", action="store_true", help="required for Docker mutation with deploy")
     return parser.parse_args()
 
@@ -409,7 +509,7 @@ def main() -> int:
             print(f"ARTIFACT_OK {archive} SHA256={ARCHIVE_SHA256}")
             return 0
         require(arguments.apply, "deploy requires --apply")
-        deploy(secure_env(arguments.env_file))
+        deploy(derived_environment(arguments.env_file, arguments.from_container, arguments.bind_host))
         return 0
     except DeployError as error:
         print(f"FAILED: {error}", file=sys.stderr)
