@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -29,6 +30,8 @@ DEV_ARTIFACT_COMPOSE = ROOT / "deploy/dev_deploy.artifact.yaml"
 DEFAULT_ENV = ROOT / "deploy/prep39083/.env.prep"
 DEPLOY_PROFILE = ROOT / "deploy/dev_deploy.json"
 RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_PATH = RUNTIME_ROOT / "admin-password"
 
 PRODUCT = "2bd5494d6f100abc8e50a844e0d01c30b93cc698"
 EVIDENCE = "4473135c3c9aa1cb44f317f1e3ae1a63de1eeacf"
@@ -428,6 +431,35 @@ def start_state_services(prefix: list[str], existing: dict[str, list[dict[str, A
     run(*prefix, "up", "-d", "--no-build", "--pull", "never", "--wait", *state, capture=False)
 
 
+def local_admin_password() -> Path:
+    """Create the private first-install password once; never expose it in output."""
+    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    if ADMIN_PASSWORD_PATH.exists():
+        details = ADMIN_PASSWORD_PATH.stat()
+        require(stat.S_ISREG(details.st_mode) and not details.st_mode & 0o077, "local admin password file is insecure")
+        require(len(ADMIN_PASSWORD_PATH.read_text(encoding="utf-8").strip()) >= 12, "local admin password file is invalid")
+        return ADMIN_PASSWORD_PATH
+    temporary = ADMIN_PASSWORD_PATH.with_suffix(".tmp")
+    temporary.write_text(f"{secrets.token_urlsafe(36)}\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, ADMIN_PASSWORD_PATH)
+    return ADMIN_PASSWORD_PATH
+
+
+def reconcile_runtime_identities(prefix: list[str]) -> None:
+    """Use the Product-bundled operational bootstrap; no fixture or seed data is loaded."""
+    password = local_admin_password()
+    run(
+        *prefix,
+        "run", "--rm", "--no-deps",
+        "--volume", f"{password}:/run/dev-deploy-admin-password:ro",
+        "web", "node", "poc-prep-bootstrap.mjs", "reconcile",
+        "--admin-username", ADMIN_USERNAME,
+        "--admin-password-file", "/run/dev-deploy-admin-password",
+        capture=False,
+    )
+
+
 def running_web() -> dict[str, Any]:
     rows = output(
         "docker", "ps", "--all", "--filter", f"label=com.docker.compose.project={PROJECT}",
@@ -465,6 +497,8 @@ def write_receipt(web: dict[str, Any]) -> None:
         "manifest_digest": MANIFEST_DIGEST,
         "config_digest": CONFIG_DIGEST,
         "container_id": web.get("Id"),
+        "admin_username": ADMIN_USERNAME,
+        "runtime_identities": "RECONCILED",
         "port_39081": PORT,
         "ports_39080_39083_untouched": True,
     }
@@ -488,6 +522,7 @@ def deploy(environment: Path) -> None:
         old = existing["web"]
         require(len(old) == 1 and old[0].get("Config", {}).get("Image") == IMAGE, "existing Web is not the fixed Product; preserve it")
     start_state_services(prefix, existing)
+    reconcile_runtime_identities(prefix)
     run(*prefix, "up", "-d", "--no-build", "--pull", "never", "--wait", "--force-recreate", "--no-deps", "web", capture=False)
     web = running_web()
     after_existing_ports = existing_web_port_containers()
