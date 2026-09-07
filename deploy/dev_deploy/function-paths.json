@@ -1,0 +1,1897 @@
+[
+  {
+    "function": "monitoringDashboards",
+    "from": "frontend/poc-server.mjs:355",
+    "to": "backend/src/modules/monitoring/application.mjs"
+  },
+  {
+    "function": "optionalDashboardUrl",
+    "from": "frontend/poc-server.mjs:394",
+    "to": "backend/src/modules/monitoring/application.mjs"
+  },
+  {
+    "function": "providerState",
+    "from": "frontend/poc-server.mjs:11379",
+    "to": "backend/src/modules/monitoring/application.mjs"
+  },
+  {
+    "function": "capabilities",
+    "from": "frontend/poc-server.mjs:11396",
+    "to": "backend/src/modules/monitoring/application.mjs"
+  },
+  {
+    "function": "json",
+    "from": "frontend/poc-server.mjs:426",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "problem",
+    "from": "frontend/poc-server.mjs:438",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "writeEventStream",
+    "from": "frontend/poc-server.mjs:448",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "securityHeaders",
+    "from": "frontend/poc-server.mjs:452",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "redirectBrowserToCanonicalOrigin",
+    "from": "frontend/poc-server.mjs:465",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "unconfiguredPocAuthenticator",
+    "from": "frontend/poc-server.mjs:480",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "bodyBuffer",
+    "from": "frontend/poc-server.mjs:495",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "bodyJson",
+    "from": "frontend/poc-server.mjs:506",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "boundedString",
+    "from": "frontend/poc-server.mjs:516",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "accessError",
+    "from": "frontend/poc-server.mjs:520",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "hasAccessControlCharacter",
+    "from": "frontend/poc-server.mjs:524",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "rejectProtectedAccessClaims",
+    "from": "frontend/poc-server.mjs:531",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "rejectProtectedAccessBodyClaims",
+    "from": "frontend/poc-server.mjs:540",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "accessIfMatch",
+    "from": "frontend/poc-server.mjs:560",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "airflowIdempotencyKey",
+    "from": "frontend/poc-server.mjs:569",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "stateIfMatch",
+    "from": "frontend/poc-server.mjs:583",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "tableSystemIfMatch",
+    "from": "frontend/poc-server.mjs:592",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "featureSecurityPolicyIfMatch",
+    "from": "frontend/poc-server.mjs:601",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "siteBrandingIfMatch",
+    "from": "frontend/poc-server.mjs:610",
+    "to": "backend/src/interfaces/http/request.mjs"
+  },
+  {
+    "function": "changeHistoryAccess",
+    "from": "frontend/poc-server.mjs:619",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryActiveUser",
+    "from": "frontend/poc-server.mjs:660",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryAssignee",
+    "from": "frontend/poc-server.mjs:666",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryLinkState",
+    "from": "frontend/poc-server.mjs:684",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPrecision",
+    "from": "frontend/poc-server.mjs:703",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryLinkedCr",
+    "from": "frontend/poc-server.mjs:723",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryAuthorizedCurrent",
+    "from": "frontend/poc-server.mjs:733",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryRow",
+    "from": "frontend/poc-server.mjs:745",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryCrPresentationStage",
+    "from": "frontend/poc-server.mjs:772",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryRowPresentationStage",
+    "from": "frontend/poc-server.mjs:795",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryAllowedLinkActions",
+    "from": "frontend/poc-server.mjs:801",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPresentationRecord",
+    "from": "frontend/poc-server.mjs:809",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPresentationValue",
+    "from": "frontend/poc-server.mjs:813",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPresentation",
+    "from": "frontend/poc-server.mjs:822",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPublicRow",
+    "from": "frontend/poc-server.mjs:890",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPublicLinkEvent",
+    "from": "frontend/poc-server.mjs:920",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryCanDisplayLink",
+    "from": "frontend/poc-server.mjs:940",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPageParameters",
+    "from": "frontend/poc-server.mjs:945",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryPage",
+    "from": "frontend/poc-server.mjs:962",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryProjectionAuthority",
+    "from": "frontend/poc-server.mjs:973",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryCr",
+    "from": "frontend/poc-server.mjs:987",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "assertChangeHistoryCrBinding",
+    "from": "frontend/poc-server.mjs:992",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryMutationHeaders",
+    "from": "frontend/poc-server.mjs:999",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryCommandBody",
+    "from": "frontend/poc-server.mjs:1010",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryWeekBounds",
+    "from": "frontend/poc-server.mjs:1029",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryKstDate",
+    "from": "frontend/poc-server.mjs:1052",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryDateBounds",
+    "from": "frontend/poc-server.mjs:1066",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryInBounds",
+    "from": "frontend/poc-server.mjs:1086",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryTransactionStage",
+    "from": "frontend/poc-server.mjs:1094",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementSchemaKey",
+    "from": "frontend/poc-server.mjs:1101",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryCurrentTableAuthority",
+    "from": "frontend/poc-server.mjs:1105",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementBaseOverview",
+    "from": "frontend/poc-server.mjs:1169",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementEventOverview",
+    "from": "frontend/poc-server.mjs:1200",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementCrCreatedInBounds",
+    "from": "frontend/poc-server.mjs:1258",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementRecordTargets",
+    "from": "frontend/poc-server.mjs:1266",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementAddCrCounts",
+    "from": "frontend/poc-server.mjs:1284",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementPriorityOneAssignees",
+    "from": "frontend/poc-server.mjs:1302",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementSummaryItem",
+    "from": "frontend/poc-server.mjs:1323",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeManagementOverviewRows",
+    "from": "frontend/poc-server.mjs:1354",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryWeeklySummary",
+    "from": "frontend/poc-server.mjs:1361",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryFilterValue",
+    "from": "frontend/poc-server.mjs:1395",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryMaximumTimestamp",
+    "from": "frontend/poc-server.mjs:1405",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryMinimumTimestamp",
+    "from": "frontend/poc-server.mjs:1411",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistorySourceSummary",
+    "from": "frontend/poc-server.mjs:1424",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistorySummary",
+    "from": "frontend/poc-server.mjs:1539",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "changeHistoryApi",
+    "from": "frontend/poc-server.mjs:1618",
+    "to": "backend/src/modules/mcl/change-history.mjs"
+  },
+  {
+    "function": "providerFetch",
+    "from": "frontend/poc-server.mjs:1889",
+    "to": "backend/src/infrastructure/provider.mjs"
+  },
+  {
+    "function": "requireOk",
+    "from": "frontend/poc-server.mjs:1901",
+    "to": "backend/src/infrastructure/provider.mjs"
+  },
+  {
+    "function": "boundedDatahubGraphqlDiagnostic",
+    "from": "frontend/poc-server.mjs:2595",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGraphql",
+    "from": "frontend/poc-server.mjs:2610",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "glossarySmokeProviderDetail",
+    "from": "frontend/poc-server.mjs:2650",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "glossarySmokeFailure",
+    "from": "frontend/poc-server.mjs:2663",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubRefreshGraphql",
+    "from": "frontend/poc-server.mjs:2683",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubRuntimeIdentity",
+    "from": "frontend/poc-server.mjs:2698",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubHeaders",
+    "from": "frontend/poc-server.mjs:2746",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubAssetCacheKey",
+    "from": "frontend/poc-server.mjs:2753",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubAssetBaseCacheKey",
+    "from": "frontend/poc-server.mjs:2757",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "invalidateDatahubCaches",
+    "from": "frontend/poc-server.mjs:2761",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubAspectDocument",
+    "from": "frontend/poc-server.mjs:2775",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "canonicalJson",
+    "from": "frontend/poc-server.mjs:2784",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "canonicalHash",
+    "from": "frontend/poc-server.mjs:2792",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "malformedDatahubReadback",
+    "from": "frontend/poc-server.mjs:2796",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "plainDocument",
+    "from": "frontend/poc-server.mjs:2803",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "validAuditStamp",
+    "from": "frontend/poc-server.mjs:2809",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "manualMetadataAspectComparableDocument",
+    "from": "frontend/poc-server.mjs:2820",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "manualMetadataAspectHash",
+    "from": "frontend/poc-server.mjs:2851",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubReadAspect",
+    "from": "frontend/poc-server.mjs:2855",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubApplyAspect",
+    "from": "frontend/poc-server.mjs:2872",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "controlledUrn",
+    "from": "frontend/poc-server.mjs:2923",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "uniqueControlledUrns",
+    "from": "frontend/poc-server.mjs:2935",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "applyManualMetadata",
+    "from": "frontend/poc-server.mjs:2942",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "urnTail",
+    "from": "frontend/poc-server.mjs:3036",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "containerKind",
+    "from": "frontend/poc-server.mjs:3041",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "customProperty",
+    "from": "frontend/poc-server.mjs:3051",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "readablePathName",
+    "from": "frontend/poc-server.mjs:3056",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "containerDisplayName",
+    "from": "frontend/poc-server.mjs:3061",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datasetIdentity",
+    "from": "frontend/poc-server.mjs:3070",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "tagReferences",
+    "from": "frontend/poc-server.mjs:3106",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "publicDatahubAsset",
+    "from": "frontend/poc-server.mjs:3110",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "customPropertyReferences",
+    "from": "frontend/poc-server.mjs:3122",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "structuredPropertyReferences",
+    "from": "frontend/poc-server.mjs:3131",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCreatedAt",
+    "from": "frontend/poc-server.mjs:3158",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datasetAsset",
+    "from": "frontend/poc-server.mjs:3187",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogMeta",
+    "from": "frontend/poc-server.mjs:3273",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "pruneCursorEntries",
+    "from": "frontend/poc-server.mjs:3298",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "issueCursor",
+    "from": "frontend/poc-server.mjs:3310",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "cursorValue",
+    "from": "frontend/poc-server.mjs:3317",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogPage",
+    "from": "frontend/poc-server.mjs:3327",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubInventory",
+    "from": "frontend/poc-server.mjs:3504",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "currentDatahubInventory",
+    "from": "frontend/poc-server.mjs:3537",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubEmbeddingInventory",
+    "from": "frontend/poc-server.mjs:3545",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubHierarchyInventory",
+    "from": "frontend/poc-server.mjs:3549",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "validDatahubInventory",
+    "from": "frontend/poc-server.mjs:3553",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "inventorySnapshotFrom",
+    "from": "frontend/poc-server.mjs:3562",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "storedDatahubInventory",
+    "from": "frontend/poc-server.mjs:3571",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubInventoryProjection",
+    "from": "frontend/poc-server.mjs:3592",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "boundedInventoryDiagnostic",
+    "from": "frontend/poc-server.mjs:3622",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "inventoryFailure",
+    "from": "frontend/poc-server.mjs:3677",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "stableInventoryItemHash",
+    "from": "frontend/poc-server.mjs:3696",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "startDatahubInventoryRefresh",
+    "from": "frontend/poc-server.mjs:3703",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubEntity",
+    "from": "frontend/poc-server.mjs:3948",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogDetailBaseEntity",
+    "from": "frontend/poc-server.mjs:3961",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "currentDatahubTables",
+    "from": "frontend/poc-server.mjs:3974",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogSearchFields",
+    "from": "frontend/poc-server.mjs:4018",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogQueryTerms",
+    "from": "frontend/poc-server.mjs:4028",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogSearchValues",
+    "from": "frontend/poc-server.mjs:4048",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogMatchContext",
+    "from": "frontend/poc-server.mjs:4063",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogMatchFragments",
+    "from": "frontend/poc-server.mjs:4071",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "assetMatches",
+    "from": "frontend/poc-server.mjs:4094",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "parameterScope",
+    "from": "frontend/poc-server.mjs:4113",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "offsetPage",
+    "from": "frontend/poc-server.mjs:4117",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogSelection",
+    "from": "frontend/poc-server.mjs:4133",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalog",
+    "from": "frontend/poc-server.mjs:4181",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogLocate",
+    "from": "frontend/poc-server.mjs:4218",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "uniqueValues",
+    "from": "frontend/poc-server.mjs:4240",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "hierarchyValues",
+    "from": "frontend/poc-server.mjs:4245",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogDatabaseBranchLabel",
+    "from": "frontend/poc-server.mjs:4252",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubTree",
+    "from": "frontend/poc-server.mjs:4256",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "facetCounts",
+    "from": "frontend/poc-server.mjs:4326",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubFacets",
+    "from": "frontend/poc-server.mjs:4335",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubDashboard",
+    "from": "frontend/poc-server.mjs:4355",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogExportRequest",
+    "from": "frontend/poc-server.mjs:4398",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogExportSearchParameters",
+    "from": "frontend/poc-server.mjs:4426",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "catalogExportRow",
+    "from": "frontend/poc-server.mjs:4439",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "createCatalogExport",
+    "from": "frontend/poc-server.mjs:4456",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubProfileCoverage",
+    "from": "frontend/poc-server.mjs:4477",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubSystems",
+    "from": "frontend/poc-server.mjs:4540",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGlossaryAssignments",
+    "from": "frontend/poc-server.mjs:4551",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "exactGlossaryTermUrns",
+    "from": "frontend/poc-server.mjs:4653",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "glossaryAssignmentCountsFromInventory",
+    "from": "frontend/poc-server.mjs:4668",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGlossaryAssignmentBatchCounts",
+    "from": "frontend/poc-server.mjs:4697",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "reconcileDatahubGlossaryScrollPage",
+    "from": "frontend/poc-server.mjs:4711",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGlossary",
+    "from": "frontend/poc-server.mjs:4739",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "glossaryTermProjection",
+    "from": "frontend/poc-server.mjs:4781",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGlossaryDetail",
+    "from": "frontend/poc-server.mjs:4834",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubGlossarySmokeTarget",
+    "from": "frontend/poc-server.mjs:4848",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "mergedMetadataReferences",
+    "from": "frontend/poc-server.mjs:4972",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubSchemaFields",
+    "from": "frontend/poc-server.mjs:4984",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "nonNegativeInteger",
+    "from": "frontend/poc-server.mjs:5026",
+    "to": "backend/src/modules/quality/domain.mjs"
+  },
+  {
+    "function": "datahubCustomPropertyValue",
+    "from": "frontend/poc-server.mjs:5035",
+    "to": "backend/src/modules/quality/domain.mjs"
+  },
+  {
+    "function": "isFullTableProfile",
+    "from": "frontend/poc-server.mjs:5045",
+    "to": "backend/src/modules/quality/domain.mjs"
+  },
+  {
+    "function": "datahubProfileQuality",
+    "from": "frontend/poc-server.mjs:5052",
+    "to": "backend/src/modules/quality/domain.mjs"
+  },
+  {
+    "function": "datahubAssertionQuality",
+    "from": "frontend/poc-server.mjs:5088",
+    "to": "backend/src/modules/quality/domain.mjs"
+  },
+  {
+    "function": "detailedDatasetAsset",
+    "from": "frontend/poc-server.mjs:5113",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "baseDatasetAsset",
+    "from": "frontend/poc-server.mjs:5145",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "authorizedCatalogDetailBase",
+    "from": "frontend/poc-server.mjs:5162",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogDetailBase",
+    "from": "frontend/poc-server.mjs:5172",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogDetailSchema",
+    "from": "frontend/poc-server.mjs:5176",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubCatalogDetailQuality",
+    "from": "frontend/poc-server.mjs:5205",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubAssetAll",
+    "from": "frontend/poc-server.mjs:5223",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubAsset",
+    "from": "frontend/poc-server.mjs:5229",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "knowledgeCatalogField",
+    "from": "frontend/poc-server.mjs:5244",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "knowledgeCatalogDataset",
+    "from": "frontend/poc-server.mjs:5262",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "knowledgeCatalogSearch",
+    "from": "frontend/poc-server.mjs:5310",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "knowledgeCatalogDetail",
+    "from": "frontend/poc-server.mjs:5315",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubLineageProjectionOptions",
+    "from": "frontend/poc-server.mjs:5327",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "datahubLineage",
+    "from": "frontend/poc-server.mjs:5339",
+    "to": "backend/src/modules/catalog/application.mjs"
+  },
+  {
+    "function": "basicAuthorization",
+    "from": "frontend/poc-server.mjs:5429",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "airflowNotConfigured",
+    "from": "frontend/poc-server.mjs:5437",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "airflowV2Token",
+    "from": "frontend/poc-server.mjs:5444",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "airflowFetch",
+    "from": "frontend/poc-server.mjs:5462",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "detectAirflowApiVersion",
+    "from": "frontend/poc-server.mjs:5489",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "airflowDagInventory",
+    "from": "frontend/poc-server.mjs:5515",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "triggerControlledAirflowDag",
+    "from": "frontend/poc-server.mjs:5540",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "isAirflowTriggerOutcomeUnknown",
+    "from": "frontend/poc-server.mjs:5583",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "isAirflowDagTransitionOutcomeUnknown",
+    "from": "frontend/poc-server.mjs:5589",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "bestEffortAirflowReceiptWrite",
+    "from": "frontend/poc-server.mjs:5595",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "triggerAirflowDag",
+    "from": "frontend/poc-server.mjs:5605",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "readAirflowDagRun",
+    "from": "frontend/poc-server.mjs:5616",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "setAirflowDagPaused",
+    "from": "frontend/poc-server.mjs:5634",
+    "to": "backend/src/infrastructure/airflow.mjs"
+  },
+  {
+    "function": "llmRequest",
+    "from": "frontend/poc-server.mjs:5701",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "boundedLlmStageError",
+    "from": "frontend/poc-server.mjs:5764",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatMemoryPayload",
+    "from": "frontend/poc-server.mjs:5778",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatMemoryText",
+    "from": "frontend/poc-server.mjs:5825",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "questionNeedsConversationResolution",
+    "from": "frontend/poc-server.mjs:5837",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "contextualizeChatQuestion",
+    "from": "frontend/poc-server.mjs:5841",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "compactChatMemory",
+    "from": "frontend/poc-server.mjs:5882",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatRoute",
+    "from": "frontend/poc-server.mjs:5919",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "graphPlannerAssets",
+    "from": "frontend/poc-server.mjs:6089",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "parseChatRouteDecision",
+    "from": "frontend/poc-server.mjs:6116",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "graphAssetMetadataConceptsOnly",
+    "from": "frontend/poc-server.mjs:6225",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "plannerConceptTokens",
+    "from": "frontend/poc-server.mjs:6238",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "boundedConceptList",
+    "from": "frontend/poc-server.mjs:6244",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "datahubLineageEvidence",
+    "from": "frontend/poc-server.mjs:6249",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "graphEvidenceAnswer",
+    "from": "frontend/poc-server.mjs:6314",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "completedChatWorkflow",
+    "from": "frontend/poc-server.mjs:6340",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "clarificationChatWorkflow",
+    "from": "frontend/poc-server.mjs:6367",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatRetrievalQueries",
+    "from": "frontend/poc-server.mjs:6380",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "boundedChatKeywordQuery",
+    "from": "frontend/poc-server.mjs:6389",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatFallbackKeywordCandidates",
+    "from": "frontend/poc-server.mjs:6405",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatCatalogKeywordQuery",
+    "from": "frontend/poc-server.mjs:6424",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatCatalogSearchScope",
+    "from": "frontend/poc-server.mjs:6439",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "normalizedCatalogIdentifier",
+    "from": "frontend/poc-server.mjs:6453",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "questionCatalogIdentifiers",
+    "from": "frontend/poc-server.mjs:6457",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogIdentityValues",
+    "from": "frontend/poc-server.mjs:6465",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "exactCatalogEvidence",
+    "from": "frontend/poc-server.mjs:6473",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "rankedExactCatalogAssets",
+    "from": "frontend/poc-server.mjs:6491",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogDetailEvidence",
+    "from": "frontend/poc-server.mjs:6525",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "requestedCatalogItemCount",
+    "from": "frontend/poc-server.mjs:6575",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogInventoryRequest",
+    "from": "frontend/poc-server.mjs:6591",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "requestedChatEvidenceLimit",
+    "from": "frontend/poc-server.mjs:6608",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogSummaryEvidence",
+    "from": "frontend/poc-server.mjs:6614",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "datahubInventoryEvidence",
+    "from": "frontend/poc-server.mjs:6626",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "inventoryEvidenceAnswer",
+    "from": "frontend/poc-server.mjs:6671",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "recordChatPerformance",
+    "from": "frontend/poc-server.mjs:6688",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "datahubChatEvidence",
+    "from": "frontend/poc-server.mjs:6695",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "detailedChatAnswerEvidence",
+    "from": "frontend/poc-server.mjs:6732",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "knowledgeAssetSearchTokens",
+    "from": "frontend/poc-server.mjs:6755",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "managedK9AssetMetadataEvidence",
+    "from": "frontend/poc-server.mjs:6760",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogEmbeddingBindingHash",
+    "from": "frontend/poc-server.mjs:6825",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogEmbeddingDocument",
+    "from": "frontend/poc-server.mjs:6835",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "embeddingVectors",
+    "from": "frontend/poc-server.mjs:6839",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "embedCatalogTexts",
+    "from": "frontend/poc-server.mjs:6857",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "ensureCatalogEmbeddingIndex",
+    "from": "frontend/poc-server.mjs:6865",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "scheduleCatalogEmbeddingRefresh",
+    "from": "frontend/poc-server.mjs:6946",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "queueCatalogEmbeddingRefresh",
+    "from": "frontend/poc-server.mjs:6967",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "catalogEmbeddingStatus",
+    "from": "frontend/poc-server.mjs:6975",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "semanticCatalogEvidence",
+    "from": "frontend/poc-server.mjs:6997",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "normalizedKnowledgeRoutingText",
+    "from": "frontend/poc-server.mjs:7069",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "boundedKnowledgeDeliveryPolicy",
+    "from": "frontend/poc-server.mjs:7073",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "knowledgeDeliveryPolicyMatches",
+    "from": "frontend/poc-server.mjs:7117",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "knowledgeMainChatSelection",
+    "from": "frontend/poc-server.mjs:7125",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "graphAssetChatSelection",
+    "from": "frontend/poc-server.mjs:7168",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "revalidateKnowledgeMainChatSelection",
+    "from": "frontend/poc-server.mjs:7182",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "metadataMasterCandidateContext",
+    "from": "frontend/poc-server.mjs:7211",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "metadataMasterResolutionContext",
+    "from": "frontend/poc-server.mjs:7247",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "resolveManagedGraphStart",
+    "from": "frontend/poc-server.mjs:7273",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "graphTraversalDirection",
+    "from": "frontend/poc-server.mjs:7327",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "managedGraphNodeSupportsDirection",
+    "from": "frontend/poc-server.mjs:7333",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "knowledgeMainChatEvidence",
+    "from": "frontend/poc-server.mjs:7340",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "publicChatAssetKind",
+    "from": "frontend/poc-server.mjs:7389",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "publicChatEvidence",
+    "from": "frontend/poc-server.mjs:7393",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "publicChatDiscovery",
+    "from": "frontend/poc-server.mjs:7450",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatDiscoveryDescriptorParameters",
+    "from": "frontend/poc-server.mjs:7462",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "chatDiscoveryMetric",
+    "from": "frontend/poc-server.mjs:7488",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "currentChatDiscovery",
+    "from": "frontend/poc-server.mjs:7492",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "currentChatHistoryMessages",
+    "from": "frontend/poc-server.mjs:7511",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "persistedChatMemory",
+    "from": "frontend/poc-server.mjs:7520",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "persistedChatWorkflow",
+    "from": "frontend/poc-server.mjs:7532",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "safeAnswerChunks",
+    "from": "frontend/poc-server.mjs:7538",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "writeApprovedAnswerStream",
+    "from": "frontend/poc-server.mjs:7548",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "liveChat",
+    "from": "frontend/poc-server.mjs:7556",
+    "to": "backend/src/modules/chat/application.mjs"
+  },
+  {
+    "function": "sha256",
+    "from": "frontend/poc-server.mjs:7893",
+    "to": "backend/src/infrastructure/minio.mjs"
+  },
+  {
+    "function": "hmac",
+    "from": "frontend/poc-server.mjs:7897",
+    "to": "backend/src/infrastructure/minio.mjs"
+  },
+  {
+    "function": "awsEncode",
+    "from": "frontend/poc-server.mjs:7901",
+    "to": "backend/src/infrastructure/minio.mjs"
+  },
+  {
+    "function": "minioObject",
+    "from": "frontend/poc-server.mjs:7905",
+    "to": "backend/src/infrastructure/minio.mjs"
+  },
+  {
+    "function": "zipEntries",
+    "from": "frontend/poc-server.mjs:7941",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "xmlText",
+    "from": "frontend/poc-server.mjs:7979",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "xlsxRows",
+    "from": "frontend/poc-server.mjs:7986",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "csvRows",
+    "from": "frontend/poc-server.mjs:8015",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "bulkCandidateKind",
+    "from": "frontend/poc-server.mjs:8039",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "compileBulkCandidates",
+    "from": "frontend/poc-server.mjs:8049",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "canReadBulkPreparation",
+    "from": "frontend/poc-server.mjs:8119",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "bulkPreparationProjection",
+    "from": "frontend/poc-server.mjs:8123",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "currentRegistrationCandidates",
+    "from": "frontend/poc-server.mjs:8132",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "visibleRegistrationCandidates",
+    "from": "frontend/poc-server.mjs:8153",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "executeBulkPreparation",
+    "from": "frontend/poc-server.mjs:8170",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "bulkCandidatePreview",
+    "from": "frontend/poc-server.mjs:8207",
+    "to": "backend/src/modules/registration/application.mjs"
+  },
+  {
+    "function": "neo4jQuery",
+    "from": "frontend/poc-server.mjs:8239",
+    "to": "backend/src/infrastructure/neo4j.mjs"
+  },
+  {
+    "function": "neo4jGraph",
+    "from": "frontend/poc-server.mjs:8288",
+    "to": "backend/src/infrastructure/neo4j.mjs"
+  },
+  {
+    "function": "knowledgeProjectionError",
+    "from": "frontend/poc-server.mjs:8318",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "isCanonicalDatahubSchemaFieldUrn",
+    "from": "frontend/poc-server.mjs:8322",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeSourceEntityId",
+    "from": "frontend/poc-server.mjs:8329",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "requiredKnowledgeIdentity",
+    "from": "frontend/poc-server.mjs:8338",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeProjectionScope",
+    "from": "frontend/poc-server.mjs:8345",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeProjectionAudit",
+    "from": "frontend/poc-server.mjs:8530",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "writeKnowledgeProjection",
+    "from": "frontend/poc-server.mjs:8556",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "assertKnowledgeProjectionAudit",
+    "from": "frontend/poc-server.mjs:8593",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeProjectionReceipt",
+    "from": "frontend/poc-server.mjs:8602",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeABoxValue",
+    "from": "frontend/poc-server.mjs:8654",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeABoxRuleKind",
+    "from": "frontend/poc-server.mjs:8665",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeABoxPlan",
+    "from": "frontend/poc-server.mjs:8671",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "writeKnowledgeABoxProjection",
+    "from": "frontend/poc-server.mjs:8846",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeIngestionJobResponse",
+    "from": "frontend/poc-server.mjs:8941",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeABoxIngestionApi",
+    "from": "frontend/poc-server.mjs:8963",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeProjectionApi",
+    "from": "frontend/poc-server.mjs:9062",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatNotFound",
+    "from": "frontend/poc-server.mjs:9088",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "assertKnowledgeChatAssetGrade",
+    "from": "frontend/poc-server.mjs:9092",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatNodeEvidenceKey",
+    "from": "frontend/poc-server.mjs:9103",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatRelationEvidenceKey",
+    "from": "frontend/poc-server.mjs:9112",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatVerifiedEvidence",
+    "from": "frontend/poc-server.mjs:9123",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatScope",
+    "from": "frontend/poc-server.mjs:9185",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatRelease",
+    "from": "frontend/poc-server.mjs:9235",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatGraph",
+    "from": "frontend/poc-server.mjs:9268",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatProperties",
+    "from": "frontend/poc-server.mjs:9810",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatProvenance",
+    "from": "frontend/poc-server.mjs:9820",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationComparable",
+    "from": "frontend/poc-server.mjs:9830",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationNodeText",
+    "from": "frontend/poc-server.mjs:9834",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationRoot",
+    "from": "frontend/poc-server.mjs:9849",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "selectManagedKnowledgeVisualization",
+    "from": "frontend/poc-server.mjs:9883",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatSnapshot",
+    "from": "frontend/poc-server.mjs:9933",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationTypeParameters",
+    "from": "frontend/poc-server.mjs:10133",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationBounds",
+    "from": "frontend/poc-server.mjs:10143",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeVisualizationSnapshot",
+    "from": "frontend/poc-server.mjs:10174",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatSeed",
+    "from": "frontend/poc-server.mjs:10259",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatTraversal",
+    "from": "frontend/poc-server.mjs:10270",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeGraphRag",
+    "from": "frontend/poc-server.mjs:10313",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "mcpAuthorizationFingerprint",
+    "from": "frontend/poc-server.mjs:10406",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "mcpReadToolAuthorized",
+    "from": "frontend/poc-server.mjs:10419",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "assertMcpReadToolAuthorized",
+    "from": "frontend/poc-server.mjs:10438",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "intersectMcpAssets",
+    "from": "frontend/poc-server.mjs:10444",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "intersectMcpPrincipalSets",
+    "from": "frontend/poc-server.mjs:10449",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "intersectMcpPrincipals",
+    "from": "frontend/poc-server.mjs:10453",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "intersectMcpKnowledgeScopes",
+    "from": "frontend/poc-server.mjs:10500",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "mcpUserReceiptIdentity",
+    "from": "frontend/poc-server.mjs:10523",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "mcpReceiptReason",
+    "from": "frontend/poc-server.mjs:10542",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "mcpHandler",
+    "from": "frontend/poc-server.mjs:10552",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "knowledgeChatApi",
+    "from": "frontend/poc-server.mjs:11221",
+    "to": "backend/src/modules/knowledge/application.mjs"
+  },
+  {
+    "function": "managedK9SourceDiagnostic",
+    "from": "frontend/poc-server.mjs:9317",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "isoValue",
+    "from": "frontend/poc-server.mjs:9325",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "schedulerTimestamp",
+    "from": "frontend/poc-server.mjs:9330",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9SchedulerReadModel",
+    "from": "frontend/poc-server.mjs:9336",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9AssetSummary",
+    "from": "frontend/poc-server.mjs:9501",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "assertManagedK9AssetAccess",
+    "from": "frontend/poc-server.mjs:9643",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9NodeDatasetUrn",
+    "from": "frontend/poc-server.mjs:9652",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "authorizeManagedK9Release",
+    "from": "frontend/poc-server.mjs:9660",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9Assets",
+    "from": "frontend/poc-server.mjs:9705",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9LifecycleStatus",
+    "from": "frontend/poc-server.mjs:9749",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "managedK9ScopeFromRow",
+    "from": "frontend/poc-server.mjs:9761",
+    "to": "backend/src/modules/k9/read-model.mjs"
+  },
+  {
+    "function": "authenticatedRequestContext",
+    "from": "frontend/poc-server.mjs:11444",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "authenticatedProfile",
+    "from": "frontend/poc-server.mjs:11472",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "exactServiceToken",
+    "from": "frontend/poc-server.mjs:11482",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "exactBodyKeys",
+    "from": "frontend/poc-server.mjs:11504",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "normalizedSecurityGrade",
+    "from": "frontend/poc-server.mjs:11515",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "assignmentResponsibility",
+    "from": "frontend/poc-server.mjs:11523",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "normalizedResponsibleSystems",
+    "from": "frontend/poc-server.mjs:11530",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "confirmedCurrentTables",
+    "from": "frontend/poc-server.mjs:11556",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "authRoute",
+    "from": "frontend/poc-server.mjs:11573",
+    "to": "backend/src/modules/auth/http.mjs"
+  },
+  {
+    "function": "writeAdminAccessDocument",
+    "from": "frontend/poc-server.mjs:11644",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "responsibleSystemsForUser",
+    "from": "frontend/poc-server.mjs:11654",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "normalizedLocalHumanEmail",
+    "from": "frontend/poc-server.mjs:11672",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "localHumanPasswordHash",
+    "from": "frontend/poc-server.mjs:11680",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "adminUsersApi",
+    "from": "frontend/poc-server.mjs:11688",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "tableSystemMappingApi",
+    "from": "frontend/poc-server.mjs:11951",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "adminSystemIdempotencyKey",
+    "from": "frontend/poc-server.mjs:12038",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "generatedSystemCode",
+    "from": "frontend/poc-server.mjs:12046",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "adminSystemsApi",
+    "from": "frontend/poc-server.mjs:12056",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "featureSecurityPolicyApi",
+    "from": "frontend/poc-server.mjs:12104",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "siteBrandingIdempotencyKey",
+    "from": "frontend/poc-server.mjs:12123",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "siteBrandingApi",
+    "from": "frontend/poc-server.mjs:12131",
+    "to": "backend/src/modules/admin/application.mjs"
+  },
+  {
+    "function": "crNextId",
+    "from": "frontend/poc-server.mjs:12179",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "exactCrBodyKeys",
+    "from": "frontend/poc-server.mjs:12181",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crBoundedText",
+    "from": "frontend/poc-server.mjs:12192",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crChangeDocument",
+    "from": "frontend/poc-server.mjs:12199",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crColumnIdentity",
+    "from": "frontend/poc-server.mjs:12209",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crValidateColumnProposals",
+    "from": "frontend/poc-server.mjs:12213",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crOptionalText",
+    "from": "frontend/poc-server.mjs:12271",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crOptionalDate",
+    "from": "frontend/poc-server.mjs:12279",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "bulkCandidateChangeRequestApi",
+    "from": "frontend/poc-server.mjs:12292",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crCreateApi",
+    "from": "frontend/poc-server.mjs:12519",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "applyReportApi",
+    "from": "frontend/poc-server.mjs:12670",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "crCommandApi",
+    "from": "frontend/poc-server.mjs:12703",
+    "to": "backend/src/modules/governance/application.mjs"
+  },
+  {
+    "function": "api",
+    "from": "frontend/poc-server.mjs:12791",
+    "to": "backend/src/interfaces/http/router.mjs"
+  },
+  {
+    "function": "staticFile",
+    "from": "frontend/poc-server.mjs:13530",
+    "to": "backend/src/interfaces/http/static.mjs"
+  },
+  {
+    "function": "serveStatic",
+    "from": "frontend/poc-server.mjs:13539",
+    "to": "backend/src/interfaces/http/static.mjs"
+  },
+  {
+    "function": "createPocServer",
+    "from": "frontend/poc-server.mjs:13570",
+    "to": "backend/src/server.mjs"
+  }
+]

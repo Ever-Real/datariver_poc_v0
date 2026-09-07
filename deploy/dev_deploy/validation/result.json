@@ -1,0 +1,41 @@
+{
+  "source_head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "tracked_files": 262,
+  "fresh_clone": "origin/dev_deploy",
+  "source_check": "PASS",
+  "no_cache_build": "PASS",
+  "platform": "linux/amd64",
+  "build_input_sha256": "3c923bb8a7f1ca816aad73252cc79343caaf62a71628d1e4830dab847d645a06",
+  "image_index_digest": "sha256:b10c1aa106f6b2489968419d46334fea0d13a8c9df46eeb362bb59190afd7dec",
+  "image_revision": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "artifact_branch_dependency": "NONE",
+  "old_source_dependency": "NONE",
+  "function_body_equivalence": 379,
+  "contract_regression": {
+    "pass": 121,
+    "fail": 0,
+    "skip": 0
+  },
+  "canonical_smoke_regression": {
+    "pass": 59,
+    "fail": 0,
+    "skip": 0
+  },
+  "focused_retry_regression": {
+    "pass": 9,
+    "fail": 0,
+    "skip": 0
+  },
+  "typecheck": "PASS",
+  "lint": "PASS",
+  "env_synthetic": "PASS",
+  "rendered_compose_parity": "PASS",
+  "independent_review": "PASS",
+  "protected_local_containers_volumes_known_good_tag": "UNCHANGED",
+  "actual_prep_runtime": "NOT_RUN",
+  "actual_env_parity": "UNVERIFIED",
+  "full_live_smoke": "NOT_RUN",
+  "new_secret_scan": "PASS",
+  "prior_gitguardian_false_positive_hash": 4,
+  "status": "READY_FOR_PREP_OPERATOR"
+}

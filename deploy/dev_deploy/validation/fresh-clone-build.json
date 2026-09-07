@@ -1,0 +1,11 @@
+{
+  "artifact_branch_dependency": false,
+  "base_product": "2bd5494d6f100abc8e50a844e0d01c30b93cc698",
+  "build_input_sha256": "3c923bb8a7f1ca816aad73252cc79343caaf62a71628d1e4830dab847d645a06",
+  "built_at": "2026-09-07T21:40:32.464387+00:00",
+  "contract": "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1",
+  "head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "image": "datariver-dev-deploy-source:b0d0dd074762",
+  "image_id": "sha256:b10c1aa106f6b2489968419d46334fea0d13a8c9df46eeb362bb59190afd7dec",
+  "no_cache": true
+}
