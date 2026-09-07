@@ -20,3 +20,4 @@ htmlcov
 *.log
 uploads
 volumes
+scripts/temporary/
