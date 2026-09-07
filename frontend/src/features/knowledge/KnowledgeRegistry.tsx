@@ -97,9 +97,12 @@ export function KnowledgeRegistry({
   const [selectedId, setSelectedId] = useState<string>()
   const [focusedReleaseId, setFocusedReleaseId] = useState<string>()
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
+  const [releaseLookup, setReleaseLookup] = useState<{
+    assetId: string
+    state: 'LOADING' | 'READY' | 'ERROR'
+  }>()
   const [versionHistory, setVersionHistory] = useState<KnowledgeAssetVersionHistoryPage>()
   const [loading, setLoading] = useState(true)
-  const [detailLoading, setDetailLoading] = useState(false)
   const [archiving, setArchiving] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<KnowledgeAssetSummary>()
   const [error, setError] = useState<unknown>()
@@ -191,6 +194,7 @@ export function KnowledgeRegistry({
 
   const selected = assets.find((asset) => asset.id === selectedId)
   const focusedRelease = releases.find((release) => release.id === focusedReleaseId)
+  const releaseState = releaseLookup?.assetId === selectedId ? releaseLookup?.state : 'LOADING'
 
   useEffect(() => {
     if (!selected) {
@@ -198,15 +202,17 @@ export function KnowledgeRegistry({
       setReleases([])
       setVersionHistory(undefined)
       setFocusedReleaseId(undefined)
+      setReleaseLookup(undefined)
       return
     }
     const controller = new AbortController()
-    setDetailLoading(true)
     setError(undefined)
     setReleases([])
+    setFocusedReleaseId(undefined)
+    setReleaseLookup({ assetId: selected.id, state: 'LOADING' })
     setVersionHistory(undefined)
     setDetail(undefined)
-    void Promise.all([
+    void Promise.allSettled([
       client.request<KnowledgeRelease[]>(
         `/knowledge/graphs/${selected.id}/releases`,
         { cache: 'no-store', signal: controller.signal },
@@ -222,24 +228,32 @@ export function KnowledgeRegistry({
     ])
       .then(([nextReleases, nextDetail, nextVersionHistory]) => {
         if (controller.signal.aborted) return
-        setDetail(nextDetail)
-        setReleases(nextReleases)
-        setVersionHistory(nextVersionHistory)
-        setFocusedReleaseId(
-          selected.active_release_id
-          ?? nextReleases.reduce<KnowledgeRelease | undefined>(
-            (latest, release) => (
-              !latest || release.release_no > latest.release_no ? release : latest
-            ),
-            undefined,
-          )?.id,
-        )
+        if (nextDetail.status === 'fulfilled') setDetail(nextDetail.value)
+        if (nextVersionHistory.status === 'fulfilled') setVersionHistory(nextVersionHistory.value)
+        if (nextReleases.status === 'fulfilled') {
+          setReleases(nextReleases.value)
+          setReleaseLookup({ assetId: selected.id, state: 'READY' })
+          setFocusedReleaseId(
+            selected.active_release_id
+            ?? nextReleases.value.reduce<KnowledgeRelease | undefined>(
+              (latest, release) => (
+                !latest || release.release_no > latest.release_no ? release : latest
+              ),
+              undefined,
+            )?.id,
+          )
+        } else {
+          setReleaseLookup({ assetId: selected.id, state: 'ERROR' })
+        }
+        const failure = [nextReleases, nextDetail, nextVersionHistory]
+          .find((result) => result.status === 'rejected')
+        if (failure?.status === 'rejected') setError(failure.reason)
       })
       .catch((next) => {
-        if (!controller.signal.aborted) setError(next)
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setDetailLoading(false)
+        if (controller.signal.aborted) return
+        setFocusedReleaseId(undefined)
+        setReleaseLookup({ assetId: selected.id, state: 'ERROR' })
+        setError(next)
       })
     return () => controller.abort()
   }, [client, selected])
@@ -936,15 +950,21 @@ export function KnowledgeRegistry({
               <AccordionItem
                 itemId="graph-preview"
                 title="그래프 미리보기"
-                summary={detailLoading
+                summary={releaseState === 'LOADING'
                   ? '불러오는 중'
-                  : focusedReleaseId
-                    ? `${selected.node_count ?? 0} canonical nodes`
-                    : '미발행'}
+                  : releaseState === 'ERROR'
+                    ? '조회 실패'
+                    : focusedReleaseId
+                      ? `${selected.node_count ?? 0} canonical nodes`
+                      : '미발행'}
                 expanded={expandedSections.has('graph-preview')}
                 onToggle={() => toggleSection('graph-preview')}
               >
-                {focusedReleaseId
+                {releaseState === 'LOADING'
+                  ? <p className="m-0 text-xs text-slate-500">발행된 그래프 정보를 불러오는 중입니다.</p>
+                  : releaseState === 'ERROR'
+                    ? <p className="m-0 text-xs text-slate-500">그래프 조회에 실패하여 미리보기를 열 수 없습니다. 발행 상태를 확인할 수 없습니다.</p>
+                    : focusedReleaseId
                   ? <KnowledgeManagedGraphExplorer
                     key={`${selected.id}:${focusedReleaseId}`}
                     client={client}

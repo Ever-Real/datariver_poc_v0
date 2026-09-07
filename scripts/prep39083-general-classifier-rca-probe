@@ -7,18 +7,22 @@ set -euo pipefail
 # SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
-# ProviderCallsPerRun: 3
+# ProviderCallsPerRun: 2 completions (--cd); 2 completions + at most 2 metadata GETs (--ab); 3 (--auto-3), no retries
 # Neo4jMutation: NONE
 
-readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
+# DiagnosticContract: PREP39083_RCA_AB_IDENTITY_V2
+# DiagnosticContract: PREP39083_RCA_CD_IDENTITY_V1
 readonly COMPOSE_PROJECT='datariver-prep39083'
 readonly COMPOSE_SERVICE='web'
 readonly RELEASE_RELATIVE_PATH='deploy/prep39083/release.json'
 readonly RELEASE_REF='refs/remotes/origin/prep39083-release'
 readonly OCI_REVISION_LABEL='org.opencontainers.image.revision'
+readonly SCRIPT_RELATIVE_PATH='scripts/prep39083-general-classifier-rca-probe'
 
 emit_failure() {
-  printf '%s\n' "${OUTPUT_PREFIX}|subtype=PROBE_FAILED|stage=$1"
+  local status=PROBE_FAILED
+  [[ "$1" == STALE_* ]] && status=STALE_DIAGNOSTIC
+  printf '%s\n' "RCA|status=$status|diag=${diag_short:-UNKNOWN}|expected=${expected_short:-UNKNOWN}|mode=${probe_mode:-UNKNOWN}|stage=$1"
 }
 
 fail() {
@@ -26,15 +30,46 @@ fail() {
   exit 2
 }
 
+probe_mode=UNKNOWN
+if [[ "$#" -eq 1 && "$1" == '--ab' ]]; then
+  probe_mode=AB
+elif [[ "$#" -eq 1 && "$1" == '--cd' ]]; then
+  probe_mode=CD
+elif [[ "$#" -eq 1 && "$1" == '--auto-3' ]]; then
+  probe_mode=AUTO3
+else
+  fail ARGUMENTS
+fi
+readonly probe_mode
+
 command -v git >/dev/null 2>&1 || fail CHECKOUT
 command -v python3 >/dev/null 2>&1 || fail PRODUCT_IDENTITY
-command -v docker >/dev/null 2>&1 || fail DOCKER
 
-readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd; })"
+readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; })"
 REPOSITORY_ROOT="$(git -C "$SCRIPT_DIRECTORY" rev-parse --show-toplevel 2>/dev/null)" \
   || fail CHECKOUT
 readonly REPOSITORY_ROOT
 [[ "$SCRIPT_DIRECTORY" == "$REPOSITORY_ROOT/scripts" ]] || fail CHECKOUT
+
+# Check the bytes of the actual executing file, not merely a successful git pull.
+DIAGNOSTIC_HEAD="$(git -C "$REPOSITORY_ROOT" rev-parse --verify HEAD 2>/dev/null)" || fail CHECKOUT
+diag_short="${DIAGNOSTIC_HEAD:0:8}"
+ORIGIN_DEV_HEAD="$(git -C "$REPOSITORY_ROOT" rev-parse --verify refs/remotes/origin/dev 2>/dev/null)" || fail STALE_ORIGIN_REF
+REMOTE_DEV_HEAD="$(git -C "$REPOSITORY_ROOT" ls-remote --exit-code origin refs/heads/dev 2>/dev/null)" || fail REMOTE_IDENTITY
+REMOTE_DEV_HEAD="${REMOTE_DEV_HEAD%%$'\t'*}"
+[[ "$REMOTE_DEV_HEAD" =~ ^[0-9a-f]{40}$ ]] || fail REMOTE_IDENTITY
+expected_short="${REMOTE_DEV_HEAD:0:8}"
+[[ "$DIAGNOSTIC_HEAD" == "$ORIGIN_DEV_HEAD" && "$ORIGIN_DEV_HEAD" == "$REMOTE_DEV_HEAD" ]] || fail STALE_CHECKOUT
+EXPECTED_SCRIPT_BLOB="$(git -C "$REPOSITORY_ROOT" rev-parse "$REMOTE_DEV_HEAD:$SCRIPT_RELATIVE_PATH" 2>/dev/null)" || fail STALE_SCRIPT
+ACTUAL_SCRIPT_BLOB="$(git -C "$REPOSITORY_ROOT" hash-object --no-filters "$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")" 2>/dev/null)" || fail STALE_SCRIPT
+[[ "$ACTUAL_SCRIPT_BLOB" == "$EXPECTED_SCRIPT_BLOB" ]] || fail STALE_SCRIPT
+readonly DIAGNOSTIC_HEAD ORIGIN_DEV_HEAD REMOTE_DEV_HEAD EXPECTED_SCRIPT_BLOB ACTUAL_SCRIPT_BLOB diag_short expected_short
+
+command -v docker >/dev/null 2>&1 || fail DOCKER
+umask 077
+DETAIL_DIRECTORY="$(mktemp -d /tmp/datariver-prep39083-rca.XXXXXX)" || fail DETAIL_DIRECTORY
+readonly DETAIL_DIRECTORY
+readonly DETAIL_FILE="$DETAIL_DIRECTORY/diagnostic.log"
 
 web_ids=()
 while IFS= read -r container_id; do
@@ -90,14 +125,17 @@ readonly RUNNING_PRODUCT
 
 set +e
 probe_output="$(
-  docker exec -i "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
+  docker exec -i -e "DATARIVER_CLASSIFIER_PROBE_MODE=$probe_mode" "$WEB_CONTAINER_ID" node --input-type=module - "$probe_mode" "$DIAGNOSTIC_HEAD" 2>/dev/null <<'NODE'
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import pg from 'pg'
 
 const OUTPUT_PREFIX = 'GENERAL_RCA_EVIDENCE'
+const PROBE_MODE = process.argv[2]
+const DIAGNOSTIC_SHA = process.argv[3]
 const QUESTION = '데이터 계보가 무엇인지 일반적으로 설명해줘.'
 const PROBE_ATTEMPT_COUNT = 3
 const SERVER_PATH = '/app/poc-server.mjs'
@@ -320,9 +358,14 @@ async function prepareTemporaryServer(source) {
       nestedReasoningEffort: body?.reasoning?.effort,
       temperature: body?.temperature,
       modelPresent: typeof body?.model === 'string' && Boolean(body.model),
+      model: body?.model,
       strictJsonSchema: body?.response_format?.type === 'json_schema'
         && body?.response_format?.json_schema?.strict === true,
     })
+    if (capture.captureOnly === true) {
+      Object.assign(capture, { body: structuredClone(body), provider, endpoint, timeoutMs })
+      throw new Error('Diagnostic request capture only; no provider call.')
+    }
   }
 ${LLM_SERIALIZE_NEEDLE}`,
   )
@@ -332,6 +375,9 @@ ${LLM_SERIALIZE_NEEDLE}`,
       globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.captureRequest = true
 ${CLASSIFIER_CALL_NEEDLE}`,
   )
+  if (['AB', 'CD'].includes(PROBE_MODE)) {
+    instrumented += '\nexport { llmRequest, graphPlannerAssets }\n'
+  }
   instrumented = instrumented.replace(
     CLASSIFIER_VALUE_NEEDLE,
     `${CLASSIFIER_VALUE_NEEDLE}\n      Object.assign(globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA, { classification, rawValue: value })`,
@@ -369,6 +415,66 @@ function propertyPresence(value, properties) {
   )) ? 'Y' : 'N'
 }
 
+function boundedCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 100_000_000
+    ? String(value)
+    : 'U'
+}
+
+function firstBoundedCount(values) {
+  for (const value of values) {
+    const bounded = boundedCount(value)
+    if (bounded !== 'U') return bounded
+  }
+  return 'U'
+}
+
+function classifierUsage(classification, rawValue) {
+  const usage = classification?.usage && typeof classification.usage === 'object'
+    ? classification.usage
+    : {}
+  const completionDetails = usage.completion_tokens_details
+    && typeof usage.completion_tokens_details === 'object'
+    ? usage.completion_tokens_details
+    : {}
+  const outputDetails = usage.output_tokens_details
+    && typeof usage.output_tokens_details === 'object'
+    ? usage.output_tokens_details
+    : {}
+  const reasoning = firstBoundedCount([
+    completionDetails.reasoning_tokens,
+    outputDetails.reasoning_tokens,
+    usage.reasoning_tokens,
+  ])
+  const thinking = firstBoundedCount([
+    completionDetails.thinking_tokens,
+    outputDetails.thinking_tokens,
+    usage.thinking_tokens,
+  ])
+  const visibleBytes = typeof rawValue === 'string'
+    ? boundedCount(Buffer.byteLength(rawValue, 'utf8'))
+    : 'U'
+  const providerLimit = firstBoundedCount([
+    classification?.max_completion_tokens,
+    classification?.max_output_tokens,
+    classification?.max_tokens,
+    classification?.token_limit,
+    usage.max_completion_tokens,
+    usage.max_output_tokens,
+    usage.max_tokens,
+    usage.token_limit,
+  ])
+  return [
+    `P${boundedCount(usage.prompt_tokens)}`,
+    `C${boundedCount(usage.completion_tokens)}`,
+    `T${boundedCount(usage.total_tokens)}`,
+    `R${reasoning}`,
+    `K${thinking}`,
+    `V${visibleBytes}`,
+    `L${providerLimit}`,
+  ].join('.')
+}
+
 function causeChain(error) {
   const values = []
   const seen = new Set()
@@ -379,6 +485,99 @@ function causeChain(error) {
     current = current.cause
   }
   return values
+}
+
+// Only public route vocabulary and JSON punctuation survive in output excerpts.
+// Never print provider text, arbitrary identifiers, numeric values or exception messages.
+const ROUTE_FIELDS = new Set([
+  'mode', 'confidence', 'intent', 'primary_concepts', 'secondary_concepts',
+  'relation_intent', 'entity_type_hints', 'selected_graph_asset',
+])
+const EXCERPT_WORDS = new Set([
+  ...ROUTE_FIELDS, 'GENERAL', 'VECTOR', 'GRAPH', 'GENERAL_CONVERSATION',
+  'CATALOG_INVENTORY', 'EXACT_METADATA', 'SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY',
+  'AMBIGUOUS', 'UPSTREAM', 'DOWNSTREAM', 'DEPENDENCY', 'IMPACT', 'PATH',
+  'PROVENANCE', 'DATA_FLOW', 'COMMON_UPSTREAM', 'COMMON_DOWNSTREAM',
+  'DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN',
+  'KNOWLEDGE_ASSET', 'null', 'true', 'false',
+])
+
+function redactedExcerpt(value) {
+  return value.replace(/[\p{L}\p{N}_-]+/gu, (word) => (
+    EXCERPT_WORDS.has(word) ? word : 'x'.repeat([...word].length)
+  )).replace(/[^xA-Za-z_{}\[\]":,.\s\\`<>/]/gu, 'x').replace(/\s/gu, ' ')
+}
+
+function modelEvidence(value) {
+  if (typeof value !== 'string' || !value) return { family: 'UNKNOWN', sha256: 'NONE' }
+  const family = ['gemma', 'qwen', 'gpt', 'llama', 'deepseek', 'mistral', 'phi']
+    .find((name) => new RegExp(`(?:^|[/])${name}`, 'iu').test(value))
+  return { family: family?.toUpperCase() || 'OTHER', sha256: createHash('sha256').update(value).digest('hex') }
+}
+
+function longOutputEvidence(rawValue) {
+  if (typeof rawValue !== 'string') return { state: 'NON_STRING' }
+  // Output-size analysis is bounded even if an upstream provider ignores max_tokens.
+  const value = rawValue.slice(0, 100_000)
+  const trimmed = value.trim()
+  const characters = [...rawValue.trim()]
+  let parse = 'VALID'
+  let position = 'NONE'
+  try {
+    JSON.parse(value)
+  } catch (error) {
+    const message = String(error?.message || '')
+    const offset = message.match(/at position (\d+)(?: \(line \d+ column \d+\))?$/u)
+    position = offset ? boundedCount(Number(offset[1])) : 'U'
+    parse = /^Unterminated string in JSON/u.test(message) ? 'UNTERMINATED_STRING'
+      : /^Unexpected end of JSON input/u.test(message) ? 'UNEXPECTED_END'
+        : /^Unexpected non-whitespace character after JSON/u.test(message) ? 'TRAILING_CONTENT'
+          : /^Expected (?:property name|double-quoted property name)/u.test(message) ? 'EXPECTED_PROPERTY'
+            : /^Expected /u.test(message) ? 'EXPECTED_DELIMITER'
+              : /^(?:No number after minus sign|Unterminated fractional number|Exponent part is missing a number|Unexpected number)/u.test(message) ? 'INVALID_NUMBER'
+                : 'UNEXPECTED_TOKEN'
+  }
+  let repeatedPattern = false
+  for (let width = 1; width <= 160; width += 1) {
+    const repeats = Math.max(3, Math.ceil(48 / width))
+    for (let index = 0; index + width * repeats <= value.length; index += 1) {
+      const pattern = value.slice(index, index + width)
+      if (value.startsWith(pattern.repeat(repeats), index)) {
+        repeatedPattern = true
+        break
+      }
+    }
+    if (repeatedPattern) break
+  }
+  const fieldOccurrences = [...value.matchAll(/"([a-z_]+)"\s*:/gu)]
+    .map((match) => match[1]).filter((name) => ROUTE_FIELDS.has(name))
+  const longest = (expression) => [...value.matchAll(expression)]
+    .reduce((maximum, match) => Math.max(maximum, [...match[0]].length), 0)
+  const boundary = (character) => character === undefined ? 'EMPTY'
+    : '{}[]"'.includes(character) ? character
+      : /[0-9-]/u.test(character) ? 'NUMBER'
+        : /[\p{L}]/u.test(character) ? 'TEXT' : 'OTHER'
+  return {
+    bytes: Buffer.byteLength(rawValue, 'utf8'),
+    chars: [...rawValue].length,
+    analysis: rawValue.length > value.length ? 'TRUNCATED_100K' : 'COMPLETE',
+    prefix_redacted: redactedExcerpt(characters.slice(0, 160).join('')),
+    suffix_redacted: redactedExcerpt(characters.slice(-160).join('')),
+    first: boundary(characters[0]),
+    last: boundary(characters.at(-1)),
+    opening: trimmed.startsWith('{') ? 'OBJECT' : trimmed.startsWith('[') ? 'ARRAY' : 'OTHER',
+    code_fence: value.includes('```'),
+    reasoning_marker: /<\/?(?:think|analysis)>|\b(?:let me|let's think|we need to|first,? I)\b/iu.test(value),
+    repeated_pattern: repeatedPattern,
+    repeated_route_keys: fieldOccurrences.length - new Set(fieldOccurrences).size,
+    adjacent_objects: [...value.matchAll(/\}\s*\{/gu)].length,
+    last_field_candidate: fieldOccurrences.at(-1) || 'NONE',
+    longest_number_run: longest(/[-+]?\d[\d.eE+-]*/gu),
+    longest_whitespace_run: longest(/\s+/gu),
+    longest_string_token: longest(/"(?:[^"\\]|\\.)*(?:"|$)/gu),
+    parse,
+    parse_position: position,
+  }
 }
 
 function parsedRawValue(rawValue) {
@@ -504,6 +703,10 @@ function classifierEvidence(route, routeError, capture, request) {
     shape: rawClassifierShape(rawValue),
     point: failurePoint(subtype),
     request: requestShape(request),
+    usage: classifierUsage(classification, rawValue),
+    longOutput: longOutputEvidence(rawValue),
+    requestModel: modelEvidence(request?.model),
+    responseModel: modelEvidence(classification?.model),
   }
 }
 
@@ -521,6 +724,7 @@ function attemptToken(evidence) {
     evidence.shape,
     evidence.point,
     evidence.request,
+    evidence.usage,
   ].join(',')
 }
 
@@ -690,13 +894,201 @@ function evidenceLine(attempts, persisted, discoveryBind, graphEvidence) {
     `run1=${attemptToken(attempts[0])}`,
     `run2=${attemptToken(attempts[1])}`,
     `run3=${attemptToken(attempts[2])}`,
+    ...attempts.map((attempt, index) => `long${index + 1}=${JSON.stringify(attempt.longOutput)}`),
+    `request_model=${JSON.stringify(attempts[0].requestModel)}`,
+    `response_models=${JSON.stringify(attempts.map((attempt) => attempt.responseModel))}`,
     `graphs=${graphEvidence}`,
     `constraint=${persisted.constraint}`,
     `discovery_bind=${discoveryBind}`,
   ].join('|')
 }
 
+function abRequests(body) {
+  if (body?.max_tokens !== 4096 || body?.temperature !== 0 || body?.stream !== false
+    || body?.reasoning_effort !== 'none' || body?.reasoning?.effort !== 'none'
+    || body?.response_format?.type !== 'json_schema'
+    || body?.response_format?.json_schema?.strict !== true
+    || typeof body?.model !== 'string' || !body.model
+    || Object.hasOwn(body, 'max_completion_tokens')) throw probeFailure('AB_REQUEST_CONTRACT')
+  const minimal = structuredClone(body)
+  minimal.response_format.json_schema.schema = {
+    type: 'object', additionalProperties: false, required: ['mode'],
+    properties: { mode: { type: 'string', enum: ['GENERAL', 'VECTOR', 'GRAPH'] } },
+  }
+  minimal.messages = [
+    { role: 'system', content: 'Classify the question. GENERAL means a conceptual explanation; VECTOR means internal asset search; GRAPH means internal relationship traversal. Return only one JSON object with the mode field.' },
+    { role: 'user', content: QUESTION },
+  ]
+  return [minimal, structuredClone(body)]
+}
+
+function cdRequests(body) {
+  const [a, b] = abRequests(body)
+  const c = structuredClone(b)
+  c.messages = structuredClone(a.messages)
+  const d = structuredClone(b)
+  d.response_format.json_schema.schema = structuredClone(a.response_format.json_schema.schema)
+  return [c, d]
+}
+
+// Diagnostic validation only, against the actual captured schema's supported keywords.
+function abSchemaValid(value, schema) {
+  if (!schema || typeof schema !== 'object') return false
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+  if (!types.includes(type) || (schema.enum && !schema.enum.includes(value))) return false
+  if (type === 'object') {
+    return schema.additionalProperties === false
+      && schema.required.every((key) => Object.hasOwn(value, key))
+      && Object.keys(value).every((key) => Object.hasOwn(schema.properties, key)
+        && abSchemaValid(value[key], schema.properties[key]))
+  }
+  if (type === 'array') return (schema.maxItems === undefined || value.length <= schema.maxItems)
+    && (schema.minItems === undefined || value.length >= schema.minItems)
+    && value.every((item) => abSchemaValid(item, schema.items))
+  if (type === 'string') return (schema.maxLength === undefined || [...value].length <= schema.maxLength)
+    && (schema.minLength === undefined || [...value].length >= schema.minLength)
+  if (type === 'number') return Number.isFinite(value)
+    && (schema.minimum === undefined || value >= schema.minimum)
+    && (schema.maximum === undefined || value <= schema.maximum)
+  return type === 'null' || type === 'boolean'
+}
+
+function abClassification(a, b) {
+  if ([a.state, b.state].includes('UNAVAILABLE')) return 'INCONCLUSIVE_PROVIDER_FAILURE'
+  if (a.state === 'PASS' && b.state === 'PASS') return 'SMOKE_CONTEXT_DIFFERENCE'
+  if (a.state === 'PASS' && b.state === 'FAIL') return 'CLASSIFIER_SCHEMA_OR_PROMPT_INTERACTION'
+  if (a.state === 'FAIL' && b.state === 'FAIL') return 'PROVIDER_MODEL_STRUCTURED_OUTPUT_UNSUPPORTED_OR_BROKEN'
+  return 'INCONCLUSIVE_A_FAIL_B_PASS'
+}
+
+function cdClassification(c, d) {
+  if ([c.state, d.state].includes('UNAVAILABLE')) return 'INCONCLUSIVE_PROVIDER_FAILURE'
+  if (c.state === 'FAIL' && d.state === 'PASS') return 'CLASSIFIER_SCHEMA_CAUSE'
+  if (c.state === 'PASS' && d.state === 'FAIL') return 'CLASSIFIER_PROMPT_CONTEXT_CAUSE'
+  if (c.state === 'PASS' && d.state === 'PASS') return 'CLASSIFIER_SCHEMA_PROMPT_INTERACTION'
+  return 'MULTIPLE_CLASSIFIER_TRIGGERS'
+}
+
+async function readProviderMetadata(provider, model) {
+  const identity = {
+    software: 'UNKNOWN', version: 'UNKNOWN',
+    model: /^[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,119}$/u.test(model)
+      && !(provider.token && model.includes(provider.token)) ? model : 'REDACTED',
+    model_identity_sha256: createHash('sha256').update(model).digest('hex'),
+    model_artifact_digest: 'UNKNOWN',
+  }
+  // Two bounded read-only Ollama metadata endpoints; no endpoint sweep or retries.
+  // A compatible gateway may expose these too: report the API identity, not a binary attestation.
+  const base = new URL(provider.url)
+  if (base.search || (base.pathname !== '/' && !/\/v1\/?$/u.test(base.pathname))) return identity
+  base.pathname = base.pathname.replace(/\/v1\/?$/u, '/').replace(/\/?$/u, '/')
+  const metadata = []
+  for (const path of ['api/version', 'api/tags']) {
+    let response
+    try {
+      response = await serverModule.providerTransport.fetch(new URL(path, base), {
+        method: 'GET', headers: { Authorization: `Bearer ${provider.token}` },
+        redirect: 'error', signal: AbortSignal.timeout(10_000),
+      })
+      if (!response.ok) { metadata.push(null); continue }
+      const chunks = []
+      let bytes = 0
+      for await (const chunk of response.body) {
+        bytes += chunk.length
+        if (bytes > 131_072) throw probeFailure('METADATA_SIZE')
+        chunks.push(chunk)
+      }
+      metadata.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    } catch {
+      metadata.push(null)
+    } finally {
+      await response?.body?.cancel().catch(() => undefined)
+    }
+  }
+  const [version, tags] = metadata
+  const selected = Array.isArray(tags?.models) ? tags.models.find((entry) => (
+    [entry.name, entry.model].includes(model)
+    || (!model.includes(':') && [entry.name, entry.model].includes(`${model}:latest`))
+  )) : null
+  if (typeof version?.version === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-.](?:rc|beta|alpha)\.?\d{1,4})?$/u.test(version.version)
+    && selected && typeof selected.digest === 'string' && /^(?:sha256:)?[a-f0-9]{64}$/u.test(selected.digest)) {
+    Object.assign(identity, {
+      software: 'OLLAMA_API', version: version.version, model_artifact_digest: selected.digest,
+    })
+  }
+  return identity
+}
+
+async function runClassifierPair(mode) {
+  if (!['AB', 'CD'].includes(mode)) throw probeFailure('PAIR_MODE')
+  const principal = Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' })
+  const capture = { providerCalls: 0, requests: [], captureRequest: false, captureOnly: true }
+  globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = capture
+  // Build B through the running Product's real chatRoute, stopping before any network call.
+  await serverModule.chatRoute(QUESTION, 'AUTO', principal, AbortSignal.timeout(130_000))
+    .catch(() => undefined)
+  if (!capture.body || !capture.provider || capture.endpoint !== '/chat/completions'
+    || capture.providerCalls !== 1 || capture.requests.length !== 1) throw probeFailure('AB_CAPTURE')
+  capture.captureOnly = false
+  const bodies = mode === 'CD' ? cdRequests(capture.body) : abRequests(capture.body)
+  const graphAssets = await serverModule.graphPlannerAssets(principal)
+  const provider = mode === 'AB' ? await readProviderMetadata(capture.provider, capture.body.model) : null
+  const results = []
+  let completionCalls = 0
+  for (const [index, body] of bodies.entries()) {
+    const result = { state: 'UNAVAILABLE', started_at: new Date().toISOString() }
+    try {
+      completionCalls += 1
+      const response = await serverModule.llmRequest(
+        capture.provider, capture.endpoint, body, capture.timeoutMs, AbortSignal.timeout(130_000),
+      )
+      const raw = response.choices?.[0]?.message?.content
+      const parsed = parsedRawValue(raw)
+      const schemaPass = parsed.state === 'PARSED' && abSchemaValid(parsed.value, body.response_format.json_schema.schema)
+      const usesProductSchema = mode === 'CD' ? index === 0 : index === 1
+      let semantic = 'NOT_CHECKED'
+      if (schemaPass) {
+        if (!usesProductSchema) semantic = parsed.value.mode === 'GENERAL' ? 'PASS' : 'FAIL'
+        else {
+          try {
+            semantic = serverModule.parseChatRouteDecision(raw, graphAssets).mode === 'GENERAL' ? 'PASS' : 'FAIL'
+          } catch { semantic = 'FAIL' }
+        }
+      }
+      const finish = boundedToken(response.choices?.[0]?.finish_reason, 'UNKNOWN')
+      Object.assign(result, {
+        // CD isolates generation/schema failure. Semantic evidence remains separate; it is
+        // required for subsequent Product acceptance, not inferred from these cross-tests.
+        state: schemaPass && finish === 'STOP'
+          && (mode === 'CD' || !usesProductSchema || semantic === 'PASS') ? 'PASS' : 'FAIL',
+        finish, schema: schemaPass ? 'PASS' : 'FAIL', semantic,
+        usage: classifierUsage(response, raw), output: longOutputEvidence(raw),
+        response_model: modelEvidence(response.model),
+      })
+    } catch (error) {
+      result.error = SAFE_PROVIDER_CODES.has(error?.code) ? error.code : 'OTHER'
+    }
+    result.completed_at = new Date().toISOString()
+    results.push(result)
+  }
+  if (completionCalls !== 2) throw probeFailure('AB_CALL_COUNT')
+  const labels = mode === 'CD' ? ['C', 'D'] : ['A', 'B']
+  process.stdout.write([
+    OUTPUT_PREFIX, `mode=${mode}`,
+    mode === 'CD' ? `cd=${cdClassification(...results)}` : `ab=${abClassification(...results)}`,
+    'completion_calls=2',
+    `diag=${DIAGNOSTIC_SHA}`, `request_model=${JSON.stringify(modelEvidence(capture.body.model))}`,
+    `request=${requestShape(capture.requests[0])}`, `provider=${JSON.stringify(provider)}`,
+    `B_request_sha256=${createHash('sha256').update(JSON.stringify(capture.body)).digest('hex')}`,
+    ...results.map((result, index) => `${labels[index]}=${JSON.stringify(result)}`),
+  ].join('|') + '\n')
+}
+
 async function main() {
+  if (!['AB', 'CD', 'AUTO3'].includes(PROBE_MODE)
+    || process.env.DATARIVER_CLASSIFIER_PROBE_MODE !== PROBE_MODE
+    || !/^[a-f0-9]{40}$/u.test(DIAGNOSTIC_SHA || '')) throw probeFailure('MODE_IDENTITY_HANDSHAKE')
   const persisted = await readPersistedEvidence()
   const [source, stateStoreSource] = await Promise.all([
     readFile(SERVER_PATH, 'utf8'),
@@ -718,6 +1110,7 @@ async function main() {
     ),
   })
   serverModule.createPocServer({ stateStore })
+  if (['AB', 'CD'].includes(PROBE_MODE)) return runClassifierPair(PROBE_MODE)
   const graphEvidence = await auditManagedGraphs(persisted.managedGraphRows)
 
   globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0, requests: [], captureRequest: false }
@@ -748,7 +1141,7 @@ async function main() {
   if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.requests.length !== PROBE_ATTEMPT_COUNT) {
     throw probeFailure('PROVIDER_REQUEST_CONTRACT')
   }
-  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind, graphEvidence)}\n`)
+  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind, graphEvidence)}|mode=AUTO3|diag=${DIAGNOSTIC_SHA}\n`)
 }
 
 try {
@@ -769,12 +1162,66 @@ NODE
 probe_status=$?
 set -e
 
-if [[ -z "$probe_output" || "$probe_output" == *$'\n'* \
-  || "$probe_output" != "${OUTPUT_PREFIX}|"* ]]; then
-  fail OUTPUT_CONTRACT
-fi
+printf '%s\n' "$probe_output" > "$DETAIL_FILE" || fail DETAIL_WRITE
+python3 - "$DETAIL_FILE" "$DIAGNOSTIC_HEAD" "$ORIGIN_DEV_HEAD" "$REMOTE_DEV_HEAD" \
+  "$ACTUAL_SCRIPT_BLOB" "$EXPECTED_SCRIPT_BLOB" "$probe_mode" "$REPOSITORY_ROOT" <<'SUMMARY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
 
-printf '%s\n' "$probe_output"
+detail, head, origin, remote, actual_blob, expected_blob, mode, checkout = sys.argv[1:]
+diag = head[:8]
+
+def fail(stage):
+    print(f"RCA|status=PROBE_FAILED|diag={diag}|mode={mode}|stage={stage}|detail={detail}")
+    raise SystemExit(2)
+
+try:
+    path = Path(detail)
+    raw = path.read_text()
+    # This record contains only the existing redacted provider evidence, never raw responses.
+    record = dict(diag=head, origin_dev=origin, remote_dev=remote, script_blob=actual_blob,
+                  expected_script_blob=expected_blob, mode=mode, checkout=checkout, evidence=raw)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(path, 0o600)
+    if not raw.startswith("GENERAL_RCA_EVIDENCE|") or len(raw.splitlines()) != 1:
+        fail("OUTPUT_CONTRACT")
+    fields = dict(item.split("=", 1) for item in raw.strip().split("|")[1:])
+    if fields.get("subtype") == "PROBE_FAILED":
+        stage = fields.get("stage", "RUNTIME")
+        fail(stage if re.fullmatch(r"[A-Z0-9_]{1,64}", stage) else "RUNTIME")
+    if fields.get("mode") != mode or fields.get("diag") != head:
+        fail("OUTPUT_MODE_IDENTITY")
+    def token(value, fallback="UNKNOWN"):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Z0-9_]{1,80}", value) else fallback
+    if mode in ("AB", "CD") and fields.get("completion_calls") != "2":
+        fail("PAIR_CALL_COUNT")
+    if mode == "CD":
+        c, d = (json.loads(fields[key]) for key in ("C", "D"))
+        print(f"RCA_CD|C={token(c.get('state'))}|D={token(d.get('state'))}"
+              f"|class={token(fields.get('cd'))}"
+              f"|C_finish={token(c.get('finish'))}|D_finish={token(d.get('finish'))}")
+    elif mode == "AB":
+        a, b, provider = (json.loads(fields[key]) for key in ("A", "B", "provider"))
+        version = provider.get("version", "UNKNOWN")
+        if not re.fullmatch(r"[0-9A-Za-z_.-]{1,32}", version):
+            version = "UNKNOWN"
+        model = token(json.loads(fields["request_model"]).get("family"))
+        print(f"RCA_AB|diag={diag}|mode=AB|completion_calls=2"
+              f"|A={token(a.get('state'))}|B={token(b.get('state'))}|class={token(fields.get('ab'))}"
+              f"|provider={token(provider.get('software'))}|version={version}|model={model}"
+              f"|A_finish={token(a.get('finish'))}|B_finish={token(b.get('finish'))}|detail={detail}")
+    else:
+        runs = [token(fields.get(f"run{n}", "").split(",")[0]) for n in (1, 2, 3)]
+        print(f"RCA_AUTO|diag={diag}|mode=AUTO3|class={token(fields.get('subtype'))}"
+              f"|run1={runs[0]}|run2={runs[1]}|run3={runs[2]}"
+              f"|constraint={token(fields.get('constraint'))}|discovery_bind={token(fields.get('discovery_bind'))}"
+              f"|detail={detail}")
+except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    fail("SUMMARY_CONTRACT")
+SUMMARY
 exit "$probe_status"
 
 # END DATARIVER_LEGACY_RCA_PREP39083_GENERAL_CLASSIFIER_V1

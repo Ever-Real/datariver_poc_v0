@@ -185,6 +185,86 @@ function snapshot(release: KnowledgeRelease): KnowledgeSnapshot {
 }
 
 describe('KnowledgeRegistry', () => {
+  it.each(['releases', 'detail', 'versions'])('does not label a failed %s lookup as unpublished', async (failedLookup) => {
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({ items: [asset], next_cursor: null, limit: 25 })
+      }
+      if (path.endsWith(`/${failedLookup}`) || path.endsWith(`/${failedLookup}?limit=50`)) {
+        return Promise.reject(new Error('Connection terminated unexpectedly'))
+      }
+      if (path.endsWith('/releases')) return Promise.resolve([currentRelease])
+      if (path.endsWith('/detail')) return Promise.resolve(detail)
+      if (path.endsWith('/versions?limit=50')) return Promise.resolve(versionHistory)
+      if (path.includes('/snapshot?')) return Promise.resolve(snapshot(currentRelease))
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<KnowledgeRegistry client={{ request } as unknown as ApiClient} onCreate={vi.fn()} onEdit={vi.fn()} />)
+    fireEvent.click(await screen.findByText(asset.name))
+    await screen.findByText('Connection terminated unexpectedly')
+    expect(screen.queryByText('미발행')).not.toBeInTheDocument()
+    expect(screen.queryByText(/발행된 graph release가 없어/)).not.toBeInTheDocument()
+    if (failedLookup === 'releases') {
+      expect(screen.getByText('조회 실패')).toBeInTheDocument()
+      expect(screen.getByText(/발행 상태를 확인할 수 없습니다/)).toBeInTheDocument()
+      expect(request.mock.calls.some(([path]) => path.includes('/snapshot?'))).toBe(false)
+    } else {
+      await waitFor(() => expect(request).toHaveBeenCalledWith(
+        expect.stringContaining(`/releases/${currentRelease.id}/snapshot?`),
+        expect.anything(),
+      ))
+    }
+  })
+
+  it('shows unpublished only after a successful empty lookup with no active release', async () => {
+    const unpublished = { ...asset, active_release_id: null }
+    let resolveReleases!: (value: KnowledgeRelease[]) => void
+    const pendingReleases = new Promise<KnowledgeRelease[]>((resolve) => { resolveReleases = resolve })
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({ items: [unpublished], next_cursor: null, limit: 25 })
+      }
+      if (path.endsWith('/releases')) return pendingReleases
+      if (path.endsWith('/detail')) return Promise.resolve({ ...detail, asset: unpublished })
+      if (path.endsWith('/versions?limit=50')) return Promise.resolve({ items: [], next_cursor: null, limit: 50 })
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<KnowledgeRegistry client={{ request } as unknown as ApiClient} onCreate={vi.fn()} onEdit={vi.fn()} />)
+    fireEvent.click(await screen.findByText(asset.name))
+    expect(await screen.findByText('발행된 그래프 정보를 불러오는 중입니다.')).toBeInTheDocument()
+    expect(screen.queryByText('미발행')).not.toBeInTheDocument()
+    expect(screen.queryByText(/발행된 graph release가 없어/)).not.toBeInTheDocument()
+    resolveReleases([])
+    expect(await screen.findByText('미발행')).toBeInTheDocument()
+    expect(screen.getByText(/발행된 graph release가 없어/)).toBeInTheDocument()
+  })
+
+  it('does not reuse the previous asset release while the next lookup loads or fails', async () => {
+    const nextAsset = { ...asset, id: 'next-graph', name: 'Next Graph', active_release_id: 'next-release' }
+    let rejectReleases!: (error: Error) => void
+    const pendingReleases = new Promise<KnowledgeRelease[]>((_resolve, reject) => { rejectReleases = reject })
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({ items: [asset, nextAsset], next_cursor: null, limit: 25 })
+      }
+      if (path === `/knowledge/graphs/${nextAsset.id}/releases`) return pendingReleases
+      if (path.endsWith('/releases')) return Promise.resolve([currentRelease])
+      if (path.endsWith('/detail')) return Promise.resolve(detail)
+      if (path.endsWith('/versions?limit=50')) return Promise.resolve(versionHistory)
+      if (path.includes('/snapshot?')) return Promise.resolve(snapshot(currentRelease))
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    render(<KnowledgeRegistry client={{ request } as unknown as ApiClient} onCreate={vi.fn()} onEdit={vi.fn()} />)
+    fireEvent.click(await screen.findByText(asset.name))
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path.includes('/snapshot?'))).toBe(true))
+    fireEvent.click(screen.getByText(nextAsset.name))
+    expect(await screen.findByText('발행된 그래프 정보를 불러오는 중입니다.')).toBeInTheDocument()
+    rejectReleases(new Error('Connection terminated unexpectedly'))
+    expect(await screen.findByText('조회 실패')).toBeInTheDocument()
+    expect(screen.queryByText('미발행')).not.toBeInTheDocument()
+    expect(request.mock.calls.some(([path]) => path.includes(`/knowledge/graphs/${nextAsset.id}/releases/`))).toBe(false)
+  })
+
   it('edits, archives, and focuses immutable release history through typed APIs', async () => {
     let graphReads = 0
     const request = vi.fn((path: string, options?: RequestOptions) => {
