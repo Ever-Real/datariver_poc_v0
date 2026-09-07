@@ -157,8 +157,11 @@ def git_head() -> str:
 
 def build_input_hash() -> str:
     # The archived current commit is the complete build context, including Dockerfile.
-    archive = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT,
-                             capture_output=True, check=True).stdout
+    try:
+        archive = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT,
+                                 capture_output=True, check=True).stdout
+    except subprocess.CalledProcessError as error:
+        raise DeployError("SOURCE_ARCHIVE_FAILED") from error
     return hashlib.sha256(archive).hexdigest()
 
 
@@ -551,11 +554,11 @@ def validate_compose(profile: Target, prefix: Sequence[str], image: str) -> None
         for item in (service.get("ports") or []) if str(item.get("published", "")).isdigit()
     }
     require(profile.port in published and not published.intersection({39080, 39083} - {profile.port}), "COMPOSE_PROTECTED_PORT_COLLISION")
-    if profile.validation_only:
-        networks = config.get("networks", {})
-        require(any(value.get("name") == profile.network for value in networks.values()), "COMPOSE_NETWORK_NOT_ISOLATED")
-        volumes = config.get("volumes", {})
-        require(all(value.get("name", "").startswith(profile.project + "_") for value in volumes.values()), "COMPOSE_VOLUMES_NOT_ISOLATED")
+    networks = config.get("networks", {})
+    require({value.get("name") for value in networks.values()} == {profile.network}, "COMPOSE_NETWORK_IDENTITY_INVALID")
+    volumes = config.get("volumes", {})
+    expected_volumes = {f"{profile.project}_{name}" for name in ("pgvector-data", "neo4j-data", "neo4j-logs")}
+    require({value.get("name") for value in volumes.values()} == expected_volumes, "COMPOSE_VOLUME_IDENTITY_INVALID")
 
 
 def project_containers(profile: Target) -> dict[str, dict[str, Any]]:
@@ -593,7 +596,7 @@ def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, An
         require(all(service in existing for service in state_services), "EXISTING_STATE_SERVICES_INCOMPLETE")
         run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--no-recreate", "--wait", *state_services))
     else:
-        run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--wait", *state_services))
+        run((*prefix, "up", "-d", "--no-build", "--pull", "missing", "--wait", *state_services))
 
 
 def password_file(profile: Target, *, existing_state: bool, supplied: Path | None) -> Path:
