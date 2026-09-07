@@ -92,7 +92,7 @@ def run(*arguments: str, cwd: Path = ROOT, capture: bool = True) -> subprocess.C
         list(arguments), cwd=cwd, text=True, capture_output=capture, check=False
     )
     if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip()
+        detail = (completed.stderr or completed.stdout or "").strip()
         raise DeployError(f"command failed: {' '.join(arguments[:3])}{': ' + detail if detail else ''}")
     return completed
 
@@ -374,7 +374,7 @@ def extract_artifact() -> Path:
 
 def compose_prefix(environment: Path) -> list[str]:
     return [
-        "docker", "compose", "--project-name", PROJECT, "--project-directory", str(ROOT),
+        "docker", "compose", "--project-name", PROJECT, "--project-directory", str(BASE_COMPOSE.parent),
         "--env-file", str(environment), "--file", str(BASE_COMPOSE), "--file", str(ARTIFACT_COMPOSE),
         "--file", str(DEV_ARTIFACT_COMPOSE),
     ]
