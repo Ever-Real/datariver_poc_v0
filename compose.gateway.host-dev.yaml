@@ -1,7 +1,0 @@
-services:
-  apisix:
-    depends_on: !reset {}
-    environment:
-      DATARIVER_API_UPSTREAM: ${DATARIVER_API_UPSTREAM:-host.docker.internal:38101}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

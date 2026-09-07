@@ -1,1 +1,0 @@
-"""Operational worker entry points."""

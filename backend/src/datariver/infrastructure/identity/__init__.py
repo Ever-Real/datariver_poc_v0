@@ -1,1 +1,0 @@
-"""Identity-provider administration adapters."""
