@@ -215,3 +215,48 @@ Local verification: **15 diagnostic tests passed**, including both fresh-checkou
 immutable mode dispatch, zero-call capture, the exact crossed requests, two completions with no
 metadata reads in CD, outcome mapping and private/compact output. Bash, embedded/temporary Node
 syntax and static verification pass. No Actual PREP C/D result or Product gate is claimed here.
+
+## Classifier RCA closed: prompt/context correction
+
+The operator supplied Actual PREP C=PASS/STOP and D=PASS/STOP. Together with A=PASS/STOP and
+B=FAIL/LENGTH, the accepted root cause is **CLASSIFIER_SCHEMA_PROMPT_INTERACTION** on the same
+GEMMA runtime. The full schema works with the short prompt; the full prompt works with the minimal
+schema. This is not classified as generic provider failure, schema-only failure, prompt-only
+failure or insufficient completion budget. No further diagnostic modes or cross-tests are added.
+
+The Product correction changes only classifier messages:
+
+- The system instruction shrinks from **1,499 to 819 characters**, retaining route boundaries,
+  inventory/exact/discovery distinctions, literal Unicode search terms, authorized graph selection
+  and the untrusted-data boundary. Repeated output-format directions and schema-field explanations
+  are removed; no example response is included.
+- The user message is one JSON object containing the question and compact graph capability rows.
+  Each row retains the exact authorized ID, name, type, intents, capabilities and entity types from
+  the two fixed managed K9 definitions. The redundant READY status and prose wrapper are omitted.
+  No graph capability is truncated, synthesized or added, and source definitions remain bounded.
+- The full strict schema, parser, semantic validation, graph eligibility lookup, 4096 budget,
+  model, transport, timeout and reasoning controls are unchanged. Existing SQL NULL persistence,
+  order-independent graph integrity and lookup-error-versus-unpublished UI corrections remain.
+
+Focused classifier/provider/semantic/fail-closed regressions: **110 passed**. Existing diagnostic
+offline tests: **15 passed**; no remote provider calls were made by either test set. A direct source
+comparison confirms the schema/controls, parser and graph eligibility lookup are unchanged.
+Full source/release gates and Actual PREP revised-request 3/3 acceptance are recorded separately;
+this correction is not an Actual PREP runtime PASS claim. The graph connection cause still awaits
+the single bounded GRAPH_UI endpoint/status/time result.
+
+Correction verification:
+
+- TypeScript, ESLint and static: PASS. Registry/explorer regression: 11 PASS.
+- Canonical POC Node regression: 260 PASS, 19 environment-gated skips.
+- Canonical PREP handoff/artifact/deploy/transport/release-prepare contracts: 189 PASS.
+- Ruff and strict mypy (605 files): PASS.
+- Additional repository-wide `development_cycle.py verify`: NOT PASS; backend result is
+  4,215 PASS, 126 skips, 17 failures. All 17 failures reproduce in an unmodified `227c3e9f`
+  archive: historical migration assertions (4), development-host secret/preflight fixtures (11),
+  environment-template keys (1), and the pilot deploy contract (1). These are not waived or
+  repaired by this prompt-only change. The formal PREP release command runs its own defined
+  canonical gates in an isolated Product checkout; its result is reported separately.
+
+Actual PREP remains unreachable from this Mac. Product source tests and the forthcoming exact
+artifact do not establish revised classifier 3/3, GENERAL smoke, preview or GRAPH Chat acceptance.
