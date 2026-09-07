@@ -9,6 +9,12 @@ files/HEAD, deployment, databases and graph pointers are unchanged. Existing pri
 files are retained locally; do not ask the operator to copy them. A different target Product is
 rejected before probe execution.
 
+Product preflight failures include a specific stage plus short `expected` and `running` revisions.
+`PRODUCT_MISMATCH` means the running image differs from the pinned Release; use the existing
+release checkout's `./scripts/prep39083 sync` and `./scripts/prep39083 deploy` before verification.
+Image lookup failure or invalid/missing revision labels have separate stages. These fields use
+the existing preflight reads; no additional Docker/provider requests or deployment are performed.
+
 After the new Release is deployed, run from the PREP repository:
 
 ```bash
@@ -20,5 +26,5 @@ Removal condition: once Actual PREP acceptance for Product `2bd5494d` is recorde
 directory and its `.dockerignore` entry. Do not import it into application code, normal deploy
 scripts or CI gates.
 
-Offline launcher verification: `python3 scripts/temporary/prep39083-verify.test.py` (five tests,
+Offline launcher verification: `python3 scripts/temporary/prep39083-verify.test.py` (seven tests,
 including stdin execution against isolated local Git fixtures; no Docker or provider calls).

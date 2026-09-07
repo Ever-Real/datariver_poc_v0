@@ -22,7 +22,13 @@ readonly SCRIPT_RELATIVE_PATH='scripts/prep39083-general-classifier-rca-probe'
 emit_failure() {
   local status=PROBE_FAILED
   [[ "$1" == STALE_* ]] && status=STALE_DIAGNOSTIC
-  printf '%s\n' "RCA|status=$status|diag=${diag_short:-UNKNOWN}|expected=${expected_short:-UNKNOWN}|mode=${probe_mode:-UNKNOWN}|stage=$1"
+  local product_fields='' expected_product=UNKNOWN running_product=UNKNOWN
+  if [[ "$1" == PRODUCT_* ]]; then
+    [[ "${EXPECTED_PRODUCT:-}" =~ ^[0-9a-f]{40}$ ]] && expected_product="${EXPECTED_PRODUCT:0:8}"
+    [[ "${RUNNING_PRODUCT:-}" =~ ^[0-9a-f]{40}$ ]] && running_product="${RUNNING_PRODUCT:0:8}"
+    product_fields="|expected_product=$expected_product|running_product=$running_product"
+  fi
+  printf '%s\n' "RCA|status=$status|diag=${diag_short:-UNKNOWN}|expected=${expected_short:-UNKNOWN}|mode=${probe_mode:-UNKNOWN}|stage=$1$product_fields"
 }
 
 fail() {
@@ -43,7 +49,7 @@ fi
 readonly probe_mode
 
 command -v git >/dev/null 2>&1 || fail CHECKOUT
-command -v python3 >/dev/null 2>&1 || fail PRODUCT_IDENTITY
+command -v python3 >/dev/null 2>&1 || fail PRODUCT_PYTHON_UNAVAILABLE
 
 readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; })"
 REPOSITORY_ROOT="$(git -C "$SCRIPT_DIRECTORY" rev-parse --show-toplevel 2>/dev/null)" \
@@ -86,7 +92,7 @@ readonly WEB_CONTAINER_ID="${web_ids[0]}"
 
 RELEASE_DOCUMENT="$(
   git -C "$REPOSITORY_ROOT" show "$RELEASE_REF:$RELEASE_RELATIVE_PATH" 2>/dev/null
-)" || fail PRODUCT_IDENTITY
+)" || fail PRODUCT_RELEASE_READ
 readonly RELEASE_DOCUMENT
 
 EXPECTED_PRODUCT="$(python3 - "$RELEASE_DOCUMENT" <<'PY'
@@ -104,7 +110,7 @@ if not isinstance(product, str) or re.fullmatch(r"[0-9a-f]{40}", product) is Non
     raise SystemExit(2)
 print(product)
 PY
-)" || fail PRODUCT_IDENTITY
+)" || fail PRODUCT_RELEASE_SCHEMA
 readonly EXPECTED_PRODUCT
 
 RUNNING_IMAGE_ID="$(
@@ -117,11 +123,11 @@ RUNNING_PRODUCT="$(
   docker image inspect \
     --format "{{index .Config.Labels \"$OCI_REVISION_LABEL\"}}" \
     "$RUNNING_IMAGE_ID" 2>/dev/null
-)" || fail PRODUCT_IDENTITY
+)" || fail PRODUCT_IMAGE_INSPECT
 readonly RUNNING_PRODUCT
 
-[[ "$RUNNING_PRODUCT" =~ ^[0-9a-f]{40}$ ]] || fail PRODUCT_IDENTITY
-[[ "$RUNNING_PRODUCT" == "$EXPECTED_PRODUCT" ]] || fail PRODUCT_IDENTITY
+[[ "$RUNNING_PRODUCT" =~ ^[0-9a-f]{40}$ ]] || fail PRODUCT_REVISION_INVALID
+[[ "$RUNNING_PRODUCT" == "$EXPECTED_PRODUCT" ]] || fail PRODUCT_MISMATCH
 
 set +e
 probe_output="$(

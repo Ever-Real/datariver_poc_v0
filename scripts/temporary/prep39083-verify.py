@@ -42,7 +42,14 @@ def summarize(output, expected_head):
         raise VerificationFailure("OUTPUT_CONTRACT")
     if not output.startswith("RCA_AUTO|"):
         stage = re.search(r"(?:^|\|)stage=([A-Z0-9_]{1,64})(?:\||$)", output)
-        raise VerificationFailure(stage.group(1) if stage else "PROBE")
+        failure = stage.group(1) if stage else "PROBE"
+        if failure.startswith("PRODUCT_"):
+            for name in ("expected", "running"):
+                value = re.search(
+                    rf"(?:^|\|){name}_product=([0-9a-f]{{8}}|UNKNOWN)(?:\||$)", output
+                )
+                failure += f"|{name}={value.group(1) if value else 'UNKNOWN'}"
+        raise VerificationFailure(failure)
     summary = dict(part.split("=", 1) for part in output.split("|")[1:])
     if summary["mode"] != "AUTO3" or summary["diag"] != expected_head[:8]:
         raise VerificationFailure("OUTPUT_MODE_IDENTITY")

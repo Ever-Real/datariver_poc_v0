@@ -84,6 +84,81 @@ class TemporaryVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(verify.VerificationFailure, "DIAGNOSTIC_IDENTITY"):
             verify.summarize(output, HEAD)
 
+    def test_product_failure_summary_keeps_only_short_validated_revisions(self):
+        for revision, expected in (("fa78c716", "fa78c716"), ("secret-fixture", "UNKNOWN")):
+            output = (
+                f"RCA|stage=PRODUCT_MISMATCH|expected_product=2bd5494d|running_product={revision}"
+            )
+            with self.assertRaises(verify.VerificationFailure) as caught:
+                verify.summarize(output, HEAD)
+            self.assertEqual(
+                str(caught.exception), f"PRODUCT_MISMATCH|expected=2bd5494d|running={expected}"
+            )
+
+    def test_existing_product_guard_reports_exact_stage_before_runtime_entry(self):
+        source = (SCRIPT.parents[2] / verify.PROBE).read_text()
+        helpers = source[source.index("emit_failure() {") : source.index("probe_mode=UNKNOWN")]
+        guard = source[source.index('RELEASE_DOCUMENT="$(') : source.index("\nset +e\n")]
+        fixture = """set -euo pipefail
+REPOSITORY_ROOT=fixture
+RELEASE_REF=fixture
+RELEASE_RELATIVE_PATH=fixture
+WEB_CONTAINER_ID=fixture
+OCI_REVISION_LABEL=org.opencontainers.image.revision
+git() {
+  [[ "$RCA_TEST_CASE" == RELEASE_READ ]] && return 1
+  printf '%s\\n' "$RCA_TEST_RELEASE"
+}
+docker() {
+  if [[ "$1" == inspect ]]; then
+    printf '%s\\n' fixture-image
+  elif [[ "$RCA_TEST_CASE" == IMAGE_INSPECT ]]; then
+    return 1
+  else
+    printf '%s\\n' "$RCA_TEST_REVISION"
+  fi
+}
+"""
+        cases = (
+            ("RELEASE_READ", verify.PRODUCT, "PRODUCT_RELEASE_READ"),
+            ("RELEASE_SCHEMA", verify.PRODUCT, "PRODUCT_RELEASE_SCHEMA"),
+            ("IMAGE_INSPECT", verify.PRODUCT, "PRODUCT_IMAGE_INSPECT"),
+            ("REVISION_INVALID", "secret-fixture", "PRODUCT_REVISION_INVALID"),
+            ("MISMATCH", "b" * 40, "PRODUCT_MISMATCH"),
+            ("MATCH", verify.PRODUCT, None),
+        )
+        for case, revision, stage in cases:
+            with self.subTest(case=case):
+                environment = dict(
+                    os.environ,
+                    RCA_TEST_CASE=case,
+                    RCA_TEST_REVISION=revision,
+                    RCA_TEST_RELEASE=json.dumps(
+                        {"product_sha": None if case == "RELEASE_SCHEMA" else verify.PRODUCT}
+                    ),
+                )
+                result = subprocess.run(
+                    ["bash"],  # noqa: S607 - operator's Bash.
+                    input=fixture + helpers + guard + "\nprintf 'RUNTIME_ENTRY\\n'\n",
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                    check=False,
+                )
+                self.assertEqual(result.stderr, "")
+                self.assertNotIn("secret-fixture", result.stdout)
+                if stage is None:
+                    self.assertEqual((result.returncode, result.stdout), (0, "RUNTIME_ENTRY\n"))
+                else:
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(f"stage={stage}|", result.stdout)
+                    self.assertNotIn("RUNTIME_ENTRY", result.stdout)
+                    self.assertEqual(len(result.stdout.splitlines()), 1)
+                    if case == "MISMATCH":
+                        self.assertIn(
+                            "expected_product=2bd5494d|running_product=bbbbbbbb", result.stdout
+                        )
+
     def test_stdin_execution_uses_one_auto3_and_preserves_callers_checkout(self):
         with tempfile.TemporaryDirectory(prefix="prep39083-offline-test-") as directory:
             root = Path(directory)
