@@ -7,10 +7,11 @@ set -euo pipefail
 # SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
-# ProviderCallsPerRun: 2 completions + at most 2 metadata GETs (--ab); 3 (--auto-3), no retries
+# ProviderCallsPerRun: 2 completions (--cd); 2 completions + at most 2 metadata GETs (--ab); 3 (--auto-3), no retries
 # Neo4jMutation: NONE
 
 # DiagnosticContract: PREP39083_RCA_AB_IDENTITY_V2
+# DiagnosticContract: PREP39083_RCA_CD_IDENTITY_V1
 readonly COMPOSE_PROJECT='datariver-prep39083'
 readonly COMPOSE_SERVICE='web'
 readonly RELEASE_RELATIVE_PATH='deploy/prep39083/release.json'
@@ -32,6 +33,8 @@ fail() {
 probe_mode=UNKNOWN
 if [[ "$#" -eq 1 && "$1" == '--ab' ]]; then
   probe_mode=AB
+elif [[ "$#" -eq 1 && "$1" == '--cd' ]]; then
+  probe_mode=CD
 elif [[ "$#" -eq 1 && "$1" == '--auto-3' ]]; then
   probe_mode=AUTO3
 else
@@ -372,7 +375,7 @@ ${LLM_SERIALIZE_NEEDLE}`,
       globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.captureRequest = true
 ${CLASSIFIER_CALL_NEEDLE}`,
   )
-  if (PROBE_MODE === 'AB') {
+  if (['AB', 'CD'].includes(PROBE_MODE)) {
     instrumented += '\nexport { llmRequest, graphPlannerAssets }\n'
   }
   instrumented = instrumented.replace(
@@ -919,6 +922,15 @@ function abRequests(body) {
   return [minimal, structuredClone(body)]
 }
 
+function cdRequests(body) {
+  const [a, b] = abRequests(body)
+  const c = structuredClone(b)
+  c.messages = structuredClone(a.messages)
+  const d = structuredClone(b)
+  d.response_format.json_schema.schema = structuredClone(a.response_format.json_schema.schema)
+  return [c, d]
+}
+
 // Diagnostic validation only, against the actual captured schema's supported keywords.
 function abSchemaValid(value, schema) {
   if (!schema || typeof schema !== 'object') return false
@@ -948,6 +960,14 @@ function abClassification(a, b) {
   if (a.state === 'PASS' && b.state === 'FAIL') return 'CLASSIFIER_SCHEMA_OR_PROMPT_INTERACTION'
   if (a.state === 'FAIL' && b.state === 'FAIL') return 'PROVIDER_MODEL_STRUCTURED_OUTPUT_UNSUPPORTED_OR_BROKEN'
   return 'INCONCLUSIVE_A_FAIL_B_PASS'
+}
+
+function cdClassification(c, d) {
+  if ([c.state, d.state].includes('UNAVAILABLE')) return 'INCONCLUSIVE_PROVIDER_FAILURE'
+  if (c.state === 'FAIL' && d.state === 'PASS') return 'CLASSIFIER_SCHEMA_CAUSE'
+  if (c.state === 'PASS' && d.state === 'FAIL') return 'CLASSIFIER_PROMPT_CONTEXT_CAUSE'
+  if (c.state === 'PASS' && d.state === 'PASS') return 'CLASSIFIER_SCHEMA_PROMPT_INTERACTION'
+  return 'MULTIPLE_CLASSIFIER_TRIGGERS'
 }
 
 async function readProviderMetadata(provider, model) {
@@ -1000,7 +1020,8 @@ async function readProviderMetadata(provider, model) {
   return identity
 }
 
-async function runClassifierAB() {
+async function runClassifierPair(mode) {
+  if (!['AB', 'CD'].includes(mode)) throw probeFailure('PAIR_MODE')
   const principal = Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' })
   const capture = { providerCalls: 0, requests: [], captureRequest: false, captureOnly: true }
   globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = capture
@@ -1010,9 +1031,9 @@ async function runClassifierAB() {
   if (!capture.body || !capture.provider || capture.endpoint !== '/chat/completions'
     || capture.providerCalls !== 1 || capture.requests.length !== 1) throw probeFailure('AB_CAPTURE')
   capture.captureOnly = false
-  const bodies = abRequests(capture.body)
+  const bodies = mode === 'CD' ? cdRequests(capture.body) : abRequests(capture.body)
   const graphAssets = await serverModule.graphPlannerAssets(principal)
-  const provider = await readProviderMetadata(capture.provider, capture.body.model)
+  const provider = mode === 'AB' ? await readProviderMetadata(capture.provider, capture.body.model) : null
   const results = []
   let completionCalls = 0
   for (const [index, body] of bodies.entries()) {
@@ -1025,9 +1046,10 @@ async function runClassifierAB() {
       const raw = response.choices?.[0]?.message?.content
       const parsed = parsedRawValue(raw)
       const schemaPass = parsed.state === 'PARSED' && abSchemaValid(parsed.value, body.response_format.json_schema.schema)
+      const usesProductSchema = mode === 'CD' ? index === 0 : index === 1
       let semantic = 'NOT_CHECKED'
       if (schemaPass) {
-        if (index === 0) semantic = parsed.value.mode === 'GENERAL' ? 'PASS' : 'FAIL'
+        if (!usesProductSchema) semantic = parsed.value.mode === 'GENERAL' ? 'PASS' : 'FAIL'
         else {
           try {
             semantic = serverModule.parseChatRouteDecision(raw, graphAssets).mode === 'GENERAL' ? 'PASS' : 'FAIL'
@@ -1036,7 +1058,10 @@ async function runClassifierAB() {
       }
       const finish = boundedToken(response.choices?.[0]?.finish_reason, 'UNKNOWN')
       Object.assign(result, {
-        state: schemaPass && finish === 'STOP' && (index === 0 || semantic === 'PASS') ? 'PASS' : 'FAIL',
+        // CD isolates generation/schema failure. Semantic evidence remains separate; it is
+        // required for subsequent Product acceptance, not inferred from these cross-tests.
+        state: schemaPass && finish === 'STOP'
+          && (mode === 'CD' || !usesProductSchema || semantic === 'PASS') ? 'PASS' : 'FAIL',
         finish, schema: schemaPass ? 'PASS' : 'FAIL', semantic,
         usage: classifierUsage(response, raw), output: longOutputEvidence(raw),
         response_model: modelEvidence(response.model),
@@ -1048,17 +1073,20 @@ async function runClassifierAB() {
     results.push(result)
   }
   if (completionCalls !== 2) throw probeFailure('AB_CALL_COUNT')
+  const labels = mode === 'CD' ? ['C', 'D'] : ['A', 'B']
   process.stdout.write([
-    OUTPUT_PREFIX, 'mode=AB', `ab=${abClassification(...results)}`, 'completion_calls=2',
+    OUTPUT_PREFIX, `mode=${mode}`,
+    mode === 'CD' ? `cd=${cdClassification(...results)}` : `ab=${abClassification(...results)}`,
+    'completion_calls=2',
     `diag=${DIAGNOSTIC_SHA}`, `request_model=${JSON.stringify(modelEvidence(capture.body.model))}`,
     `request=${requestShape(capture.requests[0])}`, `provider=${JSON.stringify(provider)}`,
-    `B_request_sha256=${createHash('sha256').update(JSON.stringify(bodies[1])).digest('hex')}`,
-    `A=${JSON.stringify(results[0])}`, `B=${JSON.stringify(results[1])}`,
+    `B_request_sha256=${createHash('sha256').update(JSON.stringify(capture.body)).digest('hex')}`,
+    ...results.map((result, index) => `${labels[index]}=${JSON.stringify(result)}`),
   ].join('|') + '\n')
 }
 
 async function main() {
-  if (!['AB', 'AUTO3'].includes(PROBE_MODE)
+  if (!['AB', 'CD', 'AUTO3'].includes(PROBE_MODE)
     || process.env.DATARIVER_CLASSIFIER_PROBE_MODE !== PROBE_MODE
     || !/^[a-f0-9]{40}$/u.test(DIAGNOSTIC_SHA || '')) throw probeFailure('MODE_IDENTITY_HANDSHAKE')
   const persisted = await readPersistedEvidence()
@@ -1082,7 +1110,7 @@ async function main() {
     ),
   })
   serverModule.createPocServer({ stateStore })
-  if (PROBE_MODE === 'AB') return runClassifierAB()
+  if (['AB', 'CD'].includes(PROBE_MODE)) return runClassifierPair(PROBE_MODE)
   const graphEvidence = await auditManagedGraphs(persisted.managedGraphRows)
 
   globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0, requests: [], captureRequest: false }
@@ -1168,9 +1196,14 @@ try:
         fail("OUTPUT_MODE_IDENTITY")
     def token(value, fallback="UNKNOWN"):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Z0-9_]{1,80}", value) else fallback
-    if mode == "AB":
-        if fields.get("completion_calls") != "2":
-            fail("AB_CALL_COUNT")
+    if mode in ("AB", "CD") and fields.get("completion_calls") != "2":
+        fail("PAIR_CALL_COUNT")
+    if mode == "CD":
+        c, d = (json.loads(fields[key]) for key in ("C", "D"))
+        print(f"RCA_CD|C={token(c.get('state'))}|D={token(d.get('state'))}"
+              f"|class={token(fields.get('cd'))}"
+              f"|C_finish={token(c.get('finish'))}|D_finish={token(d.get('finish'))}")
+    elif mode == "AB":
         a, b, provider = (json.loads(fields[key]) for key in ("A", "B", "provider"))
         version = provider.get("version", "UNKNOWN")
         if not re.fullmatch(r"[0-9A-Za-z_.-]{1,32}", version):

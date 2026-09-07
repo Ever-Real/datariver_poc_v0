@@ -26,8 +26,8 @@ const actualBody = runInNewContext(`(${productSource.slice(bodyStart, bodyEnd)})
   chatRouteIntents: runInNewContext(`new Set([${intents}])`),
 })
 const abHelpers = source.slice(source.indexOf('function abRequests('), source.indexOf('async function main()'))
-const { abRequests, abSchemaValid, abClassification } = runInNewContext(
-  `${abHelpers}\n({ abRequests, abSchemaValid, abClassification })`,
+const { abRequests, cdRequests, abSchemaValid, abClassification, cdClassification } = runInNewContext(
+  `${abHelpers}\n({ abRequests, cdRequests, abSchemaValid, abClassification, cdClassification })`,
   { structuredClone, QUESTION: question, probeFailure: (stage) => new Error(stage) },
 )
 const validRoute = {
@@ -60,6 +60,25 @@ test('diagnostic schema checks reject surplus keys and out-of-bound classifier f
   ]) assert.equal(abSchemaValid({ ...validRoute, ...change }, schema), false)
 })
 
+test('C changes only B messages and D changes only B schema, preserving capability context and controls', () => {
+  const original = structuredClone(actualBody)
+  original.messages[1].content = 'Authorized READY graph capability metadata:\n[{"id":"capability-fixture"}]\n\nQuestion:\n' + question
+  const serialized = JSON.stringify(original)
+  const [a, b] = abRequests(original)
+  const [c, d] = cdRequests(original)
+  assert.equal(JSON.stringify(original), serialized)
+  assert.equal(JSON.stringify(c.messages), JSON.stringify(a.messages))
+  assert.equal(JSON.stringify(d.messages), JSON.stringify(b.messages))
+  assert.equal(JSON.stringify(c.response_format), JSON.stringify(b.response_format))
+  assert.equal(JSON.stringify(d.response_format), JSON.stringify(a.response_format))
+  c.messages = structuredClone(b.messages)
+  d.response_format.json_schema.schema = structuredClone(b.response_format.json_schema.schema)
+  assert.equal(JSON.stringify(c), serialized)
+  assert.equal(JSON.stringify(d), serialized)
+  assert.throws(() => cdRequests({ ...original, temperature: 1 }), /AB_REQUEST_CONTRACT/u)
+  assert.throws(() => cdRequests({ ...original, reasoning: { effort: 'low' } }), /AB_REQUEST_CONTRACT/u)
+})
+
 test('A/B classifies only observed completion outcomes and leaves transport failure inconclusive', () => {
   const result = (a, b) => abClassification({ state: a }, { state: b })
   assert.equal(result('FAIL', 'FAIL'), 'PROVIDER_MODEL_STRUCTURED_OUTPUT_UNSUPPORTED_OR_BROKEN')
@@ -69,80 +88,100 @@ test('A/B classifies only observed completion outcomes and leaves transport fail
   assert.equal(result('UNAVAILABLE', 'FAIL'), 'INCONCLUSIVE_PROVIDER_FAILURE')
 })
 
-test('A/B sends exactly two completions and two bounded metadata GETs without retries', async () => {
-  const sent = []
-  const metadataPaths = []
-  const output = []
-  const context = {
-    Buffer, URL, AbortSignal, structuredClone, createHash, QUESTION: question,
-    DIAGNOSTIC_SHA: 'd'.repeat(40),
-    OUTPUT_PREFIX: 'GENERAL_RCA_EVIDENCE', SAFE_PROVIDER_CODES: new Set(['POC_LLM_PROVIDER_TIMEOUT']),
-    process: { stdout: { write: (value) => output.push(value) } },
-    probeFailure: (stage) => new Error(stage), boundedCount: String,
-    boundedToken: (value, fallback) => typeof value === 'string' ? value.toUpperCase() : fallback,
-    requestShape: () => 'fixture', classifierUsage: () => 'fixture',
-    parsedRawValue: (raw) => { try { return { state: 'PARSED', value: JSON.parse(raw) } } catch { return { state: 'INVALID_JSON' } } },
-  }
-  context.serverModule = {
-    chatRoute: async () => {
-      Object.assign(context.__DATARIVER_GENERAL_CLASSIFIER_RCA, {
-        body: structuredClone(actualBody), providerCalls: 1, requests: [{}],
-        provider: { url: 'http://provider.test/v1', token: 'secret-fixture' },
-        endpoint: '/chat/completions', timeoutMs: 120_000,
-      })
-      throw new Error('Capture only')
-    },
-    graphPlannerAssets: async () => [],
-    parseChatRouteDecision: JSON.parse,
-    providerTransport: {
-      fetch: async (url, options) => {
-        metadataPaths.push(url.pathname)
-        assert.equal(options.redirect, 'error')
-        return new Response(JSON.stringify(url.pathname === '/api/version'
-          ? { version: '0.12.6' }
-          : { models: [{ name: actualBody.model, digest: 'a'.repeat(64) }] }))
+test('C/D classifies the four generation outcomes and never attributes transport failure to schema or prompt', () => {
+  const result = (c, d) => cdClassification({ state: c }, { state: d })
+  assert.equal(result('FAIL', 'PASS'), 'CLASSIFIER_SCHEMA_CAUSE')
+  assert.equal(result('PASS', 'FAIL'), 'CLASSIFIER_PROMPT_CONTEXT_CAUSE')
+  assert.equal(result('PASS', 'PASS'), 'CLASSIFIER_SCHEMA_PROMPT_INTERACTION')
+  assert.equal(result('FAIL', 'FAIL'), 'MULTIPLE_CLASSIFIER_TRIGGERS')
+  assert.equal(result('UNAVAILABLE', 'PASS'), 'INCONCLUSIVE_PROVIDER_FAILURE')
+  assert.equal(result('FAIL', 'UNAVAILABLE'), 'INCONCLUSIVE_PROVIDER_FAILURE')
+})
+
+test('each pair sends exactly two completions without retries; C/D skips all metadata requests', async () => {
+  for (const scenario of ['AB', 'CD', 'CD_TIMEOUT']) {
+    const mode = scenario === 'AB' ? 'AB' : 'CD'
+    const sent = []
+    const metadataPaths = []
+    const output = []
+    const context = {
+      Buffer, URL, AbortSignal, structuredClone, createHash, QUESTION: question,
+      DIAGNOSTIC_SHA: 'd'.repeat(40),
+      OUTPUT_PREFIX: 'GENERAL_RCA_EVIDENCE', SAFE_PROVIDER_CODES: new Set(['POC_LLM_PROVIDER_TIMEOUT']),
+      process: { stdout: { write: (value) => output.push(value) } },
+      probeFailure: (stage) => new Error(stage), boundedCount: String,
+      boundedToken: (value, fallback) => typeof value === 'string' ? value.toUpperCase() : fallback,
+      requestShape: () => 'fixture', classifierUsage: () => 'fixture',
+      parsedRawValue: (raw) => { try { return { state: 'PARSED', value: JSON.parse(raw) } } catch { return { state: 'INVALID_JSON' } } },
+    }
+    context.serverModule = {
+      chatRoute: async () => {
+        Object.assign(context.__DATARIVER_GENERAL_CLASSIFIER_RCA, {
+          body: structuredClone(actualBody), providerCalls: 1, requests: [{}],
+          provider: { url: 'http://provider.test/v1', token: 'secret-fixture' },
+          endpoint: '/chat/completions', timeoutMs: 120_000,
+        })
+        throw new Error('Capture only')
       },
-    },
-    llmRequest: async (_provider, _endpoint, body) => {
-      sent.push(body)
-      if (sent.length === 2) throw Object.assign(new Error('secret error detail'), { code: 'POC_LLM_PROVIDER_TIMEOUT' })
-      return { choices: [{ finish_reason: 'stop', message: { content: '{"mode":"GENERAL"}' } }] }
-    },
+      graphPlannerAssets: async () => [],
+      parseChatRouteDecision: JSON.parse,
+      providerTransport: {
+        fetch: async (url, options) => {
+          metadataPaths.push(url.pathname)
+          assert.equal(options.redirect, 'error')
+          return new Response(JSON.stringify(url.pathname === '/api/version'
+            ? { version: '0.12.6' }
+            : { models: [{ name: actualBody.model, digest: 'a'.repeat(64) }] }))
+        },
+      },
+      llmRequest: async (_provider, _endpoint, body) => {
+        sent.push(body)
+        if (sent.length === 2 && scenario !== 'CD') throw Object.assign(new Error('secret error detail'), { code: 'POC_LLM_PROVIDER_TIMEOUT' })
+        const value = mode === 'CD' && sent.length === 1 ? validRoute : { mode: 'GENERAL' }
+        return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(value) } }] }
+      },
+    }
+    await runInNewContext(`${helpers}\n${abHelpers}\nrunClassifierPair('${mode}')`, context)
+    assert.equal(sent.length, 2)
+    assert.equal(JSON.stringify(sent), JSON.stringify(mode === 'AB' ? abRequests(actualBody) : cdRequests(actualBody)))
+    assert.deepEqual(metadataPaths, mode === 'AB' ? ['/api/version', '/api/tags'] : [])
+    assert.equal(output.length, 1)
+    assert.match(output[0], scenario === 'CD' ? /cd=CLASSIFIER_SCHEMA_PROMPT_INTERACTION/u : /INCONCLUSIVE_PROVIDER_FAILURE/u)
+    if (mode === 'AB') assert.match(output[0], /"software":"OLLAMA_API"/u)
+    else {
+      assert.match(output[0], /mode=CD.*completion_calls=2/u)
+      assert.match(output[0], /C=\{"state":"PASS"/u)
+    }
+    assert.equal(output[0].includes('secret'), false)
   }
-  await runInNewContext(`${helpers}\n${abHelpers}\nrunClassifierAB()`, context)
-  assert.equal(sent.length, 2)
-  assert.equal(JSON.stringify(sent[1]), JSON.stringify(actualBody))
-  assert.deepEqual(metadataPaths, ['/api/version', '/api/tags'])
-  assert.equal(output.length, 1)
-  assert.match(output[0], /ab=INCONCLUSIVE_PROVIDER_FAILURE/u)
-  assert.match(output[0], /"software":"OLLAMA_API"/u)
-  assert.equal(output[0].includes('secret'), false)
 })
 
 test('temporary source capture runs before provider transport and preserves valid module syntax', async () => {
   const constants = source.slice(source.indexOf("const OUTPUT_PREFIX = 'GENERAL_RCA_EVIDENCE'"), source.indexOf('const { Pool } = pg'))
   const preparation = source.slice(source.indexOf('async function prepareTemporaryServer('), source.indexOf('function boundedToken('))
     .replace('return import(`file://${join(temporaryDirectory, SERVER_FILE)}?rca=${Date.now()}`)', 'return instrumented')
-  const instrumented = await runInNewContext(`let temporaryDirectory;\n${constants}\n${preparation}\nprepareTemporaryServer(productSource)`, {
-    productSource, process: { env: { DATARIVER_CLASSIFIER_PROBE_MODE: 'AB' }, argv: ['node', '-', 'AB', 'd'.repeat(40)] },
-    countOccurrences: (value, needle) => value.split(needle).length - 1,
-    mkdtemp: async () => '/tmp/fixture', tmpdir: () => '/tmp', join: (...parts) => parts.join('/'),
-    readdir: async () => [], writeFile: async () => {}, probeFailure: (stage) => new Error(stage),
-  })
-  const check = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: instrumented, encoding: 'utf8' })
-  assert.equal(check.status, 0, check.stderr)
-  const requestFunction = instrumented.slice(instrumented.indexOf('async function llmRequest('), instrumented.indexOf('function boundedLlmStageError('))
-  let networkCalls = 0
-  const capture = { captureRequest: true, captureOnly: true, requests: [] }
-  const context = {
-    __DATARIVER_GENERAL_CLASSIFIER_RCA: capture, structuredClone, performance,
-    providerFetch: async () => { networkCalls += 1 }, body: actualBody,
-    llmProviderTimeoutMs: 120_000,
+  for (const mode of ['AB', 'CD']) {
+    const instrumented = await runInNewContext(`let temporaryDirectory;\n${constants}\n${preparation}\nprepareTemporaryServer(productSource)`, {
+      productSource, process: { env: { DATARIVER_CLASSIFIER_PROBE_MODE: mode }, argv: ['node', '-', mode, 'd'.repeat(40)] },
+      countOccurrences: (value, needle) => value.split(needle).length - 1,
+      mkdtemp: async () => '/tmp/fixture', tmpdir: () => '/tmp', join: (...parts) => parts.join('/'),
+      readdir: async () => [], writeFile: async () => {}, probeFailure: (stage) => new Error(stage),
+    })
+    const check = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: instrumented, encoding: 'utf8' })
+    assert.equal(check.status, 0, check.stderr)
+    const requestFunction = instrumented.slice(instrumented.indexOf('async function llmRequest('), instrumented.indexOf('function boundedLlmStageError('))
+    let networkCalls = 0
+    const capture = { captureRequest: true, captureOnly: true, requests: [] }
+    const context = {
+      __DATARIVER_GENERAL_CLASSIFIER_RCA: capture, structuredClone, performance,
+      providerFetch: async () => { networkCalls += 1 }, body: actualBody,
+      llmProviderTimeoutMs: 120_000,
+    }
+    await assert.rejects(runInNewContext(`${requestFunction}\nllmRequest({ model: 'gemma4:test' }, '/chat/completions', body)`, context), /capture only/u)
+    assert.equal(networkCalls, 0)
+    assert.equal(capture.requests.length, 1)
+    assert.equal(JSON.stringify(capture.body), JSON.stringify(actualBody))
   }
-  await assert.rejects(runInNewContext(`${requestFunction}\nllmRequest({ model: 'gemma4:test' }, '/chat/completions', body)`, context), /capture only/u)
-  assert.equal(networkCalls, 0)
-  assert.equal(capture.requests.length, 1)
-  assert.equal(JSON.stringify(capture.body), JSON.stringify(actualBody))
 })
 
 test('metadata reads stop at the byte bound and redact a model identifier containing a credential', async () => {
@@ -206,6 +245,9 @@ test('identity fence refuses missing mode, dirty script, stale HEAD and stale or
     assert.match(run('--ab').stdout, /mode=AB\|stage=WEB_IDENTITY/u)
     assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
     rmSync(dockerCalls)
+    assert.match(run('--cd').stdout, /mode=CD\|stage=WEB_IDENTITY/u)
+    assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
+    rmSync(dockerCalls)
     git('commit', '--allow-empty', '-m', 'Unpublished fixture head')
     assert.match(run('--ab').stdout, /status=STALE_DIAGNOSTIC.*stage=STALE_CHECKOUT/u)
     assert.equal(existsSync(dockerCalls), false)
@@ -215,16 +257,18 @@ test('identity fence refuses missing mode, dirty script, stale HEAD and stale or
     assert.equal(existsSync(dockerCalls), false)
 
     const review = readFileSync(new URL('../docs/reviews/2026-09-07_PREP_CLASSIFIER_GRAPH_PARTIAL_RCA.md', import.meta.url), 'utf8')
-    const launcher = review.split('<!-- PREP39083_RCA_AB_LAUNCHER -->\n```bash\n')[1].split('\n```')[0]
+    const launcher = (mode) => review.split('<!-- PREP39083_RCA_' + mode + '_LAUNCHER -->\n```bash\n')[1].split('\n```')[0]
       .replace('/tmp/datariver-rca.XXXXXX', join(root, 'fresh-diagnostic.XXXXXX'))
     git('switch', '--detach', originalHead)
     writeFileSync(script, `${source}\n# caller checkout must stay unchanged\n`)
-    const launch = () => spawnSync('bash', ['-c', launcher], { cwd: checkout, encoding: 'utf8', env })
-    assert.match(launch().stdout, /mode=AB\|stage=WEB_IDENTITY/u)
-    assert.equal(git('rev-parse', 'HEAD'), originalHead)
-    assert.equal(readFileSync(script, 'utf8'), `${source}\n# caller checkout must stay unchanged\n`)
-    assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
-    rmSync(dockerCalls)
+    const launch = (mode) => spawnSync('bash', ['-c', launcher(mode)], { cwd: checkout, encoding: 'utf8', env })
+    for (const mode of ['AB', 'CD']) {
+      assert.ok(launch(mode).stdout.includes(`mode=${mode}|stage=WEB_IDENTITY`))
+      assert.equal(git('rev-parse', 'HEAD'), originalHead)
+      assert.equal(readFileSync(script, 'utf8'), `${source}\n# caller checkout must stay unchanged\n`)
+      assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
+      rmSync(dockerCalls)
+    }
 
     // A pre-guard remote script is rejected by the launcher without executing that script.
     git('switch', 'dev')
@@ -232,14 +276,15 @@ test('identity fence refuses missing mode, dirty script, stale HEAD and stale or
     git('add', 'scripts')
     git('commit', '-m', 'Pre-guard diagnostic fixture')
     git('push', 'origin', 'HEAD:dev')
-    assert.equal(launch().stdout, 'RCA|status=STALE_DIAGNOSTIC\n')
+    assert.equal(launch('AB').stdout, 'RCA|status=STALE_DIAGNOSTIC\n')
+    assert.equal(launch('CD').stdout, 'RCA|status=STALE_DIAGNOSTIC\n')
     assert.equal(existsSync(dockerCalls), false)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
 test('missing or mismatched Bash-to-Node mode fails before persistence or provider work', async () => {
   const main = source.slice(source.indexOf('async function main()'), source.indexOf('\ntry {\n  await main()'))
-  for (const mode of [undefined, 'DEFAULT', 'AB']) {
+  for (const mode of [undefined, 'DEFAULT', 'AB', 'CD']) {
     let reads = 0
     await assert.rejects(runInNewContext(`${main}\nmain()`, {
       PROBE_MODE: mode, DIAGNOSTIC_SHA: 'd'.repeat(40), process: { env: {} },
@@ -247,25 +292,27 @@ test('missing or mismatched Bash-to-Node mode fails before persistence or provid
     }), /MODE_IDENTITY_HANDSHAKE/u)
     assert.equal(reads, 0)
   }
-  const probeProcess = { env: { DATARIVER_CLASSIFIER_PROBE_MODE: 'AB' } }
-  let abRuns = 0
-  await runInNewContext(`let serverModule;\n${main}\nmain()`, {
-    PROBE_MODE: 'AB', DIAGNOSTIC_SHA: 'd'.repeat(40), process: probeProcess,
-    readPersistedEvidence: async () => ({ managedGraphRows: [], activeGenerations: new Map() }),
-    readFile: async () => '', SERVER_PATH: 'server', STATE_STORE_PATH: 'store',
-    DISCOVERY_SQL_NULL_NEEDLE: 'sql-null', DISCOVERY_SQL_NEEDLE: 'sql', DISCOVERY_JSON_NULL_NEEDLE: 'json-null',
-    prepareTemporaryServer: async () => {
-      // Importing Product code cannot redirect AB into the old three-call path.
-      probeProcess.env.DATARIVER_CLASSIFIER_PROBE_MODE = 'DEFAULT'
-      return { createPocServer: () => {} }
-    },
-    runClassifierAB: async () => { abRuns += 1 },
-    auditManagedGraphs: async () => assert.fail('AB must not enter graph/default-three-call path'),
-  })
-  assert.equal(abRuns, 1)
+  for (const mode of ['AB', 'CD']) {
+    const probeProcess = { env: { DATARIVER_CLASSIFIER_PROBE_MODE: mode } }
+    let pairRuns = 0
+    await runInNewContext(`let serverModule;\n${main}\nmain()`, {
+      PROBE_MODE: mode, DIAGNOSTIC_SHA: 'd'.repeat(40), process: probeProcess,
+      readPersistedEvidence: async () => ({ managedGraphRows: [], activeGenerations: new Map() }),
+      readFile: async () => '', SERVER_PATH: 'server', STATE_STORE_PATH: 'store',
+      DISCOVERY_SQL_NULL_NEEDLE: 'sql-null', DISCOVERY_SQL_NEEDLE: 'sql', DISCOVERY_JSON_NULL_NEEDLE: 'json-null',
+      prepareTemporaryServer: async () => {
+        // Importing Product code cannot redirect AB/CD into the old three-call path.
+        probeProcess.env.DATARIVER_CLASSIFIER_PROBE_MODE = 'DEFAULT'
+        return { createPocServer: () => {} }
+      },
+      runClassifierPair: async (receivedMode) => { assert.equal(receivedMode, mode); pairRuns += 1 },
+      auditManagedGraphs: async () => assert.fail('AB/CD must not enter graph/default-three-call path'),
+    })
+    assert.equal(pairRuns, 1)
+  }
 })
 
-test('stdout is one compact A/B line; detailed evidence is private and default-mode output is rejected', () => {
+test('stdout is one compact AB/CD line; detailed evidence is private and wrong-mode output is rejected', () => {
   const root = mkdtempSync(join(tmpdir(), 'rca-summary-test-'))
   try {
     const detail = join(root, 'diagnostic.log')
@@ -279,9 +326,9 @@ test('stdout is one compact A/B line; detailed evidence is private and default-m
       'A={"state":"PASS","finish":"STOP","output":{"prefix_redacted":"hidden-excerpt"}}',
       'B={"state":"FAIL","finish":"LENGTH","usage":"hidden-usage"}',
     ]
-    const run = (line) => {
+    const run = (line, mode = 'AB') => {
       writeFileSync(detail, `${line}\n`)
-      return spawnSync('python3', ['-', detail, head, head, head, 'b'.repeat(40), 'b'.repeat(40), 'AB', root], {
+      return spawnSync('python3', ['-', detail, head, head, head, 'b'.repeat(40), 'b'.repeat(40), mode, root], {
         input: summary, encoding: 'utf8',
       })
     }
@@ -299,6 +346,19 @@ test('stdout is one compact A/B line; detailed evidence is private and default-m
     assert.equal(saved.diag, head)
     assert.equal(saved.script_blob, 'b'.repeat(40))
     assert.match(saved.evidence, /hidden-excerpt/u)
+    const cdFields = [
+      'GENERAL_RCA_EVIDENCE', 'mode=CD', `diag=${head}`, 'completion_calls=2',
+      'cd=CLASSIFIER_SCHEMA_CAUSE',
+      'C={"state":"FAIL","finish":"LENGTH","output":{"prefix_redacted":"hidden-excerpt"}}',
+      'D={"state":"PASS","finish":"STOP"}',
+    ]
+    const cd = run(cdFields.join('|'), 'CD')
+    assert.equal(cd.status, 0, cd.stderr)
+    assert.equal(cd.stdout, 'RCA_CD|C=FAIL|D=PASS|class=CLASSIFIER_SCHEMA_CAUSE|C_finish=LENGTH|D_finish=STOP\n')
+    assert.equal(statSync(detail).mode & 0o777, 0o600)
+    assert.equal(JSON.parse(readFileSync(detail, 'utf8')).mode, 'CD')
+    assert.match(run(fields.join('|'), 'CD').stdout, /stage=OUTPUT_MODE_IDENTITY/u)
+    assert.match(run(cdFields.join('|').replace('completion_calls=2', 'completion_calls=3'), 'CD').stdout, /stage=PAIR_CALL_COUNT/u)
     const wrongMode = run('GENERAL_RCA_EVIDENCE|run1=PASS|run2=PASS|run3=PASS')
     assert.equal(wrongMode.status, 2)
     assert.match(wrongMode.stdout, /stage=OUTPUT_MODE_IDENTITY/u)

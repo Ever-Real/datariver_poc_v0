@@ -173,3 +173,45 @@ remain pending access to PREP; this diagnostic correction is not a classifier/ba
 Verification: **13 diagnostic tests passed**; Bash, embedded/temporary Node syntax and static
 verification passed. ShellCheck is unavailable. No Product source changed in this follow-up, so
 Product TypeScript/ESLint/canonical release gates were not rerun or claimed as Actual PREP evidence.
+
+## Follow-up: Actual PREP A/B result and two cross-tests
+
+Operator-supplied Actual PREP evidence from `45c3d44a`: A=PASS/STOP, B=FAIL/LENGTH,
+`CLASSIFIER_SCHEMA_OR_PROMPT_INTERACTION`, provider=UNKNOWN, model=GEMMA. This establishes that
+the minimal request succeeds on the selected runtime. Generic structured-output incompatibility
+and a simple completion-ceiling explanation are therefore not the working causes. It does not yet
+separate the full schema from the full messages/capability context.
+
+The same probe's `--cd` mode captures B from the running Product before network transport, then
+makes exactly two completions without retries or metadata reads. C replaces only B's messages
+with A's exact short messages; D replaces only B's schema with A's exact minimal schema. All other
+request fields, provider, model, temperature=0, 4096 budget and reasoning/strict controls remain
+identical. Neither A/B nor the three-call probe is rerun.
+
+C/D PASS means STOP with valid JSON meeting the requested strict schema. The existing Product
+semantic parser is still called for C and its result is recorded independently in the private file;
+a semantic error is not mislabeled as the observed generation-length failure. D records its GENERAL
+decision check separately. These cross-tests are not Product semantic acceptance. No Product
+parser, schema, prompt or safety behavior has changed.
+
+Classification: C-fail/D-pass → CLASSIFIER_SCHEMA_CAUSE; C-pass/D-fail →
+CLASSIFIER_PROMPT_CONTEXT_CAUSE; both pass → CLASSIFIER_SCHEMA_PROMPT_INTERACTION; both fail →
+MULTIPLE_CLASSIFIER_TRIGGERS. A transport/auth/timeout failure stays
+INCONCLUSIVE_PROVIDER_FAILURE, with UNAVAILABLE for the affected call.
+
+<!-- PREP39083_RCA_CD_LAUNCHER -->
+```bash
+git fetch -q origin refs/heads/dev:refs/remotes/origin/dev && (git grep -qF PREP39083_RCA_CD_IDENTITY_V1 origin/dev -- scripts/prep39083-general-classifier-rca-probe || { printf 'RCA|status=STALE_DIAGNOSTIC\n'; exit 2; }) && prep_rca_dir="$(mktemp -d /tmp/datariver-rca.XXXXXX)" && git worktree add -q --detach "$prep_rca_dir" origin/dev && "$prep_rca_dir/scripts/prep39083-general-classifier-rca-probe" --cd
+```
+
+The existing identity fence validates diagnostic HEAD, remote dev, executing blob and received
+mode before access. Stdout is only `RCA_CD|C=...|D=...|class=...|C_finish=...|D_finish=...`.
+Redacted details and identity/call-count evidence remain in the existing private temporary file.
+The operator is not asked to transfer that file. Actual C/D outcomes remain pending; only after
+the observed result can a minimal Product correction and 3/3 JSON/schema/semantic acceptance
+precede the Product gates and release decision.
+
+Local verification: **15 diagnostic tests passed**, including both fresh-checkout launchers,
+immutable mode dispatch, zero-call capture, the exact crossed requests, two completions with no
+metadata reads in CD, outcome mapping and private/compact output. Bash, embedded/temporary Node
+syntax and static verification pass. No Actual PREP C/D result or Product gate is claimed here.
