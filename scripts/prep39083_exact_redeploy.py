@@ -410,7 +410,7 @@ def verify_loaded_image() -> None:
     document = json.loads(output("docker", "image", "inspect", IMAGE))[0]
     labels = document.get("Config", {}).get("Labels", {}) or {}
     require(
-        document.get("Id") == CONFIG_DIGEST
+        document.get("Id") == MANIFEST_DIGEST
         and document.get("Os") == "linux"
         and document.get("Architecture") in {"amd64", "x86_64"}
         and labels.get("org.opencontainers.image.revision") == PRODUCT,
@@ -444,7 +444,7 @@ def running_web() -> dict[str, Any]:
         and labels.get("com.docker.compose.project") == PROJECT
         and labels.get("com.docker.compose.service") == "web"
         and document.get("Config", {}).get("Image") == IMAGE
-        and document.get("Image") == CONFIG_DIGEST
+        and document.get("Image") == MANIFEST_DIGEST
         and image_labels.get("org.opencontainers.image.revision") == PRODUCT,
         "running Web does not match the fixed Compose/OCI identity",
     )
