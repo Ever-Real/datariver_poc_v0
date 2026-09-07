@@ -13,6 +13,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,14 +24,10 @@ from urllib.parse import urlsplit, urlunsplit
 ROOT = Path(__file__).resolve().parents[1]
 BASE_PRODUCT = "2bd5494d6f100abc8e50a844e0d01c30b93cc698"
 BRANCH = "dev_deploy"
-BASE_COMPOSE = ROOT / "deploy/poc/docker-compose.poc.yaml"
-SOURCE_COMPOSE = ROOT / "deploy/dev_deploy/docker-compose.source.yaml"
-ENV_CONTRACT = ROOT / "deploy/prep39083/env-contract.json"
-DEFAULT_ENV = ROOT / "deploy/prep39083/.env.prep"
-INCLUDE_MANIFEST = ROOT / "source-include.manifest"
-EXCLUDE_MANIFEST = ROOT / "source-exclude.manifest"
-PROVENANCE = ROOT / "deploy/dev_deploy/source-provenance.json"
-BUILD_DEPENDENCIES = ROOT / "deploy/dev_deploy/build-dependencies.json"
+BASE_COMPOSE = ROOT / "deploy/compose.yaml"
+ENV_CONTRACT = ROOT / "deploy/env-contract.json"
+DEFAULT_ENV = ROOT / "deploy/.env.prep"
+BUILD_DEPENDENCIES = ROOT / "deploy/build-dependencies.json"
 SMOKE_TOOL = ROOT / "scripts/smoke_prep39083.mjs"
 ACCEPT_TOOL = ROOT / "scripts/accept_dev_deploy.mjs"
 RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
@@ -99,6 +96,8 @@ def run(
     arguments: Sequence[str], *, cwd: Path = ROOT,
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if environment is None and list(arguments[:2]) == ["docker", "compose"]:
+        environment = subprocess_environment({})
     completed = subprocess.run(
         list(arguments), cwd=cwd, env=None if environment is None else dict(environment),
         text=True, capture_output=True, check=False,
@@ -140,8 +139,9 @@ def read_json(path: Path) -> dict[str, Any]:
 def atomic_private_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(value, encoding="utf-8")
-    os.chmod(temporary, 0o600)
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(value)
     os.replace(temporary, path)
 
 
@@ -155,54 +155,25 @@ def git_head() -> str:
     return head
 
 
-def manifest_paths() -> tuple[str, ...]:
-    try:
-        paths = tuple(
-            line.strip() for line in INCLUDE_MANIFEST.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.startswith("#")
-        )
-    except OSError as error:
-        raise DeployError("SOURCE_INCLUDE_MANIFEST_MISSING") from error
-    require(paths == tuple(sorted(set(paths))), "SOURCE_INCLUDE_MANIFEST_NOT_SORTED")
-    return paths
+def build_input_hash() -> str:
+    # The archived current commit is the complete build context, including Dockerfile.
+    archive = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT,
+                             capture_output=True, check=True).stdout
+    return hashlib.sha256(archive).hexdigest()
 
 
 def validate_source(*, clean: bool) -> tuple[str, int]:
     require(Path(output("git", "rev-parse", "--show-toplevel")).resolve() == ROOT, "GIT_ROOT_INVALID")
-    branch = output("git", "branch", "--show-current")
-    require(branch in {BRANCH, ""}, "BRANCH_INVALID")
+    require(output("git", "branch", "--show-current") in {BRANCH, ""}, "BRANCH_INVALID")
     if clean:
         require(not output("git", "status", "--porcelain", "--untracked-files=all"), "WORKTREE_NOT_CLEAN")
-    tracked = tuple(sorted(output("git", "ls-files").splitlines()))
-    require(tracked == manifest_paths(), "TRACKED_SOURCE_MANIFEST_MISMATCH")
-    require(not any(
-        re.search(r"(?:^|/)(?:\.orca|\.idea|\.vscode|coverage|__pycache__|fixtures?|diagnostics?|rca)(?:/|$)", path, re.I)
-        or re.search(r"(?:\.test\.|\.spec\.)", path, re.I)
-        for path in tracked
-    ), "EXCLUDED_SOURCE_TRACKED")
-    provenance = read_json(PROVENANCE)
-    require(
-        provenance.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_V1"
-        and provenance.get("base_product") == BASE_PRODUCT
-        and provenance.get("artifact_branch_dependency") is False,
-        "SOURCE_PROVENANCE_INVALID",
-    )
-    product_files = provenance.get("product_files")
-    require(isinstance(product_files, dict), "SOURCE_PROVENANCE_FILES_INVALID")
-    for relative, digest in product_files.items():
-        require(
-            isinstance(relative, str) and isinstance(digest, str) and HASH64.fullmatch(digest)
-            and (ROOT / relative).is_file() and sha256_file(ROOT / relative) == digest,
-            "PRODUCT_SOURCE_HASH_MISMATCH",
-        )
-    dockerfile = (ROOT / "deploy/poc/Dockerfile.example").read_text(encoding="utf-8")
-    require("COPY frontend/ ./" in dockerfile and "prep39083-artifact" not in dockerfile, "DOCKERFILE_SOURCE_CLOSURE_INVALID")
-    forbidden = (
-        "prep39083-" + "artifact-", "--from-" + "container",
-        "docker " + "load", "git " + "fetch",
-    )
-    launcher_text = Path(__file__).read_text(encoding="utf-8")
-    require(not any(value in launcher_text for value in forbidden), "ARTIFACT_OR_CONTAINER_DEPENDENCY_PRESENT")
+    tracked = output("git", "ls-files").splitlines()
+    require(not any(re.search(r"(?:^|/)(?:\.env(?:\.|$)|runtime/)|\.(?:pem|key)$", p) for p in tracked),
+            "SECRET_OR_RUNTIME_INPUT_TRACKED")
+    for relative in ("deploy/Dockerfile", "deploy/compose.yaml", "package.json", "package-lock.json",
+                     "backend/src/bootstrap.mjs", "frontend/index.html", "frontend/vite.config.ts"):
+        require((ROOT / relative).is_file(), "BUILD_INPUT_MISSING:" + relative)
+    require(read_json(ROOT / "package.json").get("type") == "module", "PACKAGE_SCOPE_INVALID")
     return git_head(), len(tracked)
 
 
@@ -239,32 +210,52 @@ def env_value(raw: str) -> str:
     return value
 
 
-def read_env(path: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        require("=" in line, "PREP_ENV_SYNTAX_INVALID")
-        key, raw = line.split("=", 1)
-        key = key.strip()
-        require(ENV_KEY.fullmatch(key) is not None and key not in result, "PREP_ENV_KEY_INVALID")
-        result[key] = env_value(raw.strip())
-    return result
+def read_env(path: Path, prior: Mapping[str, str] | None = None) -> dict[str, str]:
+    keys = []
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", raw)
+        if match:
+            require(match[1] not in keys, "PREP_ENV_KEY_DUPLICATED")
+            keys.append(match[1])
+    # config is read-only and needs no daemon. Neither values nor parser errors reach logs.
+    RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="env-parse-", dir=RUNTIME_ROOT) as directory:
+        definition = Path(directory) / "compose.json"
+        definition.write_text(json.dumps({"services": {"parser": {
+            "image": "unused", "environment": {key: "${" + key + "}" for key in keys},
+        }}}), encoding="utf-8")
+        parsed = run(["docker", "compose", "--project-name", "datariver-env-parser",
+                      "--env-file", str(path.resolve()), "--file", str(definition),
+                      "config", "--format", "json"], environment=subprocess_environment(prior or {}))
+    # Compose serializes literal dollars as $$ so its config can be reused.
+    values = {key: value.replace("$$", "$") if isinstance(value, str) else value
+              for key, value in json.loads(parsed.stdout)["services"]["parser"]["environment"].items()}
+    require(all(isinstance(value, str) and not any(c in value for c in "\r\n\x00")
+                for value in values.values()), "PREP_ENV_VALUE_INVALID")
+    return values
+
+
+def operator_environment(path: Path) -> dict[str, str]:
+    values = read_env(path)
+    optional = path.with_name(path.name + ".optional")
+    if optional.is_file():
+        private_env_file(optional)
+        extra = read_env(optional, values)
+        require(not set(values).intersection(extra), "PREP_ENV_OWNERSHIP_CONFLICT")
+        values.update(extra)
+    return values
 
 
 def env_preflight(path: Path) -> tuple[dict[str, str], str]:
     resolved, before = private_env_file(path)
-    values = read_env(resolved)
+    values = operator_environment(resolved)
     contract = read_json(ENV_CONTRACT)
     core = contract.get("ownership", {}).get("CORE_REQUIRED", [])
     require(isinstance(core, list) and all(isinstance(key, str) for key in core), "ENV_CONTRACT_INVALID")
     missing = [key for key in core if not values.get(key) or values[key].startswith("CHANGE_ME")]
     provider_required = (
         "AIRFLOW_URL", "AIRFLOW_USERNAME", "AIRFLOW_PASSWORD", "POC_AIRFLOW_SERVICE_TOKEN",
-        "AIRFLOW_WORKSPACE_ID", "MINIO_URL", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
+        "MINIO_URL", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
     )
     missing.extend(key for key in provider_required if not values.get(key) or values[key].startswith("CHANGE_ME"))
     sasl = [values.get(key, "") for key in (
@@ -339,8 +330,14 @@ def compose_quote(value: str) -> str:
 def write_derived_environment(
     source: Mapping[str, str], profile: Target, head: str, *, state: str,
     discovered: Mapping[str, str] | None = None,
+    preserved_runtime: Mapping[str, str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
     values = dict(source)
+    if preserved_runtime:
+        for key in read_json(ENV_CONTRACT)["ownership"]["GENERATED"]:
+            if preserved_runtime.get(key):
+                require(not values.get(key) or values[key] == preserved_runtime[key], "PREP_GENERATED_VALUE_DRIFT")
+                values[key] = preserved_runtime[key]
     values.update(fixed_values(profile, head))
     if profile.validation_only:
         values["POC_PUBLIC_ORIGIN"] = replace_origin_port(source["POC_PUBLIC_ORIGIN"], profile.port)
@@ -362,6 +359,17 @@ def write_derived_environment(
         atomic_private_json(RUNTIME_ROOT / profile.name / "generated.json", generated)
     if discovered:
         values.update(discovered)
+    contract = read_json(ENV_CONTRACT)
+    def merged(*items: str) -> str:
+        return ",".join(dict.fromkeys(part.strip() for item in items for part in item.split(",") if part.strip()))
+    values["NO_PROXY"] = merged(values.get("NO_PROXY", ""), values.get("EXTERNAL_SERVICE_NO_PROXY", ""),
+                                ",".join(contract.get("required_no_proxy", [])))
+    values["no_proxy"] = values["NO_PROXY"]
+    for name in ("HTTP_PROXY", "HTTPS_PROXY"):
+        values[name.lower()] = values.get(name, "")
+    values["POC_RUNTIME_NO_PROXY"] = (merged(values.get("POC_RUNTIME_NO_PROXY", ""),
+        ",".join(contract.get("required_runtime_no_proxy", [])))
+        if values.get("POC_RUNTIME_HTTP_PROXY") or values.get("POC_RUNTIME_HTTPS_PROXY") else "")
     source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
     if source_ca:
         ca_path = Path(source_ca)
@@ -427,16 +435,23 @@ def build_image(head: str) -> tuple[str, str]:
     image = source_image(head)
     before = protected_state()
     log = RUNTIME_ROOT / "build" / f"{head}.log"
-    run_logged([
+    archive = subprocess.run(["git", "archive", "--format=tar", head], cwd=ROOT,
+                             capture_output=True, check=True).stdout
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("w", encoding="utf-8") as stream:
+        built = subprocess.run([
         "docker", "build", "--no-cache", "--platform", "linux/amd64",
         "--build-arg", f"POC_SOURCE_COMMIT={head}", "--tag", image,
-        "--file", str(ROOT / "deploy/poc/Dockerfile.example"), str(ROOT),
-    ], log)
+        "--file", "deploy/Dockerfile", "-",
+    ], input=archive, cwd=ROOT,
+                               stdout=stream, stderr=subprocess.STDOUT, check=False)
+    require(built.returncode == 0, "SOURCE_BUILD_FAILED:see_runtime_log")
     document = json.loads(output("docker", "image", "inspect", image))[0]
     labels = document.get("Config", {}).get("Labels", {}) or {}
     image_id = document.get("Id")
     require(isinstance(image_id, str) and image_id.startswith("sha256:"), "BUILT_IMAGE_ID_INVALID")
     require(labels.get("org.opencontainers.image.revision") == head, "BUILT_IMAGE_REVISION_INVALID")
+    require(document.get("Os") == "linux" and document.get("Architecture") == "amd64", "BUILT_PLATFORM_INVALID")
     require(image != KNOWN_GOOD_IMAGE, "KNOWN_GOOD_IMAGE_TAG_COLLISION")
     assert_protected_unchanged(before)
     atomic_private_json(RUNTIME_ROOT / "build" / "receipt.json", {
@@ -444,7 +459,7 @@ def build_image(head: str) -> tuple[str, str]:
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
         "no_cache": True, "artifact_branch_dependency": False,
         "built_at": datetime.now(UTC).isoformat(),
-        "source_manifest_sha256": sha256_file(INCLUDE_MANIFEST),
+        "build_input_sha256": build_input_hash(),
     })
     return image, image_id
 
@@ -456,7 +471,7 @@ def require_built_image(head: str) -> tuple[str, str]:
         receipt.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1"
         and receipt.get("head") == head and receipt.get("image") == image
         and receipt.get("no_cache") is True and receipt.get("artifact_branch_dependency") is False
-        and receipt.get("source_manifest_sha256") == sha256_file(INCLUDE_MANIFEST),
+        and receipt.get("build_input_sha256") == build_input_hash(),
         "SOURCE_BUILD_RECEIPT_INVALID",
     )
     document = json.loads(output("docker", "image", "inspect", image))[0]
@@ -489,7 +504,7 @@ def provider_preflight(
     source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
     if source_ca:
         arguments.extend(("--volume", f"{source_ca}:/run/datariver/runtime-ca.pem:ro", "--env", "POC_RUNTIME_CA_CERT_FILE=/run/datariver/runtime-ca.pem"))
-    arguments.extend((image, "node", "poc-provider-preflight.mjs"))
+    arguments.extend((image, "node", "backend/scripts/provider-preflight.mjs"))
     completed = subprocess.run(arguments, cwd=ROOT, env=environment, text=True, capture_output=True, check=False)
     require(completed.returncode == 0, "PROVIDER_PREFLIGHT_FAILED")
     try:
@@ -520,7 +535,6 @@ def compose_prefix(profile: Target, environment_file: Path) -> list[str]:
         "--project-directory", str(BASE_COMPOSE.parent), "--env-file", str(environment_file),
         "--file", str(BASE_COMPOSE),
     ]
-    prefix.extend(("--file", str(SOURCE_COMPOSE)))
     return prefix
 
 
@@ -602,7 +616,7 @@ def password_file(profile: Target, *, existing_state: bool, supplied: Path | Non
 
 
 def reconcile(prefix: Sequence[str], password: Path, existing_state: bool) -> None:
-    inspect = run((*prefix, "run", "--rm", "--no-deps", "web", "node", "poc-prep-bootstrap.mjs", "inspect"))
+    inspect = run((*prefix, "run", "--rm", "--no-deps", "web", "node", "backend/scripts/prep-bootstrap.mjs", "inspect"))
     try:
         state = json.loads(inspect.stdout.strip().splitlines()[-1])
         administrators = state.get("administrators")
@@ -611,11 +625,11 @@ def reconcile(prefix: Sequence[str], password: Path, existing_state: bool) -> No
     require(isinstance(administrators, list), "BOOTSTRAP_INSPECTION_INVALID")
     command = [*prefix, "run", "--rm", "--no-deps"]
     if administrators:
-        command.extend(("web", "node", "poc-prep-bootstrap.mjs", "reconcile"))
+        command.extend(("web", "node", "backend/scripts/prep-bootstrap.mjs", "reconcile"))
     else:
         require(not existing_state, "EXISTING_STATE_ADMIN_MISSING")
         command.extend((
-            "--volume", f"{password}:/run/dev-deploy-admin-password:ro", "web", "node", "poc-prep-bootstrap.mjs", "reconcile",
+            "--volume", f"{password}:/run/dev-deploy-admin-password:ro", "web", "node", "backend/scripts/prep-bootstrap.mjs", "reconcile",
             "--admin-username", ADMIN_USERNAME, "--admin-password-file", "/run/dev-deploy-admin-password",
         ))
     run(command)
@@ -699,15 +713,25 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> N
         require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
     volume_before = state_volume_identity(profile)
     require_target_port_ownership(profile)
-    derived, values = write_derived_environment(source, profile, head, state=state)
+    runtime_file = env_file.with_name(env_file.name + ".runtime")
+    preserved = {}
+    if runtime_file.is_file() and not profile.validation_only:
+        private_env_file(runtime_file)
+        preserved = read_env(runtime_file)
+    derived, values = write_derived_environment(source, profile, head, state=state, preserved_runtime=preserved)
     discovered = provider_preflight(image, values, validation_only=profile.validation_only)
-    derived, values = write_derived_environment(source, profile, head, state=state, discovered=discovered)
+    derived, values = write_derived_environment(source, profile, head, state=state, discovered=discovered, preserved_runtime=preserved)
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     prefix = compose_prefix(profile, derived)
     validate_compose(profile, prefix, image)
     existing = project_containers(profile)
     if existing.get("web"):
-        require(existing["web"].get("Config", {}).get("Image") in {image, KNOWN_GOOD_IMAGE}, "EXISTING_WEB_OWNER_INVALID")
+        old_web = existing["web"].get("Config", {})
+        old_image = old_web.get("Image", "")
+        old_revision = (old_web.get("Labels") or {}).get("org.opencontainers.image.revision", "")
+        require(old_image in {image, KNOWN_GOOD_IMAGE}
+                or (old_image.startswith("datariver-dev-deploy-source:") and SHA40.fullmatch(old_revision)),
+                "EXISTING_WEB_OWNER_INVALID")
     wait_state(prefix, profile, existing)
     password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
     reconcile(prefix, password, existing_state=state == "EXISTING")

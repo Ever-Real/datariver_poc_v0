@@ -13,7 +13,7 @@ import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMu
 import { AuditLogsAdmin } from './AdminReadOnlySurfaces'
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
-import { PocFeaturePermissionAdmin } from './PocFeaturePermissionAdmin'
+import { FeaturePermissionAdmin } from './FeaturePermissionAdmin'
 import { SiteManagementAdmin } from './SiteManagementAdmin'
 import { getAdminMessages } from './messages'
 import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
@@ -220,7 +220,7 @@ export function AdminPage({
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
       {activeSection === 'siteManagement' && <SiteManagementAdmin {...shared} />}
-      {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin {...shared} />}
+      {activeSection === 'featurePermissions' && <FeaturePermissionAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'systemSettings' && <QualityCapabilityConnection client={client} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}

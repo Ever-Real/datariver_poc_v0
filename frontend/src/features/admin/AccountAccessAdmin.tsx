@@ -14,7 +14,7 @@ import {
 } from './MembershipAdmin'
 import { RoleManagementDialog } from './RoleAccessAdmin'
 import { SystemDirectoryAdmin } from './SystemDirectoryAdmin'
-import { PocAccountAdmin } from './PocAccountAdmin'
+import { AccountAdmin } from './AccountAdmin'
 
 type AccessView = 'users' | 'systems' | 'policies' | 'recovery'
 type PolicyView = 'classification' | 'restrictedGrants' | 'providers'
@@ -108,7 +108,7 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
     </div>
     {view === 'users' && <section {...accessTabs.panelProps('users')} aria-label="사용자 관리">
       {canReadMemberships && (pocLocalAccounts
-        ? <PocAccountAdmin {...props} />
+        ? <AccountAdmin {...props} />
         : <MembershipAccessAdmin {...props} onOpenRoleManagement={() => setRoleManagementOpen(true)} onOpenRenewals={canReadRenewals ? () => setRenewalsOpen(true) : undefined} />)}
       {!canReadMemberships && canReadRenewals && <button type="button" className="button" onClick={() => setRenewalsOpen(true)}>계정 갱신</button>}
     </section>}

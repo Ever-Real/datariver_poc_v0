@@ -1,0 +1,225 @@
+name: ${COMPOSE_PROJECT_NAME:-datariver-prep39083}
+
+services:
+  web:
+    image: ${DEV_DEPLOY_SOURCE_IMAGE:?DEV_DEPLOY_SOURCE_IMAGE is required}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    build:
+      context: ..
+      dockerfile: ${POC_DOCKERFILE:-deploy/Dockerfile}
+      args:
+        POC_SOURCE_COMMIT: ${POC_SOURCE_COMMIT:-local}
+        NODE_IMAGE: ${POC_NODE_IMAGE:-node:22.19.0-bookworm-slim}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    ports:
+      - "${POC_BIND_HOST:-127.0.0.1}:${POC_PORT:-39080}:8080"
+    environment:
+      # The host publish defaults to loopback, but peer containers still need
+      # the Node server to listen on every interface inside this container.
+      POC_SERVER_HOST: 0.0.0.0
+      POC_PUBLIC_ORIGIN: ${POC_PUBLIC_ORIGIN:?POC_PUBLIC_ORIGIN is required}
+      POC_INTRANET_HTTP_ALLOWED_CIDRS: ${POC_INTRANET_HTTP_ALLOWED_CIDRS:-}
+      # Build/toolchain HTTP_PROXY values are intentionally not inherited by Product runtime.
+      # Provider routing is explicit and implemented by the shared pinned Node transport.
+      POC_RUNTIME_HTTP_PROXY: ${POC_RUNTIME_HTTP_PROXY:-}
+      POC_RUNTIME_HTTPS_PROXY: ${POC_RUNTIME_HTTPS_PROXY:-}
+      POC_RUNTIME_NO_PROXY: ${POC_RUNTIME_NO_PROXY:-}
+      POC_RUNTIME_CA_CERT_FILE: ${POC_RUNTIME_CA_CONTAINER_FILE:-}
+      POC_AUTH_SESSION_TTL_SECONDS: ${POC_AUTH_SESSION_TTL_SECONDS:-28800}
+      POC_AUTH_FAILED_ATTEMPT_LIMIT: ${POC_AUTH_FAILED_ATTEMPT_LIMIT:-5}
+      POC_AUTH_LOCK_SECONDS: ${POC_AUTH_LOCK_SECONDS:-900}
+      POC_AIRFLOW_SERVICE_TOKEN: ${POC_AIRFLOW_SERVICE_TOKEN:-}
+      # POC_DATAHUB_ALLOW_NO_TOKEN=true is a DEV-only opt-in for an auth-disabled local GMS.
+      # Never set this in PREP or OPS; those environments always provide DATAHUB_GMS_TOKEN.
+      POC_DATAHUB_ALLOW_NO_TOKEN: ${POC_DATAHUB_ALLOW_NO_TOKEN:-false}
+      DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-}
+      DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
+      DATAHUB_UI_URL: ${DATAHUB_UI_URL:-}
+      UI_GRAFANA_URL: ${UI_GRAFANA_URL:-}
+      GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
+      GRAFANA_EMBED_ENABLED: ${GRAFANA_EMBED_ENABLED:-false}
+      GRAFANA_EMBED_EVIDENCE_REFERENCE: ${GRAFANA_EMBED_EVIDENCE_REFERENCE:-}
+      MONITORING_DASHBOARDS_JSON: ${MONITORING_DASHBOARDS_JSON:-[]}
+      AIRFLOW_URL: ${AIRFLOW_URL:-}
+      AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-}
+      AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-}
+      AIRFLOW_DAG_ID: ${AIRFLOW_DAG_ID:-datariver_bulk_registration_prepare}
+      MINIO_URL: ${MINIO_URL:-}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      S3_BUCKET_QUARANTINE: ${S3_BUCKET_QUARANTINE:-datariver-quarantine}
+      S3_BUCKET_ACCEPTED: ${S3_BUCKET_ACCEPTED:-datariver-accepted}
+      S3_BUCKET_EXPORTS: ${S3_BUCKET_EXPORTS:-datariver-exports}
+      S3_BUCKET_FILEFOLDER: ${S3_BUCKET_FILEFOLDER:-datariver-filefolder}
+      S3_BUCKET_INFOSCHEMA: ${S3_BUCKET_INFOSCHEMA:-datariver-infoschema}
+      LLM_CHAT_URL: ${LLM_CHAT_URL:-}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-}
+      LLM_CHAT_TOKEN: ${LLM_CHAT_TOKEN:-}
+      POC_LLM_TIMEOUT_MS: ${POC_LLM_TIMEOUT_MS:-120000}
+      POC_K9_SCHEDULER_ENABLED: ${POC_K9_SCHEDULER_ENABLED:-true}
+      POC_K9_REFRESH_MODE: ${POC_K9_REFRESH_MODE:-DAILY}
+      POC_K9_SCHEDULER_TIME_ZONE: ${POC_K9_SCHEDULER_TIME_ZONE:-Asia/Seoul}
+      POC_K9_SCHEDULE_HOUR: ${POC_K9_SCHEDULE_HOUR:-2}
+      POC_K9_SCHEDULE_MINUTE: ${POC_K9_SCHEDULE_MINUTE:-0}
+      POC_K9_CLASSIFICATION_CEILING: ${POC_K9_CLASSIFICATION_CEILING:-INTERNAL}
+      POC_K9_SYSTEM_SUBJECT_ID: ${POC_K9_SYSTEM_SUBJECT_ID:-}
+      POC_K9_WORKSPACE_ID: ${POC_K9_WORKSPACE_ID:-}
+      POC_K9_SOURCE_CORRECTION_REQUEST_ID: ${POC_K9_SOURCE_CORRECTION_REQUEST_ID:-}
+      POC_MCP_SERVICE_TOKEN: ${POC_MCP_SERVICE_TOKEN:-}
+      POC_MCP_SUBJECT_ID: ${POC_MCP_SUBJECT_ID:-}
+      POC_MCP_WORKSPACE_ID: ${POC_MCP_WORKSPACE_ID:-}
+      LLM_EMBEDDING_URL: ${LLM_EMBEDDING_URL:-}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-}
+      LLM_EMBEDDING_TOKEN: ${LLM_EMBEDDING_TOKEN:-}
+      LLM_RERANKER_URL: ${LLM_RERANKER_URL:-}
+      LLM_RERANKER_MODEL: ${LLM_RERANKER_MODEL:-}
+      LLM_RERANKER_TOKEN: ${LLM_RERANKER_TOKEN:-}
+      NEO4J_HTTP_URL: http://neo4j:7474
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      POC_POSTGRES_HOST: pgvector
+      POC_POSTGRES_PORT: 5432
+      POC_POSTGRES_DB: ${POC_POSTGRES_DB:-datariver_poc}
+      POC_POSTGRES_USER: ${POC_POSTGRES_USER:-datariver_poc}
+      POC_POSTGRES_PASSWORD: ${POC_POSTGRES_PASSWORD:?POC_POSTGRES_PASSWORD is required}
+      POC_POSTGRES_SCHEMA_INTEGRITY_REQUIRED: ${POC_POSTGRES_SCHEMA_INTEGRITY_REQUIRED:-false}
+      POC_KNOWLEDGE_SOURCE_MANIFEST: ${POC_KNOWLEDGE_SOURCE_MANIFEST:-}
+      POC_REDIS_URL: redis://redis:6379/0
+      POC_CHANGE_HISTORY_SCHEDULER_ENABLED: ${POC_CHANGE_HISTORY_SCHEDULER_ENABLED:-true}
+      POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE: ${POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE:-Asia/Seoul}
+      POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME: ${POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME:-datariver:poc:change-history-scheduler:v1}
+      POC_MCL_KAFKA_BROKERS: ${POC_MCL_KAFKA_BROKERS:-}
+      POC_MCL_KAFKA_CLIENT_ID: ${POC_MCL_KAFKA_CLIENT_ID:-datariver-prep39083-mcl-v1}
+      POC_MCL_KAFKA_GROUP_ID: ${POC_MCL_KAFKA_GROUP_ID:-datariver-prep39083-mcl-capture-v1}
+      POC_MCL_KAFKA_TOPIC: ${POC_MCL_KAFKA_TOPIC:-}
+      POC_MCL_SOURCE_IDENTITY_HASH: ${POC_MCL_SOURCE_IDENTITY_HASH:-}
+      POC_MCL_SCHEMA_CONTRACT_HASH: ${POC_MCL_SCHEMA_CONTRACT_HASH:-}
+      POC_MCL_PROVIDER_NAME: ${POC_MCL_PROVIDER_NAME:-}
+      POC_MCL_PROVIDER_VERSION: ${POC_MCL_PROVIDER_VERSION:-}
+      POC_MCL_KAFKA_SSL: ${POC_MCL_KAFKA_SSL:-false}
+      POC_MCL_KAFKA_SASL_MECHANISM: ${POC_MCL_KAFKA_SASL_MECHANISM:-}
+      POC_MCL_KAFKA_SASL_USERNAME: ${POC_MCL_KAFKA_SASL_USERNAME:-}
+      POC_MCL_KAFKA_SASL_PASSWORD: ${POC_MCL_KAFKA_SASL_PASSWORD:-}
+      POC_MCL_SCHEMA_REGISTRY_URL: ${POC_MCL_SCHEMA_REGISTRY_URL:-}
+      POC_MCL_SCHEMA_REGISTRY_USERNAME: ${POC_MCL_SCHEMA_REGISTRY_USERNAME:-}
+      POC_MCL_SCHEMA_REGISTRY_PASSWORD: ${POC_MCL_SCHEMA_REGISTRY_PASSWORD:-}
+      POC_MCL_MAX_MESSAGES: ${POC_MCL_MAX_MESSAGES:-10000}
+      POC_MCL_MAX_RECORD_BYTES: ${POC_MCL_MAX_RECORD_BYTES:-1048576}
+      POC_MCL_TIMEOUT_MS: ${POC_MCL_TIMEOUT_MS:-300000}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - poc-services
+    volumes:
+      - type: bind
+        source: ${POC_RUNTIME_CA_BIND_SOURCE:-/dev/null}
+        target: /run/datariver/runtime-ca.pem
+        read_only: true
+    read_only: true
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+    stop_grace_period: 10s
+
+  neo4j:
+    image: ${NEO4J_IMAGE:-neo4j:2026.06.0}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 512M
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_dbms_usage__report_enabled: "false"
+    networks:
+      - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_NEO4J_HTTP_PORT:-17475}:7474"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7474/"]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 1280m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+  pgvector:
+    image: ${POC_PGVECTOR_IMAGE:-pgvector/pgvector:0.8.2-pg17-bookworm}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    environment:
+      POSTGRES_DB: ${POC_POSTGRES_DB:-datariver_poc}
+      POSTGRES_USER: ${POC_POSTGRES_USER:-datariver_poc}
+      POSTGRES_PASSWORD: ${POC_POSTGRES_PASSWORD:?POC_POSTGRES_PASSWORD is required}
+    networks:
+      - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_POSTGRES_HOST_PORT:-15432}:5432"
+    volumes:
+      - pgvector-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: ${POC_REDIS_IMAGE:-redis:8.2.6-bookworm}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
+    networks:
+      - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 320m
+    cpus: 0.35
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  poc-services:
+    name: ${POC_SHARED_NETWORK:-datariver-poc-services}
+
+volumes:
+  neo4j-data:
+  neo4j-logs:
+  pgvector-data:

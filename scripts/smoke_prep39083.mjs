@@ -7,14 +7,14 @@ import process from 'node:process'
 import {
   prepGeneralSmokeClassification,
   sanitizeLlmProviderDiagnostic,
-} from '../frontend/poc-llm-timeout.mjs'
-import { K9_METADATA_FAILURE_DETAILS } from '../frontend/poc-k9-metadata-collection.mjs'
+} from '../backend/src/modules/chat/llm-timeout.mjs'
+import { K9_METADATA_FAILURE_DETAILS } from '../backend/src/modules/k9/metadata-collection.mjs'
 import {
   K9_LINEAGE_FAILURE_DETAILS,
   sanitizeK9LineageSourceProfile,
-} from '../frontend/poc-k9-lineage-collection.mjs'
-import { K9_V2_FAILURE_CODES } from '../frontend/poc-k9-lifecycle-v2.mjs'
-import { sanitizeK9SourcePersistenceDiagnosticV2 } from '../frontend/poc-k9-lifecycle-persistence.mjs'
+} from '../backend/src/modules/k9/lineage-collection.mjs'
+import { K9_V2_FAILURE_CODES } from '../backend/src/modules/k9/lifecycle-v2.mjs'
+import { sanitizeK9SourcePersistenceDiagnosticV2 } from '../backend/src/modules/k9/lifecycle-persistence.mjs'
 
 const processStarted = Date.now()
 const inventoryFailureClassifications = new Set([

@@ -26,7 +26,7 @@ const CatalogPage = lazy(() => import('./features/catalog/CatalogPage').then((mo
 const ChatPage = lazy(() => import('./features/chat/ChatPage').then((module) => ({ default: module.ChatPage })))
 const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((module) => ({ default: module.DashboardPage })))
 const GovernancePage = lazy(() => import('./features/governance/GovernancePage').then((module) => ({ default: module.GovernancePage })))
-const PocGlossaryPage = lazy(() => import('./features/admin/PocGlossaryPage').then((module) => ({ default: module.PocGlossaryPage })))
+const GlossaryPage = lazy(() => import('./features/admin/GlossaryPage').then((module) => ({ default: module.GlossaryPage })))
 const KnowledgeWorkspacePage = lazy(() => import('./features/knowledge/KnowledgeWorkspacePage').then((module) => ({ default: module.KnowledgeWorkspacePage })))
 const MonitoringPage = lazy(() => import('./features/monitoring/MonitoringPage').then((module) => ({ default: module.MonitoringPage })))
 const PolicyGovernancePage = lazy(() => import('./features/policy/PolicyGovernancePage').then((module) => ({ default: module.PolicyGovernancePage })))
@@ -544,7 +544,7 @@ export function App() {
           authorizationRevision={auth.authorizationRevision}
         />}
         {page === 'registration' && <RegistrationPage client={client} />}
-        {page === 'glossary' && <PocGlossaryPage client={client} />}
+        {page === 'glossary' && <GlossaryPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onManageTableSystemMappings={hasPocPageAccess('admin') ? () => navigateAdmin('systems') : undefined} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'quality' && <QualityPage
           client={client}

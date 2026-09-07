@@ -210,7 +210,7 @@ function parseArgs(argv) {
 export async function run({ mode = 'patch', packageRoot, cssPath } = {}) {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
   const frontendRoot = path.resolve(scriptDirectory, '..')
-  const resolvedPackageRoot = path.resolve(packageRoot ?? path.join(frontendRoot, 'node_modules/cytoscape'))
+  const resolvedPackageRoot = path.resolve(packageRoot ?? path.join(frontendRoot, '../node_modules/cytoscape'))
   const resolvedCssPath = path.resolve(cssPath ?? path.join(frontendRoot, 'src/components/graph/CytoscapeReadGraph.css'))
   const packageJson = JSON.parse(await readFile(path.join(resolvedPackageRoot, 'package.json'), 'utf8'))
   if (packageJson.name !== 'cytoscape' || packageJson.version !== SUPPORTED_VERSION) {

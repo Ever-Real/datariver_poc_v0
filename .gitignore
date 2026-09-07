@@ -11,3 +11,8 @@ frontend/dist/
 frontend/dist-poc/
 coverage/
 .pytest_cache/
+
+node_modules/
+**/dist/
+**/.env*
+**/*.tsbuildinfo

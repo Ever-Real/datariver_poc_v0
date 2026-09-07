@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global AbortSignal, URL, fetch */
+/* global AbortSignal, URL, fetch, setTimeout */
 
 import { lstat, readFile, writeFile } from 'node:fs/promises'
 import process from 'node:process'
