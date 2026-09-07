@@ -1,0 +1,6 @@
+DataRiver minimal PREP source deployment package
+
+This branch contains the production source and deployment inputs derived from
+Product commit 2bd5494d6f100abc8e50a844e0d01c30b93cc698. Third-party JavaScript
+dependency notices and license texts are provided by the packages installed
+from frontend/package-lock.json during the source build.

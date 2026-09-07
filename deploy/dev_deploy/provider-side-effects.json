@@ -1,0 +1,41 @@
+{
+  "contract": "DATARIVER_DEV_DEPLOY_PROVIDER_SIDE_EFFECTS_V1",
+  "validation_project": "datariver-dev-deploy-39081",
+  "external_writes": "ISOLATED",
+  "providers": {
+    "Airflow": {
+      "classification": "READ_ONLY",
+      "operations": ["health read", "DAG metadata read"]
+    },
+    "ChatEmbeddingReranker": {
+      "classification": "READ_ONLY",
+      "operations": ["bounded inference requests"]
+    },
+    "DataHub": {
+      "classification": "READ_ONLY",
+      "operations": ["GraphQL query", "entity and glossary reads"]
+    },
+    "GX": {
+      "classification": "READ_ONLY",
+      "operations": ["assertion read", "Airflow capability read"]
+    },
+    "KafkaMCL": {
+      "classification": "ISOLATED_IDENTITY",
+      "operations": ["topic read", "isolated consumer-group offsets"]
+    },
+    "MinIO": {
+      "classification": "READ_ONLY",
+      "operations": ["health and bucket capability reads"]
+    },
+    "SchemaRegistry": {
+      "classification": "READ_ONLY",
+      "operations": ["subject and schema reads"]
+    }
+  },
+  "writes_confined_to": [
+    "datariver-dev-deploy-39081 PostgreSQL volume",
+    "datariver-dev-deploy-39081 Neo4j volume",
+    "datariver-dev-deploy-39081 Redis volume",
+    "datariver-dev-deploy-39081-mcl-capture-v1 Kafka group"
+  ]
+}

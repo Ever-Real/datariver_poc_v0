@@ -2,4 +2,4 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec python3 "$ROOT/scripts/prep39083_exact_redeploy.py" "$@"
+exec python3 "$ROOT/scripts/dev_deploy.py" "$@"

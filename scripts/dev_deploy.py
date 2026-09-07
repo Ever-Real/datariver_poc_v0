@@ -1,0 +1,739 @@
+#!/usr/bin/env python3
+"""Build and deploy the single-branch DataRiver PREP source package."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import stat
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit, urlunsplit
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_PRODUCT = "2bd5494d6f100abc8e50a844e0d01c30b93cc698"
+BRANCH = "dev_deploy"
+BASE_COMPOSE = ROOT / "deploy/poc/docker-compose.poc.yaml"
+SOURCE_COMPOSE = ROOT / "deploy/dev_deploy/docker-compose.source.yaml"
+ENV_CONTRACT = ROOT / "deploy/prep39083/env-contract.json"
+DEFAULT_ENV = ROOT / "deploy/prep39083/.env.prep"
+INCLUDE_MANIFEST = ROOT / "source-include.manifest"
+EXCLUDE_MANIFEST = ROOT / "source-exclude.manifest"
+PROVENANCE = ROOT / "deploy/dev_deploy/source-provenance.json"
+BUILD_DEPENDENCIES = ROOT / "deploy/dev_deploy/build-dependencies.json"
+SMOKE_TOOL = ROOT / "scripts/smoke_prep39083.mjs"
+ACCEPT_TOOL = ROOT / "scripts/accept_dev_deploy.mjs"
+RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
+KNOWN_GOOD_IMAGE = f"datariver-poc:{BASE_PRODUCT}"
+ADMIN_USERNAME = "admin"
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HASH64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DeployError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Target:
+    name: str
+    project: str
+    port: int
+    network: str
+    state_ports: Mapping[str, str]
+    kafka_client: str
+    kafka_group: str
+    bind_host: str
+    validation_only: bool
+
+
+VALIDATION_39081 = Target(
+        name="validation39081",
+        project="datariver-dev-deploy-39081",
+        port=39081,
+        network="datariver-dev-deploy-39081-services",
+        state_ports={
+            "POC_POSTGRES_HOST_PORT": "15433",
+            "POC_REDIS_PORT": "16380",
+            "POC_NEO4J_HTTP_PORT": "17476",
+        },
+        kafka_client="datariver-dev-deploy-39081-mcl-v1",
+        kafka_group="datariver-dev-deploy-39081-mcl-capture-v1",
+        bind_host="0.0.0.0",
+        validation_only=True,
+    )
+PREP_39083 = Target(
+        name="prep39083",
+        project="datariver-prep39083",
+        port=39083,
+        network="datariver-prep39083-services",
+        state_ports={
+            "POC_POSTGRES_HOST_PORT": "25432",
+            "POC_REDIS_PORT": "26379",
+            "POC_NEO4J_HTTP_PORT": "27475",
+        },
+        kafka_client="datariver-prep39083-mcl-v1",
+        kafka_group="datariver-prep39083-mcl-capture-v1",
+        bind_host="0.0.0.0",
+        validation_only=False,
+    )
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise DeployError(message)
+
+
+def run(
+    arguments: Sequence[str], *, cwd: Path = ROOT,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        list(arguments), cwd=cwd, env=None if environment is None else dict(environment),
+        text=True, capture_output=True, check=False,
+    )
+    if completed.returncode:
+        raise DeployError(f"COMMAND_FAILED:{Path(arguments[0]).name}:{arguments[-1]}")
+    return completed
+
+
+def output(*arguments: str, cwd: Path = ROOT) -> str:
+    return run(arguments, cwd=cwd).stdout.strip()
+
+
+def run_logged(arguments: Sequence[str], path: Path, *, cwd: Path = ROOT) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as log:
+        completed = subprocess.run(list(arguments), cwd=cwd, text=True, stdout=log, stderr=subprocess.STDOUT, check=False)
+    if completed.returncode:
+        raise DeployError(f"COMMAND_FAILED:{Path(arguments[0]).name}:{arguments[-1]}:see_runtime_log")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DeployError(f"TRACKED_JSON_INVALID:{path.name}") from error
+    require(isinstance(value, dict), f"TRACKED_JSON_INVALID:{path.name}")
+    return value
+
+
+def atomic_private_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(value, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    atomic_private_text(path, json.dumps(value, sort_keys=True, indent=2) + "\n")
+
+
+def git_head() -> str:
+    head = output("git", "rev-parse", "HEAD")
+    require(SHA40.fullmatch(head) is not None, "GIT_HEAD_INVALID")
+    return head
+
+
+def manifest_paths() -> tuple[str, ...]:
+    try:
+        paths = tuple(
+            line.strip() for line in INCLUDE_MANIFEST.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        )
+    except OSError as error:
+        raise DeployError("SOURCE_INCLUDE_MANIFEST_MISSING") from error
+    require(paths == tuple(sorted(set(paths))), "SOURCE_INCLUDE_MANIFEST_NOT_SORTED")
+    return paths
+
+
+def validate_source(*, clean: bool) -> tuple[str, int]:
+    require(Path(output("git", "rev-parse", "--show-toplevel")).resolve() == ROOT, "GIT_ROOT_INVALID")
+    branch = output("git", "branch", "--show-current")
+    require(branch in {BRANCH, ""}, "BRANCH_INVALID")
+    if clean:
+        require(not output("git", "status", "--porcelain", "--untracked-files=all"), "WORKTREE_NOT_CLEAN")
+    tracked = tuple(sorted(output("git", "ls-files").splitlines()))
+    require(tracked == manifest_paths(), "TRACKED_SOURCE_MANIFEST_MISMATCH")
+    require(not any(
+        re.search(r"(?:^|/)(?:\.orca|\.idea|\.vscode|coverage|__pycache__|fixtures?|diagnostics?|rca)(?:/|$)", path, re.I)
+        or re.search(r"(?:\.test\.|\.spec\.)", path, re.I)
+        for path in tracked
+    ), "EXCLUDED_SOURCE_TRACKED")
+    provenance = read_json(PROVENANCE)
+    require(
+        provenance.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_V1"
+        and provenance.get("base_product") == BASE_PRODUCT
+        and provenance.get("artifact_branch_dependency") is False,
+        "SOURCE_PROVENANCE_INVALID",
+    )
+    product_files = provenance.get("product_files")
+    require(isinstance(product_files, dict), "SOURCE_PROVENANCE_FILES_INVALID")
+    for relative, digest in product_files.items():
+        require(
+            isinstance(relative, str) and isinstance(digest, str) and HASH64.fullmatch(digest)
+            and (ROOT / relative).is_file() and sha256_file(ROOT / relative) == digest,
+            "PRODUCT_SOURCE_HASH_MISMATCH",
+        )
+    dockerfile = (ROOT / "deploy/poc/Dockerfile.example").read_text(encoding="utf-8")
+    require("COPY frontend/ ./" in dockerfile and "prep39083-artifact" not in dockerfile, "DOCKERFILE_SOURCE_CLOSURE_INVALID")
+    forbidden = (
+        "prep39083-" + "artifact-", "--from-" + "container",
+        "docker " + "load", "git " + "fetch",
+    )
+    launcher_text = Path(__file__).read_text(encoding="utf-8")
+    require(not any(value in launcher_text for value in forbidden), "ARTIFACT_OR_CONTAINER_DEPENDENCY_PRESENT")
+    return git_head(), len(tracked)
+
+
+def private_env_file(path: Path) -> tuple[Path, str]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        raise DeployError("PREP_ENV_NOT_AVAILABLE") from error
+    require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "PREP_ENV_NOT_REGULAR")
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        os.chmod(path, 0o600)
+        metadata = path.lstat()
+    require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "PREP_ENV_MODE_INVALID")
+    return path.resolve(), sha256_file(path)
+
+
+def env_value(raw: str) -> str:
+    if not raw:
+        return ""
+    try:
+        values = shlex.split(raw, comments=True, posix=True)
+    except ValueError as error:
+        raise DeployError("PREP_ENV_SYNTAX_INVALID") from error
+    require(len(values) <= 1, "PREP_ENV_VALUE_INVALID")
+    value = values[0] if values else ""
+    require(not any(character in value for character in "\r\n\x00"), "PREP_ENV_CONTROL_CHARACTER")
+    return value
+
+
+def read_env(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        require("=" in line, "PREP_ENV_SYNTAX_INVALID")
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        require(ENV_KEY.fullmatch(key) is not None and key not in result, "PREP_ENV_KEY_INVALID")
+        result[key] = env_value(raw.strip())
+    return result
+
+
+def env_preflight(path: Path) -> tuple[dict[str, str], str]:
+    resolved, before = private_env_file(path)
+    values = read_env(resolved)
+    contract = read_json(ENV_CONTRACT)
+    core = contract.get("ownership", {}).get("CORE_REQUIRED", [])
+    require(isinstance(core, list) and all(isinstance(key, str) for key in core), "ENV_CONTRACT_INVALID")
+    missing = [key for key in core if not values.get(key) or values[key].startswith("CHANGE_ME")]
+    provider_required = (
+        "AIRFLOW_URL", "AIRFLOW_USERNAME", "AIRFLOW_PASSWORD", "POC_AIRFLOW_SERVICE_TOKEN",
+        "AIRFLOW_WORKSPACE_ID", "MINIO_URL", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
+    )
+    missing.extend(key for key in provider_required if not values.get(key) or values[key].startswith("CHANGE_ME"))
+    sasl = [values.get(key, "") for key in (
+        "POC_MCL_KAFKA_SASL_MECHANISM", "POC_MCL_KAFKA_SASL_USERNAME", "POC_MCL_KAFKA_SASL_PASSWORD",
+    )]
+    require(not any(sasl) or all(sasl), "MCL_SASL_INCOMPLETE")
+    registry_auth = [values.get(key, "") for key in (
+        "POC_MCL_SCHEMA_REGISTRY_USERNAME", "POC_MCL_SCHEMA_REGISTRY_PASSWORD",
+    )]
+    require(not any(registry_auth) or all(registry_auth), "MCL_SCHEMA_AUTH_INCOMPLETE")
+    tls = values.get("POC_MCL_KAFKA_SSL", "false").lower()
+    require(tls in {"true", "false"}, "MCL_TLS_INVALID")
+    require(not missing, "ENV_INCOMPLETE:" + ",".join(sorted(set(missing))))
+    require(sha256_file(resolved) == before, "PREP_ENV_CHANGED")
+    return values, before
+
+
+def replace_origin_port(value: str, port: int) -> str:
+    parsed = urlsplit(value)
+    require(parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password, "PUBLIC_ORIGIN_INVALID")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return urlunsplit((parsed.scheme, f"{host}:{port}", "", "", ""))
+
+
+def source_image(head: str) -> str:
+    return f"datariver-dev-deploy-source:{head[:12]}"
+
+
+def docker_platform() -> str:
+    value = output("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}")
+    require(value.startswith("linux/"), "DOCKER_SERVER_NOT_LINUX")
+    return "linux/amd64"
+
+
+def state_kind(profile: Target) -> str:
+    names = [f"{profile.project}_{name}" for name in ("pgvector-data", "neo4j-data", "neo4j-logs")]
+    present = []
+    for name in names:
+        completed = subprocess.run(["docker", "volume", "inspect", name], capture_output=True, text=True, check=False)
+        present.append(completed.returncode == 0)
+    require(not any(present) or all(present), "STATE_VOLUMES_INCOMPLETE")
+    return "EXISTING" if all(present) else "FRESH"
+
+
+def fixed_values(profile: Target, head: str) -> dict[str, str]:
+    contract = read_json(ENV_CONTRACT)
+    fixed = contract.get("ownership", {}).get("FIXED")
+    require(isinstance(fixed, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in fixed.items()), "ENV_FIXED_CONTRACT_INVALID")
+    result = dict(fixed)
+    result.update({
+        "COMPOSE_PROJECT_NAME": profile.project,
+        "POC_BIND_HOST": profile.bind_host,
+        "POC_PORT": str(profile.port),
+        "POC_SHARED_NETWORK": profile.network,
+        "POC_PLATFORM": docker_platform(),
+        "POC_WEB_PLATFORM": "linux/amd64",
+        "POC_SOURCE_COMMIT": head,
+        "POC_IMAGE_TAG": head[:12],
+        "DEV_DEPLOY_SOURCE_IMAGE": source_image(head),
+        "POC_MCL_KAFKA_CLIENT_ID": profile.kafka_client,
+        "POC_MCL_KAFKA_GROUP_ID": profile.kafka_group,
+        **profile.state_ports,
+    })
+    return result
+
+
+def compose_quote(value: str) -> str:
+    require(not any(character in value for character in "\r\n\x00"), "DERIVED_ENV_VALUE_INVALID")
+    return "'" + value.replace("'", "\\'") + "'"
+
+
+def write_derived_environment(
+    source: Mapping[str, str], profile: Target, head: str, *, state: str,
+    discovered: Mapping[str, str] | None = None,
+) -> tuple[Path, dict[str, str]]:
+    values = dict(source)
+    values.update(fixed_values(profile, head))
+    if profile.validation_only:
+        values["POC_PUBLIC_ORIGIN"] = replace_origin_port(source["POC_PUBLIC_ORIGIN"], profile.port)
+    generated = read_json(RUNTIME_ROOT / profile.name / "generated.json") if (RUNTIME_ROOT / profile.name / "generated.json").exists() else {}
+    generated_keys = read_json(ENV_CONTRACT).get("ownership", {}).get("GENERATED", {})
+    require(isinstance(generated_keys, dict), "ENV_GENERATED_CONTRACT_INVALID")
+    for key, length in generated_keys.items():
+        if values.get(key):
+            continue
+        existing = generated.get(key)
+        if isinstance(existing, str) and len(existing) >= 16:
+            values[key] = existing
+        elif state == "FRESH":
+            values[key] = secrets.token_urlsafe(max(24, int(length)))
+            generated[key] = values[key]
+        else:
+            raise DeployError("EXISTING_STATE_CREDENTIALS_REQUIRED")
+    if state == "FRESH":
+        atomic_private_json(RUNTIME_ROOT / profile.name / "generated.json", generated)
+    if discovered:
+        values.update(discovered)
+    source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
+    if source_ca:
+        ca_path = Path(source_ca)
+        require(ca_path.is_absolute() and ca_path.is_file(), "RUNTIME_CA_INVALID")
+        values["POC_RUNTIME_CA_BIND_SOURCE"] = str(ca_path)
+        values["POC_RUNTIME_CA_CONTAINER_FILE"] = "/run/datariver/runtime-ca.pem"
+    target = RUNTIME_ROOT / profile.name / "derived.env"
+    contents = "\n".join(f"{key}={compose_quote(value)}" for key, value in sorted(values.items())) + "\n"
+    atomic_private_text(target, contents)
+    return target, values
+
+
+def protected_state() -> dict[str, Any]:
+    rows = output("docker", "ps", "--all", "--format", "{{.ID}}").splitlines()
+    containers: list[dict[str, Any]] = []
+    for container_id in rows:
+        document = json.loads(output("docker", "inspect", container_id))[0]
+        labels = document.get("Config", {}).get("Labels", {}) or {}
+        project = labels.get("com.docker.compose.project", "")
+        ports = document.get("NetworkSettings", {}).get("Ports", {}) or {}
+        published = {
+            int(binding.get("HostPort"))
+            for bindings in ports.values() if isinstance(bindings, list)
+            for binding in bindings if isinstance(binding, dict) and str(binding.get("HostPort", "")).isdigit()
+        }
+        if project not in {"datariver-prep39083", "datariver-poc"} and not published.intersection({39080, 39083}):
+            continue
+        containers.append({
+            "id": document.get("Id"), "image_id": document.get("Image"), "project": project,
+            "service": labels.get("com.docker.compose.service", ""),
+            "running": document.get("State", {}).get("Running") is True,
+            "volumes": sorted(
+                mount.get("Name") or mount.get("Source") for mount in document.get("Mounts", [])
+                if isinstance(mount, dict) and (mount.get("Name") or mount.get("Source"))
+            ),
+        })
+    image = subprocess.run(["docker", "image", "inspect", KNOWN_GOOD_IMAGE], capture_output=True, text=True, check=False)
+    known_good = None
+    if image.returncode == 0:
+        known_good = json.loads(image.stdout)[0].get("Id")
+    return {"containers": sorted(containers, key=lambda value: value["id"]), "known_good_image_id": known_good}
+
+
+def assert_protected_unchanged(before: Mapping[str, Any]) -> None:
+    require(protected_state() == before, "PROTECTED_39080_OR_39083_CHANGED")
+
+
+def build_image(head: str) -> tuple[str, str]:
+    docker_platform()
+    image = source_image(head)
+    before = protected_state()
+    log = RUNTIME_ROOT / "build" / f"{head}.log"
+    run_logged([
+        "docker", "build", "--no-cache", "--platform", "linux/amd64",
+        "--build-arg", f"POC_SOURCE_COMMIT={head}", "--tag", image,
+        "--file", str(ROOT / "deploy/poc/Dockerfile.example"), str(ROOT),
+    ], log)
+    document = json.loads(output("docker", "image", "inspect", image))[0]
+    labels = document.get("Config", {}).get("Labels", {}) or {}
+    image_id = document.get("Id")
+    require(isinstance(image_id, str) and image_id.startswith("sha256:"), "BUILT_IMAGE_ID_INVALID")
+    require(labels.get("org.opencontainers.image.revision") == head, "BUILT_IMAGE_REVISION_INVALID")
+    require(image != KNOWN_GOOD_IMAGE, "KNOWN_GOOD_IMAGE_TAG_COLLISION")
+    assert_protected_unchanged(before)
+    atomic_private_json(RUNTIME_ROOT / "build" / "receipt.json", {
+        "contract": "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1", "head": head,
+        "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
+        "no_cache": True, "artifact_branch_dependency": False,
+        "built_at": datetime.now(UTC).isoformat(),
+        "source_manifest_sha256": sha256_file(INCLUDE_MANIFEST),
+    })
+    return image, image_id
+
+
+def require_built_image(head: str) -> tuple[str, str]:
+    receipt = read_json(RUNTIME_ROOT / "build" / "receipt.json")
+    image = source_image(head)
+    require(
+        receipt.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1"
+        and receipt.get("head") == head and receipt.get("image") == image
+        and receipt.get("no_cache") is True and receipt.get("artifact_branch_dependency") is False
+        and receipt.get("source_manifest_sha256") == sha256_file(INCLUDE_MANIFEST),
+        "SOURCE_BUILD_RECEIPT_INVALID",
+    )
+    document = json.loads(output("docker", "image", "inspect", image))[0]
+    image_id = document.get("Id")
+    require(image_id == receipt.get("image_id"), "SOURCE_BUILD_IMAGE_CHANGED")
+    require((document.get("Config", {}).get("Labels", {}) or {}).get("org.opencontainers.image.revision") == head, "SOURCE_BUILD_REVISION_CHANGED")
+    return image, image_id
+
+
+def subprocess_environment(values: Mapping[str, str]) -> dict[str, str]:
+    retained = {key: os.environ[key] for key in (
+        "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
+    ) if key in os.environ}
+    retained.update(values)
+    return retained
+
+
+def provider_preflight(image: str, values: Mapping[str, str]) -> dict[str, str]:
+    environment = subprocess_environment(values)
+    arguments = ["docker", "run", "--rm", "--platform", "linux/amd64"]
+    for key in sorted(values):
+        arguments.extend(("--env", key))
+    source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
+    if source_ca:
+        arguments.extend(("--volume", f"{source_ca}:/run/datariver/runtime-ca.pem:ro", "--env", "POC_RUNTIME_CA_CERT_FILE=/run/datariver/runtime-ca.pem"))
+    arguments.extend((image, "node", "poc-provider-preflight.mjs"))
+    completed = subprocess.run(arguments, cwd=ROOT, env=environment, text=True, capture_output=True, check=False)
+    require(completed.returncode == 0, "PROVIDER_PREFLIGHT_FAILED")
+    try:
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        discovery = result["mcl_discovery"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise DeployError("PROVIDER_PREFLIGHT_CONTRACT_INVALID") from error
+    require(result.get("status") == "PASS" and discovery.get("contract") == "DATARIVER_MCL_DISCOVERY_V1", "PROVIDER_PREFLIGHT_NOT_READY")
+    mapped = {
+        "POC_MCL_KAFKA_TOPIC": discovery.get("topic"),
+        "POC_MCL_SOURCE_IDENTITY_HASH": discovery.get("source_identity_hash"),
+        "POC_MCL_SCHEMA_CONTRACT_HASH": discovery.get("schema_contract_hash"),
+        "POC_MCL_PROVIDER_NAME": discovery.get("provider_name"),
+        "POC_MCL_PROVIDER_VERSION": discovery.get("provider_version"),
+    }
+    require(
+        all(isinstance(value, str) and value for value in mapped.values())
+        and HASH64.fullmatch(mapped["POC_MCL_SOURCE_IDENTITY_HASH"]) is not None
+        and HASH64.fullmatch(mapped["POC_MCL_SCHEMA_CONTRACT_HASH"]) is not None,
+        "MCL_DISCOVERY_IDENTITY_INVALID",
+    )
+    return mapped
+
+
+def compose_prefix(profile: Target, environment_file: Path) -> list[str]:
+    prefix = [
+        "docker", "compose", "--project-name", profile.project,
+        "--project-directory", str(BASE_COMPOSE.parent), "--env-file", str(environment_file),
+        "--file", str(BASE_COMPOSE),
+    ]
+    prefix.extend(("--file", str(SOURCE_COMPOSE)))
+    return prefix
+
+
+def validate_compose(profile: Target, prefix: Sequence[str], image: str) -> None:
+    config = json.loads(output(*prefix, "config", "--format", "json"))
+    services = config.get("services", {})
+    require(isinstance(services, dict) and set(services) == {"web", "neo4j", "pgvector", "redis"}, "COMPOSE_SERVICES_INVALID")
+    web = services["web"]
+    require(web.get("image") == image and isinstance(web.get("build"), dict), "COMPOSE_SOURCE_IMAGE_INVALID")
+    require(web.get("environment", {}).get("POC_MCL_KAFKA_CLIENT_ID") == profile.kafka_client, "KAFKA_CLIENT_NOT_ISOLATED")
+    require(web.get("environment", {}).get("POC_MCL_KAFKA_GROUP_ID") == profile.kafka_group, "KAFKA_GROUP_NOT_ISOLATED")
+    published = {
+        int(item.get("published")) for service in services.values()
+        for item in (service.get("ports") or []) if str(item.get("published", "")).isdigit()
+    }
+    require(profile.port in published and not published.intersection({39080, 39083} - {profile.port}), "COMPOSE_PROTECTED_PORT_COLLISION")
+    if profile.validation_only:
+        networks = config.get("networks", {})
+        require(any(value.get("name") == profile.network for value in networks.values()), "COMPOSE_NETWORK_NOT_ISOLATED")
+        volumes = config.get("volumes", {})
+        require(all(value.get("name", "").startswith(profile.project + "_") for value in volumes.values()), "COMPOSE_VOLUMES_NOT_ISOLATED")
+
+
+def project_containers(profile: Target) -> dict[str, dict[str, Any]]:
+    identifiers = output(
+        "docker", "ps", "--all", "--filter", f"label=com.docker.compose.project={profile.project}", "--format", "{{.ID}}",
+    ).splitlines()
+    result: dict[str, dict[str, Any]] = {}
+    for identifier in identifiers:
+        document = json.loads(output("docker", "inspect", identifier))[0]
+        service = (document.get("Config", {}).get("Labels", {}) or {}).get("com.docker.compose.service")
+        require(service in {"web", "neo4j", "pgvector", "redis"} and service not in result, "PROJECT_CONTAINER_INVENTORY_INVALID")
+        result[service] = document
+    return result
+
+
+def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, Any]) -> None:
+    state_services = ("pgvector", "neo4j", "redis")
+    if existing:
+        require(all(service in existing for service in state_services), "EXISTING_STATE_SERVICES_INCOMPLETE")
+        run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--no-recreate", "--wait", *state_services))
+    else:
+        run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--wait", *state_services))
+
+
+def password_file(profile: Target, *, existing_state: bool, supplied: Path | None) -> Path:
+    if supplied:
+        resolved, _ = private_env_file(supplied)
+        require(bool(resolved.read_text(encoding="utf-8").strip()), "ADMIN_PASSWORD_EMPTY")
+        return resolved
+    target = RUNTIME_ROOT / profile.name / "admin-password"
+    if target.exists():
+        resolved, _ = private_env_file(target)
+        return resolved
+    if existing_state:
+        require(sys.stdin.isatty(), "EXISTING_ADMIN_PASSWORD_REQUIRED")
+        value = getpass.getpass("Existing PREP administrator password: ")
+        require(len(value) >= 12, "ADMIN_PASSWORD_INVALID")
+    else:
+        value = secrets.token_urlsafe(36)
+    atomic_private_text(target, value + "\n")
+    return target
+
+
+def reconcile(prefix: Sequence[str], password: Path, existing_state: bool) -> None:
+    inspect = run((*prefix, "run", "--rm", "--no-deps", "web", "node", "poc-prep-bootstrap.mjs", "inspect"))
+    try:
+        state = json.loads(inspect.stdout.strip().splitlines()[-1])
+        administrators = state.get("administrators")
+    except (IndexError, TypeError, json.JSONDecodeError) as error:
+        raise DeployError("BOOTSTRAP_INSPECTION_INVALID") from error
+    require(isinstance(administrators, list), "BOOTSTRAP_INSPECTION_INVALID")
+    command = [*prefix, "run", "--rm", "--no-deps"]
+    if administrators:
+        command.extend(("web", "node", "poc-prep-bootstrap.mjs", "reconcile"))
+    else:
+        require(not existing_state, "EXISTING_STATE_ADMIN_MISSING")
+        command.extend((
+            "--volume", f"{password}:/run/dev-deploy-admin-password:ro", "web", "node", "poc-prep-bootstrap.mjs", "reconcile",
+            "--admin-username", ADMIN_USERNAME, "--admin-password-file", "/run/dev-deploy-admin-password",
+        ))
+    run(command)
+
+
+def running_web(profile: Target, image: str, image_id: str) -> dict[str, Any]:
+    containers = project_containers(profile)
+    require(set(containers) == {"web", "neo4j", "pgvector", "redis"}, "RUNNING_PROJECT_INCOMPLETE")
+    web = containers["web"]
+    labels = web.get("Config", {}).get("Labels", {}) or {}
+    require(
+        web.get("State", {}).get("Running") is True
+        and web.get("State", {}).get("Health", {}).get("Status") == "healthy"
+        and labels.get("com.docker.compose.project") == profile.project
+        and labels.get("com.docker.compose.service") == "web"
+        and web.get("Config", {}).get("Image") == image and web.get("Image") == image_id,
+        "RUNNING_WEB_IDENTITY_INVALID",
+    )
+    for service in ("neo4j", "pgvector", "redis"):
+        require(containers[service].get("State", {}).get("Health", {}).get("Status") == "healthy", "STATE_SERVICE_NOT_HEALTHY")
+    return web
+
+
+def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password: Path, request_origin: str, head: str) -> dict[str, Any]:
+    receipt_root = RUNTIME_ROOT / profile.name
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    common = [
+        "docker", "run", "--rm", "--platform", "linux/amd64", "--network", f"container:{web['Id']}",
+        "--user", f"{os.getuid()}:{os.getgid()}",
+        "--volume", f"{ROOT}:/source:ro", "--volume", f"{receipt_root}:/receipts",
+        "--volume", f"{password}:/run/dev-deploy-admin-password:ro", image, "node",
+    ]
+    # Focused checks run first. The canonical 6/6 smoke is invoked exactly once
+    # only after MCL, K9, AUTO, GRAPH and preview have all passed.
+    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--origin", "http://127.0.0.1:8080",
+         "--request-origin", request_origin, "--username", ADMIN_USERNAME,
+         "--password-file", "/run/dev-deploy-admin-password", "--output", "/receipts/features.json"))
+    features = read_json(receipt_root / "features.json")
+    require(
+        features.get("mcl_current") == "READY" and features.get("k9_semantic") == "READY"
+        and features.get("auto_chat") == "PASS" and features.get("graph_chat") == "PASS"
+        and features.get("knowledge_graph_preview") == "PASS",
+        "FOCUSED_ACCEPTANCE_NOT_READY",
+    )
+    smoke_output = "/receipts/smoke.json"
+    smoke_failure = "/receipts/smoke-failure.json"
+    run((*common, "/source/scripts/smoke_prep39083.mjs", "--origin", "http://127.0.0.1:8080",
+         "--request-origin", request_origin, "--username", ADMIN_USERNAME,
+         "--password-file", "/run/dev-deploy-admin-password", "--output", smoke_output,
+         "--failure-output", smoke_failure, "--smoke-product-sha", head, "--k9-mode", "required"))
+    smoke = read_json(receipt_root / "smoke.json")
+    require(
+        smoke.get("datahub") == "PASS" and smoke.get("llm_general") == "PASS"
+        and smoke.get("mcl_current_capture") == "READY"
+        and smoke.get("mcl_history_completeness") in {"EXACT", "DEGRADED_GAP"}
+        and (smoke.get("mcl_history_completeness") != "DEGRADED_GAP" or smoke.get("mcl_history_gap_reason") == "RETENTION_EXPIRED")
+        and smoke.get("semantic_index") == "PASS",
+        "FULL_SMOKE_NOT_READY",
+    )
+    return {"smoke": smoke, "features": features}
+
+
+def unexpected_5xx(web: Mapping[str, Any], since: str) -> bool:
+    completed = subprocess.run(["docker", "logs", "--since", since, str(web["Id"])], capture_output=True, text=True, check=False)
+    require(completed.returncode == 0, "WEB_LOG_READ_FAILED")
+    patterns = (
+        re.compile(r'"status(?:Code)?"\s*:\s*5\d\d'),
+        re.compile(r'\bHTTP[/0-9.]*\s+5\d\d\b'),
+    )
+    return any(pattern.search(completed.stdout + completed.stderr) for pattern in patterns)
+
+
+def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> None:
+    head, _ = validate_source(clean=True)
+    image, image_id = require_built_image(head)
+    before = protected_state()
+    source, source_hash = env_preflight(env_file)
+    state = state_kind(profile)
+    if profile.validation_only:
+        require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
+    derived, values = write_derived_environment(source, profile, head, state=state)
+    discovered = provider_preflight(image, values)
+    derived, values = write_derived_environment(source, profile, head, state=state, discovered=discovered)
+    require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
+    prefix = compose_prefix(profile, derived)
+    validate_compose(profile, prefix, image)
+    existing = project_containers(profile)
+    if existing.get("web"):
+        require(existing["web"].get("Config", {}).get("Image") in {image, KNOWN_GOOD_IMAGE}, "EXISTING_WEB_OWNER_INVALID")
+    wait_state(prefix, profile, existing)
+    password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
+    reconcile(prefix, password, existing_state=state == "EXISTING")
+    started = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--force-recreate", "--no-deps", "--wait", "web"))
+    web = running_web(profile, image, image_id)
+    acceptance = run_acceptance(profile, image, web, password, values["POC_PUBLIC_ORIGIN"], head)
+    containers = project_containers(profile)
+    require(not any(container.get("State", {}).get("OOMKilled") is True for container in containers.values()), "CONTAINER_OOM_DETECTED")
+    require(not unexpected_5xx(web, started), "UNEXPECTED_WEB_5XX")
+    assert_protected_unchanged(before)
+    require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
+    atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
+        "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
+        "accepted_at": datetime.now(UTC).isoformat(), "branch": BRANCH, "head": head,
+        "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
+        "profile": profile.name, "project": profile.project, "port": profile.port,
+        "env_sha256": source_hash, "source_env_unchanged": True,
+        "mcl_current": acceptance["smoke"]["mcl_current_capture"],
+        "mcl_history": acceptance["smoke"]["mcl_history_completeness"],
+        "k9_semantic": acceptance["smoke"]["semantic_index"],
+        "auto_chat": acceptance["features"]["auto_chat"],
+        "graph_chat": acceptance["features"]["graph_chat"],
+        "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
+        "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080_39083": "UNTOUCHED",
+    })
+
+
+def preflight_line(values: Mapping[str, str]) -> str:
+    return (
+        "PREP_ENV_PREFLIGHT|status=PASS|datahub=SET|chat=SET|embedding=SET|"
+        f"mcl_broker={'SET' if values.get('POC_MCL_KAFKA_BROKERS') else 'ABSENT'}|"
+        "mcl_topic=DISCOVERED_AT_DEPLOY|mcl_schema_registry=DISCOVERED_AT_DEPLOY|"
+        "mcl_auth=VALID|mcl_source_hash=DISCOVERED_AT_DEPLOY|mcl_schema_hash=DISCOVERED_AT_DEPLOY|blocker=NONE"
+    )
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("check-source", "preflight", "build", "validate-39081", "deploy"))
+    parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
+    parser.add_argument("--admin-password-file", type=Path)
+    parser.add_argument("--apply", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        head, count = validate_source(clean=arguments.command in {"build", "deploy"})
+        profile = VALIDATION_39081 if arguments.command == "validate-39081" else PREP_39083
+        if arguments.command == "check-source":
+            print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|head={head}|tracked={count}|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
+            return 0
+        if arguments.command == "preflight":
+            values, before = env_preflight(arguments.env_file)
+            require(sha256_file(arguments.env_file) == before, "PREP_ENV_CHANGED")
+            print(preflight_line(values))
+            return 0
+        if arguments.command == "build":
+            image, image_id = build_image(head)
+            print(f"SOURCE_BUILD|status=PASS|branch={BRANCH}|head={head}|image={image}|image_digest={image_id}|no_cache=Y|artifact_dependency=NONE")
+            return 0
+        require(arguments.apply, "DEPLOY_REQUIRES_APPLY")
+        deploy(profile, arguments.env_file, arguments.admin_password_file)
+        print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS|p39080=UNTOUCHED|p39083={'DEPLOYED' if not profile.validation_only else 'UNTOUCHED'}")
+        return 0
+    except DeployError as error:
+        print(f"FAILED|code={error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

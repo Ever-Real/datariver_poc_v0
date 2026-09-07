@@ -1,0 +1,3 @@
+services:
+  web:
+    image: ${DEV_DEPLOY_SOURCE_IMAGE:?DEV_DEPLOY_SOURCE_IMAGE is required}

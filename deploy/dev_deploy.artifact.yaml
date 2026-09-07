@@ -1,9 +1,0 @@
-services:
-  web:
-    platform: ${POC_WEB_PLATFORM:?POC_WEB_PLATFORM is required}
-  # A first K9 projection writes a large canonical release manifest.  The
-  # production-oriented 768 MiB state limit OOM-kills PostgreSQL on a fresh
-  # local projection, so this isolated 39081 profile reserves enough memory
-  # without changing Product code or the 39083 deployment.
-  pgvector:
-    mem_limit: 4g
