@@ -771,7 +771,8 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> N
         "auto_search": acceptance["features"]["auto_search"],
         "vector_chat": acceptance["features"]["vector_chat"],
         "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
-        "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080_39083": "UNTOUCHED",
+        "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080": "UNTOUCHED",
+        "p39083": "UNTOUCHED" if profile.validation_only else "DEPLOYED",
     })
 
 
