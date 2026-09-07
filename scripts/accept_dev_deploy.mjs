@@ -155,7 +155,7 @@ try {
   result.graph_chat = 'PASS'
 
   const candidate = (Array.isArray(managedAssets.body?.items) ? managedAssets.body.items : [])
-    .find((item) => item?.status === 'ACTIVE' && typeof item?.active_release_id === 'string'
+    .find((item) => ['READY', 'ACTIVE'].includes(item?.status) && typeof item?.active_release_id === 'string'
       && item.active_release_id && item?.projection_state === 'READY')
   if (!candidate) fail('KNOWLEDGE_GRAPH_NOT_PUBLISHED')
   const encodedGraph = encodeURIComponent(candidate.id)

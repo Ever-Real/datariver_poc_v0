@@ -10,7 +10,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import stat
 import subprocess
 import sys
@@ -71,7 +70,7 @@ VALIDATION_39081 = Target(
         },
         kafka_client="datariver-dev-deploy-39081-mcl-v1",
         kafka_group="datariver-dev-deploy-39081-mcl-capture-v1",
-        bind_host="0.0.0.0",
+        bind_host="127.0.0.1",
         validation_only=True,
     )
 PREP_39083 = Target(
@@ -223,12 +222,19 @@ def private_env_file(path: Path) -> tuple[Path, str]:
 def env_value(raw: str) -> str:
     if not raw:
         return ""
-    try:
-        values = shlex.split(raw, comments=True, posix=True)
-    except ValueError as error:
-        raise DeployError("PREP_ENV_SYNTAX_INVALID") from error
-    require(len(values) <= 1, "PREP_ENV_VALUE_INVALID")
-    value = values[0] if values else ""
+    if raw.startswith("'"):
+        match = re.fullmatch(r"'((?:\\'|[^'])*)'(?:\s+#.*)?", raw)
+        require(match is not None, "PREP_ENV_SYNTAX_INVALID")
+        value = match.group(1).replace("\\'", "'")
+    elif raw.startswith('"'):
+        match = re.fullmatch(r'("(?:\\.|[^"\\])*")(?:\s+#.*)?', raw)
+        require(match is not None, "PREP_ENV_SYNTAX_INVALID")
+        try:
+            value = json.loads(match.group(1))
+        except json.JSONDecodeError as error:
+            raise DeployError("PREP_ENV_SYNTAX_INVALID") from error
+    else:
+        value = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
     require(not any(character in value for character in "\r\n\x00"), "PREP_ENV_CONTROL_CHARACTER")
     return value
 
@@ -368,13 +374,15 @@ def write_derived_environment(
     return target, values
 
 
-def protected_state() -> dict[str, Any]:
+def protected_state(*, ignore_project: str | None = None) -> dict[str, Any]:
     rows = output("docker", "ps", "--all", "--format", "{{.ID}}").splitlines()
     containers: list[dict[str, Any]] = []
     for container_id in rows:
         document = json.loads(output("docker", "inspect", container_id))[0]
         labels = document.get("Config", {}).get("Labels", {}) or {}
         project = labels.get("com.docker.compose.project", "")
+        if ignore_project and project == ignore_project:
+            continue
         ports = document.get("NetworkSettings", {}).get("Ports", {}) or {}
         published = {
             int(binding.get("HostPort"))
@@ -399,8 +407,19 @@ def protected_state() -> dict[str, Any]:
     return {"containers": sorted(containers, key=lambda value: value["id"]), "known_good_image_id": known_good}
 
 
-def assert_protected_unchanged(before: Mapping[str, Any]) -> None:
-    require(protected_state() == before, "PROTECTED_39080_OR_39083_CHANGED")
+def assert_protected_unchanged(before: Mapping[str, Any], *, ignore_project: str | None = None) -> None:
+    require(protected_state(ignore_project=ignore_project) == before, "PROTECTED_39080_OR_39083_CHANGED")
+
+
+def state_volume_identity(profile: Target) -> tuple[tuple[str, str], ...]:
+    result = []
+    for name in ("pgvector-data", "neo4j-data", "neo4j-logs"):
+        volume = f"{profile.project}_{name}"
+        completed = subprocess.run(["docker", "volume", "inspect", volume], capture_output=True, text=True, check=False)
+        if completed.returncode == 0:
+            document = json.loads(completed.stdout)[0]
+            result.append((document.get("Name", ""), document.get("CreatedAt", "")))
+    return tuple(sorted(result))
 
 
 def build_image(head: str) -> tuple[str, str]:
@@ -455,10 +474,17 @@ def subprocess_environment(values: Mapping[str, str]) -> dict[str, str]:
     return retained
 
 
-def provider_preflight(image: str, values: Mapping[str, str]) -> dict[str, str]:
-    environment = subprocess_environment(values)
+def provider_preflight(
+    image: str, values: Mapping[str, str], *, validation_only: bool = False,
+) -> dict[str, str]:
+    provider_values = dict(values)
+    if validation_only:
+        # Product preflight validates the actual PREP intranet bind contract;
+        # the temporary host-local validation publish remains loopback-only.
+        provider_values["POC_BIND_HOST"] = "0.0.0.0"
+    environment = subprocess_environment(provider_values)
     arguments = ["docker", "run", "--rm", "--platform", "linux/amd64"]
-    for key in sorted(values):
+    for key in sorted(provider_values):
         arguments.extend(("--env", key))
     source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
     if source_ca:
@@ -529,6 +555,22 @@ def project_containers(profile: Target) -> dict[str, dict[str, Any]]:
         require(service in {"web", "neo4j", "pgvector", "redis"} and service not in result, "PROJECT_CONTAINER_INVENTORY_INVALID")
         result[service] = document
     return result
+
+
+def require_target_port_ownership(profile: Target) -> None:
+    identifiers = output("docker", "ps", "--all", "--format", "{{.ID}}").splitlines()
+    for identifier in identifiers:
+        document = json.loads(output("docker", "inspect", identifier))[0]
+        bindings = document.get("NetworkSettings", {}).get("Ports", {}) or {}
+        published = {
+            int(binding.get("HostPort"))
+            for values in bindings.values() if isinstance(values, list)
+            for binding in values if isinstance(binding, dict) and str(binding.get("HostPort", "")).isdigit()
+        }
+        if profile.port not in published:
+            continue
+        project = (document.get("Config", {}).get("Labels", {}) or {}).get("com.docker.compose.project")
+        require(project == profile.project, "TARGET_PORT_OWNED_BY_OTHER_PROJECT")
 
 
 def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, Any]) -> None:
@@ -649,13 +691,16 @@ def unexpected_5xx(web: Mapping[str, Any], since: str) -> bool:
 def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> None:
     head, _ = validate_source(clean=True)
     image, image_id = require_built_image(head)
-    before = protected_state()
+    ignored_project = None if profile.validation_only else profile.project
+    before = protected_state(ignore_project=ignored_project)
     source, source_hash = env_preflight(env_file)
     state = state_kind(profile)
     if profile.validation_only:
         require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
+    volume_before = state_volume_identity(profile)
+    require_target_port_ownership(profile)
     derived, values = write_derived_environment(source, profile, head, state=state)
-    discovered = provider_preflight(image, values)
+    discovered = provider_preflight(image, values, validation_only=profile.validation_only)
     derived, values = write_derived_environment(source, profile, head, state=state, discovered=discovered)
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     prefix = compose_prefix(profile, derived)
@@ -673,7 +718,10 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> N
     containers = project_containers(profile)
     require(not any(container.get("State", {}).get("OOMKilled") is True for container in containers.values()), "CONTAINER_OOM_DETECTED")
     require(not unexpected_5xx(web, started), "UNEXPECTED_WEB_5XX")
-    assert_protected_unchanged(before)
+    assert_protected_unchanged(before, ignore_project=ignored_project)
+    volume_after = state_volume_identity(profile)
+    if state == "EXISTING":
+        require(volume_after == volume_before, "EXISTING_STATE_VOLUMES_CHANGED")
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
         "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
@@ -681,6 +729,7 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> N
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
         "profile": profile.name, "project": profile.project, "port": profile.port,
         "env_sha256": source_hash, "source_env_unchanged": True,
+        "existing_state_preserved": state != "EXISTING" or volume_after == volume_before,
         "mcl_current": acceptance["smoke"]["mcl_current_capture"],
         "mcl_history": acceptance["smoke"]["mcl_history_completeness"],
         "k9_semantic": acceptance["smoke"]["semantic_index"],
