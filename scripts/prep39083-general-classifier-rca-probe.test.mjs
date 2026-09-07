@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 
@@ -73,6 +75,7 @@ test('A/B sends exactly two completions and two bounded metadata GETs without re
   const output = []
   const context = {
     Buffer, URL, AbortSignal, structuredClone, createHash, QUESTION: question,
+    DIAGNOSTIC_SHA: 'd'.repeat(40),
     OUTPUT_PREFIX: 'GENERAL_RCA_EVIDENCE', SAFE_PROVIDER_CODES: new Set(['POC_LLM_PROVIDER_TIMEOUT']),
     process: { stdout: { write: (value) => output.push(value) } },
     probeFailure: (stage) => new Error(stage), boundedCount: String,
@@ -121,7 +124,7 @@ test('temporary source capture runs before provider transport and preserves vali
   const preparation = source.slice(source.indexOf('async function prepareTemporaryServer('), source.indexOf('function boundedToken('))
     .replace('return import(`file://${join(temporaryDirectory, SERVER_FILE)}?rca=${Date.now()}`)', 'return instrumented')
   const instrumented = await runInNewContext(`let temporaryDirectory;\n${constants}\n${preparation}\nprepareTemporaryServer(productSource)`, {
-    productSource, process: { env: { DATARIVER_CLASSIFIER_PROBE_MODE: 'AB' } },
+    productSource, process: { env: { DATARIVER_CLASSIFIER_PROBE_MODE: 'AB' }, argv: ['node', '-', 'AB', 'd'.repeat(40)] },
     countOccurrences: (value, needle) => value.split(needle).length - 1,
     mkdtemp: async () => '/tmp/fixture', tmpdir: () => '/tmp', join: (...parts) => parts.join('/'),
     readdir: async () => [], writeFile: async () => {}, probeFailure: (stage) => new Error(stage),
@@ -161,6 +164,146 @@ test('metadata reads stop at the byte bound and redact a model identifier contai
   assert.equal(result.software, 'UNKNOWN')
   assert.equal(result.model_artifact_digest, 'UNKNOWN')
   assert.equal(JSON.stringify(result).includes('secret-token'), false)
+})
+
+test('identity fence refuses missing mode, dirty script, stale HEAD and stale origin before Docker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rca-identity-test-'))
+  try {
+    const checkout = join(root, 'diagnostic')
+    const remote = join(root, 'remote.git')
+    const bin = join(root, 'bin')
+    mkdirSync(checkout)
+    mkdirSync(bin)
+    const dockerCalls = join(root, 'docker-calls')
+    writeFileSync(join(bin, 'docker'), '#!/bin/sh\nprintf called >> "$RCA_TEST_DOCKER_CALLS"\nexit 1\n')
+    chmodSync(join(bin, 'docker'), 0o700)
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, RCA_TEST_DOCKER_CALLS: dockerCalls }
+    const git = (...args) => {
+      const result = spawnSync('git', ['-c', 'user.name=RCA Test', '-c', 'user.email=rca@example.test', ...args], {
+        cwd: checkout, encoding: 'utf8', env,
+      })
+      assert.equal(result.status, 0, result.stderr)
+      return result.stdout.trim()
+    }
+    git('init', '--bare', remote)
+    git('init', '-b', 'dev')
+    mkdirSync(join(checkout, 'scripts'))
+    const script = join(checkout, 'scripts', 'prep39083-general-classifier-rca-probe')
+    writeFileSync(script, source)
+    chmodSync(script, 0o700)
+    git('add', 'scripts')
+    git('commit', '-m', 'Diagnostic fixture')
+    git('remote', 'add', 'origin', remote)
+    git('push', '-u', 'origin', 'dev')
+    const originalHead = git('rev-parse', 'HEAD')
+    const run = (...args) => spawnSync('bash', [script, ...args], { encoding: 'utf8', env })
+    assert.match(run().stdout, /stage=ARGUMENTS/u)
+    assert.equal(existsSync(dockerCalls), false)
+    writeFileSync(script, `${source}\n# uncommitted alteration\n`)
+    assert.match(run('--ab').stdout, /status=STALE_DIAGNOSTIC.*stage=STALE_SCRIPT/u)
+    assert.equal(existsSync(dockerCalls), false)
+    writeFileSync(script, source)
+    assert.match(run('--ab').stdout, /mode=AB\|stage=WEB_IDENTITY/u)
+    assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
+    rmSync(dockerCalls)
+    git('commit', '--allow-empty', '-m', 'Unpublished fixture head')
+    assert.match(run('--ab').stdout, /status=STALE_DIAGNOSTIC.*stage=STALE_CHECKOUT/u)
+    assert.equal(existsSync(dockerCalls), false)
+    git('push', 'origin', 'dev')
+    git('update-ref', 'refs/remotes/origin/dev', originalHead)
+    assert.match(run('--ab').stdout, /status=STALE_DIAGNOSTIC.*stage=STALE_CHECKOUT/u)
+    assert.equal(existsSync(dockerCalls), false)
+
+    const review = readFileSync(new URL('../docs/reviews/2026-09-07_PREP_CLASSIFIER_GRAPH_PARTIAL_RCA.md', import.meta.url), 'utf8')
+    const launcher = review.split('<!-- PREP39083_RCA_AB_LAUNCHER -->\n```bash\n')[1].split('\n```')[0]
+      .replace('/tmp/datariver-rca.XXXXXX', join(root, 'fresh-diagnostic.XXXXXX'))
+    git('switch', '--detach', originalHead)
+    writeFileSync(script, `${source}\n# caller checkout must stay unchanged\n`)
+    const launch = () => spawnSync('bash', ['-c', launcher], { cwd: checkout, encoding: 'utf8', env })
+    assert.match(launch().stdout, /mode=AB\|stage=WEB_IDENTITY/u)
+    assert.equal(git('rev-parse', 'HEAD'), originalHead)
+    assert.equal(readFileSync(script, 'utf8'), `${source}\n# caller checkout must stay unchanged\n`)
+    assert.equal(readFileSync(dockerCalls, 'utf8'), 'called')
+    rmSync(dockerCalls)
+
+    // A pre-guard remote script is rejected by the launcher without executing that script.
+    git('switch', 'dev')
+    writeFileSync(script, '#!/bin/sh\ndocker stale-script-must-not-run\n')
+    git('add', 'scripts')
+    git('commit', '-m', 'Pre-guard diagnostic fixture')
+    git('push', 'origin', 'HEAD:dev')
+    assert.equal(launch().stdout, 'RCA|status=STALE_DIAGNOSTIC\n')
+    assert.equal(existsSync(dockerCalls), false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('missing or mismatched Bash-to-Node mode fails before persistence or provider work', async () => {
+  const main = source.slice(source.indexOf('async function main()'), source.indexOf('\ntry {\n  await main()'))
+  for (const mode of [undefined, 'DEFAULT', 'AB']) {
+    let reads = 0
+    await assert.rejects(runInNewContext(`${main}\nmain()`, {
+      PROBE_MODE: mode, DIAGNOSTIC_SHA: 'd'.repeat(40), process: { env: {} },
+      probeFailure: (stage) => new Error(stage), readPersistedEvidence: async () => { reads += 1 },
+    }), /MODE_IDENTITY_HANDSHAKE/u)
+    assert.equal(reads, 0)
+  }
+  const probeProcess = { env: { DATARIVER_CLASSIFIER_PROBE_MODE: 'AB' } }
+  let abRuns = 0
+  await runInNewContext(`let serverModule;\n${main}\nmain()`, {
+    PROBE_MODE: 'AB', DIAGNOSTIC_SHA: 'd'.repeat(40), process: probeProcess,
+    readPersistedEvidence: async () => ({ managedGraphRows: [], activeGenerations: new Map() }),
+    readFile: async () => '', SERVER_PATH: 'server', STATE_STORE_PATH: 'store',
+    DISCOVERY_SQL_NULL_NEEDLE: 'sql-null', DISCOVERY_SQL_NEEDLE: 'sql', DISCOVERY_JSON_NULL_NEEDLE: 'json-null',
+    prepareTemporaryServer: async () => {
+      // Importing Product code cannot redirect AB into the old three-call path.
+      probeProcess.env.DATARIVER_CLASSIFIER_PROBE_MODE = 'DEFAULT'
+      return { createPocServer: () => {} }
+    },
+    runClassifierAB: async () => { abRuns += 1 },
+    auditManagedGraphs: async () => assert.fail('AB must not enter graph/default-three-call path'),
+  })
+  assert.equal(abRuns, 1)
+})
+
+test('stdout is one compact A/B line; detailed evidence is private and default-mode output is rejected', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rca-summary-test-'))
+  try {
+    const detail = join(root, 'diagnostic.log')
+    const head = 'd'.repeat(40)
+    const summary = source.split("<<'SUMMARY'\n")[1].split('\nSUMMARY\n')[0]
+    const fields = [
+      'GENERAL_RCA_EVIDENCE', 'mode=AB', `diag=${head}`, 'completion_calls=2',
+      'ab=CLASSIFIER_SCHEMA_OR_PROMPT_INTERACTION',
+      'provider={"software":"OLLAMA_API","version":"0.12.6","model":"private-model-alias"}',
+      'request_model={"family":"GEMMA"}',
+      'A={"state":"PASS","finish":"STOP","output":{"prefix_redacted":"hidden-excerpt"}}',
+      'B={"state":"FAIL","finish":"LENGTH","usage":"hidden-usage"}',
+    ]
+    const run = (line) => {
+      writeFileSync(detail, `${line}\n`)
+      return spawnSync('python3', ['-', detail, head, head, head, 'b'.repeat(40), 'b'.repeat(40), 'AB', root], {
+        input: summary, encoding: 'utf8',
+      })
+    }
+    const result = run(fields.join('|'))
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout.trim().split('\n').length, 1)
+    assert.match(result.stdout, /^RCA_AB\|diag=dddddddd\|mode=AB\|completion_calls=2\|A=PASS\|B=FAIL/u)
+    assert.match(result.stdout, /model=GEMMA\|A_finish=STOP\|B_finish=LENGTH/u)
+    assert.ok(result.stdout.length < 450)
+    for (const hidden of ['private-model-alias', 'hidden-excerpt', 'hidden-usage', 'b'.repeat(40)]) {
+      assert.equal(result.stdout.includes(hidden), false)
+    }
+    assert.equal(statSync(detail).mode & 0o777, 0o600)
+    const saved = JSON.parse(readFileSync(detail, 'utf8'))
+    assert.equal(saved.diag, head)
+    assert.equal(saved.script_blob, 'b'.repeat(40))
+    assert.match(saved.evidence, /hidden-excerpt/u)
+    const wrongMode = run('GENERAL_RCA_EVIDENCE|run1=PASS|run2=PASS|run3=PASS')
+    assert.equal(wrongMode.status, 2)
+    assert.match(wrongMode.stdout, /stage=OUTPUT_MODE_IDENTITY/u)
+    assert.equal(wrongMode.stdout.includes('run1='), false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
 test('bounds and redacts excerpts and never exposes raw SyntaxError text', () => {

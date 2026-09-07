@@ -91,7 +91,7 @@ origin, connection lifecycle or transaction state. No request/log correlation wa
   release preparation, OCI build/publication and Actual PREP acceptance remain pending the runtime
   causes and corrections. No new Product or Release is declared accepted.
 
-Remaining: PREP long-output line plus serving software/model/version, and one correlated failing
+Remaining: the compact PREP A/B result and one correlated failing
 browser request with server/PostgreSQL/Neo4j evidence. Only then can the classifier/backend fix,
 new Product/Release decision, and Actual PREP GENERAL/GRAPH/preview acceptance be completed.
 
@@ -133,3 +133,43 @@ current bounded connection check also timed out before any HTTP response. No rem
 connected. The graph selection request has therefore not been reproduced, and no Web log was
 available to correlate. This reachability failure does not establish the earlier graph connection
 error's cause. No Product, Release, deployment, graph pointer, DB or Neo4j state is changed.
+
+## Follow-up: stale execution fence and compact output
+
+The operator-reported `run1/run2/run3` output cannot be the `f283bd62` AB branch. It does not
+identify the operator's actual checkout, script bytes or received mode, so the exact stale path
+remains unobserved. The Mac diagnostic HEAD and live origin/dev both matched `f283bd62` before
+this correction. No further three-call repetition was requested or performed.
+
+The existing probe now requires explicit `--ab` or `--auto-3`. Before Docker or provider access it
+requires diagnostic HEAD, cached origin/dev and live origin/dev to match, and compares the actual
+executing script blob with that commit's blob. A mismatch returns `RCA|status=STALE_DIAGNOSTIC`.
+An argv/environment mode-and-commit handshake runs before persistence reads; mode is immutable
+after that check. Successful AB output must carry the same diagnostic identity, `mode=AB` and
+`completion_calls=2`; old default-mode output is rejected.
+
+Old copies cannot acquire this guard themselves. Run the following from the PREP repository;
+it fetches origin/dev, verifies the new contract marker before invoking anything, and uses a fresh
+detached diagnostic worktree. The caller's HEAD and files, including a Release checkout, are
+unchanged. The script independently rechecks the live ref and its own bytes before provider calls.
+
+<!-- PREP39083_RCA_AB_LAUNCHER -->
+```bash
+git fetch -q origin refs/heads/dev:refs/remotes/origin/dev && (git grep -qF PREP39083_RCA_AB_IDENTITY_V2 origin/dev -- scripts/prep39083-general-classifier-rca-probe || { printf 'RCA|status=STALE_DIAGNOSTIC\n'; exit 2; }) && prep_rca_dir="$(mktemp -d /tmp/datariver-rca.XXXXXX)" && git worktree add -q --detach "$prep_rca_dir" origin/dev && "$prep_rca_dir/scripts/prep39083-general-classifier-rca-probe" --ab
+```
+
+Stdout contains one `RCA_AB` summary with diagnostic SHA, mode, call count, A/B statuses,
+classification, provider API/version, model family and finish reasons. Detailed redacted evidence
+and checkout/ref/blob provenance are saved in a private temporary directory (0700), file 0600;
+only its path is printed. Do not request the file contents, full hashes or long evidence line from
+the operator. The separate graph request is limited to
+`GRAPH_UI|path=...|http=...|time=HH:MM:SS|message=Connection terminated unexpectedly`.
+
+Offline tests verify stale/dirty identity rejection before Docker, the detached launch preserving
+the caller checkout, rejection of pre-guard copies, the mode handshake, two completion calls,
+compact output and private evidence. Runtime A/B, the failing graph endpoint and actual acceptance
+remain pending access to PREP; this diagnostic correction is not a classifier/backend cause claim.
+
+Verification: **13 diagnostic tests passed**; Bash, embedded/temporary Node syntax and static
+verification passed. ShellCheck is unavailable. No Product source changed in this follow-up, so
+Product TypeScript/ESLint/canonical release gates were not rerun or claimed as Actual PREP evidence.

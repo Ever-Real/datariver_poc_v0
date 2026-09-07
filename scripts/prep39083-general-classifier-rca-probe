@@ -7,18 +7,21 @@ set -euo pipefail
 # SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
-# ProviderCallsPerRun: 3 (default); 2 completions + at most 2 metadata GETs (--ab), no retries
+# ProviderCallsPerRun: 2 completions + at most 2 metadata GETs (--ab); 3 (--auto-3), no retries
 # Neo4jMutation: NONE
 
-readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
+# DiagnosticContract: PREP39083_RCA_AB_IDENTITY_V2
 readonly COMPOSE_PROJECT='datariver-prep39083'
 readonly COMPOSE_SERVICE='web'
 readonly RELEASE_RELATIVE_PATH='deploy/prep39083/release.json'
 readonly RELEASE_REF='refs/remotes/origin/prep39083-release'
 readonly OCI_REVISION_LABEL='org.opencontainers.image.revision'
+readonly SCRIPT_RELATIVE_PATH='scripts/prep39083-general-classifier-rca-probe'
 
 emit_failure() {
-  printf '%s\n' "${OUTPUT_PREFIX}|subtype=PROBE_FAILED|stage=$1"
+  local status=PROBE_FAILED
+  [[ "$1" == STALE_* ]] && status=STALE_DIAGNOSTIC
+  printf '%s\n' "RCA|status=$status|diag=${diag_short:-UNKNOWN}|expected=${expected_short:-UNKNOWN}|mode=${probe_mode:-UNKNOWN}|stage=$1"
 }
 
 fail() {
@@ -26,23 +29,44 @@ fail() {
   exit 2
 }
 
-probe_mode=DEFAULT
+probe_mode=UNKNOWN
 if [[ "$#" -eq 1 && "$1" == '--ab' ]]; then
   probe_mode=AB
-elif [[ "$#" -ne 0 ]]; then
+elif [[ "$#" -eq 1 && "$1" == '--auto-3' ]]; then
+  probe_mode=AUTO3
+else
   fail ARGUMENTS
 fi
 readonly probe_mode
 
 command -v git >/dev/null 2>&1 || fail CHECKOUT
 command -v python3 >/dev/null 2>&1 || fail PRODUCT_IDENTITY
-command -v docker >/dev/null 2>&1 || fail DOCKER
 
-readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd; })"
+readonly SCRIPT_DIRECTORY="$({ CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; })"
 REPOSITORY_ROOT="$(git -C "$SCRIPT_DIRECTORY" rev-parse --show-toplevel 2>/dev/null)" \
   || fail CHECKOUT
 readonly REPOSITORY_ROOT
 [[ "$SCRIPT_DIRECTORY" == "$REPOSITORY_ROOT/scripts" ]] || fail CHECKOUT
+
+# Check the bytes of the actual executing file, not merely a successful git pull.
+DIAGNOSTIC_HEAD="$(git -C "$REPOSITORY_ROOT" rev-parse --verify HEAD 2>/dev/null)" || fail CHECKOUT
+diag_short="${DIAGNOSTIC_HEAD:0:8}"
+ORIGIN_DEV_HEAD="$(git -C "$REPOSITORY_ROOT" rev-parse --verify refs/remotes/origin/dev 2>/dev/null)" || fail STALE_ORIGIN_REF
+REMOTE_DEV_HEAD="$(git -C "$REPOSITORY_ROOT" ls-remote --exit-code origin refs/heads/dev 2>/dev/null)" || fail REMOTE_IDENTITY
+REMOTE_DEV_HEAD="${REMOTE_DEV_HEAD%%$'\t'*}"
+[[ "$REMOTE_DEV_HEAD" =~ ^[0-9a-f]{40}$ ]] || fail REMOTE_IDENTITY
+expected_short="${REMOTE_DEV_HEAD:0:8}"
+[[ "$DIAGNOSTIC_HEAD" == "$ORIGIN_DEV_HEAD" && "$ORIGIN_DEV_HEAD" == "$REMOTE_DEV_HEAD" ]] || fail STALE_CHECKOUT
+EXPECTED_SCRIPT_BLOB="$(git -C "$REPOSITORY_ROOT" rev-parse "$REMOTE_DEV_HEAD:$SCRIPT_RELATIVE_PATH" 2>/dev/null)" || fail STALE_SCRIPT
+ACTUAL_SCRIPT_BLOB="$(git -C "$REPOSITORY_ROOT" hash-object --no-filters "$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")" 2>/dev/null)" || fail STALE_SCRIPT
+[[ "$ACTUAL_SCRIPT_BLOB" == "$EXPECTED_SCRIPT_BLOB" ]] || fail STALE_SCRIPT
+readonly DIAGNOSTIC_HEAD ORIGIN_DEV_HEAD REMOTE_DEV_HEAD EXPECTED_SCRIPT_BLOB ACTUAL_SCRIPT_BLOB diag_short expected_short
+
+command -v docker >/dev/null 2>&1 || fail DOCKER
+umask 077
+DETAIL_DIRECTORY="$(mktemp -d /tmp/datariver-prep39083-rca.XXXXXX)" || fail DETAIL_DIRECTORY
+readonly DETAIL_DIRECTORY
+readonly DETAIL_FILE="$DETAIL_DIRECTORY/diagnostic.log"
 
 web_ids=()
 while IFS= read -r container_id; do
@@ -98,7 +122,7 @@ readonly RUNNING_PRODUCT
 
 set +e
 probe_output="$(
-  docker exec -i -e "DATARIVER_CLASSIFIER_PROBE_MODE=$probe_mode" "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
+  docker exec -i -e "DATARIVER_CLASSIFIER_PROBE_MODE=$probe_mode" "$WEB_CONTAINER_ID" node --input-type=module - "$probe_mode" "$DIAGNOSTIC_HEAD" 2>/dev/null <<'NODE'
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -107,6 +131,8 @@ import process from 'node:process'
 import pg from 'pg'
 
 const OUTPUT_PREFIX = 'GENERAL_RCA_EVIDENCE'
+const PROBE_MODE = process.argv[2]
+const DIAGNOSTIC_SHA = process.argv[3]
 const QUESTION = '데이터 계보가 무엇인지 일반적으로 설명해줘.'
 const PROBE_ATTEMPT_COUNT = 3
 const SERVER_PATH = '/app/poc-server.mjs'
@@ -346,7 +372,7 @@ ${LLM_SERIALIZE_NEEDLE}`,
       globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.captureRequest = true
 ${CLASSIFIER_CALL_NEEDLE}`,
   )
-  if (process.env.DATARIVER_CLASSIFIER_PROBE_MODE === 'AB') {
+  if (PROBE_MODE === 'AB') {
     instrumented += '\nexport { llmRequest, graphPlannerAssets }\n'
   }
   instrumented = instrumented.replace(
@@ -1024,6 +1050,7 @@ async function runClassifierAB() {
   if (completionCalls !== 2) throw probeFailure('AB_CALL_COUNT')
   process.stdout.write([
     OUTPUT_PREFIX, 'mode=AB', `ab=${abClassification(...results)}`, 'completion_calls=2',
+    `diag=${DIAGNOSTIC_SHA}`, `request_model=${JSON.stringify(modelEvidence(capture.body.model))}`,
     `request=${requestShape(capture.requests[0])}`, `provider=${JSON.stringify(provider)}`,
     `B_request_sha256=${createHash('sha256').update(JSON.stringify(bodies[1])).digest('hex')}`,
     `A=${JSON.stringify(results[0])}`, `B=${JSON.stringify(results[1])}`,
@@ -1031,6 +1058,9 @@ async function runClassifierAB() {
 }
 
 async function main() {
+  if (!['AB', 'AUTO3'].includes(PROBE_MODE)
+    || process.env.DATARIVER_CLASSIFIER_PROBE_MODE !== PROBE_MODE
+    || !/^[a-f0-9]{40}$/u.test(DIAGNOSTIC_SHA || '')) throw probeFailure('MODE_IDENTITY_HANDSHAKE')
   const persisted = await readPersistedEvidence()
   const [source, stateStoreSource] = await Promise.all([
     readFile(SERVER_PATH, 'utf8'),
@@ -1052,7 +1082,7 @@ async function main() {
     ),
   })
   serverModule.createPocServer({ stateStore })
-  if (process.env.DATARIVER_CLASSIFIER_PROBE_MODE === 'AB') return runClassifierAB()
+  if (PROBE_MODE === 'AB') return runClassifierAB()
   const graphEvidence = await auditManagedGraphs(persisted.managedGraphRows)
 
   globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0, requests: [], captureRequest: false }
@@ -1083,7 +1113,7 @@ async function main() {
   if (globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.requests.length !== PROBE_ATTEMPT_COUNT) {
     throw probeFailure('PROVIDER_REQUEST_CONTRACT')
   }
-  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind, graphEvidence)}\n`)
+  process.stdout.write(`${evidenceLine(attempts, persisted, discoveryBind, graphEvidence)}|mode=AUTO3|diag=${DIAGNOSTIC_SHA}\n`)
 }
 
 try {
@@ -1104,12 +1134,61 @@ NODE
 probe_status=$?
 set -e
 
-if [[ -z "$probe_output" || "$probe_output" == *$'\n'* \
-  || "$probe_output" != "${OUTPUT_PREFIX}|"* ]]; then
-  fail OUTPUT_CONTRACT
-fi
+printf '%s\n' "$probe_output" > "$DETAIL_FILE" || fail DETAIL_WRITE
+python3 - "$DETAIL_FILE" "$DIAGNOSTIC_HEAD" "$ORIGIN_DEV_HEAD" "$REMOTE_DEV_HEAD" \
+  "$ACTUAL_SCRIPT_BLOB" "$EXPECTED_SCRIPT_BLOB" "$probe_mode" "$REPOSITORY_ROOT" <<'SUMMARY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
 
-printf '%s\n' "$probe_output"
+detail, head, origin, remote, actual_blob, expected_blob, mode, checkout = sys.argv[1:]
+diag = head[:8]
+
+def fail(stage):
+    print(f"RCA|status=PROBE_FAILED|diag={diag}|mode={mode}|stage={stage}|detail={detail}")
+    raise SystemExit(2)
+
+try:
+    path = Path(detail)
+    raw = path.read_text()
+    # This record contains only the existing redacted provider evidence, never raw responses.
+    record = dict(diag=head, origin_dev=origin, remote_dev=remote, script_blob=actual_blob,
+                  expected_script_blob=expected_blob, mode=mode, checkout=checkout, evidence=raw)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(path, 0o600)
+    if not raw.startswith("GENERAL_RCA_EVIDENCE|") or len(raw.splitlines()) != 1:
+        fail("OUTPUT_CONTRACT")
+    fields = dict(item.split("=", 1) for item in raw.strip().split("|")[1:])
+    if fields.get("subtype") == "PROBE_FAILED":
+        stage = fields.get("stage", "RUNTIME")
+        fail(stage if re.fullmatch(r"[A-Z0-9_]{1,64}", stage) else "RUNTIME")
+    if fields.get("mode") != mode or fields.get("diag") != head:
+        fail("OUTPUT_MODE_IDENTITY")
+    def token(value, fallback="UNKNOWN"):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Z0-9_]{1,80}", value) else fallback
+    if mode == "AB":
+        if fields.get("completion_calls") != "2":
+            fail("AB_CALL_COUNT")
+        a, b, provider = (json.loads(fields[key]) for key in ("A", "B", "provider"))
+        version = provider.get("version", "UNKNOWN")
+        if not re.fullmatch(r"[0-9A-Za-z_.-]{1,32}", version):
+            version = "UNKNOWN"
+        model = token(json.loads(fields["request_model"]).get("family"))
+        print(f"RCA_AB|diag={diag}|mode=AB|completion_calls=2"
+              f"|A={token(a.get('state'))}|B={token(b.get('state'))}|class={token(fields.get('ab'))}"
+              f"|provider={token(provider.get('software'))}|version={version}|model={model}"
+              f"|A_finish={token(a.get('finish'))}|B_finish={token(b.get('finish'))}|detail={detail}")
+    else:
+        runs = [token(fields.get(f"run{n}", "").split(",")[0]) for n in (1, 2, 3)]
+        print(f"RCA_AUTO|diag={diag}|mode=AUTO3|class={token(fields.get('subtype'))}"
+              f"|run1={runs[0]}|run2={runs[1]}|run3={runs[2]}"
+              f"|constraint={token(fields.get('constraint'))}|discovery_bind={token(fields.get('discovery_bind'))}"
+              f"|detail={detail}")
+except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    fail("SUMMARY_CONTRACT")
+SUMMARY
 exit "$probe_status"
 
 # END DATARIVER_LEGACY_RCA_PREP39083_GENERAL_CLASSIFIER_V1
