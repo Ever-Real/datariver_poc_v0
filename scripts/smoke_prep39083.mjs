@@ -3,6 +3,7 @@
 
 import { chmod, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import process from 'node:process'
+import { requestBudget, retryAllowed, withReadinessDeadline } from './readiness.mjs'
 
 import {
   prepGeneralSmokeClassification,
@@ -17,6 +18,7 @@ import { K9_V2_FAILURE_CODES } from '../backend/src/modules/k9/lifecycle-v2.mjs'
 import { sanitizeK9SourcePersistenceDiagnosticV2 } from '../backend/src/modules/k9/lifecycle-persistence.mjs'
 
 const processStarted = Date.now()
+let httpRequestCount = 0
 const inventoryFailureClassifications = new Set([
   'PREP_DATAHUB_INVENTORY_QUERY_FAILED',
   'PREP_DATAHUB_INVENTORY_PAGE_FAILED',
@@ -432,13 +434,15 @@ async function privateSecret(path) {
 
 async function responseJson(url, init, stage, classification) {
   let response
+  const readOnly = !init?.method || ['GET', 'HEAD'].includes(init.method)
+  httpRequestCount += 1
   try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(300_000) })
+    response = await fetch(url, { ...init, signal: AbortSignal.timeout(requestBudget()) })
   } catch (error) {
     const requestClassification = stage === 'GENERAL_PROVIDER' && error?.name === 'TimeoutError'
       ? 'PREP_SMOKE_GENERAL_PROVIDER_TIMEOUT_FAILED'
       : classification
-    throw smokeFailure(stage, requestClassification, `${stage} request failed.`)
+    throw Object.assign(smokeFailure(stage, requestClassification, `${stage} request failed.`), { retryable: readOnly })
   }
   const body = await response.json().catch(() => null)
   if (!response.ok) {
@@ -463,13 +467,13 @@ async function responseJson(url, init, stage, classification) {
       : undefined
     const failureClassification = adminClassification || generalClassification
       || glossaryClassification || inventoryClassification
-    throw smokeFailure(
+    throw Object.assign(smokeFailure(
       stage,
       failureClassification,
       `${stage} request was rejected.`,
       response.status,
       generalDiagnostic || (failureClassification === body?.code ? body?.diagnostic : null),
-    )
+    ), { retryable: readOnly && [408, 429, 502, 503, 504].includes(response.status) })
   }
   return { response, body }
 }
@@ -494,10 +498,11 @@ async function retryReadiness(operation, timeoutMs, label) {
   let lastError
   do {
     try {
-      return await operation()
+      return await withReadinessDeadline(deadline, operation)
     } catch (error) {
+      if (lastError && error?.retryable && Date.now() >= deadline) break
       lastError = error
-      if (error?.terminal) throw error
+      if (!retryAllowed(error)) throw error
       if (Date.now() >= deadline) break
       const diagnostic = error?.diagnostic
       if (diagnostic && Number.isSafeInteger(diagnostic.page_number) && diagnostic.page_number > 0) {
@@ -1203,7 +1208,7 @@ async function main() {
         'MCL_CHANGE_HISTORY',
         'PREP_SMOKE_MCL_SOURCE_FAILED',
       )
-      if (changeHistory.body?.capture_state === 'DISCOVERY_FAILED') {
+      if (['DISCOVERY_FAILED', 'SOURCE_NOT_CONFIGURED'].includes(changeHistory.body?.capture_state)) {
         throw smokeFailure(
           'MCL_INITIAL_CAPTURE',
           'PREP_SMOKE_MCL_RUNTIME_DISCOVERY_FAILED',
@@ -1283,7 +1288,8 @@ async function main() {
         headers: { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
       }, 'GENERAL_PROVIDER', 'PREP_SMOKE_GENERAL_PROVIDER_FAILED'), '6/6 GENERAL provider')
-      if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0) {
+      if (chat.body?.route?.selected_mode !== 'GENERAL' || (chat.body?.evidence || []).length !== 0
+        || typeof chat.body?.answer !== 'string' || !chat.body.answer.trim()) {
         throw smokeFailure('GENERAL_ROUTE', 'PREP_SMOKE_GENERAL_ROUTE_FAILED', 'Representative GENERAL route used internal retrieval or selected another route.')
       }
       report.llm_general = 'PASS'
@@ -1314,6 +1320,8 @@ async function main() {
     }).catch(() => undefined)
   }
 
+  report.elapsed_ms = Date.now() - started
+  report.application_http_requests = httpRequestCount
   await atomicJson(output, report)
   await removeIfPresent(failureOutput)
   process.stdout.write(`${JSON.stringify(report)}\n`)

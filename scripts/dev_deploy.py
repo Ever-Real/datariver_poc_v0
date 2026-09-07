@@ -662,18 +662,14 @@ def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password
         "--volume", f"{ROOT}:/source:ro", "--volume", f"{receipt_root}:/receipts",
         "--volume", f"{password}:/run/dev-deploy-admin-password:ro", image, "node",
     ]
-    # Focused checks run first. The canonical 6/6 smoke is invoked exactly once
-    # only after MCL, K9, AUTO, GRAPH and preview have all passed.
-    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--origin", "http://127.0.0.1:8080",
-         "--request-origin", request_origin, "--username", ADMIN_USERNAME,
-         "--password-file", "/run/dev-deploy-admin-password", "--output", "/receipts/features.json"))
-    features = read_json(receipt_root / "features.json")
-    require(
-        features.get("mcl_current") == "READY" and features.get("k9_semantic") == "READY"
-        and features.get("auto_chat") == "PASS" and features.get("graph_chat") == "PASS"
-        and features.get("knowledge_graph_preview") == "PASS",
-        "FOCUSED_ACCEPTANCE_NOT_READY",
-    )
+    # Cheap readiness first, six canonical gates once, then route/preview acceptance.
+    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "readiness",
+         "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
+         "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
+         "--output", "/receipts/readiness.json"))
+    readiness = read_json(receipt_root / "readiness.json")
+    require(readiness.get("mcl_current") == "READY" and readiness.get("k9_semantic") == "READY",
+            "FOCUSED_READINESS_NOT_READY")
     smoke_output = "/receipts/smoke.json"
     smoke_failure = "/receipts/smoke-failure.json"
     run((*common, "/source/scripts/smoke_prep39083.mjs", "--origin", "http://127.0.0.1:8080",
@@ -689,6 +685,15 @@ def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password
         and smoke.get("semantic_index") == "PASS",
         "FULL_SMOKE_NOT_READY",
     )
+    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "features",
+         "--canonical-smoke", smoke_output, "--source-sha", head,
+         "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
+         "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
+         "--output", "/receipts/features.json"))
+    features = read_json(receipt_root / "features.json")
+    require(all(features.get(key) == "PASS" for key in (
+        "auto_chat", "graph_chat", "auto_graph", "auto_search", "vector_chat", "knowledge_graph_preview")),
+        "FEATURE_ACCEPTANCE_NOT_READY")
     return {"smoke": smoke, "features": features}
 
 
@@ -759,6 +764,9 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> N
         "k9_semantic": acceptance["smoke"]["semantic_index"],
         "auto_chat": acceptance["features"]["auto_chat"],
         "graph_chat": acceptance["features"]["graph_chat"],
+        "auto_graph": acceptance["features"]["auto_graph"],
+        "auto_search": acceptance["features"]["auto_search"],
+        "vector_chat": acceptance["features"]["vector_chat"],
         "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
         "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080_39083": "UNTOUCHED",
     })
