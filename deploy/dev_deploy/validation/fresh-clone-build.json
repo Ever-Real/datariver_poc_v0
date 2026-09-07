@@ -1,11 +1,11 @@
 {
   "artifact_branch_dependency": false,
   "base_product": "2bd5494d6f100abc8e50a844e0d01c30b93cc698",
-  "build_input_sha256": "3c923bb8a7f1ca816aad73252cc79343caaf62a71628d1e4830dab847d645a06",
-  "built_at": "2026-09-07T21:40:32.464387+00:00",
+  "build_input_sha256": "fe6c27a4b663b2d3515d7307b4162fb4b4f46182a3a124ae557767cb76dd8d29",
+  "built_at": "2026-09-07T21:48:10.735774+00:00",
   "contract": "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1",
-  "head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
-  "image": "datariver-dev-deploy-source:b0d0dd074762",
-  "image_id": "sha256:b10c1aa106f6b2489968419d46334fea0d13a8c9df46eeb362bb59190afd7dec",
+  "head": "823359c090a9f794e4ee0c0416dae5245cc7707b",
+  "image": "datariver-dev-deploy-source:823359c090a9",
+  "image_id": "sha256:492ea87d1b4dc40ea3d1f28f4c25501260d171b33fb36d1f038f0123abf415f4",
   "no_cache": true
 }

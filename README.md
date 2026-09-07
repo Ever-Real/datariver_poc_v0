@@ -6,7 +6,7 @@
 * **성공 베이스라인 커밋**: `2bd5494d6f100abc8e50a844e0d01c30b93cc698`
 * **검증 증적 커밋**: `4473135c3c9aa1cb44f317f1e3ae1a63de1eeacf`
 * **핸드오프 커밋**: `5ae0e49b7943fb80e727d31cb3b1c90152fdf8ad`
-* **현재 상태**: 운영자 리포트 6/6 완료, 후보 환경 Actual PREP `NOT_RUN` (사용자 승인 대기), 기능 회귀 121개·canonical smoke 회귀 59개·focused/retry 9개 통과, 최종 후보 `b0d0dd074762a170b8fb6514a92c463dcaecaf81`; fresh-clone no-cache linux/amd64 build PASS. DEV 준비 완료 `READY_FOR_PREP_OPERATOR`, 실제 PREP acceptance는 미완료입니다.
+* **현재 상태**: 운영자 리포트 6/6 완료, 후보 환경 Actual PREP `NOT_RUN` (사용자 승인 대기), 기능 회귀 121개·canonical smoke 회귀 59개·focused/retry 9개 통과, 최종 후보 `823359c090a9f794e4ee0c0416dae5245cc7707b`; fresh-clone no-cache linux/amd64 build PASS. DEV 준비 완료 `READY_FOR_PREP_OPERATOR`, 실제 PREP acceptance는 미완료입니다.
 
 ---
 
@@ -91,3 +91,5 @@ cookie/storage/cache/scope와 외부 오류·Kafka/Compose 식별자는 운영 �
 로컬 개발 점검: `npm ci --ignore-scripts`, `npm run build`, `npm run typecheck`, `npm run lint`.
 원본 `.env.prep`의 내용을 편집하지 않습니다. 기존 `.env.prep.runtime`와 필요한 `.env.prep.optional`,
 CA 파일은 운영 입력이므로 소스와 함께 삭제하지 않습니다. 기존 DB의 비밀번호를 새로 만들지 않습니다.
+
+기존 관리자 암호는 초기화하지 않습니다. 대화형 deploy는 기존 암호를 숨김 입력받으며, 비대화형 실행에서는 `--admin-password-file`로 기존 보안 파일을 지정하십시오. provider `.env.prep`의 값을 다시 작성할 필요는 없습니다.

@@ -2,7 +2,7 @@
 
 Baseline Product: `2bd5494d6f100abc8e50a844e0d01c30b93cc698`
 Original source candidate: `938fa884ff1ada02db67f2e8c83f010c298c8440`
-Final source candidate: `b0d0dd074762a170b8fb6514a92c463dcaecaf81`
+Final source candidate: `823359c090a9f794e4ee0c0416dae5245cc7707b`
 Structure commit: `456b0ae1`; smoke commit: `d900f6be`; bounded review correction: `b0d0dd07`.
 Actual PREP runtime: **NOT_RUN / pending environment and explicit approval**.
 No newer actual PREP success evidence replaced the operator's Product2bd5494 / smoke6of6 baseline.
@@ -75,11 +75,11 @@ Artifact-only known-good image/tag is preserved for rollback. Database rollback 
 
 ## Validation
 
-Candidate `b0d0dd074762a170b8fb6514a92c463dcaecaf81`, tracked clean with origin, 262 files.
+Candidate `823359c090a9f794e4ee0c0416dae5245cc7707b`, tracked clean with origin, 262 files.
 Fresh origin clone source check PASS; no-cache linux/amd64 source build PASS.
-Build input SHA256: `3c923bb8a7f1ca816aad73252cc79343caaf62a71628d1e4830dab847d645a06`.
-New OCI index digest: `sha256:b10c1aa106f6b2489968419d46334fea0d13a8c9df46eeb362bb59190afd7dec`.
-Revision label matches candidate; tag `datariver-dev-deploy-source:b0d0dd074762`.
+Build input SHA256: `fe6c27a4b663b2d3515d7307b4162fb4b4f46182a3a124ae557767cb76dd8d29`.
+New OCI index digest: `sha256:492ea87d1b4dc40ea3d1f28f4c25501260d171b33fb36d1f038f0123abf415f4`.
+Revision label matches candidate; tag `datariver-dev-deploy-source:823359c090a9`.
 Old Product image, artifact branch, ignored helpers, previous build output and other checkout sources were not build inputs.
 
 - Original contract regressions: 121 PASS, zero failures/skips.
@@ -99,3 +99,7 @@ GitGuardian original four incidents: exact Product SHA256 blob hashes in origina
 New changed tracked source scanned: no credential patterns, tracked env or private key; secret values never printed.
 Independent Sonnet integrated review once; concrete fixes followed by narrow fixed-diff verification PASS at final source.
 No actualPREP deployment, migration, provider mutation or full live smoke executed on DEV.
+
+Final receipt-only correction `823359c0`: report protected39080 separately from actual39083 DEPLOYED/UNTOUCHED. No deploy operations, auth, env or source functions changed. Prior independent review applies to unchanged code at b0d0dd07; coordinator checked the exact two-field receipt diff and Python syntax. Final fresh build evidence is refreshed for the new source identity.
+
+Build observations: npm install/prune reported dependency audit advisories (`31 vulnerabilities (29 moderate, 2 high); 30 vulnerabilities (29 moderate, 1 high)`). Locked dependency versions were not changed; dependency advisory remediation was not part of this parity refactor. No claim of an audit-clean dependency set is made.

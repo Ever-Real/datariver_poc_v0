@@ -2,7 +2,7 @@
 
 These development-only helpers are stored on `dev`. They are not inputs to the
 `dev_deploy` build or deployment. Run them from the candidate checkout root
-(`b0d0dd074762a170b8fb6514a92c463dcaecaf81`) after installing its locked development dependencies.
+(`823359c090a9f794e4ee0c0416dae5245cc7707b`) after installing its locked development dependencies.
 Set `DEV_RECORDS` to this `dev` checkout's absolute `deploy/dev_deploy/validation` path.
 No actual provider credentials or production data are used. Docker Compose config parses
 synthetic env files; no container, volume, scheduler or provider is mutated.
@@ -28,3 +28,5 @@ receipt from a new origin clone with no-cache linux/amd64 git-archive build inpu
 The Docker identifier is an OCI image **index digest**, not the old Product manifest.
 Full build log is retained in the existing local task evidence storage. No new image
 is claimed identical to Product `2bd5494`, and no release/acceptance tag was created.
+
+The 121/59/9 and AST checks ran on b0d0dd07. Final 823359c0 only changes two receipt status fields; the tested auth/state/smoke/application code is identical. Final image/source checks and no-cache build ran on 823359c0.

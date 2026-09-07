@@ -1,13 +1,13 @@
 {
-  "source_head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "source_head": "823359c090a9f794e4ee0c0416dae5245cc7707b",
   "tracked_files": 262,
   "fresh_clone": "origin/dev_deploy",
   "source_check": "PASS",
   "no_cache_build": "PASS",
   "platform": "linux/amd64",
-  "build_input_sha256": "3c923bb8a7f1ca816aad73252cc79343caaf62a71628d1e4830dab847d645a06",
-  "image_index_digest": "sha256:b10c1aa106f6b2489968419d46334fea0d13a8c9df46eeb362bb59190afd7dec",
-  "image_revision": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "build_input_sha256": "fe6c27a4b663b2d3515d7307b4162fb4b4f46182a3a124ae557767cb76dd8d29",
+  "image_index_digest": "sha256:492ea87d1b4dc40ea3d1f28f4c25501260d171b33fb36d1f038f0123abf415f4",
+  "image_revision": "823359c090a9f794e4ee0c0416dae5245cc7707b",
   "artifact_branch_dependency": "NONE",
   "old_source_dependency": "NONE",
   "function_body_equivalence": 379,
@@ -37,5 +37,8 @@
   "full_live_smoke": "NOT_RUN",
   "new_secret_scan": "PASS",
   "prior_gitguardian_false_positive_hash": 4,
-  "status": "READY_FOR_PREP_OPERATOR"
+  "status": "READY_FOR_PREP_OPERATOR",
+  "independent_review_head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "regression_code_head": "b0d0dd074762a170b8fb6514a92c463dcaecaf81",
+  "final_receipt_only_delta": "Coordinator exact diff and Python syntax PASS; no protected runtime code changed"
 }
