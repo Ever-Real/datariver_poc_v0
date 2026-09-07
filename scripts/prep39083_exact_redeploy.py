@@ -51,7 +51,7 @@ RELEASE_PORT = 39083
 TREE_PATH = f"prep39083/{PRODUCT}"
 CHUNKS = tuple(f"{ARCHIVE_NAME}.part-{index:03d}" for index in range(3))
 CHECKSUM = f"{ARCHIVE_NAME}.sha256"
-SQL_FILES = tuple(f"deploy/poc/postgres-init/{index:03d}-{name}.sql" for index, name in (
+FROZEN_SQL_FILES = tuple(f"deploy/poc/postgres-init/{index:03d}-{name}.sql" for index, name in (
     (1, "poc-state"),
     (2, "poc-knowledge-ingestion"),
     (3, "poc-k9-managed-graphs"),
@@ -65,7 +65,7 @@ SQL_FILES = tuple(f"deploy/poc/postgres-init/{index:03d}-{name}.sql" for index, 
 ))
 FROZEN_PATHS = (
     "deploy/poc/docker-compose.poc.yaml",
-    *SQL_FILES,
+    *FROZEN_SQL_FILES,
     "deploy/prep39083/docker-compose.artifact.yaml",
     "deploy/prep39083/release.json",
     "deploy/prep39083/transport.json",
@@ -73,6 +73,7 @@ FROZEN_PATHS = (
 ALLOWED_PATHS = frozenset((
     ".gitignore",
     *FROZEN_PATHS,
+    "deploy/poc/postgres-init/000-poc-vector-extension.sql",
     "deploy/dev_deploy.artifact.yaml",
     "deploy/dev_deploy.json",
     "scripts/dev_deploy",
