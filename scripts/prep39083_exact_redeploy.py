@@ -270,6 +270,15 @@ def public_origin(lines: list[str]) -> str:
     return urlunsplit((parsed.scheme, f"{host}:{PORT}", parsed.path, parsed.query, parsed.fragment))
 
 
+def canonical_mcp_workspace(lines: list[str]) -> str:
+    for line in lines:
+        if line.startswith("POC_MCP_WORKSPACE_ID="):
+            value = line.split("=", 1)[1].strip().strip("'\"")
+            require(value, "source environment has no POC_MCP_WORKSPACE_ID")
+            return value
+    raise DeployError("source environment has no POC_MCP_WORKSPACE_ID")
+
+
 def derived_environment(source_file: Path, source_container: str | None, bind_host: str) -> Path:
     require(bind_host in {"127.0.0.1", "0.0.0.0"}, "bind host must be 127.0.0.1 or 0.0.0.0")
     if source_container:
@@ -278,6 +287,7 @@ def derived_environment(source_file: Path, source_container: str | None, bind_ho
         lines = secure_env(source_file).read_text(encoding="utf-8").splitlines()
         ca_bind = None
     origin = public_origin(lines)
+    workspace = canonical_mcp_workspace(lines)
     overrides = {
         "COMPOSE_PROJECT_NAME": PROJECT,
         "POC_BIND_HOST": bind_host,
@@ -290,6 +300,9 @@ def derived_environment(source_file: Path, source_container: str | None, bind_ho
         "PREP_RELEASE_PRODUCT_SHA": PRODUCT,
         "PREP_RELEASE_EVIDENCE_SHA": EVIDENCE,
         "POC_PUBLIC_ORIGIN": origin,
+        # The frozen PREP contract has one workspace for K9 and MCP.  The live
+        # 39083 container contains older drift; do not copy that drift into 39081.
+        "POC_K9_WORKSPACE_ID": workspace,
         **STATE_PORTS,
     }
     if ca_bind:
