@@ -7,7 +7,7 @@ set -euo pipefail
 # SafeRemovalWhen: GENERAL classifier RCA COMPLETE and corresponding runtime evidence is checkpointed
 # PersistentRuntimeMutation: NONE
 # DatabaseMutation: NONE
-# ProviderCallsPerRun: 3
+# ProviderCallsPerRun: 3 (default); 2 completions + at most 2 metadata GETs (--ab), no retries
 # Neo4jMutation: NONE
 
 readonly OUTPUT_PREFIX='GENERAL_RCA_EVIDENCE'
@@ -25,6 +25,14 @@ fail() {
   emit_failure "$1"
   exit 2
 }
+
+probe_mode=DEFAULT
+if [[ "$#" -eq 1 && "$1" == '--ab' ]]; then
+  probe_mode=AB
+elif [[ "$#" -ne 0 ]]; then
+  fail ARGUMENTS
+fi
+readonly probe_mode
 
 command -v git >/dev/null 2>&1 || fail CHECKOUT
 command -v python3 >/dev/null 2>&1 || fail PRODUCT_IDENTITY
@@ -90,7 +98,7 @@ readonly RUNNING_PRODUCT
 
 set +e
 probe_output="$(
-  docker exec -i "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
+  docker exec -i -e "DATARIVER_CLASSIFIER_PROBE_MODE=$probe_mode" "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -325,6 +333,10 @@ async function prepareTemporaryServer(source) {
       strictJsonSchema: body?.response_format?.type === 'json_schema'
         && body?.response_format?.json_schema?.strict === true,
     })
+    if (capture.captureOnly === true) {
+      Object.assign(capture, { body: structuredClone(body), provider, endpoint, timeoutMs })
+      throw new Error('Diagnostic request capture only; no provider call.')
+    }
   }
 ${LLM_SERIALIZE_NEEDLE}`,
   )
@@ -334,6 +346,9 @@ ${LLM_SERIALIZE_NEEDLE}`,
       globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA.captureRequest = true
 ${CLASSIFIER_CALL_NEEDLE}`,
   )
+  if (process.env.DATARIVER_CLASSIFIER_PROBE_MODE === 'AB') {
+    instrumented += '\nexport { llmRequest, graphPlannerAssets }\n'
+  }
   instrumented = instrumented.replace(
     CLASSIFIER_VALUE_NEEDLE,
     `${CLASSIFIER_VALUE_NEEDLE}\n      Object.assign(globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA, { classification, rawValue: value })`,
@@ -859,6 +874,162 @@ function evidenceLine(attempts, persisted, discoveryBind, graphEvidence) {
   ].join('|')
 }
 
+function abRequests(body) {
+  if (body?.max_tokens !== 4096 || body?.temperature !== 0 || body?.stream !== false
+    || body?.reasoning_effort !== 'none' || body?.reasoning?.effort !== 'none'
+    || body?.response_format?.type !== 'json_schema'
+    || body?.response_format?.json_schema?.strict !== true
+    || typeof body?.model !== 'string' || !body.model
+    || Object.hasOwn(body, 'max_completion_tokens')) throw probeFailure('AB_REQUEST_CONTRACT')
+  const minimal = structuredClone(body)
+  minimal.response_format.json_schema.schema = {
+    type: 'object', additionalProperties: false, required: ['mode'],
+    properties: { mode: { type: 'string', enum: ['GENERAL', 'VECTOR', 'GRAPH'] } },
+  }
+  minimal.messages = [
+    { role: 'system', content: 'Classify the question. GENERAL means a conceptual explanation; VECTOR means internal asset search; GRAPH means internal relationship traversal. Return only one JSON object with the mode field.' },
+    { role: 'user', content: QUESTION },
+  ]
+  return [minimal, structuredClone(body)]
+}
+
+// Diagnostic validation only, against the actual captured schema's supported keywords.
+function abSchemaValid(value, schema) {
+  if (!schema || typeof schema !== 'object') return false
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+  if (!types.includes(type) || (schema.enum && !schema.enum.includes(value))) return false
+  if (type === 'object') {
+    return schema.additionalProperties === false
+      && schema.required.every((key) => Object.hasOwn(value, key))
+      && Object.keys(value).every((key) => Object.hasOwn(schema.properties, key)
+        && abSchemaValid(value[key], schema.properties[key]))
+  }
+  if (type === 'array') return (schema.maxItems === undefined || value.length <= schema.maxItems)
+    && (schema.minItems === undefined || value.length >= schema.minItems)
+    && value.every((item) => abSchemaValid(item, schema.items))
+  if (type === 'string') return (schema.maxLength === undefined || [...value].length <= schema.maxLength)
+    && (schema.minLength === undefined || [...value].length >= schema.minLength)
+  if (type === 'number') return Number.isFinite(value)
+    && (schema.minimum === undefined || value >= schema.minimum)
+    && (schema.maximum === undefined || value <= schema.maximum)
+  return type === 'null' || type === 'boolean'
+}
+
+function abClassification(a, b) {
+  if ([a.state, b.state].includes('UNAVAILABLE')) return 'INCONCLUSIVE_PROVIDER_FAILURE'
+  if (a.state === 'PASS' && b.state === 'PASS') return 'SMOKE_CONTEXT_DIFFERENCE'
+  if (a.state === 'PASS' && b.state === 'FAIL') return 'CLASSIFIER_SCHEMA_OR_PROMPT_INTERACTION'
+  if (a.state === 'FAIL' && b.state === 'FAIL') return 'PROVIDER_MODEL_STRUCTURED_OUTPUT_UNSUPPORTED_OR_BROKEN'
+  return 'INCONCLUSIVE_A_FAIL_B_PASS'
+}
+
+async function readProviderMetadata(provider, model) {
+  const identity = {
+    software: 'UNKNOWN', version: 'UNKNOWN',
+    model: /^[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,119}$/u.test(model)
+      && !(provider.token && model.includes(provider.token)) ? model : 'REDACTED',
+    model_identity_sha256: createHash('sha256').update(model).digest('hex'),
+    model_artifact_digest: 'UNKNOWN',
+  }
+  // Two bounded read-only Ollama metadata endpoints; no endpoint sweep or retries.
+  // A compatible gateway may expose these too: report the API identity, not a binary attestation.
+  const base = new URL(provider.url)
+  if (base.search || (base.pathname !== '/' && !/\/v1\/?$/u.test(base.pathname))) return identity
+  base.pathname = base.pathname.replace(/\/v1\/?$/u, '/').replace(/\/?$/u, '/')
+  const metadata = []
+  for (const path of ['api/version', 'api/tags']) {
+    let response
+    try {
+      response = await serverModule.providerTransport.fetch(new URL(path, base), {
+        method: 'GET', headers: { Authorization: `Bearer ${provider.token}` },
+        redirect: 'error', signal: AbortSignal.timeout(10_000),
+      })
+      if (!response.ok) { metadata.push(null); continue }
+      const chunks = []
+      let bytes = 0
+      for await (const chunk of response.body) {
+        bytes += chunk.length
+        if (bytes > 131_072) throw probeFailure('METADATA_SIZE')
+        chunks.push(chunk)
+      }
+      metadata.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    } catch {
+      metadata.push(null)
+    } finally {
+      await response?.body?.cancel().catch(() => undefined)
+    }
+  }
+  const [version, tags] = metadata
+  const selected = Array.isArray(tags?.models) ? tags.models.find((entry) => (
+    [entry.name, entry.model].includes(model)
+    || (!model.includes(':') && [entry.name, entry.model].includes(`${model}:latest`))
+  )) : null
+  if (typeof version?.version === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-.](?:rc|beta|alpha)\.?\d{1,4})?$/u.test(version.version)
+    && selected && typeof selected.digest === 'string' && /^(?:sha256:)?[a-f0-9]{64}$/u.test(selected.digest)) {
+    Object.assign(identity, {
+      software: 'OLLAMA_API', version: version.version, model_artifact_digest: selected.digest,
+    })
+  }
+  return identity
+}
+
+async function runClassifierAB() {
+  const principal = Object.freeze({ role: 'admin', subjectId: 'prep-general-rca' })
+  const capture = { providerCalls: 0, requests: [], captureRequest: false, captureOnly: true }
+  globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = capture
+  // Build B through the running Product's real chatRoute, stopping before any network call.
+  await serverModule.chatRoute(QUESTION, 'AUTO', principal, AbortSignal.timeout(130_000))
+    .catch(() => undefined)
+  if (!capture.body || !capture.provider || capture.endpoint !== '/chat/completions'
+    || capture.providerCalls !== 1 || capture.requests.length !== 1) throw probeFailure('AB_CAPTURE')
+  capture.captureOnly = false
+  const bodies = abRequests(capture.body)
+  const graphAssets = await serverModule.graphPlannerAssets(principal)
+  const provider = await readProviderMetadata(capture.provider, capture.body.model)
+  const results = []
+  let completionCalls = 0
+  for (const [index, body] of bodies.entries()) {
+    const result = { state: 'UNAVAILABLE', started_at: new Date().toISOString() }
+    try {
+      completionCalls += 1
+      const response = await serverModule.llmRequest(
+        capture.provider, capture.endpoint, body, capture.timeoutMs, AbortSignal.timeout(130_000),
+      )
+      const raw = response.choices?.[0]?.message?.content
+      const parsed = parsedRawValue(raw)
+      const schemaPass = parsed.state === 'PARSED' && abSchemaValid(parsed.value, body.response_format.json_schema.schema)
+      let semantic = 'NOT_CHECKED'
+      if (schemaPass) {
+        if (index === 0) semantic = parsed.value.mode === 'GENERAL' ? 'PASS' : 'FAIL'
+        else {
+          try {
+            semantic = serverModule.parseChatRouteDecision(raw, graphAssets).mode === 'GENERAL' ? 'PASS' : 'FAIL'
+          } catch { semantic = 'FAIL' }
+        }
+      }
+      const finish = boundedToken(response.choices?.[0]?.finish_reason, 'UNKNOWN')
+      Object.assign(result, {
+        state: schemaPass && finish === 'STOP' && (index === 0 || semantic === 'PASS') ? 'PASS' : 'FAIL',
+        finish, schema: schemaPass ? 'PASS' : 'FAIL', semantic,
+        usage: classifierUsage(response, raw), output: longOutputEvidence(raw),
+        response_model: modelEvidence(response.model),
+      })
+    } catch (error) {
+      result.error = SAFE_PROVIDER_CODES.has(error?.code) ? error.code : 'OTHER'
+    }
+    result.completed_at = new Date().toISOString()
+    results.push(result)
+  }
+  if (completionCalls !== 2) throw probeFailure('AB_CALL_COUNT')
+  process.stdout.write([
+    OUTPUT_PREFIX, 'mode=AB', `ab=${abClassification(...results)}`, 'completion_calls=2',
+    `request=${requestShape(capture.requests[0])}`, `provider=${JSON.stringify(provider)}`,
+    `B_request_sha256=${createHash('sha256').update(JSON.stringify(bodies[1])).digest('hex')}`,
+    `A=${JSON.stringify(results[0])}`, `B=${JSON.stringify(results[1])}`,
+  ].join('|') + '\n')
+}
+
 async function main() {
   const persisted = await readPersistedEvidence()
   const [source, stateStoreSource] = await Promise.all([
@@ -881,6 +1052,7 @@ async function main() {
     ),
   })
   serverModule.createPocServer({ stateStore })
+  if (process.env.DATARIVER_CLASSIFIER_PROBE_MODE === 'AB') return runClassifierAB()
   const graphEvidence = await auditManagedGraphs(persisted.managedGraphRows)
 
   globalThis.__DATARIVER_GENERAL_CLASSIFIER_RCA = { providerCalls: 0, requests: [], captureRequest: false }

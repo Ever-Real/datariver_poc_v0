@@ -94,3 +94,42 @@ origin, connection lifecycle or transaction state. No request/log correlation wa
 Remaining: PREP long-output line plus serving software/model/version, and one correlated failing
 browser request with server/PostgreSQL/Neo4j evidence. Only then can the classifier/backend fix,
 new Product/Release decision, and Actual PREP GENERAL/GRAPH/preview acceptance be completed.
+
+## Follow-up: operator-reported repetition and bounded A/B
+
+The next supplied PREP result reports the same GEMMA model identity hash on all three calls,
+4096 completion tokens, LENGTH, 6150 visible bytes, EXPECTED_DELIMITER and repeated-pattern=true.
+Both excerpts begin/end around `{"mode":"GENERAL"`. The remaining classifier hypotheses are
+provider/model structured-output failure versus current schema/prompt interaction. Neither is
+declared proven by the repetition alone.
+
+Run the existing probe with `--ab` from the separate PREP diagnostic checkout. It captures the
+running Product's exact B request before transport, then sends exactly two direct completions:
+A has only the mode enum and a short classification prompt; B retains the captured schema,
+messages and authorized capability context byte for byte. Both retain model, 4096 budget,
+temperature zero, non-streaming output and both reasoning-disable controls. No retry is automatic.
+The default three-call probe is not run in this mode, and the Neo4j audit is skipped.
+
+The output uses the requested A/B classification matrix. Transport/authentication/timeout failures
+are INCONCLUSIVE_PROVIDER_FAILURE; A-fail/B-pass is INCONCLUSIVE_A_FAIL_B_PASS. A's PASS concerns
+schema/STOP, with semantic outcome separately reported; B also requires the existing Product parser
+and the expected GENERAL result. Diagnostic schema validation does not change Product validation.
+
+At most two metadata GETs use the same configured provider origin/prefix and transport, each with
+a 10-second deadline and 128-KiB response ceiling. The documented Ollama
+[`/api/version`](https://docs.ollama.com/api-reference/get-version) and
+[`/api/tags`](https://docs.ollama.com/api/tags) expose a version and selected model digest.
+Matching responses are labeled OLLAMA_API, not proof of a particular backend binary behind a
+compatible gateway. Other providers remain UNKNOWN; no discovery sweep is performed. Output
+contains only the selected model identifier/digest and bounded/redacted completion evidence.
+
+Local verification: **10 diagnostic tests passed**, including actual Product request extraction,
+zero network calls during capture, identical controls, B preservation, exactly two completions,
+metadata bounds, secret redaction and inconclusive transport failure. Bash and embedded/temporary
+Node module syntax pass. This is not an Actual PREP A/B result.
+
+The existing Chrome PREP tab at `100.84.101.79:39083` shows ERR_CONNECTION_TIMED_OUT, and the
+current bounded connection check also timed out before any HTTP response. No remote Orca host is
+connected. The graph selection request has therefore not been reproduced, and no Web log was
+available to correlate. This reachability failure does not establish the earlier graph connection
+error's cause. No Product, Release, deployment, graph pointer, DB or Neo4j state is changed.
