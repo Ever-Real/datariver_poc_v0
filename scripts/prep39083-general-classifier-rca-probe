@@ -92,6 +92,7 @@ set +e
 probe_output="$(
   docker exec -i "$WEB_CONTAINER_ID" node --input-type=module 2>/dev/null <<'NODE'
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -320,6 +321,7 @@ async function prepareTemporaryServer(source) {
       nestedReasoningEffort: body?.reasoning?.effort,
       temperature: body?.temperature,
       modelPresent: typeof body?.model === 'string' && Boolean(body.model),
+      model: body?.model,
       strictJsonSchema: body?.response_format?.type === 'json_schema'
         && body?.response_format?.json_schema?.strict === true,
     })
@@ -439,6 +441,99 @@ function causeChain(error) {
     current = current.cause
   }
   return values
+}
+
+// Only public route vocabulary and JSON punctuation survive in output excerpts.
+// Never print provider text, arbitrary identifiers, numeric values or exception messages.
+const ROUTE_FIELDS = new Set([
+  'mode', 'confidence', 'intent', 'primary_concepts', 'secondary_concepts',
+  'relation_intent', 'entity_type_hints', 'selected_graph_asset',
+])
+const EXCERPT_WORDS = new Set([
+  ...ROUTE_FIELDS, 'GENERAL', 'VECTOR', 'GRAPH', 'GENERAL_CONVERSATION',
+  'CATALOG_INVENTORY', 'EXACT_METADATA', 'SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY',
+  'AMBIGUOUS', 'UPSTREAM', 'DOWNSTREAM', 'DEPENDENCY', 'IMPACT', 'PATH',
+  'PROVENANCE', 'DATA_FLOW', 'COMMON_UPSTREAM', 'COMMON_DOWNSTREAM',
+  'DATASET', 'TABLE', 'VIEW', 'COLUMN', 'TAG', 'GLOSSARY_TERM', 'DOMAIN',
+  'KNOWLEDGE_ASSET', 'null', 'true', 'false',
+])
+
+function redactedExcerpt(value) {
+  return value.replace(/[\p{L}\p{N}_-]+/gu, (word) => (
+    EXCERPT_WORDS.has(word) ? word : 'x'.repeat([...word].length)
+  )).replace(/[^xA-Za-z_{}\[\]":,.\s\\`<>/]/gu, 'x').replace(/\s/gu, ' ')
+}
+
+function modelEvidence(value) {
+  if (typeof value !== 'string' || !value) return { family: 'UNKNOWN', sha256: 'NONE' }
+  const family = ['gemma', 'qwen', 'gpt', 'llama', 'deepseek', 'mistral', 'phi']
+    .find((name) => new RegExp(`(?:^|[/])${name}`, 'iu').test(value))
+  return { family: family?.toUpperCase() || 'OTHER', sha256: createHash('sha256').update(value).digest('hex') }
+}
+
+function longOutputEvidence(rawValue) {
+  if (typeof rawValue !== 'string') return { state: 'NON_STRING' }
+  // Output-size analysis is bounded even if an upstream provider ignores max_tokens.
+  const value = rawValue.slice(0, 100_000)
+  const trimmed = value.trim()
+  const characters = [...rawValue.trim()]
+  let parse = 'VALID'
+  let position = 'NONE'
+  try {
+    JSON.parse(value)
+  } catch (error) {
+    const message = String(error?.message || '')
+    const offset = message.match(/at position (\d+)(?: \(line \d+ column \d+\))?$/u)
+    position = offset ? boundedCount(Number(offset[1])) : 'U'
+    parse = /^Unterminated string in JSON/u.test(message) ? 'UNTERMINATED_STRING'
+      : /^Unexpected end of JSON input/u.test(message) ? 'UNEXPECTED_END'
+        : /^Unexpected non-whitespace character after JSON/u.test(message) ? 'TRAILING_CONTENT'
+          : /^Expected (?:property name|double-quoted property name)/u.test(message) ? 'EXPECTED_PROPERTY'
+            : /^Expected /u.test(message) ? 'EXPECTED_DELIMITER'
+              : /^(?:No number after minus sign|Unterminated fractional number|Exponent part is missing a number|Unexpected number)/u.test(message) ? 'INVALID_NUMBER'
+                : 'UNEXPECTED_TOKEN'
+  }
+  let repeatedPattern = false
+  for (let width = 1; width <= 160; width += 1) {
+    const repeats = Math.max(3, Math.ceil(48 / width))
+    for (let index = 0; index + width * repeats <= value.length; index += 1) {
+      const pattern = value.slice(index, index + width)
+      if (value.startsWith(pattern.repeat(repeats), index)) {
+        repeatedPattern = true
+        break
+      }
+    }
+    if (repeatedPattern) break
+  }
+  const fieldOccurrences = [...value.matchAll(/"([a-z_]+)"\s*:/gu)]
+    .map((match) => match[1]).filter((name) => ROUTE_FIELDS.has(name))
+  const longest = (expression) => [...value.matchAll(expression)]
+    .reduce((maximum, match) => Math.max(maximum, [...match[0]].length), 0)
+  const boundary = (character) => character === undefined ? 'EMPTY'
+    : '{}[]"'.includes(character) ? character
+      : /[0-9-]/u.test(character) ? 'NUMBER'
+        : /[\p{L}]/u.test(character) ? 'TEXT' : 'OTHER'
+  return {
+    bytes: Buffer.byteLength(rawValue, 'utf8'),
+    chars: [...rawValue].length,
+    analysis: rawValue.length > value.length ? 'TRUNCATED_100K' : 'COMPLETE',
+    prefix_redacted: redactedExcerpt(characters.slice(0, 160).join('')),
+    suffix_redacted: redactedExcerpt(characters.slice(-160).join('')),
+    first: boundary(characters[0]),
+    last: boundary(characters.at(-1)),
+    opening: trimmed.startsWith('{') ? 'OBJECT' : trimmed.startsWith('[') ? 'ARRAY' : 'OTHER',
+    code_fence: value.includes('```'),
+    reasoning_marker: /<\/?(?:think|analysis)>|\b(?:let me|let's think|we need to|first,? I)\b/iu.test(value),
+    repeated_pattern: repeatedPattern,
+    repeated_route_keys: fieldOccurrences.length - new Set(fieldOccurrences).size,
+    adjacent_objects: [...value.matchAll(/\}\s*\{/gu)].length,
+    last_field_candidate: fieldOccurrences.at(-1) || 'NONE',
+    longest_number_run: longest(/[-+]?\d[\d.eE+-]*/gu),
+    longest_whitespace_run: longest(/\s+/gu),
+    longest_string_token: longest(/"(?:[^"\\]|\\.)*(?:"|$)/gu),
+    parse,
+    parse_position: position,
+  }
 }
 
 function parsedRawValue(rawValue) {
@@ -565,6 +660,9 @@ function classifierEvidence(route, routeError, capture, request) {
     point: failurePoint(subtype),
     request: requestShape(request),
     usage: classifierUsage(classification, rawValue),
+    longOutput: longOutputEvidence(rawValue),
+    requestModel: modelEvidence(request?.model),
+    responseModel: modelEvidence(classification?.model),
   }
 }
 
@@ -752,6 +850,9 @@ function evidenceLine(attempts, persisted, discoveryBind, graphEvidence) {
     `run1=${attemptToken(attempts[0])}`,
     `run2=${attemptToken(attempts[1])}`,
     `run3=${attemptToken(attempts[2])}`,
+    ...attempts.map((attempt, index) => `long${index + 1}=${JSON.stringify(attempt.longOutput)}`),
+    `request_model=${JSON.stringify(attempts[0].requestModel)}`,
+    `response_models=${JSON.stringify(attempts.map((attempt) => attempt.responseModel))}`,
     `graphs=${graphEvidence}`,
     `constraint=${persisted.constraint}`,
     `discovery_bind=${discoveryBind}`,
