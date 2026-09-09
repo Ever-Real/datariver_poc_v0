@@ -85,6 +85,21 @@ PREP_39083 = Target(
         bind_host="0.0.0.0",
         validation_only=False,
     )
+PREP_39091 = Target(
+        name="prep39091",
+        project="datariver-prep39091",
+        port=39091,
+        network="datariver-prep39091-services",
+        state_ports={
+            "POC_POSTGRES_HOST_PORT": "35432",
+            "POC_REDIS_PORT": "36379",
+            "POC_NEO4J_HTTP_PORT": "37475",
+        },
+        kafka_client="datariver-prep39091-mcl-v1",
+        kafka_group="datariver-prep39091-mcl-capture-v1",
+        bind_host="0.0.0.0",
+        validation_only=True,
+    )
 
 
 def require(condition: bool, message: str) -> None:
@@ -283,6 +298,16 @@ def replace_origin_port(value: str, port: int) -> str:
     return urlunsplit((parsed.scheme, f"{host}:{port}", "", "", ""))
 
 
+def deployment_environment(path: Path, profile: Target, public_origin: str | None) -> tuple[dict[str, str], str]:
+    values, source_hash = env_preflight(path)
+    if public_origin is not None:
+        # A new host's browser origin is an explicit runtime override, never an env-file edit.
+        normalized = replace_origin_port(public_origin, profile.port)
+        require(public_origin.rstrip("/") == normalized, "PUBLIC_ORIGIN_TARGET_MISMATCH")
+        values["POC_PUBLIC_ORIGIN"] = normalized
+    return values, source_hash
+
+
 def source_image(head: str) -> str:
     return f"datariver-dev-deploy-source:{head[:12]}"
 
@@ -348,6 +373,10 @@ def write_derived_environment(
     generated_keys = read_json(ENV_CONTRACT).get("ownership", {}).get("GENERATED", {})
     require(isinstance(generated_keys, dict), "ENV_GENERATED_CONTRACT_INVALID")
     for key, length in generated_keys.items():
+        if profile == PREP_39091:
+            # New project credentials belong to its own state, even if the operator
+            # copied the old PREP env and its runtime credential sidecar unchanged.
+            values.pop(key, None)
         if values.get(key):
             continue
         existing = generated.get(key)
@@ -710,14 +739,14 @@ def unexpected_5xx(web: Mapping[str, Any], since: str) -> bool:
     return any(pattern.search(completed.stdout + completed.stderr) for pattern in patterns)
 
 
-def deploy(profile: Target, env_file: Path, supplied_password: Path | None) -> None:
+def deploy(profile: Target, env_file: Path, supplied_password: Path | None, public_origin: str | None = None) -> None:
     head, _ = validate_source(clean=True)
     image, image_id = require_built_image(head)
     ignored_project = None if profile.validation_only else profile.project
     before = protected_state(ignore_project=ignored_project)
-    source, source_hash = env_preflight(env_file)
+    source, source_hash = deployment_environment(env_file, profile, public_origin)
     state = state_kind(profile)
-    if profile.validation_only:
+    if profile == VALIDATION_39081:
         require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
     volume_before = state_volume_identity(profile)
     require_target_port_ownership(profile)
@@ -790,6 +819,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("command", choices=("check-source", "preflight", "build", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--admin-password-file", type=Path)
+    parser.add_argument("--port", type=int, choices=(39083, 39091), default=39083,
+                        help="Deployment port/project; default 39083, separate installation 39091")
+    parser.add_argument("--public-origin", help="Browser origin on a new host, including the selected port")
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args()
 
@@ -798,12 +830,16 @@ def main() -> int:
     arguments = parse_arguments()
     try:
         head, count = validate_source(clean=arguments.command in {"build", "deploy"})
-        profile = VALIDATION_39081 if arguments.command == "validate-39081" else PREP_39083
+        if arguments.command == "validate-39081":
+            require(arguments.port == 39083, "VALIDATION_PORT_OPTION_CONFLICT")
+            profile = VALIDATION_39081
+        else:
+            profile = PREP_39091 if arguments.port == 39091 else PREP_39083
         if arguments.command == "check-source":
             print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|head={head}|tracked={count}|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
             return 0
         if arguments.command == "preflight":
-            values, before = env_preflight(arguments.env_file)
+            values, before = deployment_environment(arguments.env_file, profile, arguments.public_origin)
             require(sha256_file(arguments.env_file) == before, "PREP_ENV_CHANGED")
             print(preflight_line(values))
             return 0
@@ -812,7 +848,7 @@ def main() -> int:
             print(f"SOURCE_BUILD|status=PASS|branch={BRANCH}|head={head}|image={image}|image_digest={image_id}|no_cache=Y|artifact_dependency=NONE")
             return 0
         require(arguments.apply, "DEPLOY_REQUIRES_APPLY")
-        deploy(profile, arguments.env_file, arguments.admin_password_file)
+        deploy(profile, arguments.env_file, arguments.admin_password_file, arguments.public_origin)
         print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS|p39080=UNTOUCHED|p39083={'DEPLOYED' if not profile.validation_only else 'UNTOUCHED'}")
         return 0
     except DeployError as error:
