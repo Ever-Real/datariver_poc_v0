@@ -194,35 +194,120 @@ try {
   result.auto_chat = 'PASS'
   }
 
-  // Bounded positive target selection, across pages; do not assert on an accidental first25.
+  // Read the published graph once, both for preview acceptance and target discovery.
+  check = 'KNOWLEDGE_GRAPH_PREVIEW'
+  const published = (Array.isArray(managedAssets.body?.items) ? managedAssets.body.items : [])
+    .filter((item) => ['READY', 'ACTIVE'].includes(item?.status) && typeof item?.active_release_id === 'string'
+      && item.active_release_id && item?.projection_state === 'READY')
+  const candidate = published.find((item) => item.graph_type === 'LINEAGE' && item.is_default)
+    || published.find((item) => item.graph_type === 'LINEAGE') || published[0]
+  if (!candidate) fail('KNOWLEDGE_GRAPH_NOT_PUBLISHED')
+  const encodedGraph = encodeURIComponent(candidate.id)
+  const encodedRelease = encodeURIComponent(candidate.active_release_id)
+  const versions = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets/${encodedGraph}/versions`, {
+    headers: { Cookie: cookie },
+  })
+  if (!(Array.isArray(versions.body?.items)
+    && versions.body.items.some((item) => item?.is_current === true && item?.status === 'READY'))) {
+    fail('KNOWLEDGE_GRAPH_VERSION_NOT_PUBLISHED')
+  }
+  // The existing visualization API selects a connected root instead of the first N nodes.
+  const snapshot = await jsonRequest(
+    `${origin}/poc-api/knowledge/graphs/${encodedGraph}/releases/${encodedRelease}/snapshot?maximum_nodes=200&maximum_edges=400&maximum_hops=2&direction=BOTH`,
+    { headers: { Cookie: cookie } },
+  )
+  if (snapshot.body?.release?.id !== candidate.active_release_id
+    || !Array.isArray(snapshot.body?.nodes) || !Array.isArray(snapshot.body?.edges)) {
+    fail('KNOWLEDGE_GRAPH_PREVIEW_CONTRACT')
+  }
+  result.knowledge_graph_preview = 'PASS'
+
   check = 'CATALOG_LINEAGE'
   let table
   let cursor
-  let lineageReads = 0
   let targetLineage
+  const selection = result.target_selection = {
+    status: 'SEARCHING', source: null, catalog_page_limit: 10, lineage_read_limit: 20,
+    catalog_pages: 0, graph_candidates: 0, catalog_candidates: 0, lineage_reads: 0,
+    catalog_complete: false, lineage_truncated: false, self_loops: 0, read_only: true,
+  }
+  const checked = new Set()
+  const isTable = (item) => item?.dataset_kind === 'TABLE' && typeof item?.id === 'string'
+    && typeof item?.name === 'string' && item.name.trim()
+  const catalogItems = async (query) => {
+    const catalog = await jsonRequest(`${origin}/poc-api/datahub/catalog?${query}`, { headers: { Cookie: cookie } })
+    if (!Array.isArray(catalog.body?.items) || !catalog.body?.page
+      || ![null, undefined].includes(catalog.body.page.next_cursor)
+        && typeof catalog.body.page.next_cursor !== 'string') fail('CATALOG_READBACK_CONTRACT')
+    return catalog.body
+  }
+  const tryTable = async (item, source) => {
+    if (table || checked.has(item.id) || selection.lineage_reads >= selection.lineage_read_limit) return
+    checked.add(item.id)
+    selection.lineage_reads += 1
+    const lineage = await jsonRequest(`${origin}/poc-api/datahub/lineage?${new URLSearchParams({ urn: item.id, direction: 'DOWNSTREAM', depth: '1' })}`, { headers: { Cookie: cookie } })
+    const body = lineage.body
+    if (body?.center_asset_id !== item.id || !Array.isArray(body?.edges)
+      || !Array.isArray(body?.nodes)) fail('LINEAGE_READBACK_CONTRACT')
+    const nodes = new Set(body.nodes.map((node) => node?.id))
+    if (!nodes.has(item.id) || body.edges.some((edge) => edge?.source_asset_id !== item.id
+      || typeof edge?.target_asset_id !== 'string' || !nodes.has(edge.target_asset_id))) fail('LINEAGE_READBACK_CONTRACT')
+    selection.lineage_truncated ||= body.truncated === true
+    selection.self_loops += body.edges.filter((edge) => edge.target_asset_id === item.id).length
+    if (body.edges.some((edge) => edge.target_asset_id !== item.id)) {
+      table = item
+      targetLineage = body
+      selection.source = source
+    }
+  }
+
+  // Graph identities are hints only: confirm current authorized Catalog TABLEs and live lineage.
+  const graphNodes = new Map(snapshot.body.nodes.map((node) => [node.id, node]))
+  const hints = candidate.graph_type !== 'LINEAGE' ? [] : [...new Set(snapshot.body.edges
+    .filter((edge) => edge.source_id !== edge.target_id)
+    .flatMap((edge) => edge.edge_type === 'DOWNSTREAM'
+      ? [edge.source_id, edge.target_id] : [edge.target_id, edge.source_id])
+    .map((id) => graphNodes.get(id)?.properties?.external_urn || graphNodes.get(id)?.properties?.dataset_urn || id)
+    .filter((id) => typeof id === 'string' && id.startsWith('urn:li:dataset:') && id.length <= 4096))].slice(0, 100)
+  for (let offset = 0; offset < hints.length && !table
+    && selection.lineage_reads < selection.lineage_read_limit; offset += 10) {
+    const batch = hints.slice(offset, offset + 10)
+    const query = new URLSearchParams({ asset_type: 'DATASET', limit: '100' })
+    for (const id of batch) query.append('urn', id)
+    const catalog = await catalogItems(query)
+    const byId = new Map(catalog.items.filter(isTable).map((item) => [item.id, item]))
+    selection.graph_candidates += byId.size
+    for (const id of batch) if (byId.has(id)) await tryTable(byId.get(id), 'PUBLISHED_LINEAGE')
+  }
+
+  const candidates = new Map()
   const seenCursors = new Set()
-  for (let page = 0; page < 10 && !table; page += 1) {
+  for (let page = 0; page < selection.catalog_page_limit && !table
+    && selection.lineage_reads < selection.lineage_read_limit; page += 1) {
     const query = new URLSearchParams({ asset_type: 'DATASET', limit: '100' })
     if (cursor) query.set('cursor', cursor)
-    const catalog = await jsonRequest(`${origin}/poc-api/datahub/catalog?${query}`, { headers: { Cookie: cookie } })
-    const candidates = (Array.isArray(catalog.body?.items) ? catalog.body.items : [])
-      .filter((item) => item?.dataset_kind === 'TABLE' && typeof item?.id === 'string'
-        && typeof item?.name === 'string' && item.name.trim())
-    for (const candidate of candidates) {
-      if (lineageReads >= 20) break
-      lineageReads += 1
-      const lineage = await jsonRequest(`${origin}/poc-api/datahub/lineage?${new URLSearchParams({ urn: candidate.id, direction: 'DOWNSTREAM', depth: '1' })}`, { headers: { Cookie: cookie } })
-      if (lineage.body?.center_asset_id !== candidate.id || !Array.isArray(lineage.body?.edges)) fail('LINEAGE_READBACK_CONTRACT')
-      if (lineage.body.edges.length) { table = candidate; targetLineage = lineage.body; break }
-    }
-    if (lineageReads >= 20 && !table) break
-    cursor = catalog.body?.page?.next_cursor
-    if (!cursor) break
+    const catalog = await catalogItems(query)
+    selection.catalog_pages += 1
+    for (const item of catalog.items.filter(isTable)) candidates.set(item.id, item)
+    cursor = catalog.page.next_cursor
+    if (!cursor) { selection.catalog_complete = true; break }
     if (seenCursors.has(cursor)) fail('CATALOG_CURSOR_STALLED')
     seenCursors.add(cursor)
   }
-  if (!table) fail('NO_TEST_DATA_GRAPH_RELATION')
-  result.target_selection = { catalog_page_limit: 10, lineage_reads: lineageReads, read_only: true }
+  selection.catalog_candidates = candidates.size
+  const remaining = [...candidates.values()].filter((item) => !checked.has(item.id))
+  const sampleSize = Math.min(remaining.length, selection.lineage_read_limit - selection.lineage_reads)
+  // Spread the bounded fallback across collected pages, not just the first alphabetical entries.
+  for (let index = 0; index < sampleSize && !table; index += 1) {
+    const offset = sampleSize === 1 ? 0 : Math.floor(index * (remaining.length - 1) / (sampleSize - 1))
+    await tryTable(remaining[offset], 'CATALOG_SAMPLE')
+  }
+  if (!table) {
+    selection.status = selection.catalog_complete && !selection.lineage_truncated
+      && [...candidates.keys()].every((id) => checked.has(id)) ? 'NO_TEST_DATA' : 'SEARCH_LIMIT'
+    fail(selection.status === 'NO_TEST_DATA' ? 'NO_TEST_DATA_GRAPH_RELATION' : 'GRAPH_TARGET_SEARCH_LIMIT')
+  }
+  selection.status = 'FOUND'
   for (const [name, mode, expected, question] of [
     ['graph_chat', 'GRAPH', 'GRAPH', `${table.name} 테이블을 변경하면 어떤 테이블이 영향을 받지?`],
     ['auto_graph', 'AUTO', 'GRAPH', `${table.name} 테이블의 downstream 변경 영향과 데이터 계보를 분석해줘.`],
@@ -252,29 +337,6 @@ try {
     result[name] = 'PASS'
   }
 
-  check = 'KNOWLEDGE_GRAPH_PREVIEW'
-  const candidate = (Array.isArray(managedAssets.body?.items) ? managedAssets.body.items : [])
-    .find((item) => ['READY', 'ACTIVE'].includes(item?.status) && typeof item?.active_release_id === 'string'
-      && item.active_release_id && item?.projection_state === 'READY')
-  if (!candidate) fail('KNOWLEDGE_GRAPH_NOT_PUBLISHED')
-  const encodedGraph = encodeURIComponent(candidate.id)
-  const encodedRelease = encodeURIComponent(candidate.active_release_id)
-  const versions = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets/${encodedGraph}/versions`, {
-    headers: { Cookie: cookie },
-  })
-  if (!(Array.isArray(versions.body?.items)
-    && versions.body.items.some((item) => item?.is_current === true && item?.status === 'READY'))) {
-    fail('KNOWLEDGE_GRAPH_VERSION_NOT_PUBLISHED')
-  }
-  const snapshot = await jsonRequest(
-    `${origin}/poc-api/knowledge/graphs/${encodedGraph}/releases/${encodedRelease}/snapshot?maximum_nodes=200`,
-    { headers: { Cookie: cookie } },
-  )
-  if (snapshot.body?.release?.id !== candidate.active_release_id
-    || !Array.isArray(snapshot.body?.nodes) || !Array.isArray(snapshot.body?.edges)) {
-    fail('KNOWLEDGE_GRAPH_PREVIEW_CONTRACT')
-  }
-  result.knowledge_graph_preview = 'PASS'
   }
   check = 'RECEIPT_WRITE'
   result.accepted_at = new Date().toISOString()
@@ -282,6 +344,7 @@ try {
   process.stdout.write(`${JSON.stringify(result)}\n`)
 } catch (error) {
   const code = safeCode(error?.message) || 'FOCUSED_ACCEPTANCE_FAILED'
+  if (result.target_selection?.status === 'SEARCHING') result.target_selection.status = 'FAILED'
   const failedKey = {
     K9: 'k9_semantic', MCL: 'mcl_current', AUTO_GENERAL_CHAT: 'auto_chat',
     GRAPH_CHAT: 'graph_chat', AUTO_GRAPH: 'auto_graph', VECTOR_CHAT: 'vector_chat',
