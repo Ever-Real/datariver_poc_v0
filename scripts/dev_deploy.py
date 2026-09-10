@@ -394,6 +394,26 @@ def compose_quote(value: str) -> str:
     return "'" + value.replace("'", "\\'") + "'"
 
 
+def read_derived_env(path: Path) -> dict[str, str]:
+    """Read only the literal format emitted by write_derived_environment.
+
+    Compose's --project-name overrides COMPOSE_PROJECT_NAME during config
+    interpolation, so the operator-env parser cannot verify this stored identity.
+    Operator .env parsing and precedence remain unchanged.
+    """
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, quoted = line.partition("=")
+        require(separator == "=" and ENV_KEY.fullmatch(key) is not None
+                and key not in values, "DERIVED_ENV_FORMAT_INVALID")
+        require(len(quoted) >= 2 and quoted.startswith("'") and quoted.endswith("'"),
+                "DERIVED_ENV_FORMAT_INVALID")
+        value = quoted[1:-1].replace("\\'", "'")
+        require(compose_quote(value) == quoted, "DERIVED_ENV_FORMAT_INVALID")
+        values[key] = value
+    return values
+
+
 def deployment_kafka_values(profile: Target, generated: Mapping[str, Any]) -> dict[str, str]:
     suffix = ""
     if profile == DEV_39091:
@@ -723,7 +743,7 @@ def check_providers(profile: Target) -> None:
     require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
             and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "DERIVED_ENV_INSECURE")
     before = sha256_file(derived)
-    values = read_env(derived)
+    values = read_derived_env(derived)
     require(values.get("COMPOSE_PROJECT_NAME") == profile.project and values.get("POC_PORT") == str(profile.port), "DERIVED_TARGET_MISMATCH")
     reference = values.get("DEV_DEPLOY_SOURCE_IMAGE", "")
     require(reference.startswith("datariver-dev-deploy-source:"), "PROVIDER_CHECK_IMAGE_INVALID")
