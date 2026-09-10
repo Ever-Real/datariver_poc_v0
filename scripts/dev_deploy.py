@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from build_progress import run_build
+from deploy_progress import DeployProgress, capture_smoke
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,13 +117,17 @@ def require(condition: bool, message: str) -> None:
 def run(
     arguments: Sequence[str], *, cwd: Path = ROOT,
     environment: Mapping[str, str] | None = None,
+    progress: DeployProgress | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if environment is None and list(arguments[:2]) == ["docker", "compose"]:
         environment = subprocess_environment({})
-    completed = subprocess.run(
-        list(arguments), cwd=cwd, env=None if environment is None else dict(environment),
-        text=True, capture_output=True, check=False,
-    )
+    if progress is not None:
+        completed = capture_smoke(arguments, cwd=cwd, environment=environment, progress=progress)
+    else:
+        completed = subprocess.run(
+            list(arguments), cwd=cwd, env=None if environment is None else dict(environment),
+            text=True, capture_output=True, check=False,
+        )
     if completed.returncode:
         raise DeployError(f"COMMAND_FAILED:{Path(arguments[0]).name}:{arguments[-1]}")
     return completed
@@ -800,7 +806,8 @@ def running_web(profile: Target, image: str, image_id: str) -> dict[str, Any]:
     return web
 
 
-def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password: Path, request_origin: str, head: str) -> dict[str, Any]:
+def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password: Path, request_origin: str, head: str,
+                   progress: DeployProgress | None = None) -> dict[str, Any]:
     receipt_root = RUNTIME_ROOT / profile.name
     receipt_root.mkdir(parents=True, exist_ok=True)
     common = [
@@ -810,37 +817,41 @@ def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password
         "--volume", f"{password}:/run/dev-deploy-admin-password:ro", image, "node",
     ]
     # Cheap readiness first, six canonical gates once, then route/preview acceptance.
-    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "readiness",
-         "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
-         "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
-         "--output", "/receipts/readiness.json"))
-    readiness = read_json(receipt_root / "readiness.json")
-    require(readiness.get("mcl_current") == "READY" and readiness.get("k9_semantic") == "READY",
-            "FOCUSED_READINESS_NOT_READY")
-    smoke_output = "/receipts/smoke.json"
-    smoke_failure = "/receipts/smoke-failure.json"
-    run((*common, "/source/scripts/smoke_prep39083.mjs", "--origin", "http://127.0.0.1:8080",
-         "--request-origin", request_origin, "--username", ADMIN_USERNAME,
-         "--password-file", "/run/dev-deploy-admin-password", "--output", smoke_output,
-         "--failure-output", smoke_failure, "--smoke-product-sha", head, "--k9-mode", "required"))
-    smoke = read_json(receipt_root / "smoke.json")
-    require(
-        smoke.get("datahub") == "PASS" and smoke.get("llm_general") == "PASS"
-        and smoke.get("mcl_current_capture") == "READY"
-        and smoke.get("mcl_history_completeness") in {"EXACT", "DEGRADED_GAP"}
-        and (smoke.get("mcl_history_completeness") != "DEGRADED_GAP" or smoke.get("mcl_history_gap_reason") == "RETENTION_EXPIRED")
-        and smoke.get("semantic_index") == "PASS",
-        "FULL_SMOKE_NOT_READY",
-    )
-    run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "features",
-         "--canonical-smoke", smoke_output, "--source-sha", head,
-         "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
-         "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
-         "--output", "/receipts/features.json"))
-    features = read_json(receipt_root / "features.json")
-    require(all(features.get(key) == "PASS" for key in (
-        "auto_chat", "graph_chat", "auto_graph", "auto_search", "vector_chat", "knowledge_graph_preview")),
-        "FEATURE_ACCEPTANCE_NOT_READY")
+    stage = progress.stage if progress is not None else lambda name: nullcontext()
+    with stage("K9_MCL_READINESS"):
+        run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "readiness",
+             "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
+             "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
+             "--output", "/receipts/readiness.json"))
+        readiness = read_json(receipt_root / "readiness.json")
+        require(readiness.get("mcl_current") == "READY" and readiness.get("k9_semantic") == "READY",
+                "FOCUSED_READINESS_NOT_READY")
+    with stage("SMOKE"):
+        smoke_output = "/receipts/smoke.json"
+        smoke_failure = "/receipts/smoke-failure.json"
+        run((*common, "/source/scripts/smoke_prep39083.mjs", "--origin", "http://127.0.0.1:8080",
+             "--request-origin", request_origin, "--username", ADMIN_USERNAME,
+             "--password-file", "/run/dev-deploy-admin-password", "--output", smoke_output,
+             "--failure-output", smoke_failure, "--smoke-product-sha", head, "--k9-mode", "required"), progress=progress)
+        smoke = read_json(receipt_root / "smoke.json")
+        require(
+            smoke.get("datahub") == "PASS" and smoke.get("llm_general") == "PASS"
+            and smoke.get("mcl_current_capture") == "READY"
+            and smoke.get("mcl_history_completeness") in {"EXACT", "DEGRADED_GAP"}
+            and (smoke.get("mcl_history_completeness") != "DEGRADED_GAP" or smoke.get("mcl_history_gap_reason") == "RETENTION_EXPIRED")
+            and smoke.get("semantic_index") == "PASS",
+            "FULL_SMOKE_NOT_READY",
+        )
+    with stage("FEATURES"):
+        run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "features",
+             "--canonical-smoke", smoke_output, "--source-sha", head,
+             "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
+             "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
+             "--output", "/receipts/features.json"))
+        features = read_json(receipt_root / "features.json")
+        require(all(features.get(key) == "PASS" for key in (
+            "auto_chat", "graph_chat", "auto_graph", "auto_search", "vector_chat", "knowledge_graph_preview")),
+            "FEATURE_ACCEPTANCE_NOT_READY")
     return {"smoke": smoke, "features": features}
 
 
@@ -855,70 +866,98 @@ def unexpected_5xx(web: Mapping[str, Any], since: str) -> bool:
 
 
 def deploy(profile: Target, env_file: Path, supplied_password: Path | None, public_origin: str | None = None) -> None:
-    head, _ = validate_source(clean=True)
-    image, image_id = require_built_image(head)
-    ignored_project = None if profile.validation_only else profile.project
-    before = protected_state(ignore_project=ignored_project)
-    source, source_hash = deployment_environment(env_file, profile, public_origin)
-    state = state_kind(profile)
-    if profile == VALIDATION_39081:
-        require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
-    volume_before = state_volume_identity(profile)
-    require_target_port_ownership(profile)
-    runtime_file = env_file.with_name(env_file.name + ".runtime")
-    preserved = {}
-    if runtime_file.is_file() and not profile.validation_only:
-        private_env_file(runtime_file)
-        preserved = read_env(runtime_file)
-    derived, values = write_derived_environment(source, profile, head, state=state, image=image, preserved_runtime=preserved)
-    discovered = provider_preflight(image, values, validation_only=profile.validation_only)
-    derived, values = write_derived_environment(source, profile, head, state=state, image=image, discovered=discovered, preserved_runtime=preserved)
-    require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
-    prefix = compose_prefix(profile, derived)
-    validate_compose(profile, prefix, image)
-    existing = project_containers(profile)
-    if existing.get("web"):
-        old_web = existing["web"].get("Config", {})
-        old_image = old_web.get("Image", "")
-        old_revision = (old_web.get("Labels") or {}).get("org.opencontainers.image.revision", "")
-        require(old_image in {image, KNOWN_GOOD_IMAGE}
-                or (old_image.startswith("datariver-dev-deploy-source:") and SOURCE_ID.fullmatch(old_revision)),
-                "EXISTING_WEB_OWNER_INVALID")
-    wait_state(prefix, profile, existing)
-    password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
-    reconcile(prefix, password, existing_state=state == "EXISTING")
-    started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--force-recreate", "--no-deps", "--wait", "web"))
-    web = running_web(profile, image, image_id)
-    acceptance = run_acceptance(profile, image, web, password, values["POC_PUBLIC_ORIGIN"], head)
-    containers = project_containers(profile)
-    require(not any(container.get("State", {}).get("OOMKilled") is True for container in containers.values()), "CONTAINER_OOM_DETECTED")
-    require(not unexpected_5xx(web, started), "UNEXPECTED_WEB_5XX")
-    assert_protected_unchanged(before, ignore_project=ignored_project)
-    volume_after = state_volume_identity(profile)
-    if state == "EXISTING":
-        require(volume_after == volume_before, "EXISTING_STATE_VOLUMES_CHANGED")
-    require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
-    atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
-        "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
-        "accepted_at": datetime.now(timezone.utc).isoformat(), "branch": BRANCH, "source_sha256": head,
-        "source_identity_kind": "FOLDER_SHA256",
-        "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
-        "profile": profile.name, "project": profile.project, "port": profile.port,
-        "env_sha256": source_hash, "source_env_unchanged": True,
-        "existing_state_preserved": state != "EXISTING" or volume_after == volume_before,
-        "mcl_current": acceptance["smoke"]["mcl_current_capture"],
-        "mcl_history": acceptance["smoke"]["mcl_history_completeness"],
-        "k9_semantic": acceptance["smoke"]["semantic_index"],
-        "auto_chat": acceptance["features"]["auto_chat"],
-        "graph_chat": acceptance["features"]["graph_chat"],
-        "auto_graph": acceptance["features"]["auto_graph"],
-        "auto_search": acceptance["features"]["auto_search"],
-        "vector_chat": acceptance["features"]["vector_chat"],
-        "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
-        "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080": "UNTOUCHED",
-        "p39083": "UNTOUCHED" if profile.validation_only else "DEPLOYED",
-    })
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    log = RUNTIME_ROOT / profile.name / f"deploy-{stamp}-{os.getpid()}.log"
+    with DeployProgress(log, profile.project) as progress:
+        execute_deploy(profile, env_file, supplied_password, public_origin, progress)
+
+
+def show_deploy_log(profile: Target, *, follow: bool) -> int:
+    logs = list((RUNTIME_ROOT / profile.name).glob("deploy-*.log"))
+    require(bool(logs), "DEPLOY_LOG_NOT_FOUND:no_progress_enabled_deploy_in_this_directory")
+    log = max(logs, key=lambda path: path.stat().st_mtime_ns)
+    print(f"DEPLOY_LOG|path={log}", flush=True)
+    arguments = ["tail", "-n", "60"]
+    if follow:
+        arguments.append("-f")
+    return subprocess.call([*arguments, str(log)])
+
+
+def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | None,
+                   public_origin: str | None, progress: DeployProgress) -> None:
+    stage = progress.stage
+    with stage("SOURCE_IMAGE"):
+        head, _ = validate_source(clean=True)
+        image, image_id = require_built_image(head)
+    with stage("ENV_TARGET"):
+        ignored_project = None if profile.validation_only else profile.project
+        before = protected_state(ignore_project=ignored_project)
+        source, source_hash = deployment_environment(env_file, profile, public_origin)
+        state = state_kind(profile)
+        if profile == VALIDATION_39081:
+            require(state == "EXISTING", "VALIDATION_39081_STATE_NOT_PRESENT")
+        volume_before = state_volume_identity(profile)
+        require_target_port_ownership(profile)
+        runtime_file = env_file.with_name(env_file.name + ".runtime")
+        preserved = {}
+        if runtime_file.is_file() and not profile.validation_only:
+            private_env_file(runtime_file)
+            preserved = read_env(runtime_file)
+        derived, values = write_derived_environment(source, profile, head, state=state, image=image, preserved_runtime=preserved)
+    with stage("PROVIDER_PREFLIGHT"):
+        discovered = provider_preflight(image, values, validation_only=profile.validation_only)
+        derived, values = write_derived_environment(source, profile, head, state=state, image=image, discovered=discovered, preserved_runtime=preserved)
+        require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
+    with stage("COMPOSE_CONFIG"):
+        prefix = compose_prefix(profile, derived)
+        validate_compose(profile, prefix, image)
+        existing = project_containers(profile)
+        if existing.get("web"):
+            old_web = existing["web"].get("Config", {})
+            old_image = old_web.get("Image", "")
+            old_revision = (old_web.get("Labels") or {}).get("org.opencontainers.image.revision", "")
+            require(old_image in {image, KNOWN_GOOD_IMAGE}
+                    or (old_image.startswith("datariver-dev-deploy-source:") and SOURCE_ID.fullmatch(old_revision)),
+                    "EXISTING_WEB_OWNER_INVALID")
+    with stage("STATE_SERVICES"):
+        wait_state(prefix, profile, existing)
+    with stage("BOOTSTRAP"):
+        password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
+        reconcile(prefix, password, existing_state=state == "EXISTING")
+    with stage("WEB_START"):
+        started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--force-recreate", "--no-deps", "--wait", "web"))
+        web = running_web(profile, image, image_id)
+    acceptance = run_acceptance(profile, image, web, password, values["POC_PUBLIC_ORIGIN"], head, progress=progress)
+    with stage("FINAL_VERIFY"):
+        containers = project_containers(profile)
+        require(not any(container.get("State", {}).get("OOMKilled") is True for container in containers.values()), "CONTAINER_OOM_DETECTED")
+        require(not unexpected_5xx(web, started), "UNEXPECTED_WEB_5XX")
+        assert_protected_unchanged(before, ignore_project=ignored_project)
+        volume_after = state_volume_identity(profile)
+        if state == "EXISTING":
+            require(volume_after == volume_before, "EXISTING_STATE_VOLUMES_CHANGED")
+        require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
+        atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
+            "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
+            "accepted_at": datetime.now(timezone.utc).isoformat(), "branch": BRANCH, "source_sha256": head,
+            "source_identity_kind": "FOLDER_SHA256",
+            "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
+            "profile": profile.name, "project": profile.project, "port": profile.port,
+            "env_sha256": source_hash, "source_env_unchanged": True,
+            "existing_state_preserved": state != "EXISTING" or volume_after == volume_before,
+            "mcl_current": acceptance["smoke"]["mcl_current_capture"],
+            "mcl_history": acceptance["smoke"]["mcl_history_completeness"],
+            "k9_semantic": acceptance["smoke"]["semantic_index"],
+            "auto_chat": acceptance["features"]["auto_chat"],
+            "graph_chat": acceptance["features"]["graph_chat"],
+            "auto_graph": acceptance["features"]["auto_graph"],
+            "auto_search": acceptance["features"]["auto_search"],
+            "vector_chat": acceptance["features"]["vector_chat"],
+            "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
+            "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080": "UNTOUCHED",
+            "p39083": "UNTOUCHED" if profile.validation_only else "DEPLOYED",
+        })
 
 
 def preflight_line(values: Mapping[str, str]) -> str:
@@ -933,7 +972,7 @@ def preflight_line(values: Mapping[str, str]) -> str:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check-source", "preflight", "build", "build-log", "validate-39081", "deploy"))
+    parser.add_argument("command", choices=("check-source", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--admin-password-file", type=Path)
     parser.add_argument("--port", type=int, choices=(39083, 39091), default=None,
@@ -943,7 +982,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--no-cache", action="store_true", help="Force a clean source build instead of reusing the image/cache")
     parser.add_argument("--build-env-file", type=Path,
                         help="Read only HTTP_PROXY/HTTPS_PROXY/NO_PROXY for build from this private env file and optional sidecar")
-    parser.add_argument("--follow", action="store_true", help="Follow the most recent build log")
+    parser.add_argument("--follow", action="store_true", help="Follow the most recent build-log or deploy-log")
     return parser.parse_args()
 
 
@@ -952,9 +991,12 @@ def main() -> int:
     try:
         require(not arguments.no_cache or arguments.command == "build", "NO_CACHE_BUILD_ONLY")
         require(arguments.build_env_file is None or arguments.command == "build", "BUILD_ENV_FILE_BUILD_ONLY")
-        require(not arguments.follow or arguments.command == "build-log", "FOLLOW_BUILD_LOG_ONLY")
+        require(not arguments.follow or arguments.command in {"build-log", "deploy-log"}, "FOLLOW_LOG_ONLY")
         if arguments.command == "build-log":
             return show_build_log(follow=arguments.follow)
+        if arguments.command == "deploy-log":
+            profile = PREP_39083 if arguments.port == 39083 else DEV_39091
+            return show_deploy_log(profile, follow=arguments.follow)
         head, count = validate_source(clean=arguments.command in {"build", "deploy"})
         if arguments.command == "validate-39081":
             require(arguments.port is None, "VALIDATION_PORT_OPTION_CONFLICT")
