@@ -1,4 +1,4 @@
-name: ${COMPOSE_PROJECT_NAME:-datariver-prep39083}
+name: ${COMPOSE_PROJECT_NAME:-datariver-dev}
 
 services:
   web:
@@ -14,7 +14,7 @@ services:
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
     ports:
-      - "${POC_BIND_HOST:-127.0.0.1}:${POC_PORT:-39080}:8080"
+      - "${POC_BIND_HOST:-127.0.0.1}:${POC_PORT:-39091}:8080"
     environment:
       # The host publish defaults to loopback, but peer containers still need
       # the Node server to listen on every interface inside this container.
@@ -92,8 +92,8 @@ services:
       POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE: ${POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE:-Asia/Seoul}
       POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME: ${POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME:-datariver:poc:change-history-scheduler:v1}
       POC_MCL_KAFKA_BROKERS: ${POC_MCL_KAFKA_BROKERS:-}
-      POC_MCL_KAFKA_CLIENT_ID: ${POC_MCL_KAFKA_CLIENT_ID:-datariver-prep39083-mcl-v1}
-      POC_MCL_KAFKA_GROUP_ID: ${POC_MCL_KAFKA_GROUP_ID:-datariver-prep39083-mcl-capture-v1}
+      POC_MCL_KAFKA_CLIENT_ID: ${POC_MCL_KAFKA_CLIENT_ID:?deployment-owned Kafka client ID is required}
+      POC_MCL_KAFKA_GROUP_ID: ${POC_MCL_KAFKA_GROUP_ID:?deployment-owned Kafka group ID is required}
       POC_MCL_KAFKA_TOPIC: ${POC_MCL_KAFKA_TOPIC:-}
       POC_MCL_SOURCE_IDENTITY_HASH: ${POC_MCL_SOURCE_IDENTITY_HASH:-}
       POC_MCL_SCHEMA_CONTRACT_HASH: ${POC_MCL_SCHEMA_CONTRACT_HASH:-}
@@ -153,7 +153,7 @@ services:
     networks:
       - poc-services
     ports:
-      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_NEO4J_HTTP_PORT:-17475}:7474"
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_NEO4J_HTTP_PORT:-37475}:7474"
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
@@ -179,7 +179,7 @@ services:
     networks:
       - poc-services
     ports:
-      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_POSTGRES_HOST_PORT:-15432}:5432"
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_POSTGRES_HOST_PORT:-35432}:5432"
     volumes:
       - pgvector-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
@@ -202,7 +202,7 @@ services:
     networks:
       - poc-services
     ports:
-      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_REDIS_PORT:-16379}:6379"
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_REDIS_PORT:-36379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -217,7 +217,7 @@ services:
 
 networks:
   poc-services:
-    name: ${POC_SHARED_NETWORK:-datariver-poc-services}
+    name: ${POC_SHARED_NETWORK:-datariver-dev-services}
 
 volumes:
   neo4j-data:

@@ -60,72 +60,95 @@ git commit -m "소스 최초 등록"
 
 ### 운영 입력
 
-| 파일 | 용도 |
+같은 PREP PC에서도 기존 소스와 다른 디렉터리에 `dev_deploy`를 받습니다. 다른 PC에서는 같은 브랜치를 새로 받습니다. 운영 입력은 새 소스 루트의 `deploy/`에 준비합니다.
+
+| 파일 | 독립 신규 설치에서의 처리 |
 |---|---|
-| `deploy/.env.prep` | 실제 PREP에서 사용하던 환경 설정 |
-| `deploy/.env.prep.runtime` | 기존에 생성된 DB 비밀번호·서비스 토큰 등, 사용 중이면 반드시 보존 |
-| `deploy/.env.prep.optional` | 추가 서비스 설정, 사용 중이면 함께 보존 |
-| 환경 설정에서 지정한 CA 파일 | 인증서 검증이 필요한 환경의 신뢰 인증서 |
+| `deploy/.env.prep` | 기존 PREP의 파일을 내용 변경 없이 복사 |
+| `deploy/.env.prep.optional` | 사용 중이면 함께 복사. 기본 파일에 없는 추가 provider 설정 |
+| 환경 설정에서 지정한 CA 파일 | 설정된 절대 경로에서 읽을 수 있도록 준비 |
+| 기존 `.env.prep.runtime` | 기존 39083의 복구용으로 보존. `datariver-dev` 신규 설치에서는 읽지 않음 |
 
-기존 파일은 내용을 바꾸지 않고 보존 복사합니다. 비밀 설정 파일의 권한은 `0600`으로 관리하며 저장소·이미지·공유 로그에 넣지 않습니다. CA 파일은 설정된 절대 경로에서 읽을 수 있어야 합니다. 필수 설정 항목은 `deploy/env-contract.json`과 `scripts/dev_deploy.py`를 확인합니다.
+기존 파일이 `deploy/prep39083/`에 있다면 원본을 남겨두고 새 소스의 `deploy/`로 **복사**합니다. 비밀 설정 파일의 권한은 `0600`으로 관리하며 Git·이미지·공유 로그에 넣지 않습니다. `.optional`과 기본 파일에 같은 키가 있으면 사전 점검이 실패합니다. 필수 설정 항목은 `deploy/env-contract.json`과 `scripts/dev_deploy.py`를 확인합니다.
 
-`.optional`은 기본 환경 파일에 없는 키를 추가하며, 두 파일에 같은 키가 있으면 사전 점검이 실패합니다. `.runtime`은 배포 시 기존에 생성된 PostgreSQL·Neo4j 비밀번호와 서비스 토큰을 재사용하는 데 사용합니다. 원본 환경 파일은 수정하지 않고 배포용 설정을 `runtime/dev_deploy/prep39083/derived.env`에 생성합니다. 현재 실행기가 새로 생성한 비밀정보는 같은 디렉터리의 `generated.json`과 `admin-password`에 저장되므로, 사용 중이면 함께 보존합니다.
+기존 파일을 수정하지 않고 새 PC의 접속 주소는 `--public-origin`으로 지정합니다. 원본 파일의 포트·프로젝트·DB 접속 설정 대신 새 프로젝트에 필요한 값만 `runtime/dev_deploy/dev/derived.env`에 적용합니다. 외부 provider의 주소·인증·workspace 계약은 유지합니다. 새 PC에서도 해당 provider, 프록시, DNS, CA 및 사내망 허용 범위가 유효해야 합니다.
 
-재배포 시 운영 비밀파일과 DB·그래프 데이터를 보존하며, 생성 비밀번호와 관리자 비밀번호도 유지합니다.
+독립 설치는 새 PostgreSQL·Neo4j 데이터와 새 관리자 계정을 만듭니다. 기존 39083의 사용자·metadata·그래프·checkpoint는 자동 복사되지 않습니다. 새 비밀정보와 설치 ID는 `runtime/dev_deploy/dev/generated.json`, 관리자 비밀번호는 같은 디렉터리의 `admin-password`에 저장됩니다. 이후 **같은 설치를 재배포할 때** 이 파일들을 보존합니다. 두 번째 PC에 별도의 새 설치를 만들 때는 이 파일들과 기존 볼륨을 복사하지 않습니다.
 
-## PREP 배포
+Kafka client/group ID는 설치마다 별도로 생성하고 재배포 시 재사용합니다. 같은 프로젝트명을 다른 PC에서 사용해도 consumer group을 공유하지 않습니다. broker/topic/schema/auth 계약은 기존 설정을 사용하며, Kafka ACL은 새 consumer group의 사용을 허용해야 합니다.
 
-아래 명령은 프로젝트 루트에서 순서대로 실행하며, 실패하면 다음 단계로 진행하지 않습니다.
+### 필요한 이미지 확보
+
+| 용도 | 이미지 |
+|---|---|
+| Web 빌드 기반 | `node:22.19.0-bookworm-slim` |
+| PostgreSQL·벡터 확장 | `pgvector/pgvector:0.8.2-pg17-bookworm` |
+| Neo4j | `neo4j:2026.06.0` |
+| Redis | `redis:8.2.6-bookworm` |
+| Web | 현재 커밋에서 `build`가 생성하는 `datariver-dev-deploy-source:<커밋 앞 12자리>` |
+
+모두 `linux/amd64` 기준입니다. 같은 PREP PC에 위 기반 이미지가 이미 있으면 그대로 사용합니다. 별도 PC로 반입할 기반 이미지는 다음과 같이 확보합니다. 아래 `save`는 이미지를 내려받지 않으므로 해당 플랫폼 이미지가 먼저 있어야 합니다.
+
+```bash
+mkdir -p runtime/transfer
+docker image save --platform linux/amd64 \
+  --output runtime/transfer/datariver-base-images-linux-amd64.tar \
+  node:22.19.0-bookworm-slim \
+  pgvector/pgvector:0.8.2-pg17-bookworm \
+  neo4j:2026.06.0 \
+  redis:8.2.6-bookworm
+(cd runtime/transfer && sha256sum datariver-base-images-linux-amd64.tar > datariver-base-images-linux-amd64.tar.sha256)
+```
+
+두 파일을 새 PC의 `runtime/transfer/`로 옮긴 뒤 확인하고 불러옵니다. 기존 Docker를 사용하는 PC에서는 동일 태그가 다른 이미지를 가리키는지 먼저 확인하며, 기존 서비스용 태그를 임의로 덮어쓰지 않습니다.
+
+```bash
+(cd runtime/transfer && sha256sum -c datariver-base-images-linux-amd64.tar.sha256) && \
+  docker image load --input runtime/transfer/datariver-base-images-linux-amd64.tar
+```
+
+Web은 아래 `build`에서 소스로 만듭니다. 기반 이미지 반입만으로 완전한 오프라인 소스 빌드가 되지는 않습니다. `npm ci`와 production dependency 정리를 위해 잠금 파일에 맞는 npm 패키지를 제공하는 승인된 저장소·미러·프록시가 필요합니다. 이미지는 운영 `.env`나 DB 데이터를 포함하지 않습니다.
+
+## datariver-dev 배포
+
+기본 프로젝트는 `datariver-dev`, Web 포트는 `39091`입니다. 같은 PREP PC와 다른 PC에서 동일한 명령을 사용하며 접속 주소만 해당 PC에 맞춥니다.
+
+| 서비스 | 호스트 바인딩·포트 | 컨테이너 포트 |
+|---|---|---|
+| Web | `0.0.0.0:39091` | `8080` |
+| PostgreSQL | `127.0.0.1:35432` | `5432` |
+| Redis | `127.0.0.1:36379` | `6379` |
+| Neo4j HTTP | `127.0.0.1:37475` | `7474` |
+
+네트워크는 `datariver-dev-services`, 영속 볼륨은 `datariver-dev_pgvector-data`, `datariver-dev_neo4j-data`, `datariver-dev_neo4j-logs`입니다. Redis는 기존 캐시 정책에 따라 영속 볼륨을 사용하지 않습니다. 컨테이너 내부의 서비스명과 포트는 유지합니다. 새 프로젝트의 네 호스트 포트는 다른 서비스가 사용하지 않아야 합니다.
+
+프로젝트 루트에서 `대상PC_IP`를 실제 주소로 바꾸고 순서대로 실행합니다. 실패하면 다음 단계로 진행하지 않습니다.
 
 ```bash
 ./scripts/dev_deploy check-source
-./scripts/dev_deploy preflight
+./scripts/dev_deploy preflight --public-origin "http://대상PC_IP:39091"
 ./scripts/dev_deploy build
+./scripts/dev_deploy deploy --public-origin "http://대상PC_IP:39091" --apply
 ```
 
-`preflight`는 환경 입력 계약을 확인합니다. 실제 외부 서비스 연결은 배포 내부의 사전 점검에서 확인합니다. `build`는 `.env.prep`를 읽지 않고 현재 로컬 Git 커밋의 소스로 이미지를 새로 만들며 실행 중인 Web을 교체하지 않습니다.
+`preflight`는 환경 입력 계약을 확인합니다. 실제 provider 연결은 배포 내부의 사전 점검에서 확인합니다. `build`는 `.env.prep`를 읽지 않고 현재 로컬 Git 커밋의 소스로 이미지를 새로 만들며, 실행 중인 Web을 교체하지 않습니다. `deploy --apply`는 새 프로젝트의 상태를 구성하고 Web을 기동합니다. 재배포에서는 해당 프로젝트의 호환되는 상태와 비밀정보를 재사용합니다.
 
-기존 서비스·데이터의 백업과 복구 절차를 확인하고 실제 PREP 변경을 승인한 뒤 실행합니다.
+기존 `datariver-prep39083`과 `39080`은 변경 대상이 아닙니다. 기존 PREP를 대상으로 하는 `--port 39083`은 별도의 운영 재배포용이므로 독립 설치에서는 사용하지 않습니다.
 
-```bash
-./scripts/dev_deploy deploy --apply
-```
+환경 파일이 다른 위치에 있으면 `preflight`와 `deploy`에 `--env-file <파일경로>`를 지정합니다. `.optional`은 지정한 환경 파일명 뒤에 같은 접미사를 붙여 같은 디렉터리에 둡니다. 관리자 계정은 `admin`이며 생성 비밀번호 파일은 로컬에서만 확인합니다. 재배포 시 필요한 기존 관리자 비밀번호를 비대화형으로 제공하려면 `--admin-password-file <보안파일경로>`를 사용합니다.
 
-기본 대상은 PREP 포트 `39083`입니다. 기존 상태 서비스는 보존하고 Web을 교체하므로 일시적인 연결 중단이 발생할 수 있습니다. 기존 `39080` 서비스는 변경 대상이 아닙니다.
-
-환경 파일이 다른 위치에 있으면 `preflight`와 `deploy`에 `--env-file <파일경로>`를 지정합니다. `.runtime`, `.optional` 파일은 해당 환경 파일명 뒤에 같은 접미사를 붙여 같은 디렉터리에 둡니다. 기존 관리자 비밀번호는 숨김 입력으로 받으며, 비대화형 배포는 `--admin-password-file <보안파일경로>`를 사용합니다.
-
-배포 명령이 준비 상태 확인, 운영 smoke 6단계, 검색·대화·그래프 미리보기 검증을 수행합니다. 성공 직후 같은 full smoke를 별도로 반복할 필요는 없습니다. 최초 수집과 임베딩은 데이터 규모에 따라 시간이 필요하며, 재배포는 호환되는 기존 상태를 재사용합니다.
-
-### 새 PC에 39091로 신규 설치
-
-새로 받은 소스의 `deploy/`에 `.env.prep`, 사용 중인 `.env.prep.optional`, `.env.prep.runtime`을 내용 변경 없이 복사하고 권한을 `0600`으로 설정합니다. CA 파일도 환경 설정에 지정된 절대 경로에 준비합니다. 소스만 반입했다면 앞의 로컬 Git 등록 절차를 먼저 수행합니다.
-
-아래 `새PC_IP`를 실제 접속 주소로 바꾸어 실행합니다. 새 주소는 기존 환경 설정의 사내망 허용 범위에 속해야 하며, 새 PC에서 외부 서비스와 모델에 접속할 수 있어야 합니다. 원본 환경 파일 대신 실행 인자로 새 주소를 지정합니다.
-
-```bash
-./scripts/dev_deploy check-source
-./scripts/dev_deploy preflight --port 39091 --public-origin "http://새PC_IP:39091"
-./scripts/dev_deploy build
-./scripts/dev_deploy deploy --port 39091 --public-origin "http://새PC_IP:39091" --apply
-```
-
-프로젝트는 `datariver-prep39091`이며, 별도 네트워크·저장공간·Kafka client/group ID를 사용합니다. Web은 `39091`에 공개하고 PostgreSQL·Redis·Neo4j의 호스트 포트는 각각 `35432`·`36379`·`37475`로 루프백에만 연결합니다. 기존 39080·39083은 보존합니다.
-
-39091 신규 설치에는 새 DB와 관리자가 생성됩니다. 복사한 `.env.prep.runtime`은 보존용이며, 이 경로에서는 기존 DB 비밀번호를 가져오지 않습니다. 새 비밀정보와 관리자 비밀번호는 `runtime/dev_deploy/prep39091/generated.json`, `admin-password`에 저장됩니다. 관리자 계정은 `admin`이며, 비밀번호 파일은 로컬에서 확인하고 공유 로그에 출력하지 않습니다. 이 디렉터리의 비밀파일은 이후 같은 프로젝트를 재배포할 때 보존합니다. 기존 사용자·metadata·그래프 데이터는 새 DB로 자동 복사되지 않습니다.
-
-브라우저 접속 주소는 위에서 지정한 `http://새PC_IP:39091`입니다. 준비 상태·smoke·기능 검증 결과는 `runtime/dev_deploy/prep39091/`에 저장됩니다. 각 명령이 실패하면 해당 오류를 확인하고 다음 단계로 진행하지 않습니다. `--port`를 생략한 `deploy`의 대상은 39083입니다.
+배포 명령은 focused readiness, 운영 smoke 6단계, 검색·대화·그래프 미리보기 검증을 수행합니다. 성공 직후 같은 full smoke를 별도로 반복할 필요는 없습니다. 최초 수집과 임베딩은 데이터 규모에 따라 시간이 필요합니다. 외부 DataHub·GX·Airflow·MinIO·모델은 연결한 서비스를 공유하므로, 독립된 Docker 프로젝트가 외부 데이터까지 복제하거나 격리하는 것은 아닙니다.
 
 ## 배포 확인과 장애 대응
 
-빌드 성공만으로 배포 완료가 아닙니다. 자동 검증이 모두 통과하고 브라우저에서 기존 계정 로그인, 검색, 일반 대화, 실제 테이블 영향도 질문, 지식그래프 미리보기와 기존 데이터 보존을 확인해야 합니다.
+빌드 성공만으로 배포 완료가 아닙니다. 자동 검증이 모두 통과하고 브라우저에서 관리자 로그인, 검색, 일반 대화, 실제 테이블 영향도 질문, 지식그래프 미리보기와 기존 데이터 보존을 확인해야 합니다.
 
 MCL 최신 수집과 K9 의미 검색 준비는 정상이어야 합니다. `SOURCE_NOT_CONFIGURED`, `FAILED`, 원인 불명의 `UNKNOWN`은 완료로 처리하지 않습니다. MCL 과거 이력은 사유가 `RETENTION_EXPIRED`인 `DEGRADED_GAP`만 허용하며, 이력의 불완전성을 구분해 표시합니다.
 
 | 위치 | 확인 내용 |
 |---|---|
 | `runtime/dev_deploy/build/` | 빌드 로그와 결과 |
-| `runtime/dev_deploy/prep39083/readiness.json` | K9·MCL 준비 상태 |
+| `runtime/dev_deploy/dev/readiness.json` | K9·MCL 준비 상태 |
 | 같은 디렉터리의 `smoke.json`, `smoke-failure.json` | 운영 smoke 결과 또는 실패 진단 |
 | 같은 디렉터리의 `features.json`, `acceptance.json` | 기능 검증과 최종 배포 결과 |
 

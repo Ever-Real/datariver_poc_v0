@@ -85,18 +85,18 @@ PREP_39083 = Target(
         bind_host="0.0.0.0",
         validation_only=False,
     )
-PREP_39091 = Target(
-        name="prep39091",
-        project="datariver-prep39091",
+DEV_39091 = Target(
+        name="dev",
+        project="datariver-dev",
         port=39091,
-        network="datariver-prep39091-services",
+        network="datariver-dev-services",
         state_ports={
             "POC_POSTGRES_HOST_PORT": "35432",
             "POC_REDIS_PORT": "36379",
             "POC_NEO4J_HTTP_PORT": "37475",
         },
-        kafka_client="datariver-prep39091-mcl-v1",
-        kafka_group="datariver-prep39091-mcl-capture-v1",
+        kafka_client="datariver-dev-mcl-v1",
+        kafka_group="datariver-dev-mcl-capture-v1",
         bind_host="0.0.0.0",
         validation_only=True,
     )
@@ -355,6 +355,19 @@ def compose_quote(value: str) -> str:
     return "'" + value.replace("'", "\\'") + "'"
 
 
+def deployment_kafka_values(profile: Target, generated: Mapping[str, Any]) -> dict[str, str]:
+    suffix = ""
+    if profile == DEV_39091:
+        installation = generated.get("installation_id", "")
+        require(isinstance(installation, str) and re.fullmatch(r"[0-9a-f]{16}", installation) is not None,
+                "DEPLOYMENT_IDENTITY_REQUIRED")
+        suffix = "-" + installation
+    return {
+        "POC_MCL_KAFKA_CLIENT_ID": profile.kafka_client + suffix,
+        "POC_MCL_KAFKA_GROUP_ID": profile.kafka_group + suffix,
+    }
+
+
 def write_derived_environment(
     source: Mapping[str, str], profile: Target, head: str, *, state: str,
     discovered: Mapping[str, str] | None = None,
@@ -373,7 +386,7 @@ def write_derived_environment(
     generated_keys = read_json(ENV_CONTRACT).get("ownership", {}).get("GENERATED", {})
     require(isinstance(generated_keys, dict), "ENV_GENERATED_CONTRACT_INVALID")
     for key, length in generated_keys.items():
-        if profile == PREP_39091:
+        if profile == DEV_39091:
             # New project credentials belong to its own state, even if the operator
             # copied the old PREP env and its runtime credential sidecar unchanged.
             values.pop(key, None)
@@ -387,6 +400,9 @@ def write_derived_environment(
             generated[key] = values[key]
         else:
             raise DeployError("EXISTING_STATE_CREDENTIALS_REQUIRED")
+    if profile == DEV_39091 and state == "FRESH" and "installation_id" not in generated:
+        generated["installation_id"] = secrets.token_hex(8)
+    values.update(deployment_kafka_values(profile, generated))
     if state == "FRESH":
         atomic_private_json(RUNTIME_ROOT / profile.name / "generated.json", generated)
     if discovered:
@@ -576,8 +592,10 @@ def validate_compose(profile: Target, prefix: Sequence[str], image: str) -> None
     require(isinstance(services, dict) and set(services) == {"web", "neo4j", "pgvector", "redis"}, "COMPOSE_SERVICES_INVALID")
     web = services["web"]
     require(web.get("image") == image and isinstance(web.get("build"), dict), "COMPOSE_SOURCE_IMAGE_INVALID")
-    require(web.get("environment", {}).get("POC_MCL_KAFKA_CLIENT_ID") == profile.kafka_client, "KAFKA_CLIENT_NOT_ISOLATED")
-    require(web.get("environment", {}).get("POC_MCL_KAFKA_GROUP_ID") == profile.kafka_group, "KAFKA_GROUP_NOT_ISOLATED")
+    generated = read_json(RUNTIME_ROOT / profile.name / "generated.json") if profile == DEV_39091 else {}
+    kafka = deployment_kafka_values(profile, generated)
+    require(web.get("environment", {}).get("POC_MCL_KAFKA_CLIENT_ID") == kafka["POC_MCL_KAFKA_CLIENT_ID"], "KAFKA_CLIENT_NOT_ISOLATED")
+    require(web.get("environment", {}).get("POC_MCL_KAFKA_GROUP_ID") == kafka["POC_MCL_KAFKA_GROUP_ID"], "KAFKA_GROUP_NOT_ISOLATED")
     published = {
         int(item.get("published")) for service in services.values()
         for item in (service.get("ports") or []) if str(item.get("published", "")).isdigit()
@@ -604,16 +622,17 @@ def project_containers(profile: Target) -> dict[str, dict[str, Any]]:
 
 
 def require_target_port_ownership(profile: Target) -> None:
+    target_ports = {profile.port, *(int(port) for port in profile.state_ports.values())}
     identifiers = output("docker", "ps", "--all", "--format", "{{.ID}}").splitlines()
     for identifier in identifiers:
         document = json.loads(output("docker", "inspect", identifier))[0]
-        bindings = document.get("NetworkSettings", {}).get("Ports", {}) or {}
+        bindings = document.get("HostConfig", {}).get("PortBindings", {}) or {}
         published = {
             int(binding.get("HostPort"))
             for values in bindings.values() if isinstance(values, list)
             for binding in values if isinstance(binding, dict) and str(binding.get("HostPort", "")).isdigit()
         }
-        if profile.port not in published:
+        if not target_ports.intersection(published):
             continue
         project = (document.get("Config", {}).get("Labels", {}) or {}).get("com.docker.compose.project")
         require(project == profile.project, "TARGET_PORT_OWNED_BY_OTHER_PROJECT")
@@ -819,8 +838,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("command", choices=("check-source", "preflight", "build", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--admin-password-file", type=Path)
-    parser.add_argument("--port", type=int, choices=(39083, 39091), default=39083,
-                        help="Deployment port/project; default 39083, separate installation 39091")
+    parser.add_argument("--port", type=int, choices=(39083, 39091), default=None,
+                        help="Default: datariver-dev on 39091; explicit 39083 targets the existing PREP project")
     parser.add_argument("--public-origin", help="Browser origin on a new host, including the selected port")
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args()
@@ -831,10 +850,10 @@ def main() -> int:
     try:
         head, count = validate_source(clean=arguments.command in {"build", "deploy"})
         if arguments.command == "validate-39081":
-            require(arguments.port == 39083, "VALIDATION_PORT_OPTION_CONFLICT")
+            require(arguments.port is None, "VALIDATION_PORT_OPTION_CONFLICT")
             profile = VALIDATION_39081
         else:
-            profile = PREP_39091 if arguments.port == 39091 else PREP_39083
+            profile = PREP_39083 if arguments.port == 39083 else DEV_39091
         if arguments.command == "check-source":
             print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|head={head}|tracked={count}|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
             return 0
