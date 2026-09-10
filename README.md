@@ -2,6 +2,18 @@
 
 DataRiver는 DataHub를 중심으로 데이터 카탈로그, 검색, 등록·변경 관리, 지식그래프, 근거 기반 대화, 품질 정보와 운영 관리를 제공하는 서비스입니다. `dev_deploy` 브랜치의 소스로 애플리케이션을 빌드·배포하고 후속 개발을 진행합니다.
 
+## 검증된 배포와 고정 버전
+
+`dev-deploy-finished-20260910` 태그는 운영자가 PREP PC의 `datariver-dev` 프로젝트, 포트 `39091`에서 배포 성공을 확인한 소스의 고정 기준선입니다. 최종 결과는 `DEPLOY PASS`, MCL·K9 `READY`, Smoke `6/6 PASS`, Chat·Graph·Knowledge Graph preview `PASS`입니다. 해당 실행에서 기존 서비스 변경 여부도 `UNTOUCHED`로 확인됐습니다.
+
+후속 개발은 `dev_deploy`에서 진행하며 고정 태그는 이동하지 않습니다. 고정 버전의 소스가 필요하면 별도 디렉터리에 받습니다.
+
+```bash
+git clone --single-branch --branch dev-deploy-finished-20260910 <저장소_URL> datariver-dev-finished
+```
+
+태그로 받은 디렉터리에서도 아래의 운영 입력 준비와 build/deploy 명령을 사용합니다. 같은 PC의 기존 설치를 재배포할 때는 해당 설치의 환경 파일·`runtime/dev_deploy/dev/`·영속 볼륨과 기존 이미지를 보존합니다. 복구를 위해서는 소스 태그와 함께 이 운영 입력과 데이터의 백업을 관리해야 합니다. 다른 PC에서의 새 설치와 태그 이후 변경은 각 환경에서 배포 검증을 수행합니다.
+
 ## 아키텍처와 코드 위치
 
 React·TypeScript 화면과 Node.js 서버를 분리한 모듈형 모놀리스입니다. 배포 시 하나의 Node.js 프로세스가 API와 빌드된 화면을 함께 제공합니다.
