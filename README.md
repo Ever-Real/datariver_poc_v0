@@ -33,30 +33,21 @@ React·TypeScript 화면과 Node.js 서버를 분리한 모듈형 모놀리스�
 
 ## 이관과 실행 준비
 
-배포에는 리눅스 셸, Git, Python 3.11 이상, Docker와 Docker Compose가 필요합니다. 대상 이미지는 `linux/amd64`이며, 호스트에서 개발 점검을 실행하려면 Node.js 22.19 이상과 npm도 준비합니다.
+배포에는 리눅스 셸, Python 3.11 이상, Docker와 Docker Compose가 필요합니다. Git은 저장소 복제나 버전 관리에만 선택적으로 사용됩니다. 대상 이미지는 `linux/amd64`이며, 호스트에서 개발 점검을 실행하려면 Node.js 22.19 이상과 npm도 준비합니다.
 
 기본 컨테이너 이미지와 npm 패키지에 접근할 수 있는 승인된 저장소·미러·프록시가 필요합니다.
 
 ### 소스만 반입한 경우
 
-숨김 파일인 `.gitignore`, `.dockerignore`도 포함해 반입합니다. 배포 도구는 로컬 Git에 커밋된 소스를 빌드하므로, 일반 디렉터리에서는 먼저 새 저장소를 준비합니다.
+숨김 파일인 `.gitignore`, `.dockerignore`도 포함해 반입합니다. Git 초기화나 커밋(`git init`/`add`/`commit`) 없이 복사된 소스 디렉터리 상태 그대로 바로 빌드·배포할 수 있습니다(Git을 사용할 경우 기존 방식으로 버전 관리 가능).
 
-운영 비밀파일을 복사하기 전에 프로젝트 루트에서 실행합니다. Git 사용자 정보는 조직 기준으로 설정하고, 등록 대상에 비밀정보가 없는지 확인합니다.
+스크립트 실행 권한을 부여한 뒤 진행합니다.
 
 ```bash
 chmod +x scripts/dev_deploy
-git init -b dev_deploy
-git add .
-git status --short
 ```
 
-등록 대상을 확인한 뒤 실행합니다.
-
-```bash
-git commit -m "소스 최초 등록"
-```
-
-이미 사내 저장소에 등록했다면 초기화하지 않고 `dev_deploy` 브랜치를 사용합니다. 빌드·배포에는 Git ignore 대상 외에 미커밋·미등록 변경이 없는 상태가 필요합니다. 수정은 커밋한 뒤 빌드하며, 빌드 후 README를 포함한 파일을 변경해 새 커밋을 만들었다면 배포 전에 다시 빌드합니다.
+빌드는 현재 소스 폴더를 읽어 처리하며, `runtime/`, 환경 설정 파일(`.env*`), 개인키, 생성 캐시 및 루트 `README.md`는 소스 해시 계산과 빌드 대상에서 자동으로 제외됩니다. 소스 코드를 수정한 경우에는 다시 빌드해야 하지만, 루트 `README.md`만 수정한 경우에는 재빌드가 필요하지 않습니다.
 
 ### 운영 입력
 
@@ -85,7 +76,7 @@ Kafka client/group ID는 설치마다 별도로 생성하고 재배포 시 재�
 | PostgreSQL·벡터 확장 | `pgvector/pgvector:0.8.2-pg17-bookworm` |
 | Neo4j | `neo4j:2026.06.0` |
 | Redis | `redis:8.2.6-bookworm` |
-| Web | 현재 커밋에서 `build`가 생성하는 `datariver-dev-deploy-source:<커밋 앞 12자리>` |
+| Web | 현재 소스에서 `build`가 생성하는 `datariver-dev-deploy-source:<소스 해시 앞 12자리>` |
 
 모두 `linux/amd64` 기준입니다. 같은 PREP PC에 위 기반 이미지가 이미 있으면 그대로 사용합니다. 별도 PC로 반입할 기반 이미지는 다음과 같이 확보합니다. 아래 `save`는 이미지를 내려받지 않으므로 해당 플랫폼 이미지가 먼저 있어야 합니다.
 
@@ -131,7 +122,27 @@ Web은 아래 `build`에서 소스로 만듭니다. 기반 이미지 반입만�
 ./scripts/dev_deploy deploy --public-origin "http://대상PC_IP:39091" --apply
 ```
 
-`preflight`는 환경 입력 계약을 확인합니다. 실제 provider 연결은 배포 내부의 사전 점검에서 확인합니다. `build`는 `.env.prep`를 읽지 않고 현재 로컬 Git 커밋의 소스로 이미지를 새로 만들며, 실행 중인 Web을 교체하지 않습니다. `deploy --apply`는 새 프로젝트의 상태를 구성하고 Web을 기동합니다. 재배포에서는 해당 프로젝트의 호환되는 상태와 비밀정보를 재사용합니다.
+`check-source`는 Git 커밋 대신 소스 내용의 SHA256 해시와 대상 파일 수를 표시합니다. 이 해시로 빌드 입력과 배포 일관성을 검증합니다.
+
+`preflight`는 환경 입력 계약을 확인합니다. 실제 provider 연결은 배포 내부의 사전 점검에서 확인합니다.
+
+`build`는 실행 중인 컨테이너를 변경하지 않으며, 현재 소스 폴더를 기반으로 `datariver-dev-deploy-source:<소스 해시 앞 12자리>` 이미지를 빌드합니다.
+
+- 동일 소스 해시, 유효한 `receipt.json`, 로컬 이미지가 존재하면 빌드·태깅 없이 기존 이미지를 재사용합니다(과거 빌드 기록은 원래 입력에 연결되어 보존).
+- 일반 빌드는 Docker 캐시를 활용하며, 클린 빌드가 필요한 경우 `./scripts/dev_deploy build --no-cache`를 사용합니다. 기존 태그가 있는 상태에서 강제 재빌드하면 시간 접미사를 붙여 기존 참조를 보존합니다. 이미지는 자동으로 삭제되지 않습니다.
+- 빌드 중 실시간 Docker plain 출력과 15초 간격의 heartbeat(경과 시간/무출력 알림)를 제공하며, 로그는 `runtime/dev_deploy/build/<소스해시>.log`와 `receipt.json`에 기록됩니다.
+- `./scripts/dev_deploy build-log`로 최근 빌드 로그 마지막 60줄을 확인하거나 `--follow`로 실시간 추적할 수 있습니다(Git·환경 설정 없이 동작).
+
+기본 빌드는 운영 환경 파일을 읽지 않습니다. 기존 환경 파일에 빌드용 `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`가 있다면 다음처럼 지정합니다. 이 세 키만 Docker 빌드에 전달하며 provider 인증정보는 전달하지 않습니다. `.optional` 파일도 기존 해석 규칙으로 읽습니다. 파일 내용을 변경하지 않습니다.
+
+```bash
+./scripts/dev_deploy build --build-env-file deploy/.env.prep
+./scripts/dev_deploy build-log --follow
+```
+
+npm 설치·production 의존성 정리는 각 단계에서 임시 프록시 설정을 사용하고 종료 시 제거합니다. 화면에는 Node/npm 버전, npm 단계, 프록시의 SET/ABSENT만 표시합니다. 프록시를 지정하지 않으면 셸 또는 Docker 클라이언트의 기존 빌드 프록시 설정을 사용합니다. 소스 빌드에는 npm 패키지 접근이 필요하며, 현재 잠금 파일의 공개 registry 경로를 사용할 수 없는 환경에서는 승인된 프록시·미러를 먼저 준비해야 합니다.
+
+`deploy --apply`는 새 프로젝트의 상태를 구성하고 Web을 기동합니다. 재배포에서는 해당 프로젝트의 호환되는 상태와 비밀정보를 재사용합니다. 빌드 후 소스코드를 수정한 경우에는 다시 빌드해야 배포할 수 있습니다(루트 `README.md`만 수정한 경우에는 재빌드 불필요).
 
 기존 `datariver-prep39083`과 `39080`은 변경 대상이 아닙니다. 기존 PREP를 대상으로 하는 `--port 39083`은 별도의 운영 재배포용이므로 독립 설치에서는 사용하지 않습니다.
 
@@ -147,7 +158,7 @@ MCL 최신 수집과 K9 의미 검색 준비는 정상이어야 합니다. `SOUR
 
 | 위치 | 확인 내용 |
 |---|---|
-| `runtime/dev_deploy/build/` | 빌드 로그와 결과 |
+| `runtime/dev_deploy/build/` | 빌드 로그(`<소스해시>.log`)와 결과(`receipt.json`) |
 | `runtime/dev_deploy/dev/readiness.json` | K9·MCL 준비 상태 |
 | 같은 디렉터리의 `smoke.json`, `smoke-failure.json` | 운영 smoke 결과 또는 실패 진단 |
 | 같은 디렉터리의 `features.json`, `acceptance.json` | 기능 검증과 최종 배포 결과 |

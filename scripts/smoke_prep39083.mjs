@@ -583,7 +583,7 @@ const readinessTimeoutMs = boundedMilliseconds(
 async function main() {
   const started = processStarted
   if (!requestOrigin || !username || !passwordFile || !output
-    || !/^[0-9a-f]{40}$/.test(smokeProductSha)) {
+    || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(smokeProductSha)) {
     throw smokeFailure(
       'INPUT',
       'PREP_SMOKE_INPUT_INVALID',
@@ -648,6 +648,7 @@ async function main() {
   const report = {
     contract: 'DATARIVER_PREP39083_SMOKE_V2',
     smoke_product_sha: smokeProductSha,
+    source_identity_kind: smokeProductSha.length === 64 ? 'FOLDER_SHA256' : 'GIT_COMMIT',
     generated_at: new Date().toISOString(),
     origin: transportOrigin,
     request_origin: requestOrigin,
@@ -1331,7 +1332,7 @@ async function main() {
 main().catch(async (error) => {
   const failure = {
     contract: 'DATARIVER_PREP39083_SMOKE_FAILURE_V2',
-    smoke_product_sha: /^[0-9a-f]{40}$/.test(smokeProductSha) ? smokeProductSha : null,
+    smoke_product_sha: /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(smokeProductSha) ? smokeProductSha : null,
     stage: error?.stage || 'UNKNOWN',
     classification: error?.classification || 'PREP_SMOKE_UNKNOWN_FAILED',
     status_class: Number.isInteger(error?.status) ? `${Math.floor(error.status / 100)}xx` : null,

@@ -2,36 +2,23 @@ ARG NODE_IMAGE=node:22.19.0-bookworm-slim
 FROM ${NODE_IMAGE} AS build
 WORKDIR /source
 COPY package.json package-lock.json ./
+COPY deploy/npm-build.sh /usr/local/bin/datariver-npm-build
 # HTTP_PROXY/HTTPS_PROXY/NO_PROXY are Docker's predefined proxy build arguments.
 # Deliberately do not redeclare them with ARG: Docker then excludes their values
 # from image history and cache metadata. A private, step-local npmrc is removed in
 # the same layer so proxy credentials and the bounded TLS relaxation cannot persist.
-RUN set -eu; \
-    export NPM_CONFIG_USERCONFIG=/tmp/datariver-npmrc; \
-    npm_proxy="${HTTPS_PROXY:-${HTTP_PROXY:-}}"; \
-    if [ -n "${npm_proxy}" ]; then \
-      npm config set proxy "${npm_proxy}"; \
-      npm config set https-proxy "${npm_proxy}"; \
-      npm config set strict-ssl false; \
-    fi; \
-    npm ci --ignore-scripts; \
-    if [ -n "${npm_proxy}" ]; then \
-      npm config delete proxy; \
-      npm config delete https-proxy; \
-      npm config set strict-ssl true; \
-      test "$(npm config get strict-ssl)" = true; \
-    fi; \
-    rm -f "${NPM_CONFIG_USERCONFIG}"
+RUN sh /usr/local/bin/datariver-npm-build ci --ignore-scripts
 COPY frontend/ ./frontend/
 COPY backend/ ./backend/
 RUN npm run build
-RUN npm prune --omit=dev
+RUN sh /usr/local/bin/datariver-npm-build prune --omit=dev
 
 FROM ${NODE_IMAGE}
 ARG POC_SOURCE_COMMIT=unrecorded
 LABEL org.opencontainers.image.title="DataRiver" \
       org.opencontainers.image.description="Node API and React UI with local opaque-session authentication" \
       org.opencontainers.image.revision="${POC_SOURCE_COMMIT}" \
+      io.datariver.source.sha256="${POC_SOURCE_COMMIT}" \
       io.datariver.authentication="LOCAL_OPAQUE_SESSION"
 WORKDIR /app
 COPY --from=build /source/frontend/dist/ ./frontend/dist/

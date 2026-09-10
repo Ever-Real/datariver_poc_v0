@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,12 +14,15 @@ import secrets
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
+
+from build_progress import run_build
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +38,7 @@ RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
 KNOWN_GOOD_IMAGE = f"datariver-poc:{BASE_PRODUCT}"
 ADMIN_USERNAME = "admin"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SOURCE_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HASH64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -164,35 +169,58 @@ def atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
     atomic_private_text(path, json.dumps(value, sort_keys=True, indent=2) + "\n")
 
 
-def git_head() -> str:
-    head = output("git", "rev-parse", "HEAD")
-    require(SHA40.fullmatch(head) is not None, "GIT_HEAD_INVALID")
-    return head
+def source_paths() -> list[Path]:
+    # Private/generated inputs never enter the Docker context. No Git index,
+    # history, remote, external manifest, or application image is consulted.
+    excluded = {".git", ".DS_Store", ".npmrc", ".yarnrc", "node_modules", "dist",
+                "dist-poc", "coverage", "__pycache__", ".pytest_cache", ".idea", ".vscode"}
+    paths: list[Path] = []
+    def visit(directory: Path) -> None:
+        for path in sorted(directory.iterdir()):
+            name = path.name
+            if (name in excluded or name.startswith(".env")
+                    or path.suffix.lower() in {".pem", ".key", ".crt", ".p12", ".pfx", ".tsbuildinfo", ".pyc"}
+                    or (path.parent == ROOT and name in {"runtime", "README.md"})):
+                continue
+            metadata = path.lstat()
+            require(not stat.S_ISLNK(metadata.st_mode), "SOURCE_SYMLINK_NOT_SUPPORTED:" + str(path.relative_to(ROOT)))
+            if stat.S_ISDIR(metadata.st_mode):
+                visit(path)
+            else:
+                require(stat.S_ISREG(metadata.st_mode), "SOURCE_NOT_REGULAR:" + str(path.relative_to(ROOT)))
+                paths.append(path)
+    visit(ROOT)
+    return sorted(paths)
+
+
+def source_archive(paths: Sequence[Path] | None = None) -> bytes:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as target:
+        for path in source_paths() if paths is None else paths:
+            # Stable across hosts/mtime/ownership. Preserve the executable bit.
+            with path.open("rb") as source:
+                metadata = os.fstat(source.fileno())
+                require(stat.S_ISREG(metadata.st_mode), "SOURCE_NOT_REGULAR")
+                info = tarfile.TarInfo(path.relative_to(ROOT).as_posix())
+                info.size = metadata.st_size
+                info.mode = 0o755 if metadata.st_mode & 0o111 else 0o644
+                target.addfile(info, source)
+    return archive.getvalue()
 
 
 def build_input_hash() -> str:
-    # The archived current commit is the complete build context, including Dockerfile.
-    try:
-        archive = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT,
-                                 capture_output=True, check=True).stdout
-    except subprocess.CalledProcessError as error:
-        raise DeployError("SOURCE_ARCHIVE_FAILED") from error
-    return hashlib.sha256(archive).hexdigest()
+    return hashlib.sha256(source_archive()).hexdigest()
 
 
 def validate_source(*, clean: bool) -> tuple[str, int]:
-    require(Path(output("git", "rev-parse", "--show-toplevel")).resolve() == ROOT, "GIT_ROOT_INVALID")
-    require(output("git", "branch", "--show-current") in {BRANCH, ""}, "BRANCH_INVALID")
-    if clean:
-        require(not output("git", "status", "--porcelain", "--untracked-files=all"), "WORKTREE_NOT_CLEAN")
-    tracked = output("git", "ls-files").splitlines()
-    require(not any(re.search(r"(?:^|/)(?:\.env(?:\.|$)|runtime/)|\.(?:pem|key)$", p) for p in tracked),
-            "SECRET_OR_RUNTIME_INPUT_TRACKED")
+    # `clean` is retained for internal callers; current content, not Git state,
+    # is authoritative. Deploy requires the exact snapshot recorded at build.
+    paths = source_paths()
     for relative in ("deploy/Dockerfile", "deploy/compose.yaml", "package.json", "package-lock.json",
                      "backend/src/bootstrap.mjs", "frontend/index.html", "frontend/vite.config.ts"):
         require((ROOT / relative).is_file(), "BUILD_INPUT_MISSING:" + relative)
     require(read_json(ROOT / "package.json").get("type") == "module", "PACKAGE_SCOPE_INVALID")
-    return git_head(), len(tracked)
+    return hashlib.sha256(source_archive(paths)).hexdigest(), len(paths)
 
 
 def private_env_file(path: Path) -> tuple[Path, str]:
@@ -369,7 +397,7 @@ def deployment_kafka_values(profile: Target, generated: Mapping[str, Any]) -> di
 
 
 def write_derived_environment(
-    source: Mapping[str, str], profile: Target, head: str, *, state: str,
+    source: Mapping[str, str], profile: Target, head: str, *, state: str, image: str | None = None,
     discovered: Mapping[str, str] | None = None,
     preserved_runtime: Mapping[str, str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
@@ -380,6 +408,8 @@ def write_derived_environment(
                 require(not values.get(key) or values[key] == preserved_runtime[key], "PREP_GENERATED_VALUE_DRIFT")
                 values[key] = preserved_runtime[key]
     values.update(fixed_values(profile, head))
+    if image is not None:
+        values["DEV_DEPLOY_SOURCE_IMAGE"] = image
     if profile.validation_only:
         values["POC_PUBLIC_ORIGIN"] = replace_origin_port(source["POC_PUBLIC_ORIGIN"], profile.port)
     generated = read_json(RUNTIME_ROOT / profile.name / "generated.json") if (RUNTIME_ROOT / profile.name / "generated.json").exists() else {}
@@ -478,55 +508,114 @@ def state_volume_identity(profile: Target) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(result))
 
 
-def build_image(head: str) -> tuple[str, str]:
+def build_proxy_environment(path: Path | None) -> tuple[dict[str, str], list[str]]:
+    environment = dict(os.environ)
+    keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+    if path is not None:
+        resolved, before = private_env_file(path)
+        values = operator_environment(resolved)
+        require(sha256_file(resolved) == before, "PREP_ENV_CHANGED")
+        for key in keys:
+            if key in values or key.lower() in values:
+                value = values.get(key, values.get(key.lower(), ""))
+                environment[key] = environment[key.lower()] = value
+    arguments: list[str] = []
+    for key in keys:
+        if key in environment or key.lower() in environment:
+            value = environment.get(key, environment.get(key.lower(), ""))
+            environment[key] = environment[key.lower()] = value
+            # Docker reads these values from the CLI environment; never argv/logs.
+            arguments.extend(("--build-arg", key, "--build-arg", key.lower()))
+    print("BUILD_NETWORK|proxy_input=" + ("ENV_FILE" if path else "SHELL_OR_DOCKER_CONFIG")
+          + "|runtime_provider_env=NOT_FORWARDED", flush=True)
+    return environment, arguments
+
+
+def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | None = None) -> tuple[str, str]:
     docker_platform()
+    if not no_cache:
+        try:
+            image, image_id = require_built_image(head)
+        except DeployError:
+            pass  # Missing/obsolete receipt or image: build the current snapshot.
+        else:
+            print(f"SOURCE_BUILD|status=REUSED|source_sha256={head}|image={image}", flush=True)
+            return image, image_id
     image = source_image(head)
+    present = subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False)
+    if present.returncode == 0:
+        # An explicit rebuild must not move an image reference used by a deployment.
+        image += "-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     before = protected_state()
     log = RUNTIME_ROOT / "build" / f"{head}.log"
-    archive = subprocess.run(["git", "archive", "--format=tar", head], cwd=ROOT,
-                             capture_output=True, check=True).stdout
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("w", encoding="utf-8") as stream:
-        built = subprocess.run([
-        "docker", "build", "--no-cache", "--platform", "linux/amd64",
-        "--build-arg", f"POC_SOURCE_COMMIT={head}", "--tag", image,
-        "--file", "deploy/Dockerfile", "-",
-    ], input=archive, cwd=ROOT,
-                               stdout=stream, stderr=subprocess.STDOUT, check=False)
-    require(built.returncode == 0, "SOURCE_BUILD_FAILED:see_runtime_log")
+    archive = source_archive()
+    require(hashlib.sha256(archive).hexdigest() == head, "SOURCE_CHANGED_BEFORE_BUILD")
+    arguments = ["docker", "build", "--progress=plain", "--platform", "linux/amd64"]
+    environment, proxy_arguments = build_proxy_environment(build_env_file)
+    arguments.extend(proxy_arguments)
+    if no_cache:
+        arguments.append("--no-cache")
+    arguments.extend(["--build-arg", f"POC_SOURCE_COMMIT={head}", "--tag", image,
+                      "--file", "deploy/Dockerfile", "-"])
+    with tempfile.TemporaryFile() as context:
+        context.write(archive)
+        context.seek(0)
+        exit_code = run_build(arguments, cwd=ROOT, archive=context, log_path=log, environment=environment)
+    assert_protected_unchanged(before)
+    require(exit_code == 0, f"SOURCE_BUILD_FAILED:exit={exit_code}:log={log}")
+    require(build_input_hash() == head, "SOURCE_CHANGED_DURING_BUILD:rebuild_current_source")
     document = json.loads(output("docker", "image", "inspect", image))[0]
     labels = document.get("Config", {}).get("Labels", {}) or {}
     image_id = document.get("Id")
     require(isinstance(image_id, str) and image_id.startswith("sha256:"), "BUILT_IMAGE_ID_INVALID")
     require(labels.get("org.opencontainers.image.revision") == head, "BUILT_IMAGE_REVISION_INVALID")
+    require(labels.get("io.datariver.source.sha256") == head, "BUILT_SOURCE_HASH_INVALID")
     require(document.get("Os") == "linux" and document.get("Architecture") == "amd64", "BUILT_PLATFORM_INVALID")
     require(image != KNOWN_GOOD_IMAGE, "KNOWN_GOOD_IMAGE_TAG_COLLISION")
-    assert_protected_unchanged(before)
     atomic_private_json(RUNTIME_ROOT / "build" / "receipt.json", {
-        "contract": "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1", "head": head,
+        "contract": "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V2", "source_sha256": head,
+        "source_identity_kind": "FOLDER_SHA256", "git_dependency": False,
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
-        "no_cache": True, "artifact_branch_dependency": False,
-        "built_at": datetime.now(UTC).isoformat(),
-        "build_input_sha256": build_input_hash(),
+        "no_cache": no_cache, "artifact_branch_dependency": False,
+        "built_at": datetime.now(UTC).isoformat(), "log": str(log),
+        "build_input_sha256": head,
     })
     return image, image_id
 
 
 def require_built_image(head: str) -> tuple[str, str]:
     receipt = read_json(RUNTIME_ROOT / "build" / "receipt.json")
-    image = source_image(head)
+    image = receipt.get("image", "")
+    image_pattern = re.escape(source_image(head)) + r"(?:-[0-9]{8}T[0-9]{12}Z)?"
     require(
-        receipt.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1"
-        and receipt.get("head") == head and receipt.get("image") == image
-        and receipt.get("no_cache") is True and receipt.get("artifact_branch_dependency") is False
-        and receipt.get("build_input_sha256") == build_input_hash(),
-        "SOURCE_BUILD_RECEIPT_INVALID",
+        receipt.get("contract") == "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V2"
+        and receipt.get("source_sha256") == head
+        and isinstance(image, str) and re.fullmatch(image_pattern, image) is not None
+        and receipt.get("source_identity_kind") == "FOLDER_SHA256"
+        and receipt.get("git_dependency") is False
+        and receipt.get("artifact_branch_dependency") is False
+        and receipt.get("build_input_sha256") == head == build_input_hash(),
+        "SOURCE_BUILD_RECEIPT_INVALID:run_build_for_current_source",
     )
     document = json.loads(output("docker", "image", "inspect", image))[0]
     image_id = document.get("Id")
     require(image_id == receipt.get("image_id"), "SOURCE_BUILD_IMAGE_CHANGED")
-    require((document.get("Config", {}).get("Labels", {}) or {}).get("org.opencontainers.image.revision") == head, "SOURCE_BUILD_REVISION_CHANGED")
+    labels = document.get("Config", {}).get("Labels", {}) or {}
+    require(labels.get("org.opencontainers.image.revision") == head
+            and labels.get("io.datariver.source.sha256") == head, "SOURCE_BUILD_REVISION_CHANGED")
+    require(document.get("Os") == "linux" and document.get("Architecture") == "amd64", "BUILT_PLATFORM_INVALID")
     return image, image_id
+
+
+def show_build_log(*, follow: bool) -> int:
+    logs = list((RUNTIME_ROOT / "build").glob("*.log"))
+    require(bool(logs), "BUILD_LOG_NOT_FOUND:run_from_source_directory")
+    log = max(logs, key=lambda path: path.stat().st_mtime_ns)
+    print(f"BUILD_LOG|path={log}", flush=True)
+    arguments = ["tail", "-n", "60"]
+    if follow:
+        arguments.append("-f")
+    return subprocess.call([*arguments, str(log)])
 
 
 def subprocess_environment(values: Mapping[str, str]) -> dict[str, str]:
@@ -774,9 +863,9 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None, publ
     if runtime_file.is_file() and not profile.validation_only:
         private_env_file(runtime_file)
         preserved = read_env(runtime_file)
-    derived, values = write_derived_environment(source, profile, head, state=state, preserved_runtime=preserved)
+    derived, values = write_derived_environment(source, profile, head, state=state, image=image, preserved_runtime=preserved)
     discovered = provider_preflight(image, values, validation_only=profile.validation_only)
-    derived, values = write_derived_environment(source, profile, head, state=state, discovered=discovered, preserved_runtime=preserved)
+    derived, values = write_derived_environment(source, profile, head, state=state, image=image, discovered=discovered, preserved_runtime=preserved)
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     prefix = compose_prefix(profile, derived)
     validate_compose(profile, prefix, image)
@@ -786,7 +875,7 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None, publ
         old_image = old_web.get("Image", "")
         old_revision = (old_web.get("Labels") or {}).get("org.opencontainers.image.revision", "")
         require(old_image in {image, KNOWN_GOOD_IMAGE}
-                or (old_image.startswith("datariver-dev-deploy-source:") and SHA40.fullmatch(old_revision)),
+                or (old_image.startswith("datariver-dev-deploy-source:") and SOURCE_ID.fullmatch(old_revision)),
                 "EXISTING_WEB_OWNER_INVALID")
     wait_state(prefix, profile, existing)
     password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
@@ -805,7 +894,8 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None, publ
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
         "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
-        "accepted_at": datetime.now(UTC).isoformat(), "branch": BRANCH, "head": head,
+        "accepted_at": datetime.now(UTC).isoformat(), "branch": BRANCH, "source_sha256": head,
+        "source_identity_kind": "FOLDER_SHA256",
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
         "profile": profile.name, "project": profile.project, "port": profile.port,
         "env_sha256": source_hash, "source_env_unchanged": True,
@@ -835,19 +925,28 @@ def preflight_line(values: Mapping[str, str]) -> str:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check-source", "preflight", "build", "validate-39081", "deploy"))
+    parser.add_argument("command", choices=("check-source", "preflight", "build", "build-log", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--admin-password-file", type=Path)
     parser.add_argument("--port", type=int, choices=(39083, 39091), default=None,
                         help="Default: datariver-dev on 39091; explicit 39083 targets the existing PREP project")
     parser.add_argument("--public-origin", help="Browser origin on a new host, including the selected port")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--no-cache", action="store_true", help="Force a clean source build instead of reusing the image/cache")
+    parser.add_argument("--build-env-file", type=Path,
+                        help="Read only HTTP_PROXY/HTTPS_PROXY/NO_PROXY for build from this private env file and optional sidecar")
+    parser.add_argument("--follow", action="store_true", help="Follow the most recent build log")
     return parser.parse_args()
 
 
 def main() -> int:
     arguments = parse_arguments()
     try:
+        require(not arguments.no_cache or arguments.command == "build", "NO_CACHE_BUILD_ONLY")
+        require(arguments.build_env_file is None or arguments.command == "build", "BUILD_ENV_FILE_BUILD_ONLY")
+        require(not arguments.follow or arguments.command == "build-log", "FOLLOW_BUILD_LOG_ONLY")
+        if arguments.command == "build-log":
+            return show_build_log(follow=arguments.follow)
         head, count = validate_source(clean=arguments.command in {"build", "deploy"})
         if arguments.command == "validate-39081":
             require(arguments.port is None, "VALIDATION_PORT_OPTION_CONFLICT")
@@ -855,7 +954,7 @@ def main() -> int:
         else:
             profile = PREP_39083 if arguments.port == 39083 else DEV_39091
         if arguments.command == "check-source":
-            print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|head={head}|tracked={count}|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
+            print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|source_sha256={head}|files={count}|git_dependency=NONE|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
             return 0
         if arguments.command == "preflight":
             values, before = deployment_environment(arguments.env_file, profile, arguments.public_origin)
@@ -863,13 +962,16 @@ def main() -> int:
             print(preflight_line(values))
             return 0
         if arguments.command == "build":
-            image, image_id = build_image(head)
-            print(f"SOURCE_BUILD|status=PASS|branch={BRANCH}|head={head}|image={image}|image_digest={image_id}|no_cache=Y|artifact_dependency=NONE")
+            image, image_id = build_image(head, no_cache=arguments.no_cache, build_env_file=arguments.build_env_file)
+            print(f"SOURCE_BUILD|status=PASS|branch={BRANCH}|source_sha256={head}|image={image}|image_digest={image_id}|no_cache_requested={'Y' if arguments.no_cache else 'N'}|artifact_dependency=NONE")
             return 0
         require(arguments.apply, "DEPLOY_REQUIRES_APPLY")
         deploy(profile, arguments.env_file, arguments.admin_password_file, arguments.public_origin)
         print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS|p39080=UNTOUCHED|p39083={'DEPLOYED' if not profile.validation_only else 'UNTOUCHED'}")
         return 0
+    except KeyboardInterrupt:
+        print("INTERRUPTED|operation=" + arguments.command, file=sys.stderr)
+        return 130
     except DeployError as error:
         print(f"FAILED|code={error}", file=sys.stderr)
         return 2
