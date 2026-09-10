@@ -130,6 +130,8 @@ def run(
             text=True, capture_output=True, check=False,
         )
     if completed.returncode:
+        if progress is not None and progress.failure_code:
+            raise DeployError(progress.failure_code)
         raise DeployError(f"COMMAND_FAILED:{Path(arguments[0]).name}:{arguments[-1]}")
     return completed
 
