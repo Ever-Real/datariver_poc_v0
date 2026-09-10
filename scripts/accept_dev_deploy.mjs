@@ -212,8 +212,13 @@ try {
     fail('KNOWLEDGE_GRAPH_VERSION_NOT_PUBLISHED')
   }
   // The existing visualization API selects a connected root instead of the first N nodes.
+  const snapshotQuery = new URLSearchParams({ maximum_nodes: '200', maximum_edges: '400', maximum_hops: '2', direction: 'BOTH' })
+  if (candidate.graph_type === 'LINEAGE') {
+    // Column lineage can be a larger disconnected component. Impact questions require datasets.
+    for (const type of ['class.table', 'class.view', 'class.dataset']) snapshotQuery.append('node_type', type)
+  }
   const snapshot = await jsonRequest(
-    `${origin}/poc-api/knowledge/graphs/${encodedGraph}/releases/${encodedRelease}/snapshot?maximum_nodes=200&maximum_edges=400&maximum_hops=2&direction=BOTH`,
+    `${origin}/poc-api/knowledge/graphs/${encodedGraph}/releases/${encodedRelease}/snapshot?${snapshotQuery}`,
     { headers: { Cookie: cookie } },
   )
   if (snapshot.body?.release?.id !== candidate.active_release_id
@@ -229,6 +234,7 @@ try {
   const selection = result.target_selection = {
     status: 'SEARCHING', source: null, catalog_page_limit: 10, lineage_read_limit: 20,
     catalog_pages: 0, graph_candidates: 0, catalog_candidates: 0, lineage_reads: 0,
+    graph_nodes: snapshot.body.nodes.length, graph_edges: snapshot.body.edges.length, graph_dataset_hints: 0,
     catalog_complete: false, lineage_truncated: false, self_loops: 0, read_only: true,
   }
   const checked = new Set()
@@ -269,6 +275,7 @@ try {
       ? [edge.source_id, edge.target_id] : [edge.target_id, edge.source_id])
     .map((id) => graphNodes.get(id)?.properties?.external_urn || graphNodes.get(id)?.properties?.dataset_urn || id)
     .filter((id) => typeof id === 'string' && id.startsWith('urn:li:dataset:') && id.length <= 4096))].slice(0, 100)
+  selection.graph_dataset_hints = hints.length
   for (let offset = 0; offset < hints.length && !table
     && selection.lineage_reads < selection.lineage_read_limit; offset += 10) {
     const batch = hints.slice(offset, offset + 10)
