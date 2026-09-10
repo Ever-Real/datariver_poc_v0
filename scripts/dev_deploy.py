@@ -300,9 +300,11 @@ def env_preflight(path: Path) -> tuple[dict[str, str], str]:
     require(isinstance(core, list) and all(isinstance(key, str) for key in core), "ENV_CONTRACT_INVALID")
     missing = [key for key in core if not values.get(key) or values[key].startswith("CHANGE_ME")]
     provider_required = (
-        "AIRFLOW_URL", "AIRFLOW_USERNAME", "AIRFLOW_PASSWORD", "POC_AIRFLOW_SERVICE_TOKEN",
+        "AIRFLOW_URL", "AIRFLOW_USERNAME", "AIRFLOW_PASSWORD",
         "MINIO_URL", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
     )
+    # POC_AIRFLOW_SERVICE_TOKEN authenticates optional inbound registration jobs,
+    # not Airflow provider access. The HTTP endpoint remains fail-closed without it.
     missing.extend(key for key in provider_required if not values.get(key) or values[key].startswith("CHANGE_ME"))
     sasl = [values.get(key, "") for key in (
         "POC_MCL_KAFKA_SASL_MECHANISM", "POC_MCL_KAFKA_SASL_USERNAME", "POC_MCL_KAFKA_SASL_PASSWORD",
@@ -584,7 +586,12 @@ def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | Non
 
 
 def require_built_image(head: str) -> tuple[str, str]:
-    receipt = read_json(RUNTIME_ROOT / "build" / "receipt.json")
+    receipt_path = RUNTIME_ROOT / "build" / "receipt.json"
+    require(receipt_path.exists(), "SOURCE_BUILD_REQUIRED:run_build_for_current_source")
+    try:
+        receipt = read_json(receipt_path)
+    except DeployError as error:
+        raise DeployError("SOURCE_BUILD_RECEIPT_INVALID:run_build_for_current_source") from error
     image = receipt.get("image", "")
     image_pattern = re.escape(source_image(head)) + r"(?:-[0-9]{8}T[0-9]{12}Z)?"
     require(
@@ -918,6 +925,7 @@ def preflight_line(values: Mapping[str, str]) -> str:
     return (
         "PREP_ENV_PREFLIGHT|status=PASS|datahub=SET|chat=SET|embedding=SET|"
         f"mcl_broker={'SET' if values.get('POC_MCL_KAFKA_BROKERS') else 'ABSENT'}|"
+        f"airflow_service_token={'SET' if values.get('POC_AIRFLOW_SERVICE_TOKEN') else 'ABSENT'}|"
         "mcl_topic=DISCOVERED_AT_DEPLOY|mcl_schema_registry=DISCOVERED_AT_DEPLOY|"
         "mcl_auth=VALID|mcl_source_hash=DISCOVERED_AT_DEPLOY|mcl_schema_hash=DISCOVERED_AT_DEPLOY|blocker=NONE"
     )
