@@ -12,6 +12,13 @@ import time
 from typing import Mapping, Sequence
 
 
+DEPLOY_STAGES = (
+    "SOURCE_IMAGE", "ENV_TARGET", "PROVIDER_PREFLIGHT", "COMPOSE_CONFIG",
+    "STATE_SERVICES", "BOOTSTRAP", "WEB_START", "K9_MCL_READINESS",
+    "SMOKE", "FEATURES", "FINAL_VERIFY",
+)
+
+
 class DeployProgress:
     def __init__(self, path: Path, project: str, *, heartbeat_seconds: float = 15):
         self.path = path
@@ -20,6 +27,7 @@ class DeployProgress:
         self.started = time.monotonic()
         self.stage_started = self.started
         self.current_stage = "DEPLOY"
+        self.current_step = 0
         self.lock = threading.RLock()
         self.stopped = threading.Event()
 
@@ -37,7 +45,8 @@ class DeployProgress:
         with self.lock:
             now = time.monotonic()
             line = (f"DEPLOY_PROGRESS|project={self.project}|stage={self.current_stage}"
-                    f"|status={status}|elapsed_seconds={int(now-self.started)}"
+                    f"|status={status}|step={self.current_step}/{len(DEPLOY_STAGES)}"
+                    f"|elapsed_seconds={int(now-self.started)}"
                     f"|stage_seconds={int(now-self.stage_started)}")
             if step is not None:
                 line += f"|smoke_step={step}|step_status={step_status}"
@@ -55,6 +64,7 @@ class DeployProgress:
     def stage(self, name: str):
         with self.lock:
             self.current_stage = name
+            self.current_step = DEPLOY_STAGES.index(name) + 1 if name in DEPLOY_STAGES else "?"
             self.stage_started = time.monotonic()
             self.emit("STARTED")
         try:

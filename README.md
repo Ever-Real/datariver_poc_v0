@@ -146,7 +146,7 @@ npm 설치·production 의존성 정리는 각 단계에서 임시 프록시 설
 
 `deploy --apply`는 새 프로젝트의 상태를 구성하고 Web을 기동합니다. 재배포에서는 해당 프로젝트의 호환되는 상태와 비밀정보를 재사용합니다. 빌드 후 소스코드를 수정한 경우에는 다시 빌드해야 배포할 수 있습니다(루트 `README.md`만 수정한 경우에는 재빌드 불필요).
 
-배포 중 `DEPLOY_PROGRESS`에 단계 시작·완료·실패·중단과 총/단계 경과 시간이 표시됩니다. 오래 걸리는 단계에서는 15초마다 `RUNNING`을 표시합니다. 순서는 소스·대상 확인 → provider 연결 → 상태 서비스 → bootstrap → Web → K9/MCL readiness → smoke → 기능 검증 → 최종 확인입니다. `RUNNING`은 실행 또는 대기 중이라는 뜻이며, 기능이 정상이라는 판정은 아닙니다. smoke의 `smoke_step=1/6`~`6/6`과 `step_status`도 실시간 표시하며 전체 성공은 최종 acceptance로 확인합니다.
+배포 중 `DEPLOY_PROGRESS`에 전체 11단계 중 현재 순서(`step=1/11`~`11/11`), 단계 시작·완료·실패·중단, 총/단계 경과 시간이 표시됩니다. 오래 걸리는 단계에서는 15초마다 `RUNNING`을 표시합니다. 순서는 소스·이미지 확인 → 환경·대상 확인 → provider 연결 → Compose 확인 → 상태 서비스 → bootstrap → Web → K9/MCL readiness → smoke → 기능 검증 → 최종 확인입니다. 단계 번호는 시간 기준 진행률이 아니며, `RUNNING`은 실행 또는 대기 중이라는 뜻입니다. 9/11 단계의 smoke 내부 진행은 `smoke_step=1/6`~`6/6`과 `step_status`로 별도 표시합니다. 전체 성공은 최종 acceptance로 확인합니다.
 
 진행 기록은 `runtime/dev_deploy/dev/deploy-*.log`에 실행별로 남습니다(권한 `0600`). 비밀값·원시 provider 응답은 기록하지 않습니다. 별도 터미널에서 `./scripts/dev_deploy deploy-log --follow`로 최신 기록을 볼 수 있습니다. `--port 39083`을 지정하면 해당 PREP의 진행 기록을 읽습니다. 이전 실행기의 실행 중 작업에는 표시가 소급 적용되지 않습니다.
 
