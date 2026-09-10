@@ -57,7 +57,7 @@ const username = option('--username')
 const passwordFile = option('--password-file')
 const output = option('--output')
 const phase = option('--phase', 'all')
-if (!['all', 'readiness', 'features'].includes(phase)) fail('PHASE_INVALID')
+if (!['all', 'readiness', 'features', 'graph-target'].includes(phase)) fail('PHASE_INVALID')
 
 if (!requestOrigin || !username || !passwordFile || !output) fail('INPUT_INVALID')
 for (const value of [origin, requestOrigin]) {
@@ -66,7 +66,7 @@ for (const value of [origin, requestOrigin]) {
 }
 
 const result = {
-  contract: 'DATARIVER_DEV_DEPLOY_ACCEPTANCE_V1',
+  contract: phase === 'graph-target' ? 'DATARIVER_DEV_DEPLOY_GRAPH_TARGET_CHECK_V1' : 'DATARIVER_DEV_DEPLOY_ACCEPTANCE_V1',
   phase,
   started_at: new Date().toISOString(),
   accepted_at: null,
@@ -114,7 +114,7 @@ try {
   const headers = { Cookie: cookie, Origin: requestOrigin, 'Content-Type': 'application/json' }
 
   let managedAssets
-  if (phase !== 'features') {
+  if (!['features', 'graph-target'].includes(phase)) {
   check = 'K9'
   await retryReady(async () => {
     managedAssets = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets`, {
@@ -183,7 +183,7 @@ try {
     result.k9_semantic = 'READY'
     result.general_evidence = 'SAME_DEPLOY_CANONICAL_SMOKE'
     managedAssets = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets`, { headers: { Cookie: cookie } })
-  } else {
+  } else if (phase !== 'graph-target') {
   check = 'AUTO_GENERAL_CHAT'
   const auto = await jsonRequest(`${origin}/poc-api/llm/chat`, {
     method: 'POST', headers,
@@ -193,6 +193,7 @@ try {
     || typeof auto.body?.answer !== 'string' || !auto.body.answer.trim()) fail('AUTO_CHAT_CONTRACT')
   result.auto_chat = 'PASS'
   }
+  if (!managedAssets) managedAssets = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets`, { headers: { Cookie: cookie } })
 
   // Read the published graph once, both for preview acceptance and target discovery.
   check = 'KNOWLEDGE_GRAPH_PREVIEW'
@@ -315,7 +316,7 @@ try {
     fail(selection.status === 'NO_TEST_DATA' ? 'NO_TEST_DATA_GRAPH_RELATION' : 'GRAPH_TARGET_SEARCH_LIMIT')
   }
   selection.status = 'FOUND'
-  for (const [name, mode, expected, question] of [
+  if (phase !== 'graph-target') for (const [name, mode, expected, question] of [
     ['graph_chat', 'GRAPH', 'GRAPH', `${table.name} 테이블을 변경하면 어떤 테이블이 영향을 받지?`],
     ['auto_graph', 'AUTO', 'GRAPH', `${table.name} 테이블의 downstream 변경 영향과 데이터 계보를 분석해줘.`],
     ['vector_chat', 'VECTOR', 'VECTOR', `${table.name} 테이블의 설명과 메타데이터를 검색해줘.`],
@@ -346,7 +347,8 @@ try {
 
   }
   check = 'RECEIPT_WRITE'
-  result.accepted_at = new Date().toISOString()
+  if (phase === 'graph-target') result.target_checked_at = new Date().toISOString()
+  else result.accepted_at = new Date().toISOString()
   await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 })
   process.stdout.write(`${JSON.stringify(result)}\n`)
 } catch (error) {

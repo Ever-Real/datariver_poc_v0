@@ -878,6 +878,62 @@ def running_web(profile: Target, image: str, image_id: str) -> dict[str, Any]:
     return web
 
 
+def check_graph_target(profile: Target, request_origin: str | None, supplied_password: Path | None, head: str) -> None:
+    """Run only authorized target discovery against the existing DEV Web; not acceptance."""
+    require(profile == DEV_39091, "GRAPH_TARGET_CHECK_DEV_ONLY")
+    require(bool(request_origin), "GRAPH_TARGET_CHECK_REQUIRES_PUBLIC_ORIGIN")
+    require(request_origin.rstrip("/") == replace_origin_port(request_origin, profile.port), "PUBLIC_ORIGIN_TARGET_MISMATCH")
+    password = supplied_password or RUNTIME_ROOT / profile.name / "admin-password"
+    require(password.exists(), "ADMIN_PASSWORD_FILE_REQUIRED")
+    metadata = password.lstat()
+    require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+            and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "ADMIN_PASSWORD_FILE_INSECURE")
+    web = project_containers(profile).get("web", {})
+    labels = web.get("Config", {}).get("Labels", {}) or {}
+    require(web.get("State", {}).get("Running") is True
+            and labels.get("com.docker.compose.project") == profile.project
+            and labels.get("com.docker.compose.service") == "web", "GRAPH_TARGET_WEB_NOT_RUNNING")
+    receipt_root = RUNTIME_ROOT / profile.name
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    context = {"acceptance_authority": False, "verifier_source_sha256": head,
+               "web_container_id": web["Id"], "web_image_id": web["Image"],
+               "started_at": datetime.now(timezone.utc).isoformat()}
+    atomic_private_json(receipt_root / "graph-target.json", {**context, "status": "RUNNING"})
+    # A unique receipt cannot accidentally reuse a previous success after an early failure.
+    with tempfile.TemporaryDirectory(prefix="graph-target-", dir=receipt_root) as temporary:
+        result_path = Path(temporary) / "result.json"
+        command = [
+            "docker", "run", "--rm", "--pull=never", "--platform", "linux/amd64",
+            "--network", f"container:{web['Id']}", "--user", f"{os.getuid()}:{os.getgid()}",
+            "--volume", f"{ROOT}:/source:ro", "--volume", f"{temporary}:/receipts",
+            "--volume", f"{password.resolve()}:/run/dev-deploy-admin-password:ro", web["Image"], "node",
+            "/source/scripts/accept_dev_deploy.mjs", "--phase", "graph-target",
+            "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin.rstrip("/"),
+            "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
+            "--output", "/receipts/result.json",
+        ]
+        print("GRAPH_TARGET_CHECK|status=RUNNING|deploy=NOT_RUN|smoke=NOT_RUN", flush=True)
+        completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+        report = read_json(result_path) if result_path.is_file() else {}
+    valid = report.get("contract") == "DATARIVER_DEV_DEPLOY_GRAPH_TARGET_CHECK_V1" and report.get("phase") == "graph-target"
+    selection = report.get("target_selection", {}) if valid else {}
+    selection = selection if isinstance(selection, dict) else {}
+    passed = (completed.returncode == 0 and valid and selection.get("status") == "FOUND"
+              and report.get("knowledge_graph_preview") == "PASS"
+              and report.get("accepted_at") is None and bool(report.get("target_checked_at")))
+    code = report.get("failure_code") if valid else None
+    code = code if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", code) else "GRAPH_TARGET_CHECK_FAILED"
+    status = "PASS" if passed else "FAILED"
+    atomic_private_json(receipt_root / "graph-target.json", {
+        **context, "status": status, "result": report, "finished_at": datetime.now(timezone.utc).isoformat(),
+    })
+    counts = "".join(f"|{key}={selection[key]}" for key in (
+        "graph_nodes", "graph_edges", "graph_dataset_hints", "graph_candidates", "catalog_candidates", "lineage_reads",
+    ) if type(selection.get(key)) is int and selection[key] >= 0)
+    print(f"GRAPH_TARGET_CHECK|status={status}{counts}|code={'NONE' if passed else code}|acceptance=NOT_RUN")
+    require(passed, f"GRAPH_TARGET_CHECK_FAILED:{code}")
+
+
 def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password: Path, request_origin: str, head: str,
                    progress: DeployProgress | None = None) -> dict[str, Any]:
     receipt_root = RUNTIME_ROOT / profile.name
@@ -1045,7 +1101,7 @@ def preflight_line(values: Mapping[str, str]) -> str:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check-source", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
+    parser.add_argument("command", choices=("check-source", "check-graph-target", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     password_input = parser.add_mutually_exclusive_group()
     password_input.add_argument("--admin-password-file", type=Path)
@@ -1083,6 +1139,9 @@ def main() -> int:
             profile = VALIDATION_39081
         else:
             profile = PREP_39083 if arguments.port == 39083 else DEV_39091
+        if arguments.command == "check-graph-target":
+            check_graph_target(profile, arguments.public_origin, arguments.admin_password_file, head)
+            return 0
         if arguments.command == "check-source":
             print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|source_sha256={head}|files={count}|git_dependency=NONE|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")
             return 0

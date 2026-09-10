@@ -174,6 +174,14 @@ PostgreSQL 메모리 제한은 4GiB입니다. 기존 `datariver-dev` 컨테이�
 
 기능 검증의 영향도 질문은 발행된 계보 그래프의 테이블·뷰·데이터셋 유형에서 후보를 고른 뒤, 현재 권한으로 조회한 Catalog 테이블과 실제 downstream 관계를 확인해 실행합니다. 후보가 없으면 최대 10페이지의 Catalog에서 분산 선택하며, lineage 조회는 전체 최대 20회입니다. `NO_TEST_DATA_GRAPH_RELATION`은 확인한 전체 Catalog 테이블에 검증 가능한 관계가 없는 경우이고, `GRAPH_TARGET_SEARCH_LIMIT`은 조회 범위 안에서 찾지 못해 존재 여부를 확정할 수 없는 경우입니다. 두 경우 모두 기능 PASS로 처리하지 않습니다. 컬럼 계보의 연결 수가 많아 테이블 후보가 가려지지 않도록 기존 유형 필터를 사용합니다. `features.json`의 `target_selection`에 그래프 노드·관계·데이터셋 후보 수, Catalog 조회 수·선택 경로·범위 제한 여부를 기록합니다.
 
+39091에서 대상 선택이 실패하면 소스를 업데이트한 뒤 다음 명령으로 해당 구간만 확인합니다. 현재 `datariver-dev` Web의 이미지로 임시 검사 컨테이너를 실행하며, 기존 admin 비밀번호 파일로 로그인해 그래프·Catalog·lineage를 조회합니다. 빌드, Web 재시작, provider 수집, LLM 질의, full smoke는 실행하지 않습니다.
+
+```bash
+./scripts/dev_deploy check-graph-target --public-origin "http://대상PC_IP:39091"
+```
+
+결과는 `runtime/dev_deploy/dev/graph-target.json`에 저장합니다. 이 명령의 PASS는 검증 가능한 테이블과 관계를 찾았다는 뜻이며 배포 acceptance가 아닙니다. 최종 배포에는 현재 소스로 정상 build/deploy와 전체 acceptance를 수행합니다.
+
 ## 배포 확인과 장애 대응
 
 빌드 성공만으로 배포 완료가 아닙니다. 자동 검증이 모두 통과하고 브라우저에서 관리자 로그인, 검색, 일반 대화, 실제 테이블 영향도 질문, 지식그래프 미리보기와 기존 데이터 보존을 확인해야 합니다.
