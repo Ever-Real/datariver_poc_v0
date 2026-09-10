@@ -814,12 +814,19 @@ def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Ma
           "|container_preserved=Y|volume_preserved=Y", flush=True)
 
 
-def password_file(profile: Target, *, existing_state: bool, supplied: Path | None) -> Path:
+def password_file(profile: Target, *, existing_state: bool, supplied: Path | None, prompt: bool = False) -> Path:
+    require(not (prompt and supplied), "ADMIN_PASSWORD_INPUT_CONFLICT")
     if supplied:
         resolved, _ = private_env_file(supplied)
         require(bool(resolved.read_text(encoding="utf-8").strip()), "ADMIN_PASSWORD_EMPTY")
         return resolved
     target = RUNTIME_ROOT / profile.name / "admin-password"
+    if prompt:
+        require(sys.stdin.isatty(), "ADMIN_PASSWORD_TTY_REQUIRED:use_admin_password_file")
+        value = getpass.getpass("현재 admin 비밀번호 (화면에 표시되지 않음): ")
+        require(len(value) >= 12, "ADMIN_PASSWORD_INVALID")
+        atomic_private_text(target, value + "\n")
+        return target
     if target.exists():
         resolved, _ = private_env_file(target)
         return resolved
@@ -887,7 +894,7 @@ def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password
         run((*common, "/source/scripts/accept_dev_deploy.mjs", "--phase", "readiness",
              "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
              "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
-             "--output", "/receipts/readiness.json"))
+             "--output", "/receipts/readiness.json"), progress=progress)
         readiness = read_json(receipt_root / "readiness.json")
         require(readiness.get("mcl_current") == "READY" and readiness.get("k9_semantic") == "READY",
                 "FOCUSED_READINESS_NOT_READY")
@@ -912,7 +919,7 @@ def run_acceptance(profile: Target, image: str, web: Mapping[str, Any], password
              "--canonical-smoke", smoke_output, "--source-sha", head,
              "--origin", "http://127.0.0.1:8080", "--request-origin", request_origin,
              "--username", ADMIN_USERNAME, "--password-file", "/run/dev-deploy-admin-password",
-             "--output", "/receipts/features.json"))
+             "--output", "/receipts/features.json"), progress=progress)
         features = read_json(receipt_root / "features.json")
         require(all(features.get(key) == "PASS" for key in (
             "auto_chat", "graph_chat", "auto_graph", "auto_search", "vector_chat", "knowledge_graph_preview")),
@@ -930,11 +937,12 @@ def unexpected_5xx(web: Mapping[str, Any], since: str) -> bool:
     return any(pattern.search(completed.stdout + completed.stderr) for pattern in patterns)
 
 
-def deploy(profile: Target, env_file: Path, supplied_password: Path | None, public_origin: str | None = None) -> None:
+def deploy(profile: Target, env_file: Path, supplied_password: Path | None, public_origin: str | None = None,
+           prompt_password: bool = False) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log = RUNTIME_ROOT / profile.name / f"deploy-{stamp}-{os.getpid()}.log"
     with DeployProgress(log, profile.project) as progress:
-        execute_deploy(profile, env_file, supplied_password, public_origin, progress)
+        execute_deploy(profile, env_file, supplied_password, public_origin, progress, prompt_password=prompt_password)
 
 
 def show_deploy_log(profile: Target, *, follow: bool) -> int:
@@ -949,7 +957,7 @@ def show_deploy_log(profile: Target, *, follow: bool) -> int:
 
 
 def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | None,
-                   public_origin: str | None, progress: DeployProgress) -> None:
+                   public_origin: str | None, progress: DeployProgress, *, prompt_password: bool = False) -> None:
     stage = progress.stage
     with stage("SOURCE_IMAGE"):
         head, _ = validate_source(clean=True)
@@ -987,7 +995,7 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
     with stage("STATE_SERVICES"):
         wait_state(prefix, profile, existing)
     with stage("BOOTSTRAP"):
-        password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
+        password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password, prompt=prompt_password)
         reconcile(prefix, password, existing_state=state == "EXISTING")
     with stage("WEB_START"):
         started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1039,7 +1047,10 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("check-source", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
-    parser.add_argument("--admin-password-file", type=Path)
+    password_input = parser.add_mutually_exclusive_group()
+    password_input.add_argument("--admin-password-file", type=Path)
+    password_input.add_argument("--prompt-admin-password", action="store_true",
+                                help="Prompt securely for the current admin password and update the local deployment copy")
     parser.add_argument("--port", type=int, choices=(39083, 39091), default=None,
                         help="Default: datariver-dev on 39091; explicit 39083 targets the existing PREP project")
     parser.add_argument("--public-origin", help="Browser origin on a new host, including the selected port")
@@ -1054,6 +1065,10 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     try:
+        require(not arguments.prompt_admin_password or arguments.command in {"deploy", "validate-39081"},
+                "ADMIN_PASSWORD_PROMPT_DEPLOY_ONLY")
+        require(not arguments.prompt_admin_password or sys.stdin.isatty(),
+                "ADMIN_PASSWORD_TTY_REQUIRED:use_admin_password_file")
         require(not arguments.no_cache or arguments.command == "build", "NO_CACHE_BUILD_ONLY")
         require(arguments.build_env_file is None or arguments.command == "build", "BUILD_ENV_FILE_BUILD_ONLY")
         require(not arguments.follow or arguments.command in {"build-log", "deploy-log"}, "FOLLOW_LOG_ONLY")
@@ -1081,7 +1096,8 @@ def main() -> int:
             print(f"SOURCE_BUILD|status=PASS|branch={BRANCH}|source_sha256={head}|image={image}|image_digest={image_id}|no_cache_requested={'Y' if arguments.no_cache else 'N'}|artifact_dependency=NONE")
             return 0
         require(arguments.apply, "DEPLOY_REQUIRES_APPLY")
-        deploy(profile, arguments.env_file, arguments.admin_password_file, arguments.public_origin)
+        deploy(profile, arguments.env_file, arguments.admin_password_file, arguments.public_origin,
+               prompt_password=arguments.prompt_admin_password)
         print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS|p39080=UNTOUCHED|p39083={'DEPLOYED' if not profile.validation_only else 'UNTOUCHED'}")
         return 0
     except KeyboardInterrupt:

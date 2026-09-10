@@ -14,6 +14,15 @@ function fail(code, options = {}) {
   throw Object.assign(new Error(code), options)
 }
 
+function safeCode(value) {
+  return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value) ? value : null
+}
+
+function safeRca(value) {
+  if (!value) return null
+  return Object.fromEntries(['state', 'stage', 'code', 'detail'].map((key) => [key, safeCode(value[key])]))
+}
+
 async function privateSecret(path) {
   const metadata = await lstat(path)
   if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
@@ -29,10 +38,16 @@ async function jsonRequest(url, init = {}) {
   try {
     response = await fetch(url, { ...init, signal: AbortSignal.timeout(requestBudget()) })
   } catch (error) {
-    throw Object.assign(error, { retryable: !init.method || ['GET', 'HEAD'].includes(init.method) })
+    fail(error?.name === 'TimeoutError' ? 'REQUEST_TIMEOUT' : 'REQUEST_CONNECTIVITY_FAILED', {
+      retryable: !init.method || ['GET', 'HEAD'].includes(init.method),
+    })
   }
   const body = await response.json().catch(() => null)
-  if (!response.ok) fail(`HTTP_${response.status}`, { status: response.status, retryable: [408, 429, 502, 503, 504].includes(response.status) })
+  if (!response.ok) fail(`HTTP_${response.status}`, {
+    status: response.status,
+    providerCode: safeCode(body?.code),
+    retryable: [408, 429, 502, 503, 504].includes(response.status),
+  })
   return { response, body }
 }
 
@@ -52,13 +67,15 @@ for (const value of [origin, requestOrigin]) {
 
 const result = {
   contract: 'DATARIVER_DEV_DEPLOY_ACCEPTANCE_V1',
-  accepted_at: new Date().toISOString(),
-  auto_chat: 'FAIL',
-  graph_chat: 'FAIL',
-  knowledge_graph_preview: 'FAIL',
-  mcl_current: 'FAIL',
-  mcl_history: 'UNKNOWN',
-  k9_semantic: 'FAIL',
+  phase,
+  started_at: new Date().toISOString(),
+  accepted_at: null,
+  auto_chat: 'NOT_RUN',
+  graph_chat: 'NOT_RUN',
+  knowledge_graph_preview: 'NOT_RUN',
+  mcl_current: 'NOT_RUN',
+  mcl_history: 'NOT_RUN',
+  k9_semantic: 'NOT_RUN',
   auto_graph: 'NOT_RUN',
   auto_search: 'NOT_RUN',
   vector_chat: 'NOT_RUN',
@@ -84,6 +101,7 @@ async function retryReady(operation, timeoutMs = 1_200_000) {
 }
 
 let cookie
+let check = 'ADMIN_LOGIN'
 try {
   const password = await privateSecret(passwordFile)
   const login = await jsonRequest(`${origin}/auth/login`, {
@@ -97,6 +115,7 @@ try {
 
   let managedAssets
   if (phase !== 'features') {
+  check = 'K9'
   await retryReady(async () => {
     managedAssets = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets`, {
       headers: { Cookie: cookie },
@@ -112,16 +131,18 @@ try {
         || lifecycle.projectors[name].desired_snapshot_id !== sourceId
         || lifecycle.projectors[name].active_snapshot_id !== sourceId)) {
       const semantic = lifecycle?.projectors?.SEMANTIC
-      result.k9_rca = {
+      result.k9_rca = safeRca({
         stage: semantic?.diagnostic?.stage || 'AGGREGATE_READINESS',
         code: semantic?.diagnostic?.code || lifecycle?.aggregate?.reason || 'K9_NOT_READY',
         detail: semantic?.diagnostic?.failure_detail_code || null,
-      }
+      })
       fail('K9_SEMANTIC_NOT_READY', { terminal: !lifecycle || [lifecycle?.source, lifecycle?.aggregate, ...Object.values(lifecycle?.projectors || {})].some((item) => item?.status === 'FAILED') })
     }
   })
   result.k9_semantic = 'READY'
+  result.k9_rca = null
 
+  check = 'MCL'
   const week = new Date()
   week.setUTCDate(week.getUTCDate() - ((week.getUTCDay() + 6) % 7))
   const weekStart = week.toISOString().slice(0, 10)
@@ -134,21 +155,23 @@ try {
       || (body?.history_completeness === 'DEGRADED_GAP'
         && body?.history_gap_reason === 'RETENTION_EXPIRED')
     if (body?.capture_state !== 'CAPTURE_CAUGHT_UP' || !acceptedHistory) {
-      result.mcl_rca = {
+      result.mcl_rca = safeRca({
         state: body?.capture_state || 'UNKNOWN',
         stage: body?.capture_failure_stage || null,
         code: body?.capture_failure_classification || 'MCL_CURRENT_NOT_READY',
         detail: body?.capture_failure_detail_code || null,
-      }
+      })
       fail('MCL_CURRENT_NOT_READY', { terminal: !['CAPTURING', 'CAPTURE_IN_PROGRESS', 'CAPTURE_PENDING', 'CAPTURE_CATCHING_UP', 'CONTIGUOUS_CAPTURE_RECORDED', 'CAPTURE_CAUGHT_UP'].includes(body?.capture_state) || (body?.capture_state === 'CAPTURE_CAUGHT_UP' && !acceptedHistory) })
     }
     result.mcl_history = body.history_completeness
   })
   result.mcl_current = 'READY'
+  result.mcl_rca = null
   }
 
   if (phase !== 'readiness') {
   if (phase === 'features') {
+    check = 'CANONICAL_SMOKE_EVIDENCE'
     const smoke = JSON.parse(await readFile(option('--canonical-smoke'), 'utf8'))
     if (smoke.smoke_product_sha !== option('--source-sha') || smoke.request_origin !== requestOrigin
       || smoke.origin !== origin || smoke.llm_general !== 'PASS'
@@ -161,6 +184,7 @@ try {
     result.general_evidence = 'SAME_DEPLOY_CANONICAL_SMOKE'
     managedAssets = await jsonRequest(`${origin}/poc-api/knowledge/managed-assets`, { headers: { Cookie: cookie } })
   } else {
+  check = 'AUTO_GENERAL_CHAT'
   const auto = await jsonRequest(`${origin}/poc-api/llm/chat`, {
     method: 'POST', headers,
     body: JSON.stringify({ question: '데이터 계보가 무엇인지 일반적으로 설명해줘.', mode: 'AUTO' }),
@@ -171,6 +195,7 @@ try {
   }
 
   // Bounded positive target selection, across pages; do not assert on an accidental first25.
+  check = 'CATALOG_LINEAGE'
   let table
   let cursor
   let lineageReads = 0
@@ -204,6 +229,7 @@ try {
     ['vector_chat', 'VECTOR', 'VECTOR', `${table.name} 테이블의 설명과 메타데이터를 검색해줘.`],
     ['auto_search', 'AUTO', 'VECTOR', `${table.name} 테이블의 설명과 메타데이터를 검색해줘.`],
   ]) {
+    check = name.toUpperCase()
     const chat = await jsonRequest(`${origin}/poc-api/llm/chat`, {
       method: 'POST', headers, body: JSON.stringify({ question, mode }),
     })
@@ -226,6 +252,7 @@ try {
     result[name] = 'PASS'
   }
 
+  check = 'KNOWLEDGE_GRAPH_PREVIEW'
   const candidate = (Array.isArray(managedAssets.body?.items) ? managedAssets.body.items : [])
     .find((item) => ['READY', 'ACTIVE'].includes(item?.status) && typeof item?.active_release_id === 'string'
       && item.active_release_id && item?.projection_state === 'READY')
@@ -249,14 +276,33 @@ try {
   }
   result.knowledge_graph_preview = 'PASS'
   }
+  check = 'RECEIPT_WRITE'
+  result.accepted_at = new Date().toISOString()
   await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 })
   process.stdout.write(`${JSON.stringify(result)}\n`)
 } catch (error) {
-  const code = /^[A-Z][A-Z0-9_]{0,95}$/.test(error?.message || '')
-    ? error.message : 'FOCUSED_ACCEPTANCE_FAILED'
+  const code = safeCode(error?.message) || 'FOCUSED_ACCEPTANCE_FAILED'
+  const failedKey = {
+    K9: 'k9_semantic', MCL: 'mcl_current', AUTO_GENERAL_CHAT: 'auto_chat',
+    GRAPH_CHAT: 'graph_chat', AUTO_GRAPH: 'auto_graph', VECTOR_CHAT: 'vector_chat',
+    AUTO_SEARCH: 'auto_search', KNOWLEDGE_GRAPH_PREVIEW: 'knowledge_graph_preview',
+  }[check]
+  if (failedKey && ![401, 403].includes(error?.status)) result[failedKey] = 'FAIL'
+  const diagnostic = check === 'K9' ? safeRca(result.k9_rca)
+    : check === 'MCL' ? safeRca(result.mcl_rca) : null
+  const failure = {
+    contract: 'DATARIVER_DEV_DEPLOY_ACCEPTANCE_FAILURE_V1',
+    status: 'FAILED', phase, stage: check, code,
+    http_status: Number.isInteger(error?.status) ? error.status : null,
+    provider_code: safeCode(error?.providerCode),
+    diagnostic,
+    failed_at: new Date().toISOString(),
+  }
+  result.accepted_at = null
   result.failure_code = code
+  result.failure = failure
   await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined)
-  process.stderr.write(`${JSON.stringify({ status: 'FAILED', code })}\n`)
+  process.stderr.write(`${JSON.stringify(failure)}\n`)
   process.exitCode = 2
 } finally {
   if (cookie) {

@@ -162,6 +162,14 @@ PostgreSQL 메모리 제한은 4GiB입니다. 기존 `datariver-dev` 컨테이�
 
 환경 파일이 다른 위치에 있으면 `preflight`와 `deploy`에 `--env-file <파일경로>`를 지정합니다. `.optional`은 지정한 환경 파일명 뒤에 같은 접미사를 붙여 같은 디렉터리에 둡니다. 관리자 계정은 `admin`이며 생성 비밀번호 파일은 로컬에서만 확인합니다. 재배포 시 필요한 기존 관리자 비밀번호를 비대화형으로 제공하려면 `--admin-password-file <보안파일경로>`를 사용합니다.
 
+웹에서 관리자 비밀번호를 변경해도 배포 디렉터리의 `runtime/dev_deploy/dev/admin-password`는 자동으로 갱신되지 않습니다. 변경 후 첫 재배포에는 현재 비밀번호를 숨김 입력하는 옵션을 사용합니다.
+
+```bash
+./scripts/dev_deploy deploy --port 39091 --env-file deploy/.env.prep --public-origin "http://대상PC_IP:39091" --prompt-admin-password --apply
+```
+
+6/11 초기 구성 단계에서 현재 `admin` 비밀번호를 입력합니다. 입력값은 화면·명령 이력에 표시되지 않으며, 로컬 `admin-password` 사본을 권한 `0600`으로 갱신합니다. DB의 비밀번호를 재설정하는 명령이 아니므로 현재 웹 로그인에 사용하는 값을 입력해야 합니다. 이후에는 갱신된 사본을 재사용합니다. 비대화형 실행은 최신 비밀번호가 들어 있는 `--admin-password-file`을 사용하며 두 옵션을 함께 지정하지 않습니다. 인증 실패 시 비밀번호를 확인하고 반복 로그인으로 우회하지 않습니다.
+
 배포 명령은 focused readiness, 운영 smoke 6단계, 검색·대화·그래프 미리보기 검증을 수행합니다. 성공 직후 같은 full smoke를 별도로 반복할 필요는 없습니다. 최초 수집과 임베딩은 데이터 규모에 따라 시간이 필요합니다. 외부 DataHub·GX·Airflow·MinIO·모델은 연결한 서비스를 공유하므로, 독립된 Docker 프로젝트가 외부 데이터까지 복제하거나 격리하는 것은 아닙니다.
 
 ## 배포 확인과 장애 대응
@@ -173,11 +181,11 @@ MCL 최신 수집과 K9 의미 검색 준비는 정상이어야 합니다. `SOUR
 | 위치 | 확인 내용 |
 |---|---|
 | `runtime/dev_deploy/build/` | 빌드 로그(`<소스해시>.log`)와 결과(`receipt.json`) |
-| `runtime/dev_deploy/dev/readiness.json` | K9·MCL 준비 상태 |
+| `runtime/dev_deploy/dev/readiness.json` | K9·MCL 준비 상태와 인증·연결 실패 원인 |
 | 같은 디렉터리의 `smoke.json`, `smoke-failure.json` | 운영 smoke 결과 또는 실패 진단 |
 | 같은 디렉터리의 `features.json`, `acceptance.json` | 기능 검증과 최종 배포 결과 |
 
-실패하면 먼저 출력된 단계·오류 코드와 해당 결과 파일을 확인합니다. Smoke 실패 시 현재 실행이 반환한 `SMOKE_FAILED|stage=...|code=...|http=...`를 표시합니다. 이전 단계 실패 후에도 읽기 전용 진단을 계속할 수 있으므로, 마지막 smoke 번호가 실패 원인을 뜻하지는 않습니다. `smoke-failure.json`의 `failed_at`, `stage`, `classification`, `readiness`를 이번 실행과 대조합니다. 초기 단계 실패에서는 뒤 단계의 파일이 없을 수 있으므로 이전 실행 결과를 이번 성공 증거로 사용하지 않습니다.
+실패하면 먼저 출력된 단계·오류 코드와 해당 결과 파일을 확인합니다. 8/11 실패는 `READINESS_FAILED`, 10/11 실패는 `FEATURES_FAILED`에 검사 단계·코드·HTTP 상태를 표시합니다. 인증 실패로 시작하지 못한 기능 검사는 `NOT_RUN`이며 K9·MCL 자체 장애나 성공을 뜻하지 않습니다. `readiness.json`·`features.json`의 `failure`에 안전한 오류 정보와 실패 시각을 남기며, `accepted_at`은 해당 검사가 성공했을 때만 기록합니다. Smoke 실패 시 현재 실행이 반환한 `SMOKE_FAILED|stage=...|code=...|http=...`를 표시합니다. 이전 단계 실패 후에도 읽기 전용 진단을 계속할 수 있으므로, 마지막 smoke 번호가 실패 원인을 뜻하지는 않습니다. `smoke-failure.json`의 `failed_at`, `stage`, `classification`, `readiness`를 이번 실행과 대조합니다. 초기 단계 실패에서는 뒤 단계의 파일이 없을 수 있으므로 이전 실행 결과를 이번 성공 증거로 사용하지 않습니다.
 
 설정 누락·인증 오류·종료된 실패를 무조건 재시도하지 않습니다. 볼륨 삭제, DB 초기화, 관리자 재생성, 무조건적인 그래프 재구성으로 우회하지 않습니다. 자동 복구를 가정하지 말고 기존 이미지와 데이터 호환성을 확인해 승인된 절차로 복구합니다.
 

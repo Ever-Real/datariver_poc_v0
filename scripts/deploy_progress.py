@@ -126,10 +126,10 @@ class DeployProgress:
         with self.lock:
             self.current_stage = name
             self.current_step = DEPLOY_STAGES.index(name) + 1 if name in DEPLOY_STAGES else "?"
+            self.failure_code = None
             if name == "SMOKE":
                 self.smoke_status.clear()
                 self.smoke_announced.clear()
-                self.failure_code = None
             self.stage_started = time.monotonic()
             self.emit("STARTED")
         try:
@@ -176,15 +176,40 @@ class DeployProgress:
                 failure = json.loads(line)
             except (ValueError, TypeError):
                 continue
-            if not isinstance(failure, dict) or failure.get("contract") != "DATARIVER_PREP39083_SMOKE_FAILURE_V2":
+            if not isinstance(failure, dict):
                 continue
-            stage = safe_code(failure.get("stage"))
-            code = safe_code(failure.get("classification"))
-            status_class = failure.get("status_class")
-            http = status_class if status_class in ("1xx", "2xx", "3xx", "4xx", "5xx") else "UNKNOWN"
+            contract = failure.get("contract")
+            if contract == "DATARIVER_PREP39083_SMOKE_FAILURE_V2":
+                prefix = "SMOKE_FAILED"
+                stage = safe_code(failure.get("stage"))
+                code = safe_code(failure.get("classification"))
+                status_class = failure.get("status_class")
+                http = status_class if status_class in ("1xx", "2xx", "3xx", "4xx", "5xx") else "UNKNOWN"
+                extra = ""
+            elif contract == "DATARIVER_DEV_DEPLOY_ACCEPTANCE_FAILURE_V1":
+                expected = {"K9_MCL_READINESS": "readiness", "FEATURES": "features"}.get(self.current_stage)
+                if expected is None or failure.get("phase") != expected or failure.get("status") != "FAILED":
+                    continue
+                prefix = "READINESS_FAILED" if expected == "readiness" else "FEATURES_FAILED"
+                stage = safe_code(failure.get("stage"))
+                code = safe_code(failure.get("code"))
+                status = failure.get("http_status")
+                http = str(status) if type(status) is int and 100 <= status <= 599 else "NONE"
+                diagnostic = failure.get("diagnostic")
+                diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+                extra = ""
+                fields = {"provider_code": failure.get("provider_code"),
+                          "cause_stage": diagnostic.get("stage"), "cause_code": diagnostic.get("code"),
+                          "detail": diagnostic.get("detail"), "state": diagnostic.get("state")}
+                for key, value in fields.items():
+                    bounded = safe_code(value)
+                    if bounded != "UNKNOWN":
+                        extra += f"|{key}={bounded}"
+            else:
+                continue
             with self.lock:
-                self.failure_code = f"SMOKE_FAILED:{stage}:{code}"
-                summary = f"SMOKE_FAILED|stage={stage}|code={code}|http={http}"
+                self.failure_code = f"{prefix}:{stage}:{code}"
+                summary = f"{prefix}|stage={stage}|code={code}|http={http}{extra}"
                 self.log.write(summary + "\n")
                 self.log.flush()
                 print(summary, flush=True)
