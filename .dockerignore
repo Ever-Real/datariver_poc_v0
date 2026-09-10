@@ -4,6 +4,7 @@
 **/dist
 **/coverage
 **/__pycache__
+**/.venv
 runtime/
 **/*.test.*
 **/*.spec.*

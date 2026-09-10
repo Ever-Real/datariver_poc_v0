@@ -11,6 +11,7 @@ frontend/dist/
 frontend/dist-poc/
 coverage/
 .pytest_cache/
+.venv/
 
 node_modules/
 **/dist/

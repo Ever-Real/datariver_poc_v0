@@ -17,7 +17,7 @@ import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -172,7 +172,7 @@ def atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
 def source_paths() -> list[Path]:
     # Private/generated inputs never enter the Docker context. No Git index,
     # history, remote, external manifest, or application image is consulted.
-    excluded = {".git", ".DS_Store", ".npmrc", ".yarnrc", "node_modules", "dist",
+    excluded = {".git", ".venv", ".DS_Store", ".npmrc", ".yarnrc", "node_modules", "dist",
                 "dist-poc", "coverage", "__pycache__", ".pytest_cache", ".idea", ".vscode"}
     paths: list[Path] = []
     def visit(directory: Path) -> None:
@@ -545,7 +545,7 @@ def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | Non
     present = subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False)
     if present.returncode == 0:
         # An explicit rebuild must not move an image reference used by a deployment.
-        image += "-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        image += "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     before = protected_state()
     log = RUNTIME_ROOT / "build" / f"{head}.log"
     archive = source_archive()
@@ -577,7 +577,7 @@ def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | Non
         "source_identity_kind": "FOLDER_SHA256", "git_dependency": False,
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
         "no_cache": no_cache, "artifact_branch_dependency": False,
-        "built_at": datetime.now(UTC).isoformat(), "log": str(log),
+        "built_at": datetime.now(timezone.utc).isoformat(), "log": str(log),
         "build_input_sha256": head,
     })
     return image, image_id
@@ -880,7 +880,7 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None, publ
     wait_state(prefix, profile, existing)
     password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password)
     reconcile(prefix, password, existing_state=state == "EXISTING")
-    started = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--force-recreate", "--no-deps", "--wait", "web"))
     web = running_web(profile, image, image_id)
     acceptance = run_acceptance(profile, image, web, password, values["POC_PUBLIC_ORIGIN"], head)
@@ -894,7 +894,7 @@ def deploy(profile: Target, env_file: Path, supplied_password: Path | None, publ
     require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     atomic_private_json(RUNTIME_ROOT / profile.name / "acceptance.json", {
         "contract": "DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1",
-        "accepted_at": datetime.now(UTC).isoformat(), "branch": BRANCH, "source_sha256": head,
+        "accepted_at": datetime.now(timezone.utc).isoformat(), "branch": BRANCH, "source_sha256": head,
         "source_identity_kind": "FOLDER_SHA256",
         "base_product": BASE_PRODUCT, "image": image, "image_id": image_id,
         "profile": profile.name, "project": profile.project, "port": profile.port,
