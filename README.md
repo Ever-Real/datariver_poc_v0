@@ -152,6 +152,10 @@ npm 설치·production 의존성 정리는 각 단계에서 임시 프록시 설
 
 중단 후에는 배포 CLI와 해당 실행의 임시 검증 컨테이너가 끝났는지 확인한 뒤 업데이트합니다. 최초 bootstrap 도중 중단된 상태는 자동 재개를 보장하지 않습니다. 환경 파일, `runtime/`의 생성 비밀정보와 기존 볼륨을 보존하고, 현재 소스를 다시 `build`한 뒤 재배포합니다. 일반 빌드는 Docker 캐시를 사용할 수 있습니다.
 
+PostgreSQL 메모리 제한은 4GiB입니다. 기존 `datariver-dev` 컨테이너에 더 작은 제한이 남아 있으면 deploy가 해당 컨테이너의 제한을 올립니다. 작은 제한에서 발생한 OOM 이력이 있으면 기존 Web을 먼저 멈추고 PostgreSQL을 한 번 재시작한 뒤 정상 배포 순서를 진행합니다. 컨테이너·볼륨 identity와 생성 비밀정보를 보존하며, 과거 OOM과 조치는 `runtime/dev_deploy/dev/postgres-recovery.json`에 남깁니다. 이미 4GiB 이상에서 발생한 OOM은 자동 재시작으로 우회하지 않고 원인 확인을 요구합니다. 이 기존 컨테이너 보정은 `datariver-dev`에만 적용합니다.
+
+`PREVIOUS_DEPLOY_VERIFIER_RUNNING:<컨테이너ID>`가 나오면 이전 deploy의 임시 검증 컨테이너가 아직 실행 중입니다. 해당 ID의 용도와 이전 CLI 종료 여부를 확인한 뒤 그 검증 작업을 종료하고 다시 실행합니다. 실제 서비스나 다른 프로젝트를 일괄 중단하지 않습니다.
+
 현재 디렉터리에 빌드 결과가 없으면 `SOURCE_BUILD_REQUIRED`, 빌드 기록이 손상됐거나 현재 소스와 맞지 않으면 `SOURCE_BUILD_RECEIPT_INVALID`로 배포 전에 종료합니다. 이 경우 현재 소스에서 `build`를 성공시킨 뒤 배포합니다. 다른 디렉터리의 `receipt.json`을 복사하거나 수동으로 만들지 않습니다.
 
 기존 `datariver-prep39083`과 `39080`은 변경 대상이 아닙니다. 기존 PREP를 대상으로 하는 `--port 39083`은 별도의 운영 재배포용이므로 독립 설치에서는 사용하지 않습니다.

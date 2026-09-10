@@ -39,6 +39,7 @@ ACCEPT_TOOL = ROOT / "scripts/accept_dev_deploy.mjs"
 RUNTIME_ROOT = ROOT / "runtime/dev_deploy"
 KNOWN_GOOD_IMAGE = f"datariver-poc:{BASE_PRODUCT}"
 ADMIN_USERNAME = "admin"
+POSTGRES_MEMORY_BYTES = 4 * 1024**3
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SOURCE_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -744,9 +745,71 @@ def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, An
     state_services = ("pgvector", "neo4j", "redis")
     if existing:
         require(all(service in existing for service in state_services), "EXISTING_STATE_SERVICES_INCOMPLETE")
+        recover_postgres_memory(profile, prefix, existing)
         run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--no-recreate", "--wait", *state_services))
     else:
         run((*prefix, "up", "-d", "--no-build", "--pull", "missing", "--wait", *state_services))
+
+
+def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Mapping[str, Any]) -> None:
+    # This repairs the confirmed 768MiB first-install OOM in datariver-dev only.
+    # Existing Actual PREP and the legacy validation project are never modified here.
+    if profile != DEV_39091:
+        return
+    pg = existing["pgvector"]
+    memory = pg.get("HostConfig", {}).get("Memory")
+    require(isinstance(memory, int) and memory >= 0, "POSTGRES_MEMORY_IDENTITY_INVALID")
+    oom = pg.get("State", {}).get("OOMKilled") is True
+    if memory == 0 or memory >= POSTGRES_MEMORY_BYTES:
+        require(not oom, "POSTGRES_OOM_AT_SUPPORTED_LIMIT:inspect_host_and_database")
+        return
+    identifier = pg.get("Id", "")
+    labels = pg.get("Config", {}).get("Labels", {}) or {}
+    require(isinstance(identifier, str) and HASH64.fullmatch(identifier) is not None
+            and labels.get("com.docker.compose.project") == profile.project
+            and labels.get("com.docker.compose.service") == "pgvector", "POSTGRES_OWNER_INVALID")
+    mounts = pg.get("Mounts", [])
+    require(any(item.get("Name") == f"{profile.project}_pgvector-data"
+                and item.get("Destination") == "/var/lib/postgresql/data" for item in mounts),
+            "POSTGRES_VOLUME_IDENTITY_INVALID")
+    web = existing.get("web")
+    if web:
+        # An interrupted older CLI can leave its standalone acceptance container alive.
+        for other_id in output("docker", "ps", "--quiet").splitlines():
+            other = json.loads(output("docker", "inspect", other_id))[0]
+            mode = other.get("HostConfig", {}).get("NetworkMode", "")
+            if mode in {f"container:{web['Id']}", f"container:{web.get('Name', '').lstrip('/')}"}:
+                raise DeployError(f"PREVIOUS_DEPLOY_VERIFIER_RUNNING:{other_id}")
+    receipt_path = RUNTIME_ROOT / profile.name / "postgres-recovery.json"
+    recovery = {"container_id": identifier, "memory_before": memory,
+                "memory_target": POSTGRES_MEMORY_BYTES, "historical_oom": oom,
+                "started_at": datetime.now(timezone.utc).isoformat(), "status": "STARTED"}
+    atomic_private_json(receipt_path, recovery)
+    print(f"POSTGRES_RECOVERY|status=STARTED|memory_before_mib={memory//1024**2}"
+          f"|memory_target_mib=4096|historical_oom={'Y' if oom else 'N'}", flush=True)
+    if oom and web and web.get("State", {}).get("Running") is True:
+        run((*prefix, "stop", "--timeout", "30", "web"))
+    swap = pg.get("HostConfig", {}).get("MemorySwap", 0)
+    target_swap = -1 if swap == -1 else max(int(swap or 0), POSTGRES_MEMORY_BYTES * 2)
+    run(("docker", "update", "--memory", str(POSTGRES_MEMORY_BYTES),
+         "--memory-swap", str(target_swap), identifier))
+    # A postmaster can survive a child OOM while Docker retains OOMKilled=true.
+    # One controlled restart starts a new observation window; the old OOM is retained above.
+    if oom:
+        run(("docker", "restart", "--timeout", "60", identifier))
+    after = json.loads(output("docker", "inspect", identifier))[0]
+    require(after.get("Id") == identifier
+            and sorted(after.get("Mounts", []), key=lambda item: item.get("Destination", ""))
+            == sorted(mounts, key=lambda item: item.get("Destination", "")),
+            "POSTGRES_IDENTITY_CHANGED_DURING_RECOVERY")
+    require(after.get("HostConfig", {}).get("Memory") == POSTGRES_MEMORY_BYTES,
+            "POSTGRES_MEMORY_UPDATE_FAILED")
+    require(after.get("State", {}).get("OOMKilled") is not True, "POSTGRES_OOM_AFTER_MEMORY_RECOVERY")
+    recovery.update(status="APPLIED", restarted=oom, memory_after=POSTGRES_MEMORY_BYTES,
+                    completed_at=datetime.now(timezone.utc).isoformat())
+    atomic_private_json(receipt_path, recovery)
+    print(f"POSTGRES_RECOVERY|status=APPLIED|memory_mib=4096|restarted={'Y' if oom else 'N'}"
+          "|container_preserved=Y|volume_preserved=Y", flush=True)
 
 
 def password_file(profile: Target, *, existing_state: bool, supplied: Path | None) -> Path:

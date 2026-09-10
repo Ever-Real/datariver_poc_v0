@@ -190,7 +190,7 @@ services:
       start_period: 15s
       retries: 12
     restart: unless-stopped
-    mem_limit: 768m
+    mem_limit: 4g
     cpus: 0.75
     security_opt:
       - no-new-privileges:true
