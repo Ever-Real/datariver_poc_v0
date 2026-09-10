@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import threading
 import time
+import unicodedata
 from typing import Mapping, Sequence
 
 
@@ -59,20 +61,82 @@ class DeployProgress:
         self.current_step = 0
         self.last_console_at = self.started
         self.smoke_status: dict[str, str] = {}
-        self.smoke_announced: set[str] = set()
         self.failure_code: str | None = None
         self.lock = threading.RLock()
         self.stopped = threading.Event()
+        self._stage_row: str | None = None
+        self._smoke_rows: dict[str, str] = {}
+        self._smoke_printed: dict[str, str] = {}
+        self._live_lines = 0
+        self._external_depth = 0
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         self.log = os.fdopen(descriptor, "w", encoding="utf-8")
+        self.output = sys.stdout
+        self.tty = self.output.isatty()
         self.emit("STARTED")
-        print(f"DEPLOY_LOG|path={self.path}", flush=True)
+        self.message(f"DEPLOY_LOG|path={self.path}")
         self.thread = threading.Thread(target=self.heartbeat, daemon=True)
         self.thread.start()
         return self
+
+    def _clear_live(self):
+        if not self._live_lines:
+            return
+        self.output.write("\r\x1b[2K")
+        for _ in range(self._live_lines - 1):
+            self.output.write("\x1b[1A\r\x1b[2K")
+        self.output.flush()
+        self._live_lines = 0
+
+    def _render_live(self, *, complete: bool = False):
+        if not self.tty or self._external_depth:
+            return
+        self._clear_live()
+        rows = ([self._stage_row] if self._stage_row is not None else [])
+        rows.extend(self._smoke_rows.values())
+        if not rows:
+            return
+        self.output.write("\n".join(rows) + ("\n" if complete else ""))
+        self.output.flush()
+        if not complete:
+            try:
+                columns = os.get_terminal_size(self.output.fileno()).columns
+            except (AttributeError, OSError, ValueError):
+                columns = 80
+            # Account for wide Korean labels when a terminal wraps a row.
+            widths = [sum(0 if unicodedata.combining(char) else
+                          2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+                          for char in row) for row in rows]
+            self._live_lines = sum(max(1, (width - 1) // max(1, columns) + 1)
+                                   for width in widths)
+
+    @contextmanager
+    def external_output(self):
+        """Suspend live rendering around complete external lines or prompts.
+
+        Callers must finish their output at a new line. Private heartbeat
+        records continue while console redraw is paused.
+        """
+        with self.lock:
+            if not self._external_depth:
+                self._clear_live()
+            self._external_depth += 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._external_depth -= 1
+                self.last_console_at = time.monotonic()
+                self._render_live()
+
+    def message(self, text: str):
+        """Print a caller-sanitized message on its own line, preserving progress."""
+        with self.lock:
+            with self.external_output():
+                print(text, file=self.output, flush=True)
 
     def emit(self, status: str, *, step: str | None = None, step_status: str | None = None,
              history: str | None = None):
@@ -92,27 +156,62 @@ class DeployProgress:
             self.log.flush()
             elapsed = int(now - self.stage_started)
             prefix = f"[{self.current_step}/{len(DEPLOY_STAGES)}]"
+            label = STAGE_LABELS.get(self.current_stage, self.current_stage)
+            result = "FAIL" if status == "FAILED" else status
             if step is not None:
-                label = "" if step in self.smoke_announced else f" {SMOKE_LABELS[step]}"
-                self.smoke_announced.add(step)
-                result = " 확인 중" if step_status == "RUNNING" else f" {step_status}"
                 note = " · 이력 공백(RETENTION_EXPIRED)" if history == "DEGRADED_GAP" else ""
-                visible = f"  [{step}]{label}{result}{note}"
+                outcome = "FAIL" if step_status == "FAILED" else step_status
+                suffix = "" if step_status == "RUNNING" else f" [{outcome}]"
+                visible = f"  [{step}] {SMOKE_LABELS[step]}{note}{suffix}"
+                self._smoke_rows[step] = visible
+                if self.tty:
+                    self._render_live()
+                elif step_status != "RUNNING" and self._smoke_printed.get(step) != visible:
+                    print(visible, file=self.output, flush=True)
+                    self._smoke_printed[step] = visible
             elif status == "RUNNING":
                 # Retain detailed private heartbeats, but print only after a
                 # full minute without a new stage or smoke result.
-                if now - self.last_console_at < 60:
+                if now - self.last_console_at < 60 or self._external_depth:
                     return
-                visible = f"{prefix} 실행/대기 중 ({elapsed}초)"
+                if self.tty:
+                    pending = [key for key in self._smoke_rows
+                               if self.smoke_status.get(key) == "RUNNING"]
+                    if pending:
+                        key = pending[-1]
+                        self._smoke_rows[key] = (f"  [{key}] {SMOKE_LABELS[key]}"
+                                                 f" · 실행/대기 중 ({elapsed}초)")
+                    else:
+                        self._stage_row = f"{prefix} {label} · 실행/대기 중 ({elapsed}초)"
+                    self._render_live()
+                else:
+                    print(f"RUNNING|stage={self.current_stage}|실행/대기 중 ({elapsed}초)",
+                          file=self.output, flush=True)
             elif self.current_stage == "DEPLOY":
                 if status == "STARTED":
                     return
-                visible = f"DEPLOY {status} ({elapsed}초)"
+                self.message(f"DEPLOY {status} ({elapsed}초)")
             elif status == "STARTED":
-                visible = f"{prefix} {STAGE_LABELS.get(self.current_stage, self.current_stage)}"
+                self._stage_row = f"{prefix} {label}"
+                self._smoke_rows.clear()
+                self._smoke_printed.clear()
+                self._render_live()
             else:
-                visible = f"{prefix} {status} ({elapsed}초)"
-            print(visible, flush=True)
+                self._stage_row = f"{prefix} {label} ({elapsed}초) [{result}]"
+                # An unrecognized smoke marker is never promoted to PASS.
+                for key in self._smoke_rows:
+                    if self.smoke_status.get(key) == "RUNNING":
+                        pending_result = result if status != "PASS" else "RUNNING"
+                        self._smoke_rows[key] = f"  [{key}] {SMOKE_LABELS[key]} [{pending_result}]"
+                if self.tty:
+                    self._render_live(complete=True)
+                else:
+                    for key, row in self._smoke_rows.items():
+                        if self._smoke_printed.get(key) != row:
+                            print(row, file=self.output, flush=True)
+                    print(self._stage_row, file=self.output, flush=True)
+                self._stage_row = None
+                self._smoke_rows.clear()
             self.last_console_at = now
 
     def heartbeat(self):
@@ -129,7 +228,6 @@ class DeployProgress:
             self.failure_code = None
             if name == "SMOKE":
                 self.smoke_status.clear()
-                self.smoke_announced.clear()
             self.stage_started = time.monotonic()
             self.emit("STARTED")
         try:
@@ -212,7 +310,7 @@ class DeployProgress:
                 summary = f"{prefix}|stage={stage}|code={code}|http={http}{extra}"
                 self.log.write(summary + "\n")
                 self.log.flush()
-                print(summary, flush=True)
+                self.message(summary)
                 self.last_console_at = time.monotonic()
             return
 

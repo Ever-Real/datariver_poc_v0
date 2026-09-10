@@ -644,14 +644,17 @@ def subprocess_environment(values: Mapping[str, str]) -> dict[str, str]:
 
 def provider_preflight(
     image: str, values: Mapping[str, str], *, validation_only: bool = False,
+    receipt_path: Path | None = None, progress: DeployProgress | None = None,
 ) -> dict[str, str]:
+    if receipt_path:
+        atomic_private_json(receipt_path, {"status": "RUNNING", "checked_at": datetime.now(timezone.utc).isoformat(), "acceptance_authority": False})
     provider_values = dict(values)
     if validation_only:
         # Product preflight validates the actual PREP intranet bind contract;
         # the temporary host-local validation publish remains loopback-only.
         provider_values["POC_BIND_HOST"] = "0.0.0.0"
     environment = subprocess_environment(provider_values)
-    arguments = ["docker", "run", "--rm", "--platform", "linux/amd64"]
+    arguments = ["docker", "run", "--rm", "--pull=never", "--platform", "linux/amd64"]
     for key in sorted(provider_values):
         arguments.extend(("--env", key))
     source_ca = values.get("RUNTIME_CA_CERT_FILE", "").strip()
@@ -659,7 +662,33 @@ def provider_preflight(
         arguments.extend(("--volume", f"{source_ca}:/run/datariver/runtime-ca.pem:ro", "--env", "POC_RUNTIME_CA_CERT_FILE=/run/datariver/runtime-ca.pem"))
     arguments.extend((image, "node", "backend/scripts/provider-preflight.mjs"))
     completed = subprocess.run(arguments, cwd=ROOT, env=environment, text=True, capture_output=True, check=False)
-    require(completed.returncode == 0, "PROVIDER_PREFLIGHT_FAILED")
+    if completed.returncode:
+        failure = {"stage": "CONTAINER_OR_RUNNER", "code": "PROVIDER_PREFLIGHT_RUNNER_FAILED", "http": "NONE"}
+        for line in reversed(completed.stderr.splitlines()):
+            if not line.startswith("{") or len(line) > 65536:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("contract") != "DATARIVER_PREP39083_PROVIDER_PREFLIGHT_V2" or record.get("status") != "FAILED":
+                continue
+            for source, target in (("stage", "stage"), ("classification", "code")):
+                value = record.get(source)
+                if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", value):
+                    failure[target] = value
+            if record.get("status_class") in ("1xx", "2xx", "3xx", "4xx", "5xx"):
+                failure["http"] = record["status_class"]
+            break
+        if receipt_path:
+            atomic_private_json(receipt_path, {"status": "FAILED", **failure,
+                "checked_at": datetime.now(timezone.utc).isoformat(), "acceptance_authority": False})
+        summary = f"PROVIDER_PREFLIGHT|status=FAILED|stage={failure['stage']}|code={failure['code']}|http={failure['http']}"
+        if progress is not None:
+            progress.message(summary)
+        else:
+            print(summary, flush=True)
+        raise DeployError(f"PROVIDER_PREFLIGHT_FAILED:{failure['stage']}:{failure['code']}")
     try:
         result = json.loads(completed.stdout.strip().splitlines()[-1])
         discovery = result["mcl_discovery"]
@@ -679,7 +708,35 @@ def provider_preflight(
         and HASH64.fullmatch(mapped["POC_MCL_SCHEMA_CONTRACT_HASH"]) is not None,
         "MCL_DISCOVERY_IDENTITY_INVALID",
     )
+    if receipt_path:
+        atomic_private_json(receipt_path, {"status": "PASS", "stage": "ALL", "code": "NONE", "http": "NONE",
+            "checked_at": datetime.now(timezone.utc).isoformat(), "acceptance_authority": False})
     return mapped
+
+
+def check_providers(profile: Target) -> None:
+    """Recheck the last DEV deployment's provider inputs without build or service mutation."""
+    require(profile == DEV_39091, "PROVIDER_CHECK_DEV_ONLY")
+    derived = RUNTIME_ROOT / profile.name / "derived.env"
+    require(derived.exists(), "DEPLOY_DERIVED_ENV_REQUIRED")
+    metadata = derived.lstat()
+    require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+            and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "DERIVED_ENV_INSECURE")
+    before = sha256_file(derived)
+    values = read_env(derived)
+    require(values.get("COMPOSE_PROJECT_NAME") == profile.project and values.get("POC_PORT") == str(profile.port), "DERIVED_TARGET_MISMATCH")
+    reference = values.get("DEV_DEPLOY_SOURCE_IMAGE", "")
+    require(reference.startswith("datariver-dev-deploy-source:"), "PROVIDER_CHECK_IMAGE_INVALID")
+    image = json.loads(output("docker", "image", "inspect", reference))[0]
+    require(image.get("Config", {}).get("Labels", {}).get("io.datariver.source.sha256") == values.get("POC_SOURCE_COMMIT")
+            and isinstance(values.get("POC_SOURCE_COMMIT"), str) and HASH64.fullmatch(values["POC_SOURCE_COMMIT"]), "PROVIDER_CHECK_IMAGE_CHANGED")
+    receipt = RUNTIME_ROOT / profile.name / "provider-preflight.json"
+    print("PROVIDER_PREFLIGHT|status=RUNNING|deploy=NOT_RUN|smoke=NOT_RUN", flush=True)
+    try:
+        provider_preflight(image["Id"], values, validation_only=True, receipt_path=receipt)
+    finally:
+        require(sha256_file(derived) == before, "DERIVED_ENV_CHANGED_DURING_CHECK")
+    print("PROVIDER_PREFLIGHT|status=PASS|stage=ALL|code=NONE|http=NONE|acceptance=NOT_RUN")
 
 
 def compose_prefix(profile: Target, environment_file: Path) -> list[str]:
@@ -743,17 +800,17 @@ def require_target_port_ownership(profile: Target) -> None:
         require(project == profile.project, "TARGET_PORT_OWNED_BY_OTHER_PROJECT")
 
 
-def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, Any]) -> None:
+def wait_state(prefix: Sequence[str], profile: Target, existing: Mapping[str, Any], *, progress: DeployProgress | None = None) -> None:
     state_services = ("pgvector", "neo4j", "redis")
     if existing:
         require(all(service in existing for service in state_services), "EXISTING_STATE_SERVICES_INCOMPLETE")
-        recover_postgres_memory(profile, prefix, existing)
+        recover_postgres_memory(profile, prefix, existing, progress=progress)
         run((*prefix, "up", "-d", "--no-build", "--pull", "never", "--no-recreate", "--wait", *state_services))
     else:
         run((*prefix, "up", "-d", "--no-build", "--pull", "missing", "--wait", *state_services))
 
 
-def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Mapping[str, Any]) -> None:
+def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Mapping[str, Any], *, progress: DeployProgress | None = None) -> None:
     # This repairs the confirmed 768MiB first-install OOM in datariver-dev only.
     # Existing Actual PREP and the legacy validation project are never modified here.
     if profile != DEV_39091:
@@ -787,8 +844,9 @@ def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Ma
                 "memory_target": POSTGRES_MEMORY_BYTES, "historical_oom": oom,
                 "started_at": datetime.now(timezone.utc).isoformat(), "status": "STARTED"}
     atomic_private_json(receipt_path, recovery)
-    print(f"POSTGRES_RECOVERY|status=STARTED|memory_before_mib={memory//1024**2}"
-          f"|memory_target_mib=4096|historical_oom={'Y' if oom else 'N'}", flush=True)
+    announce = progress.message if progress is not None else lambda text: print(text, flush=True)
+    announce(f"POSTGRES_RECOVERY|status=STARTED|memory_before_mib={memory//1024**2}"
+             f"|memory_target_mib=4096|historical_oom={'Y' if oom else 'N'}")
     if oom and web and web.get("State", {}).get("Running") is True:
         run((*prefix, "stop", "--timeout", "30", "web"))
     swap = pg.get("HostConfig", {}).get("MemorySwap", 0)
@@ -810,8 +868,8 @@ def recover_postgres_memory(profile: Target, prefix: Sequence[str], existing: Ma
     recovery.update(status="APPLIED", restarted=oom, memory_after=POSTGRES_MEMORY_BYTES,
                     completed_at=datetime.now(timezone.utc).isoformat())
     atomic_private_json(receipt_path, recovery)
-    print(f"POSTGRES_RECOVERY|status=APPLIED|memory_mib=4096|restarted={'Y' if oom else 'N'}"
-          "|container_preserved=Y|volume_preserved=Y", flush=True)
+    announce(f"POSTGRES_RECOVERY|status=APPLIED|memory_mib=4096|restarted={'Y' if oom else 'N'}"
+             "|container_preserved=Y|volume_preserved=Y")
 
 
 def password_file(profile: Target, *, existing_state: bool, supplied: Path | None, prompt: bool = False) -> Path:
@@ -1034,7 +1092,8 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
             preserved = read_env(runtime_file)
         derived, values = write_derived_environment(source, profile, head, state=state, image=image, preserved_runtime=preserved)
     with stage("PROVIDER_PREFLIGHT"):
-        discovered = provider_preflight(image, values, validation_only=profile.validation_only)
+        discovered = provider_preflight(image, values, validation_only=profile.validation_only,
+                                        receipt_path=RUNTIME_ROOT / profile.name / "provider-preflight.json", progress=progress)
         derived, values = write_derived_environment(source, profile, head, state=state, image=image, discovered=discovered, preserved_runtime=preserved)
         require(sha256_file(env_file) == source_hash, "PREP_ENV_CHANGED")
     with stage("COMPOSE_CONFIG"):
@@ -1049,9 +1108,10 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
                     or (old_image.startswith("datariver-dev-deploy-source:") and SOURCE_ID.fullmatch(old_revision)),
                     "EXISTING_WEB_OWNER_INVALID")
     with stage("STATE_SERVICES"):
-        wait_state(prefix, profile, existing)
+        wait_state(prefix, profile, existing, progress=progress)
     with stage("BOOTSTRAP"):
-        password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password, prompt=prompt_password)
+        with progress.external_output() if progress is not None else nullcontext():
+            password = password_file(profile, existing_state=state == "EXISTING", supplied=supplied_password, prompt=prompt_password)
         reconcile(prefix, password, existing_state=state == "EXISTING")
     with stage("WEB_START"):
         started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1099,9 +1159,42 @@ def preflight_line(values: Mapping[str, str]) -> str:
     )
 
 
+def manage_images(*, apply: bool = False) -> int:
+    from image_cleanup import ImageCleanupError, cleanup
+
+    protected: set[str] = set()
+    # Legacy build receipts still protect rollback images; they do not become
+    # valid build/acceptance evidence for the current source.
+    receipts = [(RUNTIME_ROOT / "build/receipt.json", {"DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V1", "DATARIVER_DEV_DEPLOY_SOURCE_BUILD_V2"})]
+    receipts.extend((path, {"DATARIVER_DEV_DEPLOY_RUNTIME_ACCEPTANCE_V1"})
+                    for path in sorted(RUNTIME_ROOT.glob("*/acceptance.json")))
+    for path, contracts in receipts:
+        if not path.exists():
+            continue
+        record = read_json(path)
+        require(isinstance(record, dict) and record.get("contract") in contracts, "IMAGE_PROTECTION_RECEIPT_INVALID")
+        image, image_id = record.get("image"), record.get("image_id")
+        require(isinstance(image, str) and re.fullmatch(r"datariver-dev-deploy-source:[0-9a-f]{12}(?:-[0-9]{8}T[0-9]{12}Z)?", image)
+                and isinstance(image_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id), "IMAGE_PROTECTION_RECEIPT_INVALID")
+        protected.update((image, image_id))
+    try:
+        result = cleanup(protected, keep=3, apply=apply)
+    except ImageCleanupError as error:
+        raise DeployError(f"IMAGE_CLEANUP_FAILED:{error}") from error
+    atomic_private_json(RUNTIME_ROOT / "image-cleanup.json", result)
+    deleted = {record["id"] for record in result["deleted"]}
+    held = {record["id"]: record["reason"] for record in result["held"]}
+    for record in result["plan"]:
+        status = "DELETED" if record["id"] in deleted else "HELD" if record["id"] in held else record["disposition"]
+        print(f"IMAGE|id={record['id']}|status={status}|reason={held.get(record['id'], record['reason'])}")
+    counts = result["counts"]
+    print(f"IMAGE_CLEANUP|mode={'APPLY' if apply else 'PREVIEW'}|images={counts['plan']}|kept={counts['keep']}|candidates={counts['candidates']}|deleted={counts['deleted']}|held={counts['held']}|recent_retained=3")
+    return 2 if result["held"] else 0
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check-source", "check-graph-target", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
+    parser.add_argument("command", choices=("check-source", "check-graph-target", "check-providers", "images", "clean-images", "preflight", "build", "build-log", "deploy-log", "validate-39081", "deploy"))
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     password_input = parser.add_mutually_exclusive_group()
     password_input.add_argument("--admin-password-file", type=Path)
@@ -1128,6 +1221,9 @@ def main() -> int:
         require(not arguments.no_cache or arguments.command == "build", "NO_CACHE_BUILD_ONLY")
         require(arguments.build_env_file is None or arguments.command == "build", "BUILD_ENV_FILE_BUILD_ONLY")
         require(not arguments.follow or arguments.command in {"build-log", "deploy-log"}, "FOLLOW_LOG_ONLY")
+        if arguments.command in {"images", "clean-images"}:
+            require(not arguments.apply or arguments.command == "clean-images", "IMAGE_CLEANUP_REQUIRES_CLEAN_IMAGES")
+            return manage_images(apply=arguments.command == "clean-images" and arguments.apply)
         if arguments.command == "build-log":
             return show_build_log(follow=arguments.follow)
         if arguments.command == "deploy-log":
@@ -1141,6 +1237,9 @@ def main() -> int:
             profile = PREP_39083 if arguments.port == 39083 else DEV_39091
         if arguments.command == "check-graph-target":
             check_graph_target(profile, arguments.public_origin, arguments.admin_password_file, head)
+            return 0
+        if arguments.command == "check-providers":
+            check_providers(profile)
             return 0
         if arguments.command == "check-source":
             print(f"SOURCE_CHECK|status=PASS|branch={BRANCH}|source_sha256={head}|files={count}|git_dependency=NONE|base_product={BASE_PRODUCT[:12]}|artifact_dependency=NONE")

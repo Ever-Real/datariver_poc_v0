@@ -135,6 +135,17 @@ Airflow 연결에는 `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`를 �
 - 빌드 중 실시간 Docker plain 출력과 15초 간격의 heartbeat(경과 시간/무출력 알림)를 제공하며, 로그는 `runtime/dev_deploy/build/<소스해시>.log`와 `receipt.json`에 기록됩니다.
 - `./scripts/dev_deploy build-log`로 최근 빌드 로그 마지막 60줄을 확인하거나 `--follow`로 실시간 추적할 수 있습니다(Git·환경 설정 없이 동작).
 
+배포가 성공한 뒤 소스·빌드 입력이 같고 이미지와 빌드 기록이 남아 있으면 다음 재배포에 build를 반복할 필요가 없습니다. 기능 코드·의존성·Dockerfile·실행 스크립트를 변경하면 일반 build를 다시 수행합니다. 운영 환경 파일만 바꾼 경우에는 보통 이미지 재빌드가 필요하지 않지만 preflight와 배포 검증은 다시 수행합니다. 소스 해시는 GitHub 접속 없이 현재 폴더에서 계산합니다.
+
+Dockerfile은 `deploy/Dockerfile` 하나이며, 버전별로 쌓이는 것은 빌드 이미지입니다. 배포 성공과 복구 이미지 보존을 확인한 뒤 다음 명령으로 오래된 소스 이미지를 정리할 수 있습니다.
+
+```bash
+./scripts/dev_deploy images
+./scripts/dev_deploy clean-images --apply
+```
+
+`images`와 `clean-images`의 기본 동작은 삭제 없는 미리보기입니다. `clean-images --apply`만 삭제하며, 실행·중지된 모든 컨테이너의 이미지, 현재 디렉터리의 빌드·배포 성공 기록이 참조하는 이미지, 최근 소스 이미지 3개와 별도 태그가 붙은 이미지는 보존합니다. 이 도구가 확인한 `datariver-dev-deploy-source`의 오래된 이미지만 삭제하고 기반 이미지·빌드 캐시·볼륨은 건드리지 않습니다. 삭제 직전 상태가 달라지거나 Docker가 거부하면 보류합니다. 빌드·배포·이미지 태깅과 동시에 실행하지 않습니다. 결과는 `runtime/dev_deploy/image-cleanup.json`에 남습니다.
+
 기본 빌드는 운영 환경 파일을 읽지 않습니다. 기존 환경 파일에 빌드용 `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`가 있다면 다음처럼 지정합니다. 이 세 키만 Docker 빌드에 전달하며 provider 인증정보는 전달하지 않습니다. `.optional` 파일도 기존 해석 규칙으로 읽습니다. 파일 내용을 변경하지 않습니다.
 
 ```bash
@@ -146,7 +157,7 @@ npm 설치·production 의존성 정리는 각 단계에서 임시 프록시 설
 
 `deploy --apply`는 새 프로젝트의 상태를 구성하고 Web을 기동합니다. 재배포에서는 해당 프로젝트의 호환되는 상태와 비밀정보를 재사용합니다. 빌드 후 소스코드를 수정한 경우에는 다시 빌드해야 배포할 수 있습니다(루트 `README.md`만 수정한 경우에는 재빌드 불필요).
 
-배포 화면에는 `[1/11] 소스·이미지 확인`처럼 단계 번호와 이름, 완료·실패·중단 결과가 짧게 표시됩니다. 새 출력이 없는 동안에는 1분 간격으로 실행/대기 알림을 표시합니다. 단계 번호는 시간 기준 진행률이 아닙니다. `[9/11] Smoke 검증`에서는 서버·이미지 상태, 관리자 로그인, DataHub 조회·용어집, 관리형 그래프·의미 검색 인덱스, MCL 최신 수집·이력, AUTO 일반 대화·응답 경로를 `[1/6]`~`[6/6]` 이름과 결과로 표시합니다. 검색·GRAPH 대화·미리보기 검증은 다음 기능 검증 단계에서 수행하며, 전체 성공은 최종 acceptance로 확인합니다.
+배포 터미널에는 `[1/11] 소스·이미지 확인`을 표시하고, 완료되면 같은 줄 오른쪽에 경과 시간과 `[PASS]`를 붙인 뒤 다음 단계로 넘어갑니다. 실패·중단은 `[FAIL]`·`[INTERRUPTED]`로 표시합니다. 대기 중에는 같은 줄을 갱신하며, 파일로 출력하면 제어문자 없이 완료 결과와 1분 간격의 대기 알림을 기록합니다. 단계 번호는 시간 기준 진행률이 아닙니다. `[9/11] Smoke 검증`에서는 서버·이미지 상태, 관리자 로그인, DataHub 조회·용어집, 관리형 그래프·의미 검색 인덱스, MCL 최신 수집·이력, AUTO 일반 대화·응답 경로를 `[1/6]`~`[6/6]` 이름과 결과로 표시합니다. 검색·GRAPH 대화·미리보기 검증은 다음 기능 검증 단계에서 수행하며, 전체 성공은 최종 acceptance로 확인합니다.
 
 상세 `DEPLOY_PROGRESS` 기록은 `runtime/dev_deploy/dev/deploy-*.log`에 실행별로 남습니다(권한 `0600`). 비밀값·원시 provider 응답은 기록하지 않습니다. 별도 터미널에서 `./scripts/dev_deploy deploy-log --follow`로 최신 기록을 볼 수 있습니다. `--port 39083`을 지정하면 해당 PREP의 진행 기록을 읽습니다. 이전 실행기의 실행 중 작업에는 표시가 소급 적용되지 않습니다.
 
@@ -191,6 +202,7 @@ MCL 최신 수집과 K9 의미 검색 준비는 정상이어야 합니다. `SOUR
 | 위치 | 확인 내용 |
 |---|---|
 | `runtime/dev_deploy/build/` | 빌드 로그(`<소스해시>.log`)와 결과(`receipt.json`) |
+| `runtime/dev_deploy/dev/provider-preflight.json` | 외부 연결 사전 점검의 단계·오류 코드·HTTP 상태 분류 |
 | `runtime/dev_deploy/dev/readiness.json` | K9·MCL 준비 상태와 인증·연결 실패 원인 |
 | 같은 디렉터리의 `smoke.json`, `smoke-failure.json` | 운영 smoke 결과 또는 실패 진단 |
 | 같은 디렉터리의 `features.json`, `acceptance.json` | 기능 검증과 최종 배포 결과 |
@@ -198,6 +210,14 @@ MCL 최신 수집과 K9 의미 검색 준비는 정상이어야 합니다. `SOUR
 실패하면 먼저 출력된 단계·오류 코드와 해당 결과 파일을 확인합니다. 8/11 실패는 `READINESS_FAILED`, 10/11 실패는 `FEATURES_FAILED`에 검사 단계·코드·HTTP 상태를 표시합니다. 인증 실패로 시작하지 못한 기능 검사는 `NOT_RUN`이며 K9·MCL 자체 장애나 성공을 뜻하지 않습니다. `readiness.json`·`features.json`의 `failure`에 안전한 오류 정보와 실패 시각을 남기며, `accepted_at`은 해당 검사가 성공했을 때만 기록합니다. Smoke 실패 시 현재 실행이 반환한 `SMOKE_FAILED|stage=...|code=...|http=...`를 표시합니다. 이전 단계 실패 후에도 읽기 전용 진단을 계속할 수 있으므로, 마지막 smoke 번호가 실패 원인을 뜻하지는 않습니다. `smoke-failure.json`의 `failed_at`, `stage`, `classification`, `readiness`를 이번 실행과 대조합니다. 초기 단계 실패에서는 뒤 단계의 파일이 없을 수 있으므로 이전 실행 결과를 이번 성공 증거로 사용하지 않습니다.
 
 설정 누락·인증 오류·종료된 실패를 무조건 재시도하지 않습니다. 볼륨 삭제, DB 초기화, 관리자 재생성, 무조건적인 그래프 재구성으로 우회하지 않습니다. 자동 복구를 가정하지 말고 기존 이미지와 데이터 호환성을 확인해 승인된 절차로 복구합니다.
+
+`PROVIDER_PREFLIGHT_FAILED`는 빌드 성공 후 외부 서비스 사전 점검에서 실패했다는 뜻입니다. `PROVIDER_PREFLIGHT|status=FAILED|stage=...|code=...|http=...`로 실패한 점검을 확인합니다. 39091 배포 시도 후에는 다음 명령으로 이 구간만 다시 확인할 수 있습니다.
+
+```bash
+./scripts/dev_deploy check-providers
+```
+
+마지막 배포 시도에서 생성한 `runtime/dev_deploy/dev/derived.env`와 그 안에 지정된 기존 로컬 이미지를 사용합니다. 소스 업데이트 후에도 이 진단을 위해 다시 빌드할 필요는 없습니다. 임시 컨테이너에서 외부 연결·인증·모델 응답과 MCL discovery를 점검하며 Web 교체·state 초기화·full smoke는 수행하지 않습니다. 원본 환경 파일을 수정했더라도 이 명령은 마지막 배포 시도의 입력을 검사합니다. 비밀값과 원시 응답은 출력하지 않으며, 진단 PASS를 배포 acceptance로 사용하지 않습니다.
 
 ## 개발 및 Agent 작업 원칙
 
