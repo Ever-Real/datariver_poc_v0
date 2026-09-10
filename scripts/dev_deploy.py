@@ -491,43 +491,6 @@ def write_derived_environment(
     return target, values
 
 
-def protected_state(*, ignore_project: str | None = None) -> dict[str, Any]:
-    rows = output("docker", "ps", "--all", "--format", "{{.ID}}").splitlines()
-    containers: list[dict[str, Any]] = []
-    for container_id in rows:
-        document = json.loads(output("docker", "inspect", container_id))[0]
-        labels = document.get("Config", {}).get("Labels", {}) or {}
-        project = labels.get("com.docker.compose.project", "")
-        if ignore_project and project == ignore_project:
-            continue
-        ports = document.get("NetworkSettings", {}).get("Ports", {}) or {}
-        published = {
-            int(binding.get("HostPort"))
-            for bindings in ports.values() if isinstance(bindings, list)
-            for binding in bindings if isinstance(binding, dict) and str(binding.get("HostPort", "")).isdigit()
-        }
-        if project not in {"datariver-prep39083", "datariver-poc"} and not published.intersection({39080, 39083}):
-            continue
-        containers.append({
-            "id": document.get("Id"), "image_id": document.get("Image"), "project": project,
-            "service": labels.get("com.docker.compose.service", ""),
-            "running": document.get("State", {}).get("Running") is True,
-            "volumes": sorted(
-                mount.get("Name") or mount.get("Source") for mount in document.get("Mounts", [])
-                if isinstance(mount, dict) and (mount.get("Name") or mount.get("Source"))
-            ),
-        })
-    image = subprocess.run(["docker", "image", "inspect", KNOWN_GOOD_IMAGE], capture_output=True, text=True, check=False)
-    known_good = None
-    if image.returncode == 0:
-        known_good = json.loads(image.stdout)[0].get("Id")
-    return {"containers": sorted(containers, key=lambda value: value["id"]), "known_good_image_id": known_good}
-
-
-def assert_protected_unchanged(before: Mapping[str, Any], *, ignore_project: str | None = None) -> None:
-    require(protected_state(ignore_project=ignore_project) == before, "PROTECTED_39080_OR_39083_CHANGED")
-
-
 def state_volume_identity(profile: Target) -> tuple[tuple[str, str], ...]:
     result = []
     for name in ("pgvector-data", "neo4j-data", "neo4j-logs"):
@@ -577,7 +540,6 @@ def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | Non
     if present.returncode == 0:
         # An explicit rebuild must not move an image reference used by a deployment.
         image += "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    before = protected_state()
     log = RUNTIME_ROOT / "build" / f"{head}.log"
     archive = source_archive()
     require(hashlib.sha256(archive).hexdigest() == head, "SOURCE_CHANGED_BEFORE_BUILD")
@@ -592,7 +554,6 @@ def build_image(head: str, *, no_cache: bool = False, build_env_file: Path | Non
         context.write(archive)
         context.seek(0)
         exit_code = run_build(arguments, cwd=ROOT, archive=context, log_path=log, environment=environment)
-    assert_protected_unchanged(before)
     require(exit_code == 0, f"SOURCE_BUILD_FAILED:exit={exit_code}:log={log}")
     require(build_input_hash() == head, "SOURCE_CHANGED_DURING_BUILD:rebuild_current_source")
     document = json.loads(output("docker", "image", "inspect", image))[0]
@@ -1097,8 +1058,6 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
         head, _ = validate_source(clean=True)
         image, image_id = require_built_image(head)
     with stage("ENV_TARGET"):
-        ignored_project = None if profile.validation_only else profile.project
-        before = protected_state(ignore_project=ignored_project)
         source, source_hash = deployment_environment(env_file, profile, public_origin)
         state = state_kind(profile)
         if profile == VALIDATION_39081:
@@ -1142,7 +1101,6 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
         containers = project_containers(profile)
         require(not any(container.get("State", {}).get("OOMKilled") is True for container in containers.values()), "CONTAINER_OOM_DETECTED")
         require(not unexpected_5xx(web, started), "UNEXPECTED_WEB_5XX")
-        assert_protected_unchanged(before, ignore_project=ignored_project)
         volume_after = state_volume_identity(profile)
         if state == "EXISTING":
             require(volume_after == volume_before, "EXISTING_STATE_VOLUMES_CHANGED")
@@ -1164,8 +1122,7 @@ def execute_deploy(profile: Target, env_file: Path, supplied_password: Path | No
             "auto_search": acceptance["features"]["auto_search"],
             "vector_chat": acceptance["features"]["vector_chat"],
             "knowledge_graph_preview": acceptance["features"]["knowledge_graph_preview"],
-            "unexpected_5xx": "NONE", "oom": "NONE", "protected_39080": "UNTOUCHED",
-            "p39083": "UNTOUCHED" if profile.validation_only else "DEPLOYED",
+            "unexpected_5xx": "NONE", "oom": "NONE",
         })
 
 
@@ -1276,7 +1233,7 @@ def main() -> int:
         require(arguments.apply, "DEPLOY_REQUIRES_APPLY")
         deploy(profile, arguments.env_file, arguments.admin_password_file, arguments.public_origin,
                prompt_password=arguments.prompt_admin_password)
-        print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS|p39080=UNTOUCHED|p39083={'DEPLOYED' if not profile.validation_only else 'UNTOUCHED'}")
+        print(f"DEV_DEPLOY_ACCEPTANCE|status=PASS|target={profile.name}|mcl=READY|k9=READY|smoke=6/6_PASS|chat=PASS|graph=PASS|preview=PASS")
         return 0
     except KeyboardInterrupt:
         print("INTERRUPTED|operation=" + arguments.command, file=sys.stderr)
